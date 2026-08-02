@@ -23,6 +23,7 @@ class AppPreferencesRepositoryTest {
         try {
             val ignored = FindingPreferenceKey.create("phone_ble", "AA:BB")!!
             first.setOnboardingComplete()
+            assertEquals(AppLaunchState.Ready("info"), first.launchState.first())
             first.setLastTopLevelRoute("privacy")
             first.ignoreFinding(ignored)
             first.markPermissionsRequested(
@@ -34,7 +35,7 @@ class AppPreferencesRepositoryTest {
             first.markPermissionsRequested(setOf(Manifest.permission.CAMERA))
 
             val recreated = AppPreferencesRepository(context)
-            assertEquals(AppLaunchState.Ready("privacy"), recreated.launchState.first())
+            assertEquals(AppLaunchState.Ready("info"), recreated.launchState.first())
             assertEquals(setOf(ignored.encoded), recreated.ignoredFindingKeys.first())
             assertEquals(
                 setOf(

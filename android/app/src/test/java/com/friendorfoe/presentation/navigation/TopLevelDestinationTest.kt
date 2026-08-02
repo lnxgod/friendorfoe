@@ -8,7 +8,7 @@ class TopLevelDestinationTest {
     @Test
     fun destinationsStayInApprovedOrder() {
         assertEquals(
-            listOf("AR", "Map", "List", "Privacy", "Badge", "History", "Info"),
+            listOf("AR", "Map", "List", "Privacy", "Badge", "History", "About"),
             TopLevelDestination.entries.map { it.label }
         )
         assertEquals(7, TopLevelDestination.entries.map { it.route }.distinct().size)

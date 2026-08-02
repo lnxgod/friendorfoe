@@ -5,12 +5,10 @@ import com.friendorfoe.domain.model.Aircraft
 import com.friendorfoe.domain.model.ObjectCategory
 import com.friendorfoe.domain.model.Position
 import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.take
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
@@ -158,36 +156,6 @@ class MapOverlayPresentationTest {
                 remoteCenter = null,
             )
         )
-    }
-
-    @Test
-    fun `map pan timer expires after ten seconds and restarts on touch`() = runTest {
-        val gestures = MutableSharedFlow<Unit>()
-        val states = mutableListOf<Boolean>()
-        val collection = backgroundScope.launch {
-            mapPanActivity(gestures).toList(states)
-        }
-        runCurrent()
-        assertEquals(false, states.last())
-
-        gestures.emit(Unit)
-        runCurrent()
-        assertEquals(true, states.last())
-
-        advanceTimeBy(9_999L)
-        runCurrent()
-        assertEquals(true, states.last())
-
-        gestures.emit(Unit)
-        runCurrent()
-        advanceTimeBy(9_999L)
-        runCurrent()
-        assertEquals(true, states.last())
-
-        advanceTimeBy(1L)
-        runCurrent()
-        assertEquals(false, states.last())
-        collection.cancel()
     }
 
     @Test

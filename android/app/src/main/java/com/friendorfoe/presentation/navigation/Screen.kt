@@ -7,9 +7,9 @@ import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Map
 import androidx.compose.material.icons.filled.Shield
-import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.ui.graphics.vector.ImageVector
+import com.friendorfoe.presentation.badge.BadgeMarkIcon
 import com.friendorfoe.presentation.privacy.PrivacyFindingKey
 import com.friendorfoe.presentation.privacy.PrivacySourceKind
 
@@ -23,7 +23,8 @@ sealed class Screen(val route: String) {
         fun createRoute(focusKey: String) = "badge/${Uri.encode(focusKey)}"
     }
     data object History : Screen("history")
-    data object Info : Screen("info")
+    data object About : Screen("info")
+    data object AboutSettings : Screen("info/settings")
     data object Detail : Screen("detail/{objectId}") {
         fun createRoute(objectId: String) = "detail/${encodeRouteSegment(objectId)}"
     }
@@ -85,9 +86,9 @@ enum class TopLevelDestination(
     MAP("Map", Screen.MapView.route, Icons.Default.Map),
     LIST("List", Screen.ListView.route, Icons.AutoMirrored.Filled.List),
     PRIVACY("Privacy", Screen.Privacy.route, Icons.Default.Shield),
-    BADGE("Badge", Screen.Badge.route, Icons.Default.Tune),
+    BADGE("Badge", Screen.Badge.route, BadgeMarkIcon),
     HISTORY("History", Screen.History.route, Icons.Default.History),
-    INFO("Info", Screen.Info.route, Icons.Default.Info),
+    ABOUT("About", Screen.About.route, Icons.Default.Info),
 }
 
 enum class BackDisposition { EXIT_APP, POP_SECONDARY }

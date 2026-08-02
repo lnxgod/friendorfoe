@@ -25,6 +25,9 @@ data class StalkerAlertPresentation(
     val tone: FofTone,
 )
 
+internal fun GlassesDetection.isSupportedPrivacyFinding(): Boolean =
+    !matchReason.startsWith("ble_behavioral:") || matchReason == "ble_behavioral:pairing_spam"
+
 @Singleton
 class PrivacyAlertPolicy internal constructor(
     private val cooldownMs: Long,
@@ -94,6 +97,7 @@ class PrivacyAlertPolicy internal constructor(
         private const val DEFAULT_COOLDOWN_MS = 10 * 60 * 1_000L
 
         fun fromDetection(detection: GlassesDetection): PrivacyAlertCandidate? {
+            if (!detection.isSupportedPrivacyFinding()) return null
             val normalized = PrivacyFindingNormalizer.normalize(detection)
             if (normalized.category.threatLevel < 2) return null
             if (normalized.category == PrivacyCategory.INFORMATIONAL) return null

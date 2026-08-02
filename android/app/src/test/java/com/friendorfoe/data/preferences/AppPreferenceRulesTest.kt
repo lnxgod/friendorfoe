@@ -8,9 +8,15 @@ import org.junit.Test
 class AppPreferenceRulesTest {
 
     @Test
-    fun invalidTopLevelRouteFallsBackToAr() {
-        assertEquals("ar_view", sanitizeTopLevelRoute("calibrate"))
-        assertEquals("ar_view", sanitizeTopLevelRoute(null))
+    fun invalidTopLevelRouteFallsBackToAbout() {
+        assertEquals("info", sanitizeTopLevelRoute("calibrate"))
+        assertEquals("info", sanitizeTopLevelRoute(null))
+    }
+
+    @Test
+    fun normalLaunchAlwaysUsesAboutInsteadOfTheSavedTopLevelRoute() {
+        assertEquals("privacy", sanitizeTopLevelRoute("privacy"))
+        assertEquals("info", normalLaunchRoute())
     }
 
     @Test

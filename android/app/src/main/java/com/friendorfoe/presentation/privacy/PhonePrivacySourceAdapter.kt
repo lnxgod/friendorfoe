@@ -213,6 +213,7 @@ class PhonePrivacySourceAdapter internal constructor(
                         )
                     }
                     is GlassesScanEvent.Observation -> {
+                        if (!event.detection.isSupportedPrivacyFinding()) return@collect
                         terminalEvent = false
                         val nowElapsed = clock.nowElapsedMs()
                         val nowWall = clock.nowWallClock().toEpochMilli()

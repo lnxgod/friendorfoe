@@ -19,6 +19,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import androidx.navigation.NavHostController
 import com.friendorfoe.data.preferences.AppLaunchState
 import com.friendorfoe.data.preferences.sanitizeTopLevelRoute
 import com.friendorfoe.data.repository.RuntimePermissionChangeNotifier
@@ -156,12 +157,12 @@ fun MainApplicationShell(
     val isTopLevel = currentRoute in TopLevelDestination.entries.map { it.route }
     val activity = LocalContext.current as? Activity
 
-    LaunchedEffect(pendingPrivacyRoute, currentRoute) {
-        val route = pendingPrivacyRoute ?: return@LaunchedEffect
-        if (currentRoute == null) return@LaunchedEffect
-        navController.navigate(route) { launchSingleTop = true }
-        onPrivacyRouteConsumed(route)
-    }
+    PendingPrivacyRouteNavigationEffect(
+        navController = navController,
+        currentRoute = currentRoute,
+        pendingPrivacyRoute = pendingPrivacyRoute,
+        onPrivacyRouteConsumed = onPrivacyRouteConsumed,
+    )
 
     BackHandler(enabled = currentRoute != null) {
         when (backDisposition(currentRoute)) {
@@ -181,6 +182,21 @@ fun MainApplicationShell(
         },
     ) { padding ->
         MainNavGraph(navController, graphStartRoute, Modifier.padding(padding))
+    }
+}
+
+@Composable
+internal fun PendingPrivacyRouteNavigationEffect(
+    navController: NavHostController,
+    currentRoute: String?,
+    pendingPrivacyRoute: String?,
+    onPrivacyRouteConsumed: (String) -> Unit,
+) {
+    LaunchedEffect(pendingPrivacyRoute, currentRoute) {
+        val route = pendingPrivacyRoute ?: return@LaunchedEffect
+        if (currentRoute == null) return@LaunchedEffect
+        navController.navigate(route) { launchSingleTop = true }
+        onPrivacyRouteConsumed(route)
     }
 }
 

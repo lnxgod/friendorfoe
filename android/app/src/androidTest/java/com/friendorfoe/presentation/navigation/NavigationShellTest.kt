@@ -18,13 +18,15 @@ import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
-import androidx.compose.ui.test.performScrollToIndex
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navigation
 import androidx.test.espresso.Espresso.pressBack
+import com.friendorfoe.presentation.permissions.AppFeature
+import com.friendorfoe.presentation.permissions.PermissionBindings
+import com.friendorfoe.presentation.permissions.PermissionUiState
 import com.friendorfoe.presentation.theme.FriendOrFoeTheme
 import org.junit.Assert.assertEquals
 import org.junit.Rule
@@ -51,7 +53,10 @@ class NavigationShellTest {
             }
         }
 
-        listOf("AR", "Map", "List", "Privacy", "Badge", "History", "Info")
+        assertEquals("info", Screen.About.route)
+        assertEquals("info/settings", Screen.AboutSettings.route)
+
+        listOf("AR", "Map", "List", "Privacy", "Badge", "History", "About")
             .forEach { label ->
                 compose.onNodeWithContentDescription(label).assertHasClickAction().performClick()
                 compose.onNodeWithTag("screen_${label.lowercase()}").assertIsDisplayed()
@@ -90,8 +95,8 @@ class NavigationShellTest {
                             composable(Screen.ArView.route) {
                                 TopLevelRouteRoot(TopLevelDestination.AR) { Text("AR") }
                             }
-                            composable(Screen.Info.route) {
-                                TopLevelRouteRoot(TopLevelDestination.INFO) {
+                            composable(Screen.About.route) {
+                                TopLevelRouteRoot(TopLevelDestination.ABOUT) {
                                     Button(onClick = { navController.navigate(Screen.IgnoredDevices.route) }) {
                                         Text("Open ignored")
                                     }
@@ -106,32 +111,29 @@ class NavigationShellTest {
             }
         }
 
-        compose.onNodeWithContentDescription("Info").performClick()
+        compose.onNodeWithContentDescription("About").performClick()
         compose.onNodeWithText("Open ignored").performClick()
         compose.onNodeWithTag("screen_ignored_devices").assertIsDisplayed()
         compose.onNodeWithTag("navigation_bar").assertDoesNotExist()
 
         pressBack()
-        compose.onNodeWithTag("screen_info").assertIsDisplayed()
+        compose.onNodeWithTag("screen_about").assertIsDisplayed()
 
         compose.runOnUiThread { persistedStart.value = Screen.Badge.route }
         compose.waitForIdle()
 
-        compose.onNodeWithTag("screen_info").assertIsDisplayed()
+        compose.onNodeWithTag("screen_about").assertIsDisplayed()
         assertEquals(0, hostDisposals.intValue)
     }
 
     @Test
-    fun productionInfoReferenceActionNavigatesThroughARealNavHost() {
+    fun productionAboutReferenceActionNavigatesThroughARealNavHost() {
         compose.setContent {
             FriendOrFoeTheme {
                 val navController = rememberNavController()
-                NavHost(navController = navController, startDestination = "test_info") {
-                    composable("test_info") {
-                        InfoTopLevelRoute(
-                            navController = navController,
-                            viewModel = null,
-                        )
+                NavHost(navController = navController, startDestination = "test_about") {
+                    composable("test_about") {
+                        AboutTopLevelRoute(navController = navController)
                     }
                     composable("reference_guide") {
                         Text("Reference guide", Modifier.testTag("screen_reference_guide"))
@@ -140,9 +142,44 @@ class NavigationShellTest {
             }
         }
 
-        compose.onNodeWithTag("info_list").performScrollToIndex(3)
-        compose.onNodeWithTag("info_reference_guide").performClick()
+        compose.onNodeWithTag("about_reference").performClick()
 
         compose.onNodeWithTag("screen_reference_guide").assertIsDisplayed()
+    }
+
+    @Test
+    fun productionAboutSettingsRouteReturnsToAboutOnBack() {
+        compose.setContent {
+            FriendOrFoeTheme {
+                val navController = rememberNavController()
+                NavHost(navController = navController, startDestination = Screen.About.route) {
+                    composable(Screen.About.route) {
+                        AboutTopLevelRoute(navController = navController)
+                    }
+                    composable(Screen.AboutSettings.route) {
+                        AboutSettingsRoute(
+                            navController = navController,
+                            viewModel = null,
+                            permissionBindings = PermissionBindings(
+                                states = AppFeature.entries.associateWith {
+                                    PermissionUiState.Granted
+                                },
+                                requestFeature = { _, onResolved ->
+                                    onResolved(PermissionUiState.Granted)
+                                },
+                                openFeatureSettings = { _, _ -> },
+                            ),
+                        )
+                    }
+                }
+            }
+        }
+
+        compose.onNodeWithTag("about_app_settings").performClick()
+        compose.onNodeWithTag("screen_about_settings").assertIsDisplayed()
+
+        pressBack()
+
+        compose.onNodeWithTag("about_landing").assertIsDisplayed()
     }
 }

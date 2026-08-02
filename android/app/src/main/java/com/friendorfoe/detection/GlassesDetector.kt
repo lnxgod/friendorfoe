@@ -190,20 +190,6 @@ class GlassesDetector @Inject constructor(
     companion object {
         private const val TAG = "GlassesDetector"
         private const val MIN_STATIC_DETECTION_CONFIDENCE = 0.60f
-        private val SERIAL_IDENTITY_REASONS = setOf(
-            "UUID16:0XFFE0",
-            "UUID16:0XFFF0",
-            "SVC_DATA:0XFFE0",
-            "SVC_DATA:0XFFF0",
-        )
-        private val GENERIC_SERIAL_PRODUCT_NAMES = setOf(
-            "BT",
-            "BLE",
-            "UART",
-            "SERIAL",
-            "HC-05",
-            "HC-06",
-        )
 
         internal data class ManufacturerClassification(
             val manufacturer: String,
@@ -276,40 +262,6 @@ class GlassesDetector @Inject constructor(
             return "fp:$m|$t|$ja3Part|$uuidPart|$namePart"
         }
 
-        internal fun isTrustedSerialProductIdentity(
-            isBonded: Boolean,
-            confidence: Float,
-            manufacturer: String,
-            deviceType: String,
-            matchReason: String,
-        ): Boolean {
-            if (isBonded) return true
-            if (confidence < MIN_STATIC_DETECTION_CONFIDENCE) return false
-
-            val normalizedManufacturer = manufacturer.trim()
-            val normalizedType = deviceType.trim()
-            val normalizedReason = matchReason.trim().uppercase()
-            if (normalizedManufacturer.isBlank() || normalizedType.isBlank() || normalizedReason.isBlank()) {
-                return false
-            }
-            if (normalizedManufacturer.equals("unknown", ignoreCase = true) ||
-                normalizedType.contains("unknown", ignoreCase = true) ||
-                normalizedReason == "ADDRESS_TYPE:PUBLIC"
-            ) {
-                return false
-            }
-            if (normalizedReason in SERIAL_IDENTITY_REASONS ||
-                normalizedType.contains("serial", ignoreCase = true) ||
-                normalizedType.contains("uart", ignoreCase = true) ||
-                normalizedType.contains("skimmer", ignoreCase = true)
-            ) {
-                return false
-            }
-
-            val nameIdentity = normalizedReason.substringAfter("NAME:", missingDelimiterValue = "")
-            return nameIdentity !in GENERIC_SERIAL_PRODUCT_NAMES
-        }
-
         internal fun behavioralDetectionIsIgnored(
             detection: GlassesDetection,
             ignoredKeys: Set<String>,
@@ -347,33 +299,6 @@ class GlassesDetector @Inject constructor(
                 investigationTarget = BleInvestigationTarget(
                     mode = BleInvestigationMode.PASSIVE_CAPTURE,
                     mac = null,
-                    entityKey = signal.entityKey,
-                    observedAtElapsedMs = observedAtElapsedMs,
-                    origin = PrivacyDetectionOrigin.ANDROID,
-                ),
-            )
-
-            is BleThreatSignal.SerialSkimmer -> GlassesDetection(
-                mac = signal.targetMac,
-                deviceName = null,
-                deviceType = "Possible Serial Skimmer",
-                manufacturer = "BLE Behavioral Analysis",
-                hasCamera = false,
-                rssi = signal.strongestRssi,
-                confidence = signal.confidence,
-                matchReason = "ble_behavioral:serial_skimmer",
-                firstSeen = now,
-                lastSeen = now,
-                details = mapOf(
-                    "serial_service_uuid" to "0x%04X".format(signal.serialServiceUuid),
-                    "evidence" to signal.evidence.joinToString(",") { it.name },
-                ),
-                category = PrivacyCategory.ATTACK_TOOL,
-                fingerprintKey = signal.entityKey,
-                seenMacs = setOf(signal.targetMac),
-                investigationTarget = BleInvestigationTarget(
-                    mode = BleInvestigationMode.GATT,
-                    mac = signal.targetMac,
                     entityKey = signal.entityKey,
                     observedAtElapsedMs = observedAtElapsedMs,
                     origin = PrivacyDetectionOrigin.ANDROID,
@@ -1755,13 +1680,6 @@ class GlassesDetector @Inject constructor(
         // service UUIDs, advertising flags, appearance, local name.
         val adv = BlePacketParser.parseAdvertisement(result)
 
-        val trustedIdentity = isTrustedSerialProductIdentity(
-            isBonded = mac in myBondedAddresses,
-            confidence = bestConf,
-            manufacturer = bestMfr,
-            deviceType = bestType,
-            matchReason = bestReason,
-        )
         val observedAtElapsedMs = elapsedRealtimeMs()
         val behavioralSignal = bleThreatAnalyzer.observe(
             BleThreatObservation(
@@ -1774,7 +1692,7 @@ class GlassesDetector @Inject constructor(
                 serviceUuids16 = adv.serviceUuids16.toSet(),
                 localName = adv.localName,
                 companyId = adv.companyId,
-                trustedIdentity = trustedIdentity,
+                trustedIdentity = false,
             )
         ).firstOrNull()
         val behavioralDetection = behavioralSignal?.let {
@@ -1785,20 +1703,7 @@ class GlassesDetector @Inject constructor(
             return behavioralDetection?.let(::storeBehavioralDetection)
         }
 
-        val staticCategory = categorize(bestType)
-        val staticSignatureProtectedFromSerialHeuristic = behavioralSignal is BleThreatSignal.SerialSkimmer &&
-            bestConf > behavioralSignal.confidence &&
-            (bestCamera ||
-                bestMfr.contains("Meta", ignoreCase = true) ||
-                staticCategory in setOf(
-                    PrivacyCategory.BLE_TRACKER,
-                    PrivacyCategory.FINDMY,
-                    PrivacyCategory.ATTACK_TOOL,
-                ))
-        if (behavioralDetection != null &&
-            (staticCategory == PrivacyCategory.INFORMATIONAL ||
-                !staticSignatureProtectedFromSerialHeuristic)
-        ) {
+        if (behavioralDetection != null) {
             return storeBehavioralDetection(behavioralDetection)
         }
 

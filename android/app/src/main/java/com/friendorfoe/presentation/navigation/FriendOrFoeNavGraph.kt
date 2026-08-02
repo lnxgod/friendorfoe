@@ -6,9 +6,11 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavGraphBuilder
@@ -19,14 +21,18 @@ import androidx.navigation.compose.composable
 import androidx.navigation.navigation
 import androidx.navigation.navArgument
 import com.friendorfoe.data.preferences.sanitizeTopLevelRoute
-import com.friendorfoe.presentation.about.AboutScreen
+import com.friendorfoe.presentation.about.AboutLandingActions
+import com.friendorfoe.presentation.about.AboutLandingScreen
 import com.friendorfoe.presentation.about.AboutViewModel
+import com.friendorfoe.presentation.about.InfoSettingsScreen
+import com.friendorfoe.presentation.about.openUri
 import com.friendorfoe.presentation.aircraft.AircraftReferenceScreen
 import com.friendorfoe.presentation.ar.ArViewModel
 import com.friendorfoe.presentation.ar.ArViewScreen
 import com.friendorfoe.presentation.ar.PermissionHandler
 import com.friendorfoe.presentation.badge.BadgeControlScreen
 import com.friendorfoe.presentation.calibrate.CalibrateScreen
+import com.friendorfoe.presentation.components.FofSecondaryScreenHeader
 import com.friendorfoe.presentation.detail.DetailScreen
 import com.friendorfoe.presentation.detail.HistoricalDetailScreen
 import com.friendorfoe.presentation.drones.DroneReferenceScreen
@@ -42,6 +48,7 @@ import com.friendorfoe.presentation.reference.ReferenceGuideScreen
 import com.friendorfoe.presentation.permissions.AppFeature
 import com.friendorfoe.presentation.permissions.ContextualPermissionGate
 import com.friendorfoe.presentation.permissions.FeaturePermissionGate
+import com.friendorfoe.presentation.permissions.PermissionBindings
 import com.friendorfoe.presentation.permissions.PermissionUiState
 import com.friendorfoe.presentation.permissions.rememberPermissionBindings
 
@@ -163,7 +170,7 @@ private fun NavGraphBuilder.registerSevenTopLevelDestinations(
                     navController.navigate(REFERENCE_GUIDE_BASE_ROUTE) { launchSingleTop = true }
                 },
                 onNavigateToAbout = {
-                    navigateTopLevel(navController, TopLevelDestination.INFO)
+                    navigateTopLevel(navController, TopLevelDestination.ABOUT)
                 },
             )
         }
@@ -176,7 +183,7 @@ private fun NavGraphBuilder.registerSevenTopLevelDestinations(
                     navController.navigate(Screen.IgnoredDevices.route) { launchSingleTop = true }
                 },
                 onOpenInfo = {
-                    navigateTopLevel(navController, TopLevelDestination.INFO)
+                    navigateTopLevel(navController, TopLevelDestination.ABOUT)
                 },
                 onOpenFinding = { key ->
                     navController.navigate(Screen.PrivacyFinding.createRoute(key))
@@ -201,28 +208,54 @@ private fun NavGraphBuilder.registerSevenTopLevelDestinations(
                     navController.navigate(REFERENCE_GUIDE_BASE_ROUTE) { launchSingleTop = true }
                 },
                 onNavigateToAbout = {
-                    navigateTopLevel(navController, TopLevelDestination.INFO)
+                    navigateTopLevel(navController, TopLevelDestination.ABOUT)
                 },
             )
         }
     }
 
-    composable(Screen.Info.route) {
-        InfoTopLevelRoute(
-            navController = navController,
-            viewModel = hiltViewModel<AboutViewModel>(),
+    composable(Screen.About.route) {
+        AboutTopLevelRoute(navController = navController)
+    }
+}
+
+@Composable
+internal fun AboutTopLevelRoute(
+    navController: NavHostController,
+) {
+    val context = LocalContext.current
+    TopLevelRouteRoot(TopLevelDestination.ABOUT) {
+        AboutLandingScreen(
+            actions = AboutLandingActions(
+                onOpenSettings = {
+                    navController.navigate(Screen.AboutSettings.route) { launchSingleTop = true }
+                },
+                onOpenReference = {
+                    navController.navigate(REFERENCE_GUIDE_BASE_ROUTE) { launchSingleTop = true }
+                },
+                onContactSupport = {
+                    context.openUri("mailto:lnxgod@gmail.com?subject=Friend%20or%20Foe%20feedback")
+                },
+                onOpenGithub = {
+                    context.openUri("https://github.com/lnxgod/friendorfoe")
+                },
+            ),
         )
     }
 }
 
 @Composable
-internal fun InfoTopLevelRoute(
+internal fun AboutSettingsRoute(
     navController: NavHostController,
     viewModel: AboutViewModel?,
+    permissionBindings: PermissionBindings? = null,
 ) {
-    TopLevelRouteRoot(TopLevelDestination.INFO) {
-        AboutScreen(
-            onBack = { navController.popBackStack() },
+    Column(Modifier.fillMaxSize().testTag("screen_about_settings")) {
+        FofSecondaryScreenHeader(
+            title = "App settings",
+            onBack = navController::popBackStack,
+        )
+        InfoSettingsScreen(
             viewModel = viewModel,
             onNavigateToCalibrate = {
                 navController.navigate(Screen.Calibrate.route) { launchSingleTop = true }
@@ -236,6 +269,8 @@ internal fun InfoTopLevelRoute(
             onNavigateToReference = {
                 navController.navigate(REFERENCE_GUIDE_BASE_ROUTE) { launchSingleTop = true }
             },
+            permissionBindings = permissionBindings,
+            modifier = Modifier.weight(1f),
         )
     }
 }
@@ -243,6 +278,13 @@ internal fun InfoTopLevelRoute(
 private fun NavGraphBuilder.registerSecondaryDestinations(
     navController: NavHostController,
 ) {
+    composable(Screen.AboutSettings.route) {
+        AboutSettingsRoute(
+            navController = navController,
+            viewModel = hiltViewModel<AboutViewModel>(),
+        )
+    }
+
     composable(
         route = Screen.Detail.route,
         arguments = listOf(navArgument("objectId") { type = NavType.StringType }),
