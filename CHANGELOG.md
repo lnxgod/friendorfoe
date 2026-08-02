@@ -31,10 +31,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   phone, or video activity, or connected AirPods very close by.
 
 ### Changed
-- **README now reflects the current Codex-first workflow.** Claude is credited
-  for the initial bootstrap, while Codex is documented as the day-to-day
-  engineering partner for implementation, firmware/version work, tests,
-  review, and release prep.
+- **README now reflects the current Codex-first workflow.** Codex is documented
+  as the day-to-day engineering partner for implementation, firmware/version
+  work, tests, review, and release prep.
 - **RSSI drone-range release versions refreshed.** README, backend firmware
   readiness expectations, ESP32 version metadata, Android version metadata,
   and web flasher manifests now identify the current production/app/backend

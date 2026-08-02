@@ -258,11 +258,10 @@ run as a fleet.
 
 ## AI Workflow
 
-Friend or Foe is built with AI-assisted engineering. Claude helped bootstrap
-the earliest Android architecture and first implementation wave. Codex is now
-the primary engineering orchestrator for repo maintenance, firmware work,
-reviews, tests, Android badge controls, docs, and release prep. Grok contributed
-design direction, Gemini helped with technology-stack research, and ML Kit runs
+Friend or Foe is built with AI-assisted engineering. Codex is the primary
+engineering orchestrator for repo maintenance, firmware work, reviews, tests,
+Android badge controls, docs, and release prep. Grok contributed design
+direction, Gemini helped with technology-stack research, and ML Kit runs
 on-device for visual detection.
 
 ## Security And Configuration
