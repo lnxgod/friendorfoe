@@ -17,6 +17,141 @@ from app.services.node_commands import (
 RESULT = TypeAdapter(NodeCommandResultRequest)
 
 
+@pytest.mark.asyncio
+async def test_command_poll_and_duplicate_result_contract(client):
+    created = await client.post("/nodes/uplink_CB77A4/commands/ble-investigate", json={
+        "target_mac": None,
+        "mode": "passive_capture",
+        "timeout_ms": 12000,
+    })
+    assert created.status_code == 201
+    command_id = created.json()["command_id"]
+
+    first = await client.get("/nodes/uplink_CB77A4/commands/next")
+    second = await client.get("/nodes/uplink_CB77A4/commands/next")
+    assert first.json() == second.json()
+    assert first.json() == {
+        "command_id": command_id,
+        "type": "ble_investigate",
+        "request_id": command_id,
+        "mode": "passive_capture",
+        "target": None,
+        "timeout_ms": 12000,
+        "next_sequence": 0,
+        "result_state": None,
+    }
+
+    begin_body = {
+        "sequence": 0, "type": "ble_inv_begin", "request_id": command_id,
+        "mode": "passive_capture", "target_mac": None,
+    }
+    begin = await client.post(
+        f"/nodes/uplink_CB77A4/commands/{command_id}/result", json=begin_body,
+    )
+    result_body = {
+        "sequence": 1, "type": "ble_inv_end", "request_id": command_id,
+        "state": "complete", "summary": "passive capture complete",
+        "error": None, "authentication_required": False, "truncated": False,
+    }
+    result = await client.post(
+        f"/nodes/uplink_CB77A4/commands/{command_id}/result", json=result_body,
+    )
+    duplicate = await client.post(
+        f"/nodes/uplink_CB77A4/commands/{command_id}/result", json=result_body,
+    )
+    assert result.status_code == 200
+    assert begin.json() == {
+        "ok": True, "command_id": command_id, "accepted_sequence": 0,
+        "next_sequence": 1, "result_state": "queued", "terminal": False,
+        "duplicate": False,
+    }
+    assert result.json() == {
+        "ok": True, "command_id": command_id, "accepted_sequence": 1,
+        "next_sequence": 2, "result_state": "complete", "terminal": True,
+        "duplicate": False,
+    }
+    assert duplicate.status_code == 200
+    assert duplicate.json()["duplicate"] is True
+    idle = await client.get("/nodes/uplink_CB77A4/commands/next")
+    assert idle.status_code == 204
+    assert idle.content == b""
+
+    history = await client.get(
+        f"/nodes/uplink_CB77A4/commands/{command_id}",
+    )
+    assert history.status_code == 200
+    assert history.json() == {
+        "command_id": command_id,
+        "device_id": "uplink_CB77A4",
+        "command_type": "ble_investigate",
+        "state": "terminal",
+        "next_sequence": 2,
+        "result_state": "complete",
+        "terminal": True,
+        "events": [begin_body, result_body],
+    }
+    wrong_node = await client.get(
+        f"/nodes/uplink_OTHER/commands/{command_id}",
+    )
+    assert wrong_node.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_cancel_poll_returns_complete_first_seen_cancel_envelope(client):
+    created = await client.post("/nodes/uplink_CB77A4/commands/ble-investigate", json={
+        "target_mac": "AA:BB:CC:DD:EE:FF", "mode": "gatt",
+    })
+    command_id = created.json()["command_id"]
+    cancelled = await client.post(
+        f"/nodes/uplink_CB77A4/commands/{command_id}/cancel",
+    )
+    expected = {
+        "command_id": command_id,
+        "type": "ble_investigate_cancel",
+        "request_id": command_id,
+        "mode": "gatt",
+        "target": "AA:BB:CC:DD:EE:FF",
+        "timeout_ms": 12000,
+        "next_sequence": 0,
+        "result_state": None,
+    }
+    assert cancelled.status_code == 200
+    assert cancelled.json() == expected
+    assert (await client.get("/nodes/uplink_CB77A4/commands/next")).json() == expected
+
+
+@pytest.mark.asyncio
+async def test_conflicting_terminal_replay_returns_409(client):
+    created = await client.post("/nodes/uplink_CB77A4/commands/ble-investigate", json={
+        "target_mac": "AA:BB:CC:DD:EE:FF",
+    })
+    command_id = created.json()["command_id"]
+    await client.post(
+        f"/nodes/uplink_CB77A4/commands/{command_id}/result",
+        json={
+            "sequence": 0, "type": "ble_inv_begin", "request_id": command_id,
+            "mode": "gatt", "target_mac": "AA:BB:CC:DD:EE:FF",
+        },
+    )
+    await client.post(
+        f"/nodes/uplink_CB77A4/commands/{command_id}/result",
+        json={
+            "sequence": 1, "type": "ble_inv_end", "request_id": command_id,
+            "state": "failed", "summary": "", "error": "timeout",
+            "authentication_required": False, "truncated": False,
+        },
+    )
+    conflict = await client.post(
+        f"/nodes/uplink_CB77A4/commands/{command_id}/result",
+        json={
+            "sequence": 1, "type": "ble_inv_end", "request_id": command_id,
+            "state": "complete", "summary": "late success", "error": None,
+            "authentication_required": False, "truncated": False,
+        },
+    )
+    assert conflict.status_code == 409
+
+
 def gate_command_transactions(monkeypatch):
     """Make two service calls reach their SQLite write starts deterministically."""
     original = node_commands._begin_command_transaction

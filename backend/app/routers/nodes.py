@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from urllib.parse import quote
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, UploadFile, File
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -18,7 +18,14 @@ from app.models.db_models import DroneDetection, SensorNode
 from app.models.schemas import (
     DetectionHistoryItem,
     DetectionHistoryResponse,
+    BleInvestigateCancelEnvelope,
+    BleInvestigateCommandEnvelope,
+    BleInvestigationCreateRequest,
     NodeCreateRequest,
+    NodeCommandEnvelope,
+    NodeCommandHistoryResponse,
+    NodeCommandResultAck,
+    NodeCommandResultRequest,
     NodeListResponse,
     NodeResponse,
     NodeUpdateRequest,
@@ -26,12 +33,18 @@ from app.models.schemas import (
 from app.services.database import get_db
 
 from app.services.firmware_manager import FirmwareManager
+from app.services.node_commands import (
+    NodeCommandConflict,
+    NodeCommandNotFound,
+    NodeCommandService,
+)
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/nodes", tags=["nodes"])
 
 _firmware_mgr = FirmwareManager()
+_node_command_service = NodeCommandService()
 
 _firmware_rollouts: dict[str, dict] = {}
 _firmware_rollout_log: list[str] = []
@@ -480,6 +493,95 @@ def _node_to_response(node: SensorNode) -> NodeResponse:
         last_seen=node.last_seen.isoformat() if node.last_seen else None,
         created_at=node.created_at.isoformat() if node.created_at else None,
     )
+
+
+@router.post(
+    "/{device_id}/commands/ble-investigate",
+    status_code=201,
+    response_model=BleInvestigateCommandEnvelope,
+)
+async def enqueue_ble_investigation(
+    device_id: str,
+    command: BleInvestigationCreateRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        return await _node_command_service.enqueue_ble_investigation(
+            db, device_id, command, now=time.time(),
+        )
+    except NodeCommandConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post(
+    "/{device_id}/commands/{command_id}/cancel",
+    response_model=BleInvestigateCancelEnvelope,
+)
+async def cancel_ble_investigation(
+    device_id: str,
+    command_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        return await _node_command_service.request_cancel(
+            db, device_id, command_id, now=time.time(),
+        )
+    except NodeCommandNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.get(
+    "/{device_id}/commands/next",
+    response_model=NodeCommandEnvelope,
+    responses={204: {"description": "No outstanding command"}},
+)
+async def get_next_node_command(
+    device_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    command = await _node_command_service.next_for_device(
+        db, device_id, now=time.time(),
+    )
+    if command is None:
+        return Response(status_code=204)
+    return command
+
+
+@router.post(
+    "/{device_id}/commands/{command_id}/result",
+    response_model=NodeCommandResultAck,
+)
+async def record_node_command_result(
+    device_id: str,
+    command_id: str,
+    result: NodeCommandResultRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        return await _node_command_service.record_result(
+            db, device_id, command_id, result, now=time.time(),
+        )
+    except NodeCommandNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except NodeCommandConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.get(
+    "/{device_id}/commands/{command_id}",
+    response_model=NodeCommandHistoryResponse,
+)
+async def get_node_command_history(
+    device_id: str,
+    command_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        return await _node_command_service.history_for_device(
+            db, device_id, command_id,
+        )
+    except NodeCommandNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @router.post("", response_model=NodeResponse, status_code=201)
