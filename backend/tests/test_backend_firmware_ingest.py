@@ -192,6 +192,76 @@ def test_backend_batch_preserves_identity_health_and_queue_metadata():
 
 
 @pytest.mark.asyncio
+async def test_backend_heartbeat_accepts_empty_detection_array(client):
+    response = await client.post("/detections/drones", json={
+        "device_id": "uplink_CB77A4",
+        "timestamp": 1_785_600_000,
+        "firmware_target": "uplink-s3-backend",
+        "detections": [],
+    })
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "ok",
+        "accepted": 0,
+        "device_id": "uplink_CB77A4",
+        "processed": 0,
+        "deduplicated": 0,
+        "filtered": 0,
+    }
+
+
+@pytest.mark.asyncio
+async def test_invalid_backend_detection_is_http_400(client):
+    response = await client.post("/detections/drones", json={
+        "device_id": "uplink_CB77A4",
+        "detections": [{"source": "ble_rid", "confidence": 0.8}],
+    })
+    assert response.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_replayed_non_rid_batch_is_acknowledged_without_duplicate_accept(client):
+    body = {
+        "device_id": "uplink_CB77A4",
+        "timestamp": 1_785_600_000,
+        "detections": [{
+            "drone_id": "BLE:AA:BB:CC:DD:EE:FF",
+            "source": "ble_fingerprint",
+            "confidence": 0.8,
+            "bssid": "AA:BB:CC:DD:EE:FF",
+        }],
+    }
+    first = await client.post("/detections/drones", json=body)
+    second = await client.post("/detections/drones", json=body)
+    assert first.json()["accepted"] == 1
+    assert first.json()["processed"] == 1
+    assert second.json()["accepted"] == 1
+    assert second.json()["processed"] == 0
+    assert second.json()["deduplicated"] == 1
+    assert second.json()["device_id"] == "uplink_CB77A4"
+
+
+@pytest.mark.asyncio
+async def test_locally_filtered_item_is_transport_accepted(client):
+    response = await client.post("/detections/drones", json={
+        "device_id": "uplink_CB77A4",
+        "timestamp": int(time.time()),
+        "detections": [{
+            "drone_id": "AP:FOF-SELF",
+            "source": "wifi_ap",
+            "confidence": 0.8,
+            "ssid": "FoF-Uplink-CB77A4",
+            "bssid": "AA:BB:CC:DD:EE:FF",
+        }],
+    })
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "ok", "accepted": 1, "device_id": "uplink_CB77A4",
+        "processed": 0, "deduplicated": 0, "filtered": 1,
+    }
+
+
+@pytest.mark.asyncio
 async def test_backend_named_image_is_not_sent_to_badge_uplink(client, monkeypatch):
     detections._node_heartbeats["uplink_BADGE1"] = {
         "device_id": "uplink_BADGE1", "ip": "10.0.0.20",
