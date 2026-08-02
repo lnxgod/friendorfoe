@@ -58,6 +58,31 @@ The two scanner boards run the same firmware image. The uplink assigns runtime
 roles and scanner profiles, which is what lets the same physical design behave
 like a handheld badge or a stationary sensor.
 
+### Build One
+
+The DEF CON badge is buildable from the fabrication and mechanical files in
+[`hardware/badge/`](hardware/badge/). One complete badge uses:
+
+| Qty | Component | Exact part used for the DEF CON run |
+|----:|-----------|--------------------------------------|
+| 3 | MCU/radio board | [Seeed Studio XIAO ESP32-S3 3-pack, SKU 102010573](https://www.seeedstudio.com/Seeed-Studio-XIAO-ESP32S3-3PCS-p-5919.html) |
+| 3 | External 2.4 GHz Wi-Fi/Bluetooth antenna | [Abracon APAGM2525-S2450 RHCP patch antenna](https://abracon.com/datasheets/APAGM2525-S2450.pdf) |
+| 3 | Antenna coax lead | Seeed lead included with the XIAO ESP32-S3 pack |
+| 1 | Battery connector | JST-clone `S2B-PH-SM4-TB(LF)(SN)` |
+| 1 | Lithium-ion cell | [NDNNAS 103665 PH2.0](https://www.aliexpress.us/item/3256811602344151.html) |
+| 2 | Push button | [4.5 x 4.5 x 3.8 mm, four-pin SMD, SPST-NO](https://www.amazon.com/dp/B07CJSV1ZW?th=1) |
+| 1 | Display | [1.8-inch, 128 x 160, full-color SPI module](https://www.aliexpress.us/item/3256805953674718.html) |
+| 1 | Badge PCB | [Single-board Gerbers](hardware/badge/fabrication/friend-or-foe-badge-single-board.zip), or one badge from the [five-badge/two-core panel](hardware/badge/fabrication/friend-or-foe-badge-oshpark-panel-5-badges-2-cores.zip) |
+| 1 | Battery cage | Printed from the [battery-cage STL](hardware/badge/mechanical/battery-cage-dc34phv.stl) |
+
+The direct board and component cost for the 45-badge DEF CON run was roughly
+**$80 per badge**, excluding tools, labor, 3D-printer time or material, and
+general shop supplies. Prices and availability will move. Read the
+[hardware guide](hardware/badge/README.md) before ordering: it records the
+battery-polarity, button-footprint, display-fit, panel, and antenna lessons from
+the actual build. The original seven-part CSV is published with its supplied
+rows and ordering intact alongside the fabrication files.
+
 ## What It Listens For
 
 Friend or Foe is passive. It listens for signals already being broadcast and
@@ -130,6 +155,7 @@ field console.
 | `esp32/scanner/` | ESP32-S3 scanner firmware for BLE/Wi-Fi detection |
 | `esp32/uplink/` | ESP32-S3 uplink firmware, display, USB-C control, read-only local status, UART OTA relay |
 | `esp32/shared/` | Shared C detection policy, badge display policy, themes, signatures, protocol types |
+| `hardware/badge/` | Badge BOM, fabrication Gerbers, panel, and battery-cage STL |
 | `docs/badge/` | Badge operator notes and current badge version matrix |
 | `scripts/` | Badge flashing, debug bridge, recovery, and utility scripts |
 
@@ -248,6 +274,7 @@ run as a fleet.
 
 ## Docs
 
+- Badge hardware and BOM: [hardware/badge/README.md](hardware/badge/README.md)
 - Badge operator guide: [docs/badge/README.md](docs/badge/README.md)
 - Badge recovery: [docs/badge_scanner_recovery.md](docs/badge_scanner_recovery.md)
 - Badge boundary notes: [docs/fof_badge_notes.md](docs/fof_badge_notes.md)
