@@ -26,12 +26,6 @@ disconnect or direct-flash a scanner for a normal field update.
      --port /dev/cu.usbmodemXXXX
    ```
 
-   For the private game canary, add:
-
-   ```text
-   --platform badge-trio-xiao-s3-con-crud-canary
-   ```
-
    If multiple ESP32 USB cables are intentionally connected, also add
    `--bind-selected-uplink`. That flag is an operator acknowledgement that
    `--port` is the uplink in the complete three-device census.

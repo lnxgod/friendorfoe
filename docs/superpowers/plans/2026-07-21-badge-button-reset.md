@@ -13,7 +13,7 @@
 - Both physical buttons held continuously for exactly 10,000 ms trigger reset.
 - No physical button chord may toggle quiet/off mode.
 - A reset is one-shot until full button release and cannot loop from boot-held buttons.
-- Keep USB quiet-mode controls, scanner behavior, OTA/UART updating, themes, Easter eggs, versions, and factory bundles unchanged.
+- Keep USB quiet-mode controls, scanner behavior, OTA/UART updating, themes, versions, and factory bundles unchanged.
 
 ---
 

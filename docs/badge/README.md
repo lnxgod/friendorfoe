@@ -62,7 +62,7 @@ The physical 10-second Menu+OK ROM-recovery gate and the remaining manual
 acceptance checks are still pending. Until they pass on the exact candidate
 binaries, do not replace factory artifacts, tag, push, or publish a release.
 
-### Provisional game headroom
+### Provisional candidate headroom
 
 The `.87` canary build, relay transcript, and fresh post-update USB status
 snapshot reported:
@@ -81,54 +81,12 @@ Link-map RAM headroom is not the same as live heap headroom. The current uplink
 status does not expose scanner-MCU heap, PSRAM, or scanner-task stack metrics,
 so scanner runtime headroom is not yet proven from the single uplink USB path.
 
-The implemented game fits the raw flash and PSRAM envelope, but the stricter
-promotion gates are now the practical limit: `.87` is only 3,892 bytes below
+The candidate fits the raw flash and PSRAM envelope, but the stricter promotion
+gates are now the practical limit: `.87` is only 3,892 bytes below
 the static internal-RAM gate and 1,249 bytes below the conservative app-image
 gate. Substantial new firmware features require removing or relocating code
 first. Do not add another BLE host or a large internal allocation on the
 uplink.
-
-### Provisional CON CRUD factory roles
-
-The private canary factory flow supports three explicit uplink seed roles:
-`normal`, `infected`, and `immune`. `normal` is the CLI default, but every
-batch actively sends `FOF_SET:game_seed=normal`; stale NVS is never accepted as
-the default. After all three erase/write/readback operations, the flasher
-resets the two scanner leaves in their established order, starts the uplink,
-then discovers its application port without toggling DTR/RTS. Exact
-PONG/status binds the eFuse hardware ID before mutation. After the exact seed
-acknowledgment, a second fresh status records the expected-reboot generation;
-the flasher then requires exact `FOF_REBOOT:OK` and closes the old handle.
-Native USB may retain or re-enumerate the same device path, so the host opens a
-new descriptor-bound reset-neutral session without esptool or another reset.
-It accepts only an exact PONG followed by status from the same hardware ID,
-version, and target, with reboot reason `usb_reboot` and the exact wrap-aware
-successor generation. It then reruns the complete health gate. PASS requires
-fresh status with selected seed and current state, `game_active:false`, and
-integer `game_shield:0`.
-
-If USB re-enumerates during the seed acknowledgment, fresh pre-reboot status,
-or reboot receipt, the host closes that handle, rediscovers the exact
-MAC/version/target, and repeats the whole idempotent transaction within one
-bounded deadline. Explicit protocol or identity mismatches still fail closed.
-
-Both physical scanner slots continue to use the same scanner image. Factory
-role selection does not change their normal BLE-primary and Wi-Fi-primary
-scanning duties.
-
-Public factory output contains fixed board-role aliases and an opaque random
-receipt only after PASS. MACs, compact badge IDs, native hardware IDs, and
-bundle-derived identifiers stay out of the terminal transcript. The private
-JSONL retains manufacturing hardware evidence plus the selected role, receipt,
-and four safe game fields; failures record the role and a null receipt. The
-CSV rework index remains backward-compatible.
-
-This is a canary boundary, not a production promotion. The embedded production
-factory ZIP remains unchanged. Pre-promotion physical role tests use an
-explicit validated local canary bundle and USB seeding. If the selected
-firmware rejects `game_seed`, the batch fails closed; embedded factory output
-must not be described as game-capable until those artifacts are deliberately
-promoted.
 
 ## Hardware Boundary
 
@@ -164,10 +122,6 @@ remains separate from production node firmware. This release verifies:
 - Holding both badge buttons continuously for ten seconds performs a controlled
   software reboot. The previous physical quiet/off shortcut is removed; USB
   control can still manage volatile quiet mode, and reboot returns ACTIVE.
-- Exact `fof-michagain` Remote ID coordinates for Hell, Michigan at 666 m, the
-  exact `fof-goblue` SSID, or the temporary spare-button trigger opens the
-  purple DEF CON 34 Wall of Sheep Easter egg once per boot. Any button dismisses
-  it.
 - `FOF_STATUS` exposes the staged firmware manifest, serialized update queue,
   scanner roles, power convergence, heap/stack, PSRAM, and display state.
 
