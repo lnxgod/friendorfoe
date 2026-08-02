@@ -1,4 +1,6 @@
 import asyncio
+import hashlib
+import json
 import time
 import uuid
 from collections import deque
@@ -11,8 +13,15 @@ from app.main import app
 from app.models.db_models import DroneDetection, SensorNode, TriangulatedPosition
 from app.models.schemas import DroneDetectionBatch, DroneDetectionItem
 from app.routers import detections
+from app.services.applied_calibration import AppliedCalibrationStore
+from app.services.backend_node_status import (
+    bounded_detection_time,
+    bounded_observation_time,
+    merge_backend_heartbeat,
+)
 from app.services.database import get_db
 from app.services.signal_tracker import SignalTracker
+from app.services import triangulation
 from app.services.triangulation import SensorTracker
 
 
@@ -945,3 +954,320 @@ async def test_primary_db_outage_returns_503_without_consuming_retry(
         )
     assert detection_count == 1
     assert position_count == 1
+
+
+def test_future_clock_never_extends_online_liveness():
+    observation_time, skew = bounded_observation_time(2_000_000_000, 1_785_600_000.0)
+    assert observation_time == 1_785_600_000.0
+    assert skew == 214_400_000.0
+
+
+def test_offline_replay_preserves_valid_historical_scan_time():
+    observation_time, skew = bounded_observation_time(
+        1_784_000_000, 1_785_600_000.0,
+    )
+    assert observation_time == 1_784_000_000.0
+    assert skew == -1_600_000.0
+
+
+def test_future_detection_timestamp_falls_back_to_batch_observation():
+    assert bounded_detection_time(
+        2_000_000_000_000, 1_784_000_000.0, 1_785_600_000.0,
+    ) == 1_784_000_000.0
+
+
+def test_backend_heartbeat_keeps_operational_device_id_and_sticky_metadata():
+    previous = {
+        "device_id": "uplink_CB77A4", "total_batches": 4,
+        "node_name": "Roof", "lat": 36.1, "lon": -115.1, "alt": 700.0,
+    }
+    batch = DroneDetectionBatch(
+        device_id="uplink_CB77A4",
+        firmware_target="uplink-s3-backend",
+        hardware_mac="A4:CF:12:CB:77:A4",
+        detections=[],
+    )
+    merged = merge_backend_heartbeat(previous, batch, "10.0.0.15", 1000.0)
+    assert merged["device_id"] == "uplink_CB77A4"
+    assert merged["last_seen"] == 1000.0
+    assert merged["total_batches"] == 5
+    assert merged["node_name"] == "Roof"
+    assert (merged["lat"], merged["lon"], merged["alt"]) == (36.1, -115.1, 700.0)
+    assert merged["firmware_target"] == "uplink-s3-backend"
+    assert merged["hardware_mac"] == "A4:CF:12:CB:77:A4"
+
+
+@pytest.mark.asyncio
+async def test_backend_upgrade_heartbeat_does_not_replace_registered_location(client):
+    device_id = f"uplink_{uuid.uuid4().hex[:6].upper()}"
+    registered = await client.post("/nodes", json={
+        "device_id": device_id,
+        "name": "Roof",
+        "lat": 36.1,
+        "lon": -115.1,
+        "alt": 700.0,
+        "position_mode": "active",
+    })
+    assert registered.status_code == 201
+    try:
+        response = await client.post("/detections/drones", json={
+            "device_id": device_id,
+            "device_lat": 1.0,
+            "device_lon": 2.0,
+            "node_name": "Untrusted over-air rename",
+            "firmware_target": "uplink-s3-backend",
+            "detections": [],
+        })
+        assert response.status_code == 200
+        status = await client.get("/detections/nodes/status")
+        node = next(row for row in status.json()["nodes"] if row["device_id"] == device_id)
+        assert (node["lat"], node["lon"], node["name"]) == (36.1, -115.1, "Roof")
+    finally:
+        await client.delete(f"/nodes/{device_id}")
+
+
+@pytest.mark.asyncio
+async def test_backend_upgrade_keeps_history_and_listener_calibration_on_device_id(client):
+    device_id = f"uplink_{uuid.uuid4().hex[:6].upper()}"
+    drone_id = f"BLE:{uuid.uuid4().hex}"
+    prior_model = triangulation.PER_LISTENER_MODEL.get(device_id)
+    triangulation.PER_LISTENER_MODEL[device_id] = (-58.0, 2.1)
+    try:
+        created = await client.post("/nodes", json={
+            "device_id": device_id,
+            "name": "Existing roof node",
+            "lat": 36.1,
+            "lon": -115.1,
+            "alt": 700.0,
+            "position_mode": "active",
+        })
+        assert created.status_code == 201
+        uploaded = await client.post("/detections/drones", json={
+            "device_id": device_id,
+            "firmware_version": "0.1.0-backend",
+            "firmware_target": "uplink-s3-backend",
+            "app_project": "fof_backend_uplink",
+            "hardware_type": "seeed_xiao_esp32s3",
+            "hardware_mac": "A4:CF:12:CB:77:A4",
+            "detections": [{
+                "drone_id": drone_id,
+                "source": "ble_fingerprint",
+                "confidence": 0.8,
+                "bssid": "AA:BB:CC:DD:EE:FF",
+            }],
+        })
+        assert uploaded.status_code == 200
+
+        registry = (await client.get("/nodes")).json()
+        matching = [n for n in registry["nodes"] if n["device_id"] == device_id]
+        assert len(matching) == 1
+        assert matching[0]["name"] == "Existing roof node"
+        history = (await client.get(f"/nodes/{device_id}/detections")).json()
+        assert any(
+            row["device_id"] == device_id and row["drone_id"] == drone_id
+            for row in history["detections"]
+        )
+        assert triangulation.PER_LISTENER_MODEL[device_id] == (-58.0, 2.1)
+        assert "A4:CF:12:CB:77:A4" not in {
+            node["device_id"] for node in registry["nodes"]
+        }
+    finally:
+        await client.delete(f"/nodes/{device_id}")
+        if prior_model is None:
+            triangulation.PER_LISTENER_MODEL.pop(device_id, None)
+        else:
+            triangulation.PER_LISTENER_MODEL[device_id] = prior_model
+
+
+@pytest.mark.asyncio
+async def test_legacy_batch_without_timestamp_persists_non_null_observation_time(
+    client, backend_sensor_session_factory,
+):
+    drone_id = f"BLE:{uuid.uuid4().hex}"
+    before = int(time.time())
+    response = await client.post("/detections/drones", json={
+        "device_id": "uplink_CB77A4",
+        "detections": [{
+            "drone_id": drone_id,
+            "source": "ble_fingerprint",
+            "confidence": 0.8,
+            "bssid": "AA:BB:CC:DD:EE:FF",
+        }],
+    })
+    assert response.status_code == 200
+    async with backend_sensor_session_factory() as session:
+        stored = await session.scalar(
+            select(DroneDetection).where(DroneDetection.drone_id == drone_id)
+        )
+    assert stored is not None
+    assert before <= stored.timestamp <= int(time.time())
+
+
+@pytest.mark.asyncio
+async def test_valid_historical_item_timestamp_is_persisted_not_batch_receipt(
+    client, backend_sensor_session_factory,
+):
+    drone_id = f"BLE:{uuid.uuid4().hex}"
+    historical_ms = 1_784_000_000_123
+    response = await client.post("/detections/drones", json={
+        "device_id": "uplink_CB77A4",
+        "timestamp": 1_785_600_000,
+        "detections": [{
+            "drone_id": drone_id,
+            "source": "ble_fingerprint",
+            "confidence": 0.8,
+            "bssid": "AA:BB:CC:DD:EE:FF",
+            "timestamp": historical_ms,
+        }],
+    })
+    assert response.status_code == 200
+    async with backend_sensor_session_factory() as session:
+        stored = await session.scalar(
+            select(DroneDetection).where(DroneDetection.drone_id == drone_id)
+        )
+    assert stored is not None
+    assert stored.timestamp == historical_ms // 1000
+
+
+@pytest.mark.asyncio
+async def test_ingest_node_name_is_creation_only_and_never_renames_registry(
+    client, backend_sensor_session_factory,
+):
+    device_id = f"uplink_{uuid.uuid4().hex[:6].upper()}"
+    first = await client.post("/detections/drones", json={
+        "device_id": device_id,
+        "device_lat": 36.11,
+        "device_lon": -115.11,
+        "node_name": "Roof backend sensor",
+        "detections": [],
+    })
+    assert first.status_code == 200
+    async with backend_sensor_session_factory() as session:
+        created = await session.scalar(
+            select(SensorNode).where(SensorNode.device_id == device_id)
+        )
+        assert created is not None
+        assert created.name == "Roof backend sensor"
+
+    later = await client.post("/detections/drones", json={
+        "device_id": device_id,
+        "device_lat": 36.12,
+        "device_lon": -115.12,
+        "node_name": "Changed over radio",
+        "detections": [],
+    })
+    assert later.status_code == 200
+    async with backend_sensor_session_factory() as session:
+        preserved = await session.scalar(
+            select(SensorNode).where(SensorNode.device_id == device_id)
+        )
+        assert preserved is not None
+        assert preserved.name == "Roof backend sensor"
+
+
+def test_calibration_continuity_defaults_and_missing_listener_are_nonsecret():
+    store = AppliedCalibrationStore()
+    assert store.calibration_continuity("uplink_DEFAULT") == {
+        "schema": 1,
+        "device_id": "uplink_DEFAULT",
+        "calibration_status": "defaults",
+        "session_id": None,
+        "applied_at": None,
+        "listener_model_present": False,
+        "listener_model_schema": "rssi-ref-path-loss-v1",
+        "listener_model_sha256": None,
+    }
+    store.record = {
+        "session_id": "0123456789ab",
+        "applied_at": 1_785_600_000.25,
+        "per_listener_model": {"uplink_OTHER": [-58.0, 2.1]},
+        "verified_fit": {"model_validation": {"applyable": True, "reasons": []}},
+    }
+    missing = store.calibration_continuity("uplink_MISSING")
+    assert missing["calibration_status"] == "trusted"
+    assert missing["session_id"] == "0123456789ab"
+    assert missing["listener_model_present"] is False
+    assert missing["listener_model_sha256"] is None
+
+
+@pytest.mark.parametrize("value", [[], [float("nan"), 2.1], [True, 2.1], [-58.0, "2.1"]])
+def test_calibration_continuity_rejects_malformed_listener_model(value):
+    store = AppliedCalibrationStore()
+    store.record = {"per_listener_model": {"uplink_BAD": value}}
+    with pytest.raises(ValueError, match="invalid listener model"):
+        store.calibration_continuity("uplink_BAD")
+
+
+@pytest.mark.asyncio
+async def test_calibration_continuity_is_device_bound_stable_and_nonsecret(
+    client, monkeypatch,
+):
+    device_id = f"uplink_{uuid.uuid4().hex[:6].upper()}"
+    created = await client.post("/nodes", json={
+        "device_id": device_id,
+        "name": "Calibrated roof",
+        "lat": 36.1,
+        "lon": -115.1,
+        "alt": 700.0,
+        "position_mode": "active",
+    })
+    assert created.status_code == 201
+    monkeypatch.setattr(detections._applied_cal_store, "record", {
+        "session_id": "0123456789ab",
+        "applied_at": 1_785_600_000.25,
+        "per_listener_model": {
+            device_id: [-58.0, 2.1],
+            "uplink_OTHER1": [-61.0, 2.4],
+        },
+        "verified_fit": {
+            "model_validation": {"applyable": True, "reasons": []},
+            "private_raw_samples": ["must-not-escape"],
+        },
+        "provisional_fit": {"raw": "must-not-escape"},
+    })
+    canonical = json.dumps(
+        {
+            "device_id": device_id,
+            "model_schema": "rssi-ref-path-loss-v1",
+            "values": [-58.0, 2.1],
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    expected = {
+        "schema": 1,
+        "device_id": device_id,
+        "calibration_status": "trusted",
+        "session_id": "0123456789ab",
+        "applied_at": 1_785_600_000.25,
+        "listener_model_present": True,
+        "listener_model_schema": "rssi-ref-path-loss-v1",
+        "listener_model_sha256": hashlib.sha256(canonical).hexdigest(),
+    }
+
+    before = await client.get(f"/detections/calibrate/continuity/{device_id}")
+    assert before.status_code == 200
+    assert before.json() == expected
+    heartbeat = await client.post("/detections/drones", json={
+        "device_id": device_id,
+        "firmware_target": "uplink-s3-backend",
+        "app_project": "fof_backend_uplink",
+        "hardware_type": "seeed_xiao_esp32s3",
+        "hardware_mac": "A4:CF:12:CB:77:A4",
+        "node_name": "Must not rename calibrated node",
+        "detections": [],
+    })
+    assert heartbeat.status_code == 200
+    after = await client.get(f"/detections/calibrate/continuity/{device_id}")
+    assert after.status_code == 200
+    assert after.json() == before.json()
+    serialized = json.dumps(after.json(), sort_keys=True)
+    for forbidden in (
+        "rssi_ref", "path_loss", "-58.0", "2.1", "verified_fit",
+        "provisional_fit", "must-not-escape",
+    ):
+        assert forbidden not in serialized
+
+    unknown = await client.get("/detections/calibrate/continuity/uplink_UNKNOWN")
+    assert unknown.status_code == 404

@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.db_models import DroneDetection, SensorNode, TriangulatedPosition
 from app.models.schemas import (
     AnomalyAlertItem,
+    CalibrationContinuityResponse,
     DetectionHistoryItem,
     DetectionHistoryResponse,
     DroneDetectionBatch,
@@ -53,6 +54,11 @@ from app.services.rf_identity import (
 )
 from app.services.rf_reference import reference_status as rf_reference_status
 from app.services.applied_calibration import AppliedCalibrationStore
+from app.services.backend_node_status import (
+    bounded_detection_time,
+    bounded_observation_time,
+    merge_backend_heartbeat,
+)
 from app.services.calibration_mode import CalibrationModeCoordinator
 from app.services.phone_calibration import PhoneCalibrationManager
 from app.services.privacy_devices import (
@@ -1069,6 +1075,7 @@ async def _resolve_sensor_position(
     device_lon: float | None,
     device_alt: float | None,
     db: AsyncSession | None,
+    node_name: str | None = None,
 ) -> tuple[
     float | None,
     float | None,
@@ -1096,7 +1103,7 @@ async def _resolve_sensor_position(
                abs(device_lat) > 0.1 and abs(device_lon) > 0.1:
                 node = SensorNode(
                     device_id=device_id,
-                    name=device_id,
+                    name=node_name or device_id,
                     lat=device_lat,
                     lon=device_lon,
                     alt=device_alt or 0,
@@ -1227,46 +1234,16 @@ async def ingest_drone_detections(
     2. Kept in an in-memory ring buffer for fast recent queries
     3. Fed to the triangulation engine for multi-sensor position estimation
     """
-    # Use the batch timestamp from the ESP32 (scan time), not server receive time.
-    # This groups detections from the same scan cycle correctly.
-    received_at = batch.timestamp if batch.timestamp and batch.timestamp > 1700000000 else time.time()
+    server_received_at = time.time()
+    received_at, _ = bounded_observation_time(batch.timestamp, server_received_at)
 
     # Build the heartbeat locally. Nonempty batches publish it only after the
     # primary detection transaction is durable.
     source_ip = request.client.host if request.client else None
     prev_hb = _node_heartbeats.get(batch.device_id, {})
-    heartbeat = {
-        "device_id": batch.device_id,
-        "last_seen": received_at,
-        "detection_count": len(batch.detections),
-        "total_batches": prev_hb.get("total_batches", 0) + 1,
-        "total_detections": prev_hb.get("total_detections", 0) + len(batch.detections),
-        "lat": batch.device_lat,
-        "lon": batch.device_lon,
-        "ip": source_ip,
-        "firmware_version": batch.firmware_version or prev_hb.get("firmware_version"),
-        "board_type": batch.board_type or prev_hb.get("board_type"),
-        "scanners": batch.scanners or prev_hb.get("scanners"),
-        "time_sync": batch.time_sync or prev_hb.get("time_sync"),
-        "reporting": batch.reporting or prev_hb.get("reporting"),
-        "scan_mode": batch.scan_mode or prev_hb.get("scan_mode"),
-        "scan_profile": batch.scan_profile or prev_hb.get("scan_profile"),
-        "calibration_uuid": batch.calibration_uuid or prev_hb.get("calibration_uuid"),
-        "dedup_seen": batch.dedup_seen if batch.dedup_seen is not None else prev_hb.get("dedup_seen"),
-        "dedup_sent": batch.dedup_sent if batch.dedup_sent is not None else prev_hb.get("dedup_sent"),
-        "dedup_collapsed": (
-            batch.dedup_collapsed
-            if batch.dedup_collapsed is not None
-            else prev_hb.get("dedup_collapsed")
-        ),
-        "cal_seen": batch.cal_seen if batch.cal_seen is not None else prev_hb.get("cal_seen"),
-        "cal_sent": batch.cal_sent if batch.cal_sent is not None else prev_hb.get("cal_sent"),
-        "wifi_ssid": batch.wifi_ssid or prev_hb.get("wifi_ssid"),
-        "wifi_rssi": batch.wifi_rssi if batch.wifi_rssi is not None else prev_hb.get("wifi_rssi"),
-        "source_fixups_total": prev_hb.get("source_fixups_total", 0),
-        "source_fixups_by_rule": dict(prev_hb.get("source_fixups_by_rule", {})),
-        "last_source_fixup_at": prev_hb.get("last_source_fixup_at"),
-    }
+    heartbeat = merge_backend_heartbeat(
+        prev_hb, batch, source_ip, server_received_at,
+    )
 
     # Resolve sensor position (fixed node overrides GPS) and stage any node
     # registration/last-seen write in the same unit of work as detections.
@@ -1281,6 +1258,7 @@ async def ingest_drone_detections(
         node_auto_registered,
     ) = await _resolve_sensor_position(
         batch.device_id, batch.device_lat, batch.device_lon, batch.device_alt, db,
+        batch.node_name,
     )
 
     logger.info(
@@ -1296,6 +1274,9 @@ async def ingest_drone_detections(
     dedup_skipped = 0
     staged_dedup: dict[IngestDedupKey, float] = {}
     for det in batch.detections:
+        detection_observed_at = bounded_detection_time(
+            det.timestamp, received_at, server_received_at,
+        )
         # Skip our own infrastructure SSIDs — never store or process FoF-* detections
         if det.ssid and det.ssid.upper().startswith("FOF-") and not det.ssid.upper().startswith("FOF-DRONE-"):
             continue
@@ -1387,13 +1368,10 @@ async def ingest_drone_detections(
                det.rssi is not None and \
                sensor_lat is not None and \
                sensor_lon is not None:
-                det_ts = (det.timestamp / 1000.0
-                          if det.timestamp and det.timestamp > 1_700_000_000_000
-                          else received_at)
                 prepared_runtime.append(_PreparedCalibrationDetection(
                     det=det,
                     session=cal_session,
-                    detection_ts=det_ts,
+                    detection_ts=detection_observed_at,
                 ))
                 processed += 1
                 continue
@@ -1542,16 +1520,13 @@ async def ingest_drone_detections(
             sensor_lon=sensor_lon,
             sensor_alt=sensor_alt,
             probed_ssids=json.dumps(det.probed_ssids) if det.probed_ssids else None,
-            timestamp=int(received_at),
+            timestamp=int(detection_observed_at),
         )
         db_detections.append(db_det)
 
         # Triangulation engine (use adjusted confidence for test drones).
         # Per-detection timestamp from scanner's epoch-synced clock; fall back
         # to batch receive time when the scanner timestamp is not epoch-valid.
-        det_ts = (det.timestamp / 1000.0
-                  if det.timestamp and det.timestamp > 1_700_000_000_000
-                  else received_at)
         prepared_runtime.append(_PreparedDetection(
             det=det,
             classification=classification,
@@ -1560,7 +1535,7 @@ async def ingest_drone_detections(
             grouping_model=grouping_model,
             apple_info=ainfo,
             device_type_hint=device_type_hint,
-            detection_ts=det_ts,
+            detection_ts=detection_observed_at,
         ))
 
         processed += 1
@@ -3853,6 +3828,27 @@ async def calibration_status():
 @router.get("/calibrate/model")
 async def calibration_model():
     return _applied_cal_store.summary()
+
+
+@router.get(
+    "/calibrate/continuity/{device_id}",
+    response_model=CalibrationContinuityResponse,
+)
+async def calibration_continuity(
+    device_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    registered = await db.scalar(
+        select(SensorNode.device_id).where(SensorNode.device_id == device_id)
+    )
+    if registered is None:
+        raise HTTPException(status_code=404, detail="sensor node not found")
+    try:
+        return _applied_cal_store.calibration_continuity(device_id)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=500, detail="invalid applied calibration state",
+        ) from exc
 
 
 @router.get("/calibrate/history")

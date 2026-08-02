@@ -9,8 +9,10 @@ restarts without depending on the removed legacy CalibrationManager.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
+import math
 import time
 from pathlib import Path
 from typing import Any
@@ -160,4 +162,75 @@ class AppliedCalibrationStore:
             "session_id": self.record.get("session_id"),
             "model_validation": self.record.get("model_validation") or (self.record.get("verified_fit") or {}).get("model_validation"),
             "trust_reasons": trust_reasons,
+        }
+
+    def calibration_continuity(self, device_id: str) -> dict[str, Any]:
+        """Return a device-bound, nonsecret receipt of applied calibration."""
+        if not device_id or len(device_id) > 64:
+            raise ValueError("invalid device_id")
+        if self.record is None:
+            return {
+                "schema": 1,
+                "device_id": device_id,
+                "calibration_status": "defaults",
+                "session_id": None,
+                "applied_at": None,
+                "listener_model_present": False,
+                "listener_model_schema": "rssi-ref-path-loss-v1",
+                "listener_model_sha256": None,
+            }
+
+        models = self.record.get("per_listener_model") or {}
+        if not isinstance(models, dict):
+            raise ValueError("invalid per_listener_model mapping")
+        present = device_id in models
+        digest = None
+        if present:
+            value = models[device_id]
+            if (
+                not isinstance(value, (list, tuple))
+                or len(value) != 2
+                or any(
+                    isinstance(part, bool) or not isinstance(part, (int, float))
+                    for part in value
+                )
+            ):
+                raise ValueError("invalid listener model")
+            normalized = [float(value[0]), float(value[1])]
+            if not all(math.isfinite(part) for part in normalized):
+                raise ValueError("invalid listener model")
+            canonical = json.dumps(
+                {
+                    "device_id": device_id,
+                    "model_schema": "rssi-ref-path-loss-v1",
+                    "values": normalized,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            ).encode("utf-8")
+            digest = hashlib.sha256(canonical).hexdigest()
+
+        session_id = self.record.get("session_id")
+        if session_id is not None and (
+            not isinstance(session_id, str) or not session_id or len(session_id) > 64
+        ):
+            raise ValueError("invalid calibration session_id")
+        applied_at = self.record.get("applied_at")
+        if applied_at is not None:
+            if isinstance(applied_at, bool) or not isinstance(applied_at, (int, float)):
+                raise ValueError("invalid calibration applied_at")
+            applied_at = float(applied_at)
+            if not math.isfinite(applied_at):
+                raise ValueError("invalid calibration applied_at")
+        trusted, _ = _record_trust(self.record)
+        return {
+            "schema": 1,
+            "device_id": device_id,
+            "calibration_status": "trusted" if trusted else "untrusted",
+            "session_id": session_id,
+            "applied_at": applied_at,
+            "listener_model_present": present,
+            "listener_model_schema": "rssi-ref-path-loss-v1",
+            "listener_model_sha256": digest,
         }

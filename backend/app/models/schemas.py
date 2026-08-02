@@ -402,6 +402,23 @@ class DroneDetectionResponse(BaseModel):
     filtered: int = 0
 
 
+class CalibrationContinuityResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    schema: Literal[1] = 1
+    device_id: str = Field(min_length=1, max_length=64)
+    calibration_status: Literal["defaults", "trusted", "untrusted"]
+    session_id: str | None = Field(None, max_length=64)
+    applied_at: float | None = None
+    listener_model_present: bool
+    listener_model_schema: Literal["rssi-ref-path-loss-v1"] = (
+        "rssi-ref-path-loss-v1"
+    )
+    listener_model_sha256: str | None = Field(
+        None, pattern=r"^[0-9a-f]{64}$",
+    )
+
+
 class StoredDetection(DroneDetectionItem):
     """A detection stored in the ring buffer with ingestion metadata."""
 
