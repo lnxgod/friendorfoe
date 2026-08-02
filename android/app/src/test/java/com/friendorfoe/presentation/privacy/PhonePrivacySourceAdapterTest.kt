@@ -194,6 +194,34 @@ class PhonePrivacySourceAdapterTest {
     }
 
     @Test
+    fun legacySerialSkimmerObservationDoesNotCreateAPhoneFinding() = runTest {
+        val settings = MutableStateFlow(
+            DetectionSettings.defaults().copy(phonePrivacyScanEnabled = true),
+        )
+        val permissions = MutableStateFlow(LocalDetectionPermissions.None.copy(bluetoothScan = true))
+        val events = MutableSharedFlow<GlassesScanEvent>(extraBufferCapacity = 1)
+        val adapter = adapter(
+            settings = settings,
+            permissions = permissions,
+            bleEvents = { events },
+        )
+        runCurrent()
+
+        events.emit(
+            GlassesScanEvent.Observation(
+                glasses("ble:serial-skimmer:AA:BB", "AA:BB").copy(
+                    deviceType = "Possible Serial Skimmer",
+                    matchReason = "ble_behavioral:serial_skimmer",
+                    category = PrivacyCategory.ATTACK_TOOL,
+                ),
+            ),
+        )
+        runCurrent()
+
+        assertTrue(adapter.bleSnapshot().findings.isEmpty())
+    }
+
+    @Test
     fun failureAndPauseRetainBleRowsWithoutRejuvenatingObservationTime() = runTest {
         val settings = MutableStateFlow(
             DetectionSettings.defaults().copy(phonePrivacyScanEnabled = true),

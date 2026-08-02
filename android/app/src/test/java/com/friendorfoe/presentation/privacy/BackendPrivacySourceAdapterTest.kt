@@ -149,6 +149,45 @@ class BackendPrivacySourceAdapterTest {
     }
 
     @Test
+    fun explicitLegacySkimmerRowsAreSuppressed() = runTest {
+        val adapter = BackendPrivacySourceAdapter(
+            settings = MutableStateFlow(DetectionSettings.defaults()),
+            fetch = {
+                LivePrivacyDevicesDto(
+                    devices = listOf(
+                        device(fingerprint = "legacy-skimmer", privacyKind = "SKIMMER"),
+                        device(fingerprint = "mixed-case-skimmer", privacyKind = "sKiMmEr"),
+                    ),
+                )
+            },
+            clock = FakeClock(),
+            scope = backgroundScope,
+        )
+
+        runCurrent()
+
+        assertTrue(adapter.snapshot().findings.isEmpty())
+    }
+
+    @Test
+    fun supportedBackendPrivacyKindStillMaps() = runTest {
+        val adapter = BackendPrivacySourceAdapter(
+            settings = MutableStateFlow(DetectionSettings.defaults()),
+            fetch = {
+                LivePrivacyDevicesDto(
+                    devices = listOf(device(fingerprint = "supported", privacyKind = "TRACKER_NEAR")),
+                )
+            },
+            clock = FakeClock(),
+            scope = backgroundScope,
+        )
+
+        runCurrent()
+
+        assertEquals(PrivacyCategory.BLE_TRACKER, adapter.snapshot().findings.single().category)
+    }
+
+    @Test
     fun failureRetainsCachedRowsAndTheirSourceTimestamps() = runTest {
         val settings = MutableStateFlow(DetectionSettings.defaults())
         var call = 0

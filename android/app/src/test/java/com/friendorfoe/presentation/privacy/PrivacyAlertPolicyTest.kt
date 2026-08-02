@@ -54,6 +54,16 @@ class PrivacyAlertPolicyTest {
     }
 
     @Test
+    fun legacySerialSkimmerDetectionCannotCreateAnAlertCandidate() {
+        val legacySkimmer = detection(category = PrivacyCategory.ATTACK_TOOL).copy(
+            deviceType = "Possible Serial Skimmer",
+            matchReason = "ble_behavioral:serial_skimmer",
+        )
+
+        assertNull(PrivacyAlertPolicy.fromDetection(legacySkimmer))
+    }
+
+    @Test
     fun suppressesInformationalBondedAndCanonicalIgnoredDevices() {
         assertNull(
             PrivacyAlertPolicy.fromDetection(
