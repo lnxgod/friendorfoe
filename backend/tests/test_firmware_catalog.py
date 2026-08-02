@@ -32,6 +32,20 @@ NONBACKEND_IDENTITIES = {
         "scanner-s3-combo-fof_badge"
     ],
 }
+BACKEND_IDENTITIES = {
+    "uplink-s3-backend": (
+        "fof_backend_uplink", "seeed_xiao_esp32s3", 0,
+    ),
+    "scanner-s3-combo-backend": (
+        "fof_backend_scanner", "seeed_xiao_esp32s3", 1,
+    ),
+    "uplink-s3-fullsize-backend": (
+        "fof_backend_uplink_fullsize", "esp32s3_n16r8_fullsize", 0,
+    ),
+    "scanner-s3-combo-fullsize-backend": (
+        "fof_backend_scanner_fullsize", "esp32s3_n16r8_fullsize", 1,
+    ),
+}
 
 
 def _esp_firmware_image(
@@ -89,12 +103,11 @@ def _backend_image(
     trailer: bytes = b"",
     payload_fill: bytes = b"A",
 ) -> bytes:
-    project = "fof_backend_uplink" if target == "uplink-s3-backend" else "fof_backend_scanner"
-    image_kind = 0 if target == "uplink-s3-backend" else 1
+    project, hardware, image_kind = BACKEND_IDENTITIES[target]
     identity = _backend_identity_record(
         target=target,
         project=project,
-        hardware="seeed_xiao_esp32s3",
+        hardware=hardware,
         version="0.1.0-backend",
         image_kind=image_kind,
     )
@@ -219,28 +232,48 @@ def test_live_fleet_firmware_targets_are_present():
         "scanner-s3-combo-fof_badge",
         "scanner-s3-combo-seed",
         "scanner-s3-combo-backend",
+        "scanner-s3-combo-fullsize-backend",
         "uplink-s3",
         "uplink-s3-fof_badge",
         "uplink-s3-backend",
+        "uplink-s3-fullsize-backend",
     }
 
 
-def test_backend_targets_have_exact_identity_and_isolated_paths():
-    assert FIRMWARE_TYPES["uplink-s3-backend"] == {
-        "description": "Backend sensor uplink (Seeed XIAO ESP32-S3)",
-        "asset_pattern": "uplink-s3-backend",
-        "board": "esp32s3",
-        "project": "fof_backend_uplink",
-        "hardware": "seeed_xiao_esp32s3",
-        "image_kind": 0,
-        "partition_capacity": 0x200000,
-        "local_bin": firmware_manager._REPO_ROOT / "backend-firmware/uplink/.pio/build/uplink-s3-backend/firmware.bin",
+def test_three_family_catalog_has_exact_server_owned_management_matrix():
+    expected = {
+        "uplink-s3": (None, "legacy", "uplink", 0x200000, 0x200000, True, False),
+        "scanner-s3-combo": (None, "legacy", "scanner", 0x300000, None, True, False),
+        "scanner-s3-combo-seed": (None, "legacy", "scanner", 0x200000, None, False, False),
+        "uplink-s3-fof_badge": ("badge", "native_badge", "uplink", 0x200000, 0x200000, False, True),
+        "scanner-s3-combo-fof_badge": ("badge", "native_badge", "scanner", 0x200000, None, False, True),
+        "uplink-s3-backend": ("badge_lite", "backend", "uplink", 0x200000, 0x200000, False, True),
+        "scanner-s3-combo-backend": ("badge_lite", "backend", "scanner", 0x200000, None, False, True),
+        "uplink-s3-fullsize-backend": ("s3_fullsize", "backend", "uplink", 0x200000, 0x300000, False, True),
+        "scanner-s3-combo-fullsize-backend": ("s3_fullsize", "backend", "scanner", 0x300000, None, False, True),
     }
-    assert FIRMWARE_TYPES["scanner-s3-combo-backend"]["project"] == "fof_backend_scanner"
-    assert FIRMWARE_TYPES["scanner-s3-combo-backend"]["image_kind"] == 1
-    assert FIRMWARE_TYPES["scanner-s3-combo-backend"]["partition_capacity"] == 0x200000
-    assert str(FIRMWARE_TYPES["scanner-s3-combo-backend"]["local_bin"]).endswith(
-        "/backend-firmware/scanner/.pio/build/scanner-s3-combo-backend/firmware.bin"
+
+    actual = {
+        name: (
+            info["product_family"], info["firmware_line"], info["component"],
+            info["partition_capacity"], info.get("scanner_cache_capacity"),
+            info["migration_required"], info["remote_update_eligible"],
+        )
+        for name, info in FIRMWARE_TYPES.items()
+    }
+
+    assert actual == expected
+    assert FIRMWARE_TYPES["uplink-s3-fullsize-backend"]["companion_target"] == (
+        "scanner-s3-combo-fullsize-backend"
+    )
+    assert FIRMWARE_TYPES["scanner-s3-combo-fullsize-backend"]["companion_target"] == (
+        "uplink-s3-fullsize-backend"
+    )
+    assert str(FIRMWARE_TYPES["uplink-s3-fullsize-backend"]["local_bin"]).endswith(
+        "/backend-firmware/uplink/.pio/build/uplink-s3-fullsize-backend/firmware.bin"
+    )
+    assert str(FIRMWARE_TYPES["scanner-s3-combo-fullsize-backend"]["local_bin"]).endswith(
+        "/backend-firmware/scanner/.pio/build/scanner-s3-combo-fullsize-backend/firmware.bin"
     )
 
 
@@ -249,6 +282,9 @@ def test_every_catalog_target_declares_its_exact_runtime_family_identity():
         "uplink-s3": ("fof_uplink", "esp32-s3-devkitc-1"),
         "uplink-s3-fof_badge": ("fof_badge_uplink", "seeed_xiao_esp32s3"),
         "uplink-s3-backend": ("fof_backend_uplink", "seeed_xiao_esp32s3"),
+        "uplink-s3-fullsize-backend": (
+            "fof_backend_uplink_fullsize", "esp32s3_n16r8_fullsize",
+        ),
         "scanner-s3-combo": ("fof_scanner", "esp32-s3-devkitc-1"),
         "scanner-s3-combo-seed": ("fof_scanner_seed", "esp32-s3-devkitc-1"),
         "scanner-s3-combo-fof_badge": (
@@ -258,6 +294,10 @@ def test_every_catalog_target_declares_its_exact_runtime_family_identity():
         "scanner-s3-combo-backend": (
             "fof_backend_scanner",
             "seeed_xiao_esp32s3",
+        ),
+        "scanner-s3-combo-fullsize-backend": (
+            "fof_backend_scanner_fullsize",
+            "esp32s3_n16r8_fullsize",
         ),
     }
 
@@ -799,8 +839,14 @@ def test_badge_catalog_accepts_the_native_0672_usb_bundle(role: str, target: str
         / "tools/badge_flasher/resources/badge-factory-flasher-embedded.zip"
     )
     with zipfile.ZipFile(bundle) as archive:
+        manifest = __import__("json").loads(archive.read("manifest.json"))
         image = archive.read(f"{role}/firmware.bin")
 
+    assert manifest["version"] == "0.67.2-badge-defcon34"
+    assert manifest["layouts"][role]["identity"]["target"] == target
+    assert set(BADGE_IDENTITIES) == {
+        "uplink-s3-fof_badge", "scanner-s3-combo-fof_badge",
+    }
     assert FirmwareManager().validate_firmware_image(target, image)
 
 

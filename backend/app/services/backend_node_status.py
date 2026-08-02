@@ -1,11 +1,13 @@
 """Server-timed liveness and bounded observation-time policy for uplinks."""
 
 from app.models.schemas import DroneDetectionBatch
+from app.services.firmware_management import enrich_node_management
 
 
 MAX_TRUSTED_CLOCK_SKEW_S = 300.0
 
 STICKY_BATCH_FIELDS = (
+    "product_family", "firmware_line", "component",
     "firmware_version", "board_type", "firmware_target", "app_project",
     "hardware_type", "hardware_mac", "capabilities", "node_name",
     "scanners", "time_sync", "reporting", "scan_mode", "scan_profile",
@@ -78,4 +80,8 @@ def merge_backend_heartbeat(
             if field == "health":
                 value = value.model_dump(exclude_none=True)
             merged[field] = value
-    return merged
+    for field in ("product_family", "firmware_line", "component"):
+        value = getattr(batch, field)
+        if value is not None:
+            merged[f"reported_{field}"] = value
+    return enrich_node_management(merged, now=server_received_at)

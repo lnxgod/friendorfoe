@@ -39,6 +39,11 @@ from app.services.firmware_manager import (
     _validated_backend_image_info,
     _validated_named_image_info,
 )
+from app.services.firmware_management import (
+    enrich_node_management,
+    remote_update_blockers,
+    resolve_component_management_identity,
+)
 from app.services.node_commands import (
     NodeCommandConflict,
     NodeCommandNotFound,
@@ -135,6 +140,7 @@ def _ota_identity_binding(snapshot: dict, firmware_name: str, uart: str | None) 
     """Stable hardware/firmware identity that must survive an awaited fetch."""
     if firmware_name not in FIRMWARE_TYPES:
         raise HTTPException(status_code=409, detail="OTA firmware family is unknown")
+    info = FIRMWARE_TYPES[firmware_name]
     heartbeat = snapshot["heartbeat"]
     ip = str(snapshot.get("ip") or "").strip()
     if not ip:
@@ -172,7 +178,26 @@ def _ota_identity_binding(snapshot: dict, firmware_name: str, uart: str | None) 
             ))
         if not scanners:
             raise HTTPException(status_code=409, detail="scanner OTA identity is incomplete")
-        return ("scanner", snapshot.get("device_id"), ip, tuple(sorted(scanners)))
+        binding: tuple = (
+            "scanner", snapshot.get("device_id"), ip, tuple(sorted(scanners)),
+        )
+        if info.get("product_family") == "s3_fullsize":
+            uplink_mac = _normalized_hardware_mac(
+                heartbeat.get("hardware_mac") or heartbeat.get("mac")
+            )
+            uplink_target = heartbeat.get("firmware_target") or heartbeat.get("firmware_name")
+            uplink_project = heartbeat.get("app_project")
+            uplink_hardware = heartbeat.get("hardware_type")
+            if not all((uplink_mac, uplink_target, uplink_project, uplink_hardware)):
+                raise HTTPException(status_code=409, detail="uplink OTA identity is incomplete")
+            binding += ((
+                uplink_mac,
+                str(heartbeat.get("boot_id")) if heartbeat.get("boot_id") is not None else "",
+                uplink_target,
+                uplink_project,
+                uplink_hardware,
+            ),)
+        return binding
     if firmware_name.startswith("uplink-"):
         mac = _normalized_hardware_mac(heartbeat.get("hardware_mac") or heartbeat.get("mac"))
         target = heartbeat.get("firmware_target") or heartbeat.get("firmware_name")
@@ -189,7 +214,7 @@ def _ota_identity_binding(snapshot: dict, firmware_name: str, uart: str | None) 
         boot_id = heartbeat.get("boot_id")
         if boot_id is not None and not str(boot_id).strip():
             raise HTTPException(status_code=409, detail="uplink OTA identity is incomplete")
-        return (
+        binding = (
             "uplink",
             snapshot.get("device_id"),
             ip,
@@ -199,6 +224,34 @@ def _ota_identity_binding(snapshot: dict, firmware_name: str, uart: str | None) 
             project,
             hardware,
         )
+        if info.get("product_family") == "s3_fullsize":
+            scanner_bindings = []
+            for scanner in snapshot.get("scanners") or []:
+                scanner_uart = str(scanner.get("uart") or "").strip()
+                slot = scanner.get("slot")
+                scanner_mac = _normalized_hardware_mac(
+                    scanner.get("mac") or scanner.get("hardware_mac")
+                )
+                scanner_boot_id = scanner.get("boot_id")
+                scanner_target = scanner.get("firmware_target") or scanner.get("firmware_name")
+                scanner_project = scanner.get("app_project")
+                scanner_hardware = scanner.get("hardware_type")
+                values = (
+                    scanner_uart,
+                    str(slot).strip() if slot is not None else "",
+                    scanner_mac,
+                    str(scanner_boot_id).strip() if scanner_boot_id is not None else "",
+                    str(scanner_target or "").strip(),
+                    str(scanner_project or "").strip(),
+                    str(scanner_hardware or "").strip(),
+                )
+                if not all(values):
+                    raise HTTPException(status_code=409, detail="scanner OTA identity is incomplete")
+                scanner_bindings.append(values)
+            if len(scanner_bindings) != 2:
+                raise HTTPException(status_code=409, detail="Fullsize scanner identity is incomplete")
+            binding += (tuple(sorted(scanner_bindings)),)
+        return binding
     raise HTTPException(status_code=409, detail="OTA firmware role is unknown")
 
 
@@ -255,9 +308,27 @@ def _expected_named_firmware_identity(firmware_name: str) -> dict | None:
 def _require_named_family_preflight(
     device_id: str, firmware_name: str, uart: str | None = None,
 ) -> dict:
-    snapshot = _ota_target_snapshot(device_id, uart)
+    catalog_info = FIRMWARE_TYPES.get(firmware_name)
+    if catalog_info is None:
+        raise HTTPException(status_code=409, detail="OTA firmware family is unknown")
+    if not catalog_info.get("remote_update_eligible"):
+        raise HTTPException(
+            status_code=409,
+            detail=f"firmware target {firmware_name} is not remote-update eligible",
+        )
+    fullsize = catalog_info.get("product_family") == "s3_fullsize"
+    snapshot = _ota_target_snapshot(device_id, "both" if fullsize else uart)
+    if fullsize:
+        blockers = remote_update_blockers(
+            snapshot["heartbeat"], firmware_name, now=time.time(),
+        )
+        if blockers:
+            raise HTTPException(
+                status_code=409,
+                detail=f"S3 Fullsize remote update blocked: {', '.join(blockers)}",
+            )
     running = _reported_identities(device_id, uart, snapshot=snapshot)
-    required_count = 2 if uart == "both" else 1
+    required_count = 2 if (uart == "both" or (fullsize and firmware_name.startswith("scanner-"))) else 1
     expected = _expected_named_firmware_identity(firmware_name)
     compatible = (
         expected is not None
@@ -296,9 +367,32 @@ def _require_ota_compatibility(
     else:
         raise HTTPException(status_code=400, detail="unknown firmware family")
 
-    snapshot = snapshot or _ota_target_snapshot(device_id, uart)
+    requested_info = FIRMWARE_TYPES.get(requested["target"])
+    if requested_info is None or not requested_info.get("remote_update_eligible"):
+        raise HTTPException(status_code=409, detail="firmware target is not remote-update eligible")
+    fullsize = requested_info.get("product_family") == "s3_fullsize"
+    if requested_info.get("component") == "scanner":
+        companion = FIRMWARE_TYPES.get(requested_info.get("companion_target")) or {}
+        cache_capacity = companion.get("scanner_cache_capacity")
+        if cache_capacity is not None and len(image) > cache_capacity:
+            raise HTTPException(
+                status_code=400,
+                detail="scanner image exceeds uplink cache capacity",
+            )
+
+    if snapshot is None or (fullsize and len(snapshot.get("scanners") or []) != 2):
+        snapshot = _ota_target_snapshot(device_id, "both" if fullsize else uart)
+    if fullsize:
+        blockers = remote_update_blockers(
+            snapshot["heartbeat"], requested["target"], now=time.time(),
+        )
+        if blockers:
+            raise HTTPException(
+                status_code=409,
+                detail=f"S3 Fullsize remote update blocked: {', '.join(blockers)}",
+            )
     running = _reported_identities(device_id, uart, snapshot=snapshot)
-    required_count = 2 if uart == "both" else 1
+    required_count = 2 if (uart == "both" or (fullsize and requested_info.get("component") == "scanner")) else 1
     named_expected = (
         _expected_named_firmware_identity(firmware_name)
         if firmware_name is not None else None
@@ -507,7 +601,8 @@ async def _scanner_targets(
 ) -> list[dict]:
     targets: list[dict] = []
     version_cache: dict[str, str] = {}
-    for node_id, node in _heartbeat_nodes(device_id, include_offline=include_offline):
+    for node_id, raw_node in _heartbeat_nodes(device_id, include_offline=include_offline):
+        node = enrich_node_management(raw_node)
         ip = node.get("ip")
         scanners = [sc for sc in (node.get("scanners") or []) if isinstance(sc, dict)]
         for scanner in scanners:
@@ -516,6 +611,8 @@ async def _scanner_targets(
                 continue
             if target_fw not in version_cache:
                 version_cache[target_fw] = await _firmware_mgr.get_firmware_version(target_fw) or ""
+            management = resolve_component_management_identity(scanner, "scanner")
+            management_blockers = remote_update_blockers(node, target_fw)
             targets.append({
                 "device_id": node_id,
                 "ip": ip,
@@ -527,6 +624,12 @@ async def _scanner_targets(
                 "self_update_capable": _scanner_self_update_capable(scanner),
                 "online": bool(node.get("online")),
                 "node_age_s": node.get("age_s"),
+                "product_family": management.get("product_family"),
+                "firmware_line": management.get("firmware_line"),
+                "component": management.get("component"),
+                "migration_required": bool(management.get("migration_required")),
+                "remote_update_eligible": not management_blockers,
+                "management_blockers": management_blockers,
             })
     targets.sort(key=lambda t: (t["device_id"], t["uart"]))
     return targets
@@ -1190,7 +1293,9 @@ async def get_firmware_catalog():
 async def upload_custom_firmware(name: str, firmware: UploadFile = File(...)):
     """Upload a custom firmware .bin for testing (overrides GitHub release)."""
     data = await firmware.read()
-    if len(data) < 1024 or len(data) > 2 * 1024 * 1024:
+    info = FIRMWARE_TYPES.get(name)
+    capacity = info.get("partition_capacity") if info else None
+    if len(data) < 1024 or capacity is None or len(data) > capacity:
         raise HTTPException(status_code=400, detail=f"Invalid size: {len(data)} bytes")
     if not _firmware_mgr.validate_firmware_image(name, data):
         raise HTTPException(status_code=400, detail="Firmware identity validation failed")
@@ -1279,6 +1384,9 @@ async def get_firmware_download(name: str, request: Request = None):
         "X-FoF-Firmware-Target": name,
         "X-FoF-App-Project": FIRMWARE_TYPES[name].get("project") or "",
         "X-FoF-Hardware-Type": FIRMWARE_TYPES[name].get("hardware") or "",
+        "X-FoF-Product-Family": FIRMWARE_TYPES[name].get("product_family") or "",
+        "X-FoF-Firmware-Line": FIRMWARE_TYPES[name].get("firmware_line") or "",
+        "X-FoF-Component": FIRMWARE_TYPES[name].get("component") or "",
     }
     if request is not None:
         inm = request.headers.get("if-none-match")
@@ -1381,6 +1489,16 @@ async def push_scanner_firmware(
         )
     if legacy and relay_mode in {"auto", "staged"}:
         relay_mode = "staged_legacy"
+
+    catalog_info = FIRMWARE_TYPES.get(firmware_name) or {}
+    if catalog_info.get("product_family") == "s3_fullsize":
+        if legacy or relay_mode in {"staged_legacy", "direct_legacy"}:
+            raise HTTPException(
+                status_code=409,
+                detail="legacy relay paths are not eligible for S3 Fullsize",
+            )
+        if relay_mode == "auto":
+            relay_mode = "staged"
 
     initial_snapshot = _require_named_family_preflight(device_id, firmware_name, uart)
 
@@ -1709,6 +1827,7 @@ async def scanner_firmware_readiness(
         target_version = _normalized_firmware_version(target["target_version"])
         already_current = bool(target_version and current == target_version)
         blockers = []
+        blockers.extend(target.get("management_blockers") or [])
         if not target.get("online"):
             blockers.append("stale_heartbeat")
         if not target.get("ip"):
@@ -1728,6 +1847,13 @@ async def scanner_firmware_readiness(
             "target_firmware": target["target_firmware"],
             "target_version": target["target_version"],
             "board": target["scanner"].get("board"),
+            "product_family": target.get("product_family"),
+            "firmware_line": target.get("firmware_line"),
+            "component": target.get("component"),
+            "migration_required": bool(target.get("migration_required")),
+            "remote_update_eligible": bool(
+                target.get("remote_update_eligible") and not blockers
+            ),
             "cmd_rx": target["scanner"].get("cmd_rx") or target["scanner"].get("cmd_rx_count") or 0,
             "fw_check_count": target["scanner"].get("fw_check_count") or 0,
             "fw_state": target["scanner"].get("fw_state") or target["scanner"].get("fw_update_state") or "idle",
@@ -1736,7 +1862,7 @@ async def scanner_firmware_readiness(
             "self_update_capable": target["self_update_capable"],
             "already_current": already_current,
             "state": "blocked" if blockers else ("verified" if already_current else "pending"),
-            "blockers": blockers,
+            "blockers": list(dict.fromkeys(blockers)),
             "needs_usb_recovery": "scanner_command_ingress_unreachable" in blockers,
             "next_action": (
                 "USB flash this scanner once with the recovery-capable image"
@@ -1744,6 +1870,21 @@ async def scanner_firmware_readiness(
                 ("none" if already_current else "stage firmware and trigger firmware check")
             ),
         })
+    family_labels = {
+        "badge": "Badge",
+        "badge_lite": "Badge Lite",
+        "s3_fullsize": "S3 Fullsize",
+    }
+    family_counts = {
+        "Badge": 0,
+        "Badge Lite": 0,
+        "S3 Fullsize": 0,
+        "Legacy / Unsupported": 0,
+    }
+    for row in rows:
+        family_counts[family_labels.get(
+            row.get("product_family"), "Legacy / Unsupported",
+        )] += 1
     return {
         "count": len(rows),
         "ready_count": sum(
@@ -1752,6 +1893,7 @@ async def scanner_firmware_readiness(
         ),
         "blocked_count": sum(1 for row in rows if row["blockers"]),
         "needs_usb_recovery_count": sum(1 for row in rows if row["needs_usb_recovery"]),
+        "families": family_counts,
         "scanners": rows,
     }
 

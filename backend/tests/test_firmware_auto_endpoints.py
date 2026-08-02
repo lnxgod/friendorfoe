@@ -40,6 +40,7 @@ def _esp_firmware_image(
     project: str = "friendorfoe",
     identity_records: tuple[bytes, ...] = (),
     payload_fill: bytes = b"A",
+    payload_size: int = 64 * 1024,
 ) -> bytes:
     placements = tuple(
         (0x120 + index * len(record), record)
@@ -49,7 +50,7 @@ def _esp_firmware_image(
         version,
         project=project,
         placements=placements,
-        payload_size=64 * 1024,
+        payload_size=payload_size,
         payload_fill=payload_fill,
     )
 
@@ -92,17 +93,36 @@ def _backend_image(
     *,
     version: str = "0.1.0-backend",
     payload_fill: bytes = b"A",
+    exact_size: int | None = None,
 ) -> bytes:
-    project = "fof_backend_uplink" if target == "uplink-s3-backend" else "fof_backend_scanner"
+    identities = {
+        "uplink-s3-backend": (
+            "fof_backend_uplink", "seeed_xiao_esp32s3", 0,
+        ),
+        "scanner-s3-combo-backend": (
+            "fof_backend_scanner", "seeed_xiao_esp32s3", 1,
+        ),
+        "uplink-s3-fullsize-backend": (
+            "fof_backend_uplink_fullsize", "esp32s3_n16r8_fullsize", 0,
+        ),
+        "scanner-s3-combo-fullsize-backend": (
+            "fof_backend_scanner_fullsize", "esp32s3_n16r8_fullsize", 1,
+        ),
+    }
+    project, hardware, image_kind = identities[target]
     identity = _backend_identity_record(
         target=target,
         project=project,
-        hardware="seeed_xiao_esp32s3",
+        hardware=hardware,
         version=version,
-        image_kind=0 if target == "uplink-s3-backend" else 1,
+        image_kind=image_kind,
     )
     return _esp_firmware_image(
-        version, project=project, identity_records=(identity,), payload_fill=payload_fill,
+        version,
+        project=project,
+        identity_records=(identity,),
+        payload_fill=payload_fill,
+        payload_size=(exact_size - 0x150) if exact_size is not None else 64 * 1024,
     )
 
 
@@ -295,6 +315,72 @@ async def test_backend_latest_metadata_has_exact_identity(monkeypatch, tmp_path)
     assert download.headers["x-fof-firmware-target"] == name
     assert download.headers["x-fof-app-project"] == "fof_backend_uplink"
     assert download.headers["x-fof-hardware-type"] == "seeed_xiao_esp32s3"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("name", "family", "component"),
+    [
+        ("uplink-s3-backend", "badge_lite", "uplink"),
+        ("uplink-s3-fullsize-backend", "s3_fullsize", "uplink"),
+        ("scanner-s3-combo-fullsize-backend", "s3_fullsize", "scanner"),
+    ],
+)
+async def test_latest_body_stays_exactly_11_keys_and_management_is_download_headers(
+    monkeypatch,
+    tmp_path,
+    name: str,
+    family: str,
+    component: str,
+):
+    image = _backend_image(name)
+    manager = _cached_github_manager(monkeypatch, tmp_path, name, image)
+    monkeypatch.setattr(nodes, "_firmware_mgr", manager)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        latest = await client.get(f"/nodes/firmware/latest/{name}")
+        download = await client.get(f"/nodes/firmware/download/{name}")
+
+    assert latest.status_code == 200, latest.text
+    assert set(latest.json()) == {
+        "name", "target", "description", "board", "project", "hardware",
+        "version", "size", "sha256", "crc32", "download_url",
+    }
+    assert not ({"product_family", "firmware_line", "component"} & set(latest.json()))
+    assert download.headers["x-fof-product-family"] == family
+    assert download.headers["x-fof-firmware-line"] == "backend"
+    assert download.headers["x-fof-component"] == component
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("name", "size", "expected_status"),
+    [
+        ("scanner-s3-combo-backend", 0x200001, 400),
+        ("scanner-s3-combo-fullsize-backend", 0x300000, 200),
+        ("scanner-s3-combo-fullsize-backend", 0x300001, 400),
+    ],
+)
+async def test_custom_scanner_upload_uses_exact_target_partition_capacity(
+    client,
+    name: str,
+    size: int,
+    expected_status: int,
+):
+    image = (
+        _backend_image(name, exact_size=size)
+        if expected_status == 200
+        else b"not-a-valid-image".ljust(size, b"X")
+    )
+    assert len(image) == size
+    try:
+        response = await client.post(
+            f"/nodes/firmware/upload/{name}",
+            files={"firmware": ("scanner.bin", image, "application/octet-stream")},
+        )
+        assert response.status_code == expected_status, response.text
+    finally:
+        nodes._firmware_mgr.clear_custom_firmware(name)
 
 
 @pytest.mark.asyncio

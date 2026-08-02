@@ -103,6 +103,9 @@ NAMED_FIRMWARE_IDENTITIES = {
     "uplink-s3": ("fof_uplink", "esp32-s3-devkitc-1"),
     "uplink-s3-fof_badge": ("fof_badge_uplink", "seeed_xiao_esp32s3"),
     "uplink-s3-backend": ("fof_backend_uplink", "seeed_xiao_esp32s3"),
+    "uplink-s3-fullsize-backend": (
+        "fof_backend_uplink_fullsize", "esp32s3_n16r8_fullsize",
+    ),
     "scanner-s3-combo": ("fof_scanner", "esp32-s3-devkitc-1"),
     "scanner-s3-combo-seed": ("fof_scanner_seed", "esp32-s3-devkitc-1"),
     "scanner-s3-combo-fof_badge": (
@@ -113,6 +116,19 @@ NAMED_FIRMWARE_IDENTITIES = {
         "fof_backend_scanner",
         "seeed_xiao_esp32s3",
     ),
+    "scanner-s3-combo-fullsize-backend": (
+        "fof_backend_scanner_fullsize",
+        "esp32s3_n16r8_fullsize",
+    ),
+}
+
+REMOTE_ELIGIBLE_TARGETS = {
+    "uplink-s3-fof_badge",
+    "scanner-s3-combo-fof_badge",
+    "uplink-s3-backend",
+    "scanner-s3-combo-backend",
+    "uplink-s3-fullsize-backend",
+    "scanner-s3-combo-fullsize-backend",
 }
 
 
@@ -144,6 +160,36 @@ def _heartbeat_for_firmware(target: str) -> tuple[dict, str | None]:
         "boot_id": 41,
         "last_seen": time.time(),
     }
+    if target.endswith("-fullsize-backend"):
+        heartbeat.update({
+            "product_family": "s3_fullsize",
+            "firmware_line": "backend",
+            "component": "uplink",
+            "firmware_target": "uplink-s3-fullsize-backend",
+            "app_project": "fof_backend_uplink_fullsize",
+            "hardware_type": "esp32s3_n16r8_fullsize",
+            "scanners": [
+                {
+                    "uart": "ble", "slot": 0,
+                    "mac": "AA:BB:CC:DD:EE:42", "boot_id": 1,
+                    "product_family": "s3_fullsize",
+                    "firmware_line": "backend", "component": "scanner",
+                    "firmware_target": "scanner-s3-combo-fullsize-backend",
+                    "app_project": "fof_backend_scanner_fullsize",
+                    "hardware_type": "esp32s3_n16r8_fullsize",
+                },
+                {
+                    "uart": "wifi", "slot": 1,
+                    "mac": "AA:BB:CC:DD:EE:43", "boot_id": 2,
+                    "product_family": "s3_fullsize",
+                    "firmware_line": "backend", "component": "scanner",
+                    "firmware_target": "scanner-s3-combo-fullsize-backend",
+                    "app_project": "fof_backend_scanner_fullsize",
+                    "hardware_type": "esp32s3_n16r8_fullsize",
+                },
+            ],
+        })
+        return heartbeat, None if target.startswith("uplink-") else "ble"
     if target.startswith("uplink-"):
         heartbeat.update(identity)
         return heartbeat, None
@@ -210,6 +256,9 @@ def test_backend_detection_preserves_every_ported_evidence_field():
 def test_backend_batch_preserves_identity_health_and_queue_metadata():
     payload = {
         "device_id": "uplink_CB77A4",
+        "product_family": "badge_lite",
+        "firmware_line": "backend",
+        "component": "uplink",
         "firmware_version": "0.1.0-backend",
         "firmware_target": "uplink-s3-backend",
         "app_project": "fof_backend_uplink",
@@ -245,6 +294,9 @@ def test_backend_batch_preserves_identity_health_and_queue_metadata():
         "detections": [PORTABLE_EVIDENCE],
     }
     batch = DroneDetectionBatch.model_validate(payload)
+    assert batch.model_dump()["product_family"] == "badge_lite"
+    assert batch.model_dump()["firmware_line"] == "backend"
+    assert batch.model_dump()["component"] == "uplink"
     assert batch.model_dump()["firmware_target"] == "uplink-s3-backend"
     assert batch.model_dump()["upload_queue"]["capacity_batches"] == 512
     assert batch.model_dump()["health"] == payload["health"]
@@ -282,6 +334,23 @@ def test_backend_lite_health_rejects_coerced_wire_types():
                 "health": malformed,
                 "detections": [],
             })
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("product_family", "generic_s3"),
+        ("firmware_line", "native_backend"),
+        ("component", "both"),
+    ],
+)
+def test_backend_management_wire_fields_are_typed(field: str, value: str):
+    with pytest.raises(ValueError):
+        DroneDetectionBatch.model_validate({
+            "device_id": "uplink_BADMETA",
+            field: value,
+            "detections": [],
+        })
 
 
 @pytest.mark.asyncio
@@ -490,7 +559,7 @@ def test_named_ota_family_gates_reject_every_cross_family_pair(
     assert image_error.value.status_code == 409
 
 
-@pytest.mark.parametrize("target", sorted(NAMED_FIRMWARE_IDENTITIES))
+@pytest.mark.parametrize("target", sorted(REMOTE_ELIGIBLE_TARGETS))
 def test_named_ota_family_gates_accept_only_the_exact_running_identity(
     monkeypatch,
     target: str,
@@ -520,9 +589,9 @@ def test_named_ota_family_gates_accept_only_the_exact_running_identity(
 @pytest.mark.parametrize(
     ("requested_target", "image_target"),
     [
-        ("uplink-s3", "uplink-s3-fof_badge"),
-        ("scanner-s3-combo", "scanner-s3-combo-seed"),
-        ("scanner-s3-combo-seed", "scanner-s3-combo-fof_badge"),
+        ("uplink-s3-backend", "uplink-s3-fullsize-backend"),
+        ("scanner-s3-combo-backend", "scanner-s3-combo-fullsize-backend"),
+        ("scanner-s3-combo-fullsize-backend", "scanner-s3-combo-fof_badge"),
     ],
 )
 def test_named_ota_rejects_a_mislabeled_image_for_the_exact_running_target(
@@ -587,7 +656,7 @@ def test_raw_ota_rejects_every_cross_family_uplink_image(
     assert error.value.status_code == 409
 
 
-@pytest.mark.parametrize("target", sorted(NAMED_FIRMWARE_IDENTITIES))
+@pytest.mark.parametrize("target", sorted(REMOTE_ELIGIBLE_TARGETS))
 def test_raw_ota_accepts_only_the_exact_catalog_family(
     monkeypatch,
     target: str,
@@ -1860,7 +1929,12 @@ def test_backend_heartbeat_keeps_operational_device_id_and_sticky_metadata():
     }
     batch = DroneDetectionBatch(
         device_id="uplink_CB77A4",
+        product_family="badge_lite",
+        firmware_line="backend",
+        component="uplink",
         firmware_target="uplink-s3-backend",
+        app_project="fof_backend_uplink",
+        hardware_type="seeed_xiao_esp32s3",
         hardware_mac="A4:CF:12:CB:77:A4",
         health={
             "clock_valid": False,
@@ -1879,6 +1953,12 @@ def test_backend_heartbeat_keeps_operational_device_id_and_sticky_metadata():
     assert merged["node_name"] == "Roof"
     assert (merged["lat"], merged["lon"], merged["alt"]) == (36.1, -115.1, 700.0)
     assert merged["firmware_target"] == "uplink-s3-backend"
+    assert merged["reported_product_family"] == "badge_lite"
+    assert merged["reported_firmware_line"] == "backend"
+    assert merged["reported_component"] == "uplink"
+    assert merged["product_family"] == "badge_lite"
+    assert merged["firmware_line"] == "backend"
+    assert merged["component"] == "uplink"
     assert merged["hardware_mac"] == "A4:CF:12:CB:77:A4"
     assert merged["health"]["config_generation"] == 4
 

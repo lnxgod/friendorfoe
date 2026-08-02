@@ -366,6 +366,9 @@ class DroneDetectionBatch(BaseModel):
     device_lon: float | None = Field(None, description="Sensor device longitude")
     device_alt: float | None = Field(None, description="Sensor device altitude in meters")
     timestamp: int | None = Field(None, description="Batch timestamp (epoch seconds)")
+    product_family: Literal["badge", "badge_lite", "s3_fullsize"] | None = None
+    firmware_line: Literal["native_badge", "backend", "legacy"] | None = None
+    component: Literal["uplink", "scanner"] | None = None
     firmware_version: str | None = Field(None, description="Firmware version (e.g. 0.35.0)")
     firmware_target: str | None = Field(
         None,

@@ -59,6 +59,7 @@ from app.services.backend_node_status import (
     bounded_observation_time,
     merge_backend_heartbeat,
 )
+from app.services.firmware_management import enrich_node_management
 from app.services.calibration_mode import CalibrationModeCoordinator
 from app.services.phone_calibration import PhoneCalibrationManager
 from app.services.privacy_devices import (
@@ -941,6 +942,8 @@ _EXPECTED_BADGE_FIRMWARE_VERSION = "0.67.2-badge-defcon34"
 _EXPECTED_BACKEND_FIRMWARE_VERSIONS = {
     "uplink-s3-backend": "0.1.0-backend",
     "scanner-s3-combo-backend": "0.1.0-backend",
+    "uplink-s3-fullsize-backend": "0.1.0-backend",
+    "scanner-s3-combo-fullsize-backend": "0.1.0-backend",
 }
 
 
@@ -2376,7 +2379,8 @@ async def get_node_status(db: AsyncSession = Depends(get_db)):
         pass  # DB unavailable, use heartbeat data only
 
     nodes = []
-    for node in _node_heartbeats.values():
+    for raw_node in _node_heartbeats.values():
+        node = enrich_node_management(raw_node, now=now)
         age = now - node["last_seen"]
         recent_fixups, recent_by_rule = _recent_source_fixups(node["device_id"], now)
         scanners = []

@@ -37,6 +37,12 @@ def test_backend_versions_are_target_aware_without_repurposing_api_version():
         "0.1.1-backend", "uplink-s3-backend",
     ) == "drift"
     assert detections._firmware_version_state(
+        "0.1.0-backend", "uplink-s3-fullsize-backend",
+    ) == "current"
+    assert detections._firmware_version_state(
+        "0.1.0-backend", "scanner-s3-combo-fullsize-backend",
+    ) == "current"
+    assert detections._firmware_version_state(
         detections._EXPECTED_FIRMWARE_VERSION, "uplink-s3",
     ) == "current"
 
@@ -56,12 +62,20 @@ def scanner_fleet_state(monkeypatch: pytest.MonkeyPatch):
                 "device_id": "uplink_A",
                 "ip": "192.168.1.10",
                 "last_seen": now,
+                "firmware_target": "uplink-s3-backend",
+                "app_project": "fof_backend_uplink",
+                "hardware_type": "seeed_xiao_esp32s3",
+                "hardware_mac": "AA:BB:CC:DD:EE:A0",
                 "scanners": [
                     {
                         "uart": "ble",
+                        "slot": 0,
                         "mac": "AA:BB:CC:DD:EE:01",
                         "boot_id": 1,
-                        "board": "scanner-s3-combo",
+                        "firmware_target": "scanner-s3-combo-backend",
+                        "app_project": "fof_backend_scanner",
+                        "hardware_type": "seeed_xiao_esp32s3",
+                        "board": "scanner-s3-combo-backend",
                         "ver": "0.63.0-svc140",
                         "cmd_rx": 3,
                         "fw_check_count": 1,
@@ -69,9 +83,13 @@ def scanner_fleet_state(monkeypatch: pytest.MonkeyPatch):
                     },
                     {
                         "uart": "wifi",
+                        "slot": 1,
                         "mac": "AA:BB:CC:DD:EE:02",
                         "boot_id": 2,
-                        "board": "scanner-s3-combo",
+                        "firmware_target": "scanner-s3-combo-backend",
+                        "app_project": "fof_backend_scanner",
+                        "hardware_type": "seeed_xiao_esp32s3",
+                        "board": "scanner-s3-combo-backend",
                         "ver": "0.63.0-svc140",
                         "cmd_rx": 1,
                         "fw_check_count": 1,
@@ -83,10 +101,20 @@ def scanner_fleet_state(monkeypatch: pytest.MonkeyPatch):
                 "device_id": "uplink_B",
                 "ip": "192.168.1.11",
                 "last_seen": now,
+                "firmware_target": "uplink-s3-backend",
+                "app_project": "fof_backend_uplink",
+                "hardware_type": "seeed_xiao_esp32s3",
+                "hardware_mac": "AA:BB:CC:DD:EE:B0",
                 "scanners": [
                     {
                         "uart": "ble",
-                        "board": "scanner-s3-combo",
+                        "slot": 0,
+                        "mac": "AA:BB:CC:DD:EE:B1",
+                        "boot_id": 11,
+                        "firmware_target": "scanner-s3-combo-backend",
+                        "app_project": "fof_backend_scanner",
+                        "hardware_type": "seeed_xiao_esp32s3",
+                        "board": "scanner-s3-combo-backend",
                         "ver": "0.63.0-svc139",
                         "cmd_rx": 0,
                         "fw_check_count": 0,
@@ -98,15 +126,20 @@ def scanner_fleet_state(monkeypatch: pytest.MonkeyPatch):
     )
 
     async def fake_binary(name: str) -> bytes:
-        assert name == "scanner-s3-combo"
+        assert name == "scanner-s3-combo-backend"
         return b"fake fleet firmware"
 
     async def fake_version(name: str) -> str:
-        assert name == "scanner-s3-combo"
-        return "0.63.0-svc153"
+        assert name == "scanner-s3-combo-backend"
+        return "0.1.1-backend"
+
+    def accept_fleet_fixture_image(device_id, firmware_name, image, uart=None, **kwargs):
+        assert firmware_name == "scanner-s3-combo-backend"
+        return kwargs.get("snapshot")
 
     monkeypatch.setattr(nodes._firmware_mgr, "get_firmware_binary", fake_binary)
     monkeypatch.setattr(nodes._firmware_mgr, "get_firmware_version", fake_version)
+    monkeypatch.setattr(nodes, "_require_ota_compatibility", accept_fleet_fixture_image)
 
 
 @pytest.mark.asyncio
@@ -190,6 +223,69 @@ async def test_scanner_readiness_filters_gate_canary_device_and_uart(
     assert payload["scanners"][0]["device_id"] == "uplink_D0A148"
     assert payload["scanners"][0]["uart"] == "wifi"
     assert payload["scanners"][0]["target_firmware"] == "scanner-s3-combo-seed"
+    assert payload["scanners"][0]["product_family"] is None
+    assert payload["scanners"][0]["remote_update_eligible"] is False
+    assert "unsupported_target" in payload["scanners"][0]["blockers"]
+
+
+@pytest.mark.asyncio
+async def test_fullsize_scanner_readiness_groups_exact_family_and_complete_trio(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    now = time.time()
+    monkeypatch.setattr(detections, "_node_heartbeats", {
+        "uplink_FULL": {
+            "device_id": "uplink_FULL", "ip": "192.168.1.80", "last_seen": now,
+            "product_family": "s3_fullsize", "firmware_line": "backend",
+            "component": "uplink", "hardware_mac": "AA:BB:CC:DD:EE:80",
+            "boot_id": 80,
+            "firmware_target": "uplink-s3-fullsize-backend",
+            "app_project": "fof_backend_uplink_fullsize",
+            "hardware_type": "esp32s3_n16r8_fullsize",
+            "scanners": [
+                {
+                    "uart": "ble", "slot": 0, "mac": "AA:BB:CC:DD:EE:81",
+                    "boot_id": 81, "product_family": "s3_fullsize",
+                    "firmware_line": "backend", "component": "scanner",
+                    "firmware_target": "scanner-s3-combo-fullsize-backend",
+                    "app_project": "fof_backend_scanner_fullsize",
+                    "hardware_type": "esp32s3_n16r8_fullsize",
+                    "firmware_version": "0.1.0-backend", "cmd_rx": 1,
+                },
+                {
+                    "uart": "wifi", "slot": 1, "mac": "AA:BB:CC:DD:EE:82",
+                    "boot_id": 82, "product_family": "s3_fullsize",
+                    "firmware_line": "backend", "component": "scanner",
+                    "firmware_target": "scanner-s3-combo-fullsize-backend",
+                    "app_project": "fof_backend_scanner_fullsize",
+                    "hardware_type": "esp32s3_n16r8_fullsize",
+                    "firmware_version": "0.1.0-backend", "cmd_rx": 1,
+                },
+            ],
+        },
+    })
+
+    async def fullsize_version(name: str) -> str:
+        assert name == "scanner-s3-combo-fullsize-backend"
+        return "0.1.0-backend"
+
+    monkeypatch.setattr(nodes._firmware_mgr, "get_firmware_version", fullsize_version)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.get(
+            "/nodes/firmware/scanner/readiness"
+            "?firmware_name=scanner-s3-combo-fullsize-backend"
+        )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["families"] == {
+        "Badge": 0, "Badge Lite": 0, "S3 Fullsize": 2, "Legacy / Unsupported": 0,
+    }
+    assert payload["ready_count"] == 2
+    assert {row["product_family"] for row in payload["scanners"]} == {"s3_fullsize"}
+    assert all(row["remote_update_eligible"] for row in payload["scanners"])
+    assert all(row["blockers"] == [] for row in payload["scanners"])
 
 
 @pytest.mark.asyncio
@@ -197,7 +293,7 @@ async def test_scanner_readiness_flags_missing_target_version(
     monkeypatch: pytest.MonkeyPatch,
 ):
     async def missing_version(name: str) -> None:
-        assert name == "scanner-s3-combo"
+        assert name == "scanner-s3-combo-backend"
         return None
 
     monkeypatch.setattr(nodes._firmware_mgr, "get_firmware_version", missing_version)
@@ -224,6 +320,10 @@ async def test_default_readiness_and_stage_use_canonical_backend_scanner_identit
                 "device_id": "uplink_CANON",
                 "ip": "192.168.1.70",
                 "last_seen": time.time(),
+                "firmware_target": "uplink-s3-backend",
+                "app_project": "fof_backend_uplink",
+                "hardware_type": "seeed_xiao_esp32s3",
+                "hardware_mac": "AA:BB:CC:DD:EE:6F",
                 "scanners": [{
                     "firmware_target": "scanner-s3-combo-backend",
                     "app_project": "fof_backend_scanner",
@@ -231,6 +331,7 @@ async def test_default_readiness_and_stage_use_canonical_backend_scanner_identit
                     "firmware_version": "0.1.0-backend",
                     "mac": "AA:BB:CC:DD:EE:70",
                     "boot_id": 70,
+                    "slot": 0,
                     "uart": "ble",
                 }],
             },
@@ -324,8 +425,8 @@ async def test_backend_scanner_identity_mismatch_is_blocked_from_fleet_execution
     assert readiness.status_code == 200, readiness.text
     mismatched = next(row for row in readiness.json()["scanners"] if row["uart"] == "wifi")
     assert "identity_mismatch" in mismatched["blockers"]
-    assert rollout.status_code == 200, rollout.text
-    assert [row["uart"] for row in rollout.json()["targets"]] == ["ble"]
+    assert rollout.status_code == 404, rollout.text
+    assert rollout.json()["detail"] == "No online scanner targets found"
 
 
 @pytest.mark.asyncio
@@ -349,7 +450,7 @@ async def test_stage_fleet_records_version_size_and_crc(monkeypatch: pytest.Monk
     payload = resp.json()
     assert payload["ok"] is True
     assert payload["count"] == 2
-    assert all(row["target_version"] == "0.63.0-svc153" for row in payload["results"])
+    assert all(row["target_version"] == "0.1.1-backend" for row in payload["results"])
     assert all(row["size"] == 19 for row in payload["results"])
     assert all(row["crc32"] for row in payload["results"])
     assert len(calls) == 2
@@ -416,7 +517,7 @@ async def test_stage_fleet_final_revalidation_blocks_later_target_changed_during
     calls: list[str] = []
 
     async def mutate_later_target(name: str) -> bytes:
-        assert name == "scanner-s3-combo"
+        assert name == "scanner-s3-combo-backend"
         detections._node_heartbeats["uplink_B"]["last_seen"] = time.time() - 120
         return b"fake fleet firmware"
 
@@ -436,7 +537,7 @@ async def test_stage_fleet_final_revalidation_blocks_later_target_changed_during
     assert response.json()["results"] == [{
         "ok": False,
         "device_id": "uplink_B",
-        "firmware": "scanner-s3-combo",
+        "firmware": "scanner-s3-combo-backend",
         "state": "blocked",
         "error": "stale_heartbeat",
     }]
@@ -444,7 +545,7 @@ async def test_stage_fleet_final_revalidation_blocks_later_target_changed_during
 
 
 @pytest.mark.asyncio
-async def test_stage_fleet_uses_scanner_board_for_mixed_variants(
+async def test_stage_fleet_rejects_legacy_and_seed_variants_before_upload(
     monkeypatch: pytest.MonkeyPatch,
 ):
     now = time.time()
@@ -501,13 +602,9 @@ async def test_stage_fleet_uses_scanner_board_for_mixed_variants(
 
     assert resp.status_code == 200, resp.text
     payload = resp.json()
-    assert payload["ok"] is True
-    assert {row["firmware"] for row in payload["results"]} == {
-        "scanner-s3-combo-seed",
-        "scanner-s3-combo",
-    }
-    assert any("name=scanner-s3-combo-seed" in url for url in uploads)
-    assert any("name=scanner-s3-combo&" in url for url in uploads)
+    assert payload["ok"] is False
+    assert {row["error"] for row in payload["results"]} == {"identity_mismatch"}
+    assert uploads == []
 
 
 @pytest.mark.asyncio
@@ -549,9 +646,9 @@ async def test_canary_rollout_stages_triggers_and_requires_heartbeat_proof(
         raise AssertionError(f"unexpected URL {url}")
 
     async def fake_wait_for_scanner_version(*args, **kwargs):
-        return True, "0.63.0-svc153", {
+        return True, "0.1.1-backend", {
             "uart": "ble",
-            "ver": "0.63.0-svc153",
+            "ver": "0.1.1-backend",
             "cmd_rx": 2,
             "fw_check_count": 1,
         }
@@ -578,7 +675,7 @@ async def test_canary_rollout_stages_triggers_and_requires_heartbeat_proof(
 
 
 @pytest.mark.asyncio
-async def test_gate_canary_rollout_both_targets_ble_then_wifi(
+async def test_seed_canary_is_rejected_before_stage_or_trigger(
     monkeypatch: pytest.MonkeyPatch,
 ):
     now = time.time()
@@ -667,24 +764,10 @@ async def test_gate_canary_rollout_both_targets_ble_then_wifi(
             "?mode=canary&canary_device_id=uplink_D0A148"
             "&canary_uart=both&firmware_name=scanner-s3-combo-seed"
         )
-        assert start.status_code == 200, start.text
-        assert start.json()["target_count"] == 2
-        rollout_id = start.json()["rollout_id"]
-        for _ in range(20):
-            await asyncio.sleep(0)
-            status = await client.get(f"/nodes/firmware/rollouts/{rollout_id}")
-            payload = status.json()
-            if payload["task_done"]:
-                break
+        assert start.status_code == 404, start.text
 
-    assert payload["status"] == "done"
-    assert list(payload["targets"]) == ["uplink_D0A148/ble", "uplink_D0A148/wifi"]
-    assert waited == ["uplink_D0A148/ble", "uplink_D0A148/wifi"]
-    trigger_urls = [url for url in calls if "/api/fw/trigger" in url]
-    assert trigger_urls == [
-        "http://192.168.1.202/api/fw/trigger?uart=ble",
-        "http://192.168.1.202/api/fw/trigger?uart=wifi",
-    ]
+    assert calls == []
+    assert waited == []
 
 
 @pytest.mark.asyncio
@@ -703,9 +786,9 @@ async def test_canary_rollout_success_requires_update_telemetry(
         raise AssertionError(f"unexpected URL {url}")
 
     async def fake_wait_for_scanner_version(*args, **kwargs):
-        return True, "0.63.0-svc153", {
+        return True, "0.1.1-backend", {
             "uart": "ble",
-            "ver": "0.63.0-svc153",
+            "ver": "0.1.1-backend",
             "cmd_rx": 0,
             "fw_check_count": 0,
             "fw_state": "idle",

@@ -3316,11 +3316,13 @@ async function refreshFleetFirmwarePanel() {
       '<button class="btn ghost" onclick="refreshFleetFirmwarePanel()">Refresh</button>' +
     '</div>' +
     (scanners.length
-      ? '<table class="compact-table"><tr><th>Node</th><th>Slot</th><th>Current</th><th>Target</th><th>State</th><th>Blocker / Next Action</th></tr>' +
+      ? '<table class="compact-table"><tr><th>Family</th><th>Node</th><th>Slot</th><th>Current</th><th>Target</th><th>State</th><th>Blocker / Next Action</th></tr>' +
         scanners.map(s => {
           const blockers = (s.blockers||[]).join(', ');
           const stateCls = s.already_current ? 'ok' : s.needs_usb_recovery ? 'err' : blockers ? 'warn' : 'blue';
-          return '<tr><td style="font-weight:700;color:#58a6ff">'+htmlEsc(s.device_id)+'</td>' +
+          const family = s.product_family === 'badge' ? 'Badge' : s.product_family === 'badge_lite' ? 'Badge Lite' : s.product_family === 's3_fullsize' ? 'S3 Fullsize' : 'Legacy / Unsupported';
+          return '<tr><td>'+htmlEsc(family)+(s.migration_required?' · migration required':'')+'</td>' +
+            '<td style="font-weight:700;color:#58a6ff">'+htmlEsc(s.device_id)+'</td>' +
             '<td>'+htmlEsc((s.uart||'?').toUpperCase())+'</td>' +
             '<td style="font-family:JetBrains Mono,monospace">'+htmlEsc(s.current_version||'?')+'</td>' +
             '<td style="font-family:JetBrains Mono,monospace">'+htmlEsc((s.target_firmware||'?')+' '+(s.target_version||''))+'</td>' +
@@ -3396,9 +3398,23 @@ async function showOtaDialog(deviceId) {
     return;
   }
 
-  const options = available.map((fw) =>
-    '<option value="'+fw.name+'">'+fw.name+' ('+fw.source+', '+(fw.size/1024).toFixed(0)+'KB'+(fw.version?' '+fw.version:'')+')</option>'
-  ).join('');
+  const familyGroups = [
+    ['Badge', 'badge'],
+    ['Badge Lite', 'badge_lite'],
+    ['S3 Fullsize', 's3_fullsize'],
+    ['Legacy / Unsupported', null],
+  ];
+  const options = familyGroups.map(function(group) {
+    const rows = available.filter(function(fw) {
+      return group[1] === null ? !fw.product_family : fw.product_family === group[1];
+    });
+    if (!rows.length) return '';
+    return '<optgroup label="'+group[0]+'">' + rows.map(function(fw) {
+      const disabled = !fw.remote_update_eligible;
+      const suffix = fw.migration_required ? ', migration required' : disabled ? ', remote ineligible' : '';
+      return '<option value="'+fw.name+'" data-family="'+htmlEsc(fw.product_family||'')+'" data-component="'+htmlEsc(fw.component||'')+'" data-eligible="'+(fw.remote_update_eligible?'1':'0')+'"'+(disabled?' disabled':'')+'>'+htmlEsc(fw.component||'?')+' · '+htmlEsc(fw.name)+' ('+htmlEsc(fw.source)+', '+(fw.size/1024).toFixed(0)+'KB'+(fw.version?' '+htmlEsc(fw.version):'')+suffix+')</option>';
+    }).join('') + '</optgroup>';
+  }).join('');
 
   // Build scanner info display
   const scanners = node ? (node.scanners || []) : [];
@@ -3436,6 +3452,9 @@ async function showOtaDialog(deviceId) {
       '<div class="metric"><span>Board type</span><span class="val" style="color:#58a6ff">'+(boardType||'unknown')+'</span></div>' +
       '<div class="metric"><span>IP</span><span class="val" style="color:#484f58">'+(node?node.ip:'?')+'</span></div>' +
       '<div class="metric"><span>Backend Fixups</span><span class="val '+(((node && node.source_fixups_recent) || 0)>0?'warn':'')+'">'+((node && node.source_fixups_recent) || 0)+'</span></div>' +
+      '<div class="metric"><span>Management family</span><span class="val">'+htmlEsc((node&&node.product_family)||'legacy / unknown')+'</span></div>' +
+      '<div class="metric"><span>Remote readiness</span><span class="val '+((node&&node.remote_update_eligible)?'ok':'warn')+'">'+((node&&node.remote_update_eligible)?'eligible':'blocked')+'</span></div>' +
+      '<div style="font-size:10px;color:#d29922">'+htmlEsc(((node&&node.management_blockers)||[]).join(', '))+'</div>' +
       scannerHtml +
     '</div>' +
     '<div style="margin-bottom:8px">' +
@@ -3454,7 +3473,7 @@ async function showOtaDialog(deviceId) {
         }).join('') || '<option value="wifi">WiFi Scanner (not detected)</option>') +
       '</select>' +
     '</div>' +
-    '<button onclick="doOtaPush()" style="background:#238636;color:#fff;border:none;padding:8px 20px;border-radius:6px;cursor:pointer;font-size:13px;font-weight:700;width:100%">Flash Firmware</button>' +
+    '<button id="ota-submit" onclick="doOtaPush()" style="background:#238636;color:#fff;border:none;padding:8px 20px;border-radius:6px;cursor:pointer;font-size:13px;font-weight:700;width:100%">Flash Firmware</button>' +
     '<div id="ota-status" style="margin-top:8px;font-size:12px"></div>';
 
   const targetSel = document.getElementById('ota-target');
@@ -3468,8 +3487,22 @@ async function showOtaDialog(deviceId) {
     if (!desired) return;
     const opt = Array.from(fwSel.options).find(function(o){ return o.value === desired; });
     if (opt) fwSel.value = desired;
+    updateOtaEligibility();
+  };
+  const updateOtaEligibility = function() {
+    const selected = fwSel.options[fwSel.selectedIndex];
+    const requestedComponent = targetSel.value === 'uplink' ? 'uplink' : 'scanner';
+    const eligible = !!selected && selected.dataset.eligible === '1' &&
+      !!node && !!node.remote_update_eligible &&
+      selected.dataset.family === (node.product_family||'') &&
+      selected.dataset.component === requestedComponent;
+    const submit = document.getElementById('ota-submit');
+    submit.disabled = !eligible;
+    submit.style.opacity = eligible ? '1' : '0.45';
+    submit.title = eligible ? '' : 'Server management blockers or family/component mismatch prevent this update';
   };
   targetSel.addEventListener('change', pickFirmwareForTarget);
+  fwSel.addEventListener('change', updateOtaEligibility);
   pickFirmwareForTarget();
 }
 
