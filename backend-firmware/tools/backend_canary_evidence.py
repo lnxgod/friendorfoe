@@ -90,6 +90,9 @@ SECRET_KEY = re.compile(
 )
 NORMALIZED_SECRET_MARKERS = (
     "password",
+    "passphrase",
+    "pwd",
+    "psk",
     "secret",
     "credential",
     "token",
@@ -1235,7 +1238,7 @@ def _serial_log_receipt(
         )
     receipts: list[dict[str, Any]] = []
     forbidden_content = re.compile(
-        rb"password|wifi[_-]?pass|ap[_-]?pass|secret|credential|token|"
+        rb"password|passphrase|pwd|psk|wifi[_-]?pass|ap[_-]?pass|secret|credential|token|"
         rb"authorization|cookie|set[-_]?cookie|api[_-]?key|value[_-]?hex|ble[_-]?raw|"
         rb"raw[_-]?ble|characteristic[_-]?value|ble[_-]?apple[_-]?auth|"
         rb"ble[_-]?auth[_-]?payload|raw[_-]?auth[_-]?payload|"

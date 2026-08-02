@@ -41,7 +41,10 @@ CONTINUITY = {
 
 @pytest.mark.parametrize(
     "key",
-    ("wifi_pass", "ap_pass", "api-key", "apiKey"),
+    (
+        "wifi_pass", "ap_pass", "passphrase", "pwd", "psk",
+        "api-key", "apiKey",
+    ),
 )
 def test_secret_key_aliases_are_normalized_for_rejection_and_redaction(key):
     value = {key: "must-not-survive", "safe": 7}
@@ -814,6 +817,9 @@ def test_serial_log_receipt_requires_exact_private_current_three_roles(tmp_path)
         b"Set-Cookie: session=value\n",
         b"wifi_pass=network-value\n",
         b"ap_pass=portal-value\n",
+        b"passphrase=network-value\n",
+        b"pwd=network-value\n",
+        b"psk=network-value\n",
         b"api-key=backend-value\n",
         b"apiKey=backend-value\n",
         b"raw_auth_payload=001122\n",
