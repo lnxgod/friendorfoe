@@ -134,7 +134,7 @@ private fun NavGraphBuilder.registerSevenTopLevelDestinations(
                             navController.navigate(Screen.Detail.createRoute(objectId))
                         },
                         viewModel = arViewModel,
-                        isPreciseLocation = locationState == PermissionUiState.Granted,
+                        locationPermissionState = locationState,
                     )
                 }
             }

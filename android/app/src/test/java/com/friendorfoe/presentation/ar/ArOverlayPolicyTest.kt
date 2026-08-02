@@ -5,12 +5,31 @@ import com.friendorfoe.domain.model.DetectionSource
 import com.friendorfoe.domain.model.Drone
 import com.friendorfoe.domain.model.ObjectCategory
 import com.friendorfoe.domain.model.Position
+import com.friendorfoe.presentation.permissions.PermissionUiState
 import com.friendorfoe.sensor.ScreenPosition
 import org.junit.Assert.assertEquals
 import org.junit.Test
 import java.time.Instant
 
 class ArOverlayPolicyTest {
+
+    @Test
+    fun `display policy keeps radio positions when location is granted or approximate`() {
+        val position = offScreenPosition(aircraft("POSITION"), 1_000.0)
+
+        assertEquals(
+            listOf(position),
+            displayedRadioPositions(listOf(position), PermissionUiState.Granted),
+        )
+        assertEquals(
+            listOf(position),
+            displayedRadioPositions(listOf(position), PermissionUiState.Approximate),
+        )
+        assertEquals(
+            emptyList<ScreenPosition>(),
+            displayedRadioPositions(listOf(position), PermissionUiState.Denied),
+        )
+    }
 
     @Test
     fun `off-screen arrows include nearby aircraft but exclude farther aircraft and drones`() {

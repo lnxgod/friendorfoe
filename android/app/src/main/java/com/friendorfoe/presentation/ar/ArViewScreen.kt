@@ -111,6 +111,8 @@ import com.friendorfoe.presentation.detail.DetailViewModel
 import com.friendorfoe.presentation.detail.DroneDetailContent
 import com.friendorfoe.presentation.list.listBadgeVisual
 import com.friendorfoe.presentation.list.listPrimaryText
+import com.friendorfoe.presentation.permissions.PermissionUiState
+import com.friendorfoe.presentation.permissions.isUsable
 import com.friendorfoe.presentation.util.categoryBadge
 import com.friendorfoe.presentation.util.categoryColor
 import com.friendorfoe.domain.model.ObjectCategory
@@ -142,14 +144,14 @@ fun ArViewScreen(
     viewModel: ArViewModel = hiltViewModel(),
     detailViewModel: DetailViewModel = hiltViewModel(),
     captureReviewViewModel: CaptureReviewViewModel = hiltViewModel(),
-    isPreciseLocation: Boolean = true,
+    locationPermissionState: PermissionUiState,
 ) {
     val lifecycleOwner = LocalLifecycleOwner.current
     val activity = LocalContext.current as? Activity
 
     // Collect state from ViewModel
     val screenPositions by viewModel.screenPositions.collectAsStateWithLifecycle()
-    val displayedScreenPositions = if (isPreciseLocation) screenPositions else emptyList()
+    val displayedScreenPositions = displayedRadioPositions(screenPositions, locationPermissionState)
     val aircraftCount by viewModel.aircraftCount.collectAsStateWithLifecycle()
     val droneCount by viewModel.droneCount.collectAsStateWithLifecycle()
     val militaryCount by viewModel.militaryCount.collectAsStateWithLifecycle()
@@ -186,6 +188,11 @@ fun ArViewScreen(
     val minZoomRatio by viewModel.minZoomRatio.collectAsStateWithLifecycle()
     val lockedObjectId by viewModel.lockedObjectId.collectAsStateWithLifecycle()
     val lockedScreenPosition by viewModel.lockedScreenPosition.collectAsStateWithLifecycle()
+    val displayedLockedScreenPosition = displayedRadioPositions(
+        listOfNotNull(lockedScreenPosition),
+        locationPermissionState,
+    ).firstOrNull()
+    val displayedLockedObjectId = if (locationPermissionState.isUsable()) lockedObjectId else null
     val snapTarget by viewModel.snapTarget.collectAsStateWithLifecycle()
     val proximityDrones by viewModel.proximityDrones.collectAsStateWithLifecycle()
     val objectPeek by viewModel.objectPeek.collectAsStateWithLifecycle()
@@ -255,8 +262,8 @@ fun ArViewScreen(
         selectedObjectId?.let { detailViewModel.loadDetail(it) }
     }
 
-    LaunchedEffect(isPreciseLocation) {
-        if (!isPreciseLocation) {
+    LaunchedEffect(locationPermissionState) {
+        if (!locationPermissionState.isUsable()) {
             viewModel.selectObject(null)
             viewModel.unlockObject()
         }
@@ -288,8 +295,8 @@ fun ArViewScreen(
             unmatchedVisuals = unmatchedVisuals,
             classifiedUnknowns = classifiedUnknowns,
             darkTargetScores = darkTargetScores,
-            lockedObjectId = lockedObjectId,
-            lockedScreenPosition = lockedScreenPosition,
+            lockedObjectId = displayedLockedObjectId,
+            lockedScreenPosition = displayedLockedScreenPosition,
             orientation = orientation,
             onLabelTapped = { objectId ->
                 hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
@@ -316,9 +323,9 @@ fun ArViewScreen(
         )
 
         // Lock-on HUD badge: shown when an object is locked
-        if (lockedObjectId != null) {
+        if (displayedLockedObjectId != null) {
             val lockedLabel = displayedScreenPositions
-                .firstOrNull { it.skyObject.id == lockedObjectId }
+                .firstOrNull { it.skyObject.id == displayedLockedObjectId }
                 ?.let { sp ->
                     when (val obj = sp.skyObject) {
                         is Aircraft -> obj.callsign ?: obj.icaoHex
@@ -812,6 +819,12 @@ internal fun selectOffScreenRadioPositions(screenPositions: List<ScreenPosition>
         !it.isInView && it.distanceMeters > 0 &&
             ArVisualRangePolicy.includes(it.skyObject, it.distanceMeters)
     }.sortedBy { it.distanceMeters }.take(8)
+
+internal fun displayedRadioPositions(
+    screenPositions: List<ScreenPosition>,
+    locationState: PermissionUiState,
+): List<ScreenPosition> =
+    if (locationState.isUsable()) screenPositions else emptyList()
 
 /**
  * Transparent Canvas overlay that draws floating labels at screen positions.
