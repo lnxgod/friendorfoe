@@ -9,7 +9,9 @@ import http.client
 import io
 import json
 from pathlib import Path
+import shutil
 import socket
+import subprocess
 import threading
 import unittest
 from urllib.parse import quote
@@ -434,26 +436,23 @@ class StaticAndStateRouteTest(WebServerTestCase):
         )
         self.assertNotIn(".innerHTML", combined)
         self.assertNotIn("insertAdjacentHTML", combined)
-        self.assertNotIn("setInterval", sources["app.js"])
-        self.assertIn("setTimeout", sources["app.js"])
+        self.assertNotIn("setInterval", combined)
+        self.assertIn("setTimeout", sources["api.js"])
         self.assertIn("AbortController", sources["api.js"])
         self.assertIn("5000", sources["api.js"])
         self.assertIn("new URLSearchParams", combined)
         self.assertIn("hashchange", sources["app.js"])
         for key in ("ArrowLeft", "ArrowRight", "Home", "End"):
-            self.assertIn(key, sources["app.js"])
+            self.assertIn(key, sources["ui.js"])
         self.assertIn("newDash.v1.", sources["app.js"])
 
     def test_live_and_map_modules_preserve_source_truth_and_budgets(self) -> None:
         live_path = STATIC_ROOT / "views" / "live.js"
         map_path = STATIC_ROOT / "views" / "map.js"
-        app_path = STATIC_ROOT / "app.js"
         self.assertTrue(live_path.is_file())
         self.assertTrue(map_path.is_file())
-        self.assertTrue(app_path.is_file())
         live_source = live_path.read_text(encoding="utf-8")
         map_source = map_path.read_text(encoding="utf-8")
-        app_source = app_path.read_text(encoding="utf-8")
 
         self.assertIn('"ble_rid"', live_source)
         self.assertIn('"wifi_rid"', live_source)
@@ -464,10 +463,10 @@ class StaticAndStateRouteTest(WebServerTestCase):
         self.assertIn("https://www.openstreetmap.org/copyright", map_source)
         self.assertIn("Basemap offline — coordinates and observations remain available", map_source)
         self.assertIn("Host-observed trail", map_source)
-        self.assertIn("MAX_TRAIL_PAGES = 4", app_source)
-        self.assertIn("MAX_TRAIL_ROWS = 2000", app_source)
+        self.assertIn("MAX_TRAIL_PAGES = 4", map_source)
+        self.assertIn("MAX_TRAIL_ROWS = 2000", map_source)
         for query_contract in ('"kind", "track"', '"positioned", "true"', '"limit", "500"'):
-            self.assertIn(query_contract, app_source)
+            self.assertIn(query_contract, map_source)
 
     def test_responsive_shell_keeps_desktop_compact_and_mobile_filters_reachable(self) -> None:
         html = (STATIC_ROOT / "index.html").read_text(encoding="utf-8")
@@ -480,6 +479,33 @@ class StaticAndStateRouteTest(WebServerTestCase):
         self.assertIn(".presentation-filter-panel", css)
         self.assertIn(".view-panel:focus-visible", css)
         self.assertIn('matchMedia("(min-width: 760px)")', app_source)
+
+    def test_leaflet_controls_have_touch_targets_focus_and_readable_attribution(self) -> None:
+        css = (STATIC_ROOT / "styles.css").read_text(encoding="utf-8")
+
+        self.assertRegex(
+            css,
+            r"\.leaflet-control-zoom a\s*\{[^}]*min-width:\s*44px;[^}]*min-height:\s*44px;",
+        )
+        self.assertIn(".leaflet-control-zoom a:focus-visible", css)
+        self.assertRegex(
+            css,
+            r"\.leaflet-control-attribution a\s*\{[^}]*color:\s*#7ae4ef",
+        )
+
+    def test_browser_state_machine_behavior_suite(self) -> None:
+        node = shutil.which("node")
+        if node is None:
+            self.skipTest("Node.js is unavailable for browser module behavior tests")
+        result = subprocess.run(
+            [node, "--test", "tests/browser_behavior_test.mjs"],
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_fixture_is_standalone_deterministic_and_includes_hostile_usb_text(self) -> None:
         fixture_path = PROJECT_ROOT / "tests" / "browser_fixture_server.py"

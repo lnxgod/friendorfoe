@@ -10,6 +10,9 @@ const REMOTE_ID_SOURCES = new Set(["ble_rid", "wifi_rid"]);
 const OFFLINE_MESSAGE = "Basemap offline — coordinates and observations remain available";
 const TRAIL_LABEL = "Host-observed trail";
 const WORLD_VIEW = [20, 0];
+const MAX_TRAIL_PAGES = 4;
+const MAX_TRAIL_ROWS = 2000;
+const MAX_TRAIL_ATTEMPTS = 2;
 
 let map = null;
 let tileLayer = null;
@@ -216,6 +219,101 @@ export function renderTrail(points) {
     }
   }
   void TRAIL_LABEL;
+}
+
+export function createTrailController({ getHistory, render, reportError }) {
+  let generation = 0;
+  let signature = "";
+  let currentKeys = [];
+  let state = "idle";
+  let attempts = 0;
+  let activeController = null;
+  let activePromise = null;
+
+  async function load(loadGeneration, controller) {
+    const acceptedKeys = new Set(currentKeys);
+    const queue = currentKeys.map((key) => ({ key, cursor: null }));
+    const points = [];
+    let pageCount = 0;
+    try {
+      while (queue.length && pageCount < MAX_TRAIL_PAGES && points.length < MAX_TRAIL_ROWS) {
+        const job = queue.shift();
+        const query = new URLSearchParams();
+        query.set("kind", "track");
+        query.set("positioned", "true");
+        query.set("text", job.key);
+        query.set("limit", "500");
+        if (job.cursor) {
+          query.set("cursor", job.cursor);
+        }
+        const page = await getHistory(query, { signal: controller.signal });
+        if (loadGeneration !== generation || controller.signal.aborted) {
+          return;
+        }
+        pageCount += 1;
+        const remaining = MAX_TRAIL_ROWS - points.length;
+        const exactItems = (Array.isArray(page?.items) ? page.items : [])
+          .filter((item) => acceptedKeys.has(item?.stable_key))
+          .slice(0, remaining);
+        points.push(...exactItems);
+        if (page?.next_cursor && pageCount < MAX_TRAIL_PAGES && points.length < MAX_TRAIL_ROWS) {
+          queue.push({ key: job.key, cursor: page.next_cursor });
+        }
+      }
+      if (loadGeneration === generation && !controller.signal.aborted) {
+        state = "loaded";
+        render(points);
+      }
+    } catch (error) {
+      if (loadGeneration === generation && !controller.signal.aborted) {
+        state = "failed";
+        reportError(error);
+      }
+    }
+  }
+
+  function startLoad() {
+    attempts += 1;
+    state = "loading";
+    const loadGeneration = generation;
+    const controller = new AbortController();
+    activeController = controller;
+    const promise = load(loadGeneration, controller).finally(() => {
+      if (activePromise === promise) {
+        activePromise = null;
+        activeController = null;
+      }
+    });
+    activePromise = promise;
+    return promise;
+  }
+
+  return {
+    update(keys) {
+      const nextKeys = [...new Set(
+        (Array.isArray(keys) ? keys : []).filter((key) => typeof key === "string" && key),
+      )].sort();
+      const nextSignature = JSON.stringify(nextKeys);
+      if (nextSignature !== signature) {
+        generation += 1;
+        activeController?.abort();
+        activeController = null;
+        activePromise = null;
+        signature = nextSignature;
+        currentKeys = nextKeys;
+        attempts = 0;
+        state = "idle";
+        render([]);
+      }
+      if (!currentKeys.length || state === "loaded" || attempts >= MAX_TRAIL_ATTEMPTS) {
+        return Promise.resolve();
+      }
+      if (activePromise) {
+        return activePromise;
+      }
+      return startLoad();
+    },
+  };
 }
 
 export function focusEntity(stableKey) {

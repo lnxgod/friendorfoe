@@ -1,16 +1,15 @@
-import { getHistory, getState } from "./api.js";
-import { stableEntityKey, writePreference, readPreference } from "./ui.js";
-import { renderLive, visibleEntities } from "./views/live.js";
+import { createCompletionPoller, getHistory, getState } from "./api.js";
+import { nextTabIndex, scannerSummary, writePreference, readPreference } from "./ui.js";
+import { filteredRemoteIdKeys, renderLive, visibleEntities } from "./views/live.js";
 import {
   createMap,
+  createTrailController,
   invalidateSize,
   renderActiveEntities,
   renderTrail,
 } from "./views/map.js";
 
 const POLL_INTERVAL_MS = 1000;
-const MAX_TRAIL_PAGES = 4;
-const MAX_TRAIL_ROWS = 2000;
 const VIEW_KEY = "newDash.v1.selectedView";
 const FILTER_KEY = "newDash.v1.presentationFilters";
 const VIEWS = ["live", "map", "history", "badge"];
@@ -58,9 +57,7 @@ const filterControls = {
 let selectedView = readPreference(VIEW_KEY, (value) => VIEWS.includes(value), "live");
 let filters = readPreference(FILTER_KEY, validFilters, DEFAULT_FILTERS);
 let latestState = null;
-let pollTimer = null;
 let mapCreated = false;
-let trailFetchStarted = false;
 
 function validFilters(value) {
   return value
@@ -124,11 +121,7 @@ function renderHeader(state) {
   document.querySelector("#connection-firmware").textContent = status.version || connection.firmware_version
     ? `FW ${status.version || connection.firmware_version}`
     : "Firmware missing";
-  const scanners = Array.isArray(status.scanners) ? status.scanners : [];
-  const scannerSuffix = status.sensing_health ? ` · ${status.sensing_health.replaceAll("_", " ")}` : "";
-  document.querySelector("#connection-scanners").textContent = scanners.length
-    ? `${scanners.length} ${scanners.length === 1 ? "scanner" : "scanners"}${scannerSuffix}`
-    : `Scanners missing${scannerSuffix}`;
+  document.querySelector("#connection-scanners").textContent = scannerSummary(status);
   document.querySelector("#connection-port").textContent = connection.port || "Port missing";
 }
 
@@ -160,48 +153,13 @@ function ensureMap() {
 }
 
 async function ensureMapTrails() {
-  if (trailFetchStarted || !latestState || selectedView !== "map") {
+  if (!latestState || selectedView !== "map") {
     return;
   }
-  const keys = [...new Set(
-    mapEntities(latestState).map((entity) => stableEntityKey(entity)),
-  )];
-  if (!keys.length) {
-    return;
-  }
-  trailFetchStarted = true;
-  const queue = keys.map((key) => ({ key, cursor: null }));
-  const points = [];
-  let pageCount = 0;
-  try {
-    while (queue.length && pageCount < MAX_TRAIL_PAGES && points.length < MAX_TRAIL_ROWS) {
-      const job = queue.shift();
-      const query = new URLSearchParams();
-      query.set("kind", "track");
-      query.set("positioned", "true");
-      query.set("text", job.key);
-      query.set("limit", "500");
-      if (job.cursor) {
-        query.set("cursor", job.cursor);
-      }
-      const page = await getHistory(query);
-      pageCount += 1;
-      const remaining = MAX_TRAIL_ROWS - points.length;
-      const exactItems = (Array.isArray(page?.items) ? page.items : [])
-        .filter((item) => item?.stable_key === job.key)
-        .slice(0, remaining);
-      points.push(...exactItems);
-      if (page?.next_cursor && pageCount < MAX_TRAIL_PAGES && points.length < MAX_TRAIL_ROWS) {
-        queue.push({ key: job.key, cursor: page.next_cursor });
-      }
-    }
-    renderTrail(points);
-  } catch (error) {
-    showRequestStatus(`Host-observed trail unavailable: ${error.message}`);
-  }
+  await trailController.update(filteredRemoteIdKeys(latestState, filters));
 }
 
-function activateView(view, { focus = true, replaceHash = false } = {}) {
+function activateView(view, { focus = true, replaceHash = false, keyboard = false } = {}) {
   const validView = VIEWS.includes(view) ? view : "live";
   selectedView = validView;
   writePreference(VIEW_KEY, selectedView);
@@ -218,6 +176,8 @@ function activateView(view, { focus = true, replaceHash = false } = {}) {
   if (window.location.hash !== desiredHash) {
     if (replaceHash) {
       window.history.replaceState(null, "", desiredHash);
+    } else if (keyboard) {
+      window.history.pushState(null, "", desiredHash);
     } else {
       window.location.hash = selectedView;
     }
@@ -246,20 +206,11 @@ for (const tab of tabs) {
   tab.addEventListener("click", () => activateView(tab.dataset.viewTarget));
   tab.addEventListener("keydown", (event) => {
     const current = tabs.indexOf(tab);
-    let next = null;
-    if (event.key === "ArrowLeft") {
-      next = (current - 1 + tabs.length) % tabs.length;
-    } else if (event.key === "ArrowRight") {
-      next = (current + 1) % tabs.length;
-    } else if (event.key === "Home") {
-      next = 0;
-    } else if (event.key === "End") {
-      next = tabs.length - 1;
-    }
+    const next = nextTabIndex(current, event.key, tabs.length);
     if (next !== null) {
       event.preventDefault();
       tabs[next].focus();
-      activateView(tabs[next].dataset.viewTarget, { focus: false });
+      activateView(tabs[next].dataset.viewTarget, { focus: false, keyboard: true });
     }
   });
 }
@@ -291,28 +242,30 @@ filterForm.addEventListener("reset", () => {
 });
 
 window.addEventListener("hashchange", () => routeFromHash({ focus: true }));
+window.addEventListener("popstate", () => routeFromHash({ focus: true }));
 desktopFilterMedia.addEventListener("change", syncFilterDisclosure);
 
-async function pollState() {
-  try {
-    const state = await getState();
+const trailController = createTrailController({
+  getHistory,
+  render: renderTrail,
+  reportError: (error) => showRequestStatus(`Host-observed trail unavailable: ${error.message}`),
+});
+
+const statePoller = createCompletionPoller({
+  load: (signal) => getState({ signal }),
+  onValue: (state) => {
     latestState = state;
     showRequestStatus();
     renderState(state);
-  } catch (error) {
-    showRequestStatus(`${error.message} Last valid dashboard state is retained.`);
-  } finally {
-    pollTimer = window.setTimeout(pollState, POLL_INTERVAL_MS);
-  }
-}
-
-window.addEventListener("pagehide", () => {
-  if (pollTimer !== null) {
-    window.clearTimeout(pollTimer);
-  }
+  },
+  onError: (error) => showRequestStatus(`${error.message} Last valid dashboard state is retained.`),
+  intervalMs: POLL_INTERVAL_MS,
 });
+
+window.addEventListener("pagehide", () => statePoller.stop());
+window.addEventListener("pageshow", () => statePoller.start());
 
 syncFilterControls();
 syncFilterDisclosure({ matches: desktopFilterMedia.matches, initial: desktopFilterMedia.matches });
 routeFromHash({ focus: false });
-pollState();
+statePoller.start();

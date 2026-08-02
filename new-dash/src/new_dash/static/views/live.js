@@ -9,6 +9,7 @@ import {
   hasNumber,
   replace,
   sourceLabel,
+  stableEntityKey,
 } from "../ui.js";
 
 const REMOTE_ID_SOURCES = new Set(["ble_rid", "wifi_rid"]);
@@ -47,6 +48,20 @@ export function visibleEntities(state, filters) {
     }
     return true;
   });
+}
+
+export function groupVisibleEntities(state, filters) {
+  const visible = visibleEntities(state, filters);
+  const remoteId = visible.filter(isRemoteId);
+  const droneClues = visible.filter((entity) => !isRemoteId(entity) && entity.class === "drone");
+  const other = visible.filter((entity) => !isRemoteId(entity) && entity.class !== "drone");
+  return { visible, remoteId, droneClues, other };
+}
+
+export function filteredRemoteIdKeys(state, filters) {
+  return [...new Set(
+    groupVisibleEntities(state, filters).remoteId.map((entity) => stableEntityKey(entity)),
+  )].sort();
 }
 
 function stateBanners(state) {
@@ -200,18 +215,13 @@ function entitySection(title, entities, variant = "") {
 }
 
 export function renderLive(root, state, filters) {
-  const active = (Array.isArray(state?.status?.entities) ? state.status.entities : [])
-    .filter((entity) => entity && entity.stale !== true);
-  const visible = visibleEntities(state, filters);
-  const remoteId = visible.filter(isRemoteId);
-  const droneClues = visible.filter((entity) => !isRemoteId(entity) && entity.class === "drone");
-  const other = visible.filter((entity) => !isRemoteId(entity) && entity.class !== "drone");
+  const { visible, remoteId, droneClues, other } = groupVisibleEntities(state, filters);
   const children = [];
   const banners = renderBanners(state);
   if (banners) {
     children.push(banners);
   }
-  children.push(countRail(active));
+  children.push(countRail(visible));
   children.push(firmwareCounts(state?.status));
   children.push(entitySection("Remote ID", remoteId, "remote-id"));
   children.push(entitySection("Drone clues", droneClues, "drone-clue"));

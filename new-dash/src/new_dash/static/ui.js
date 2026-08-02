@@ -83,6 +83,36 @@ export function sourceLabel(source) {
   return labels[source] || (source ? String(source) : "Source missing");
 }
 
+export function scannerSummary(status) {
+  if (!Array.isArray(status?.scanners)) {
+    return "Scanners unavailable";
+  }
+  const count = status.scanners.length;
+  const health = typeof status.sensing_health === "string" && status.sensing_health
+    ? ` · ${status.sensing_health.replaceAll("_", " ")}`
+    : "";
+  return `${count} ${count === 1 ? "scanner" : "scanners"}${health}`;
+}
+
+export function nextTabIndex(current, key, count) {
+  if (!Number.isInteger(current) || !Number.isInteger(count) || count < 1) {
+    return null;
+  }
+  if (key === "ArrowLeft") {
+    return (current - 1 + count) % count;
+  }
+  if (key === "ArrowRight") {
+    return (current + 1) % count;
+  }
+  if (key === "Home") {
+    return 0;
+  }
+  if (key === "End") {
+    return count - 1;
+  }
+  return null;
+}
+
 export function stableEntityKey(entity) {
   const identity = entity?.display_id || entity?.bssid || entity?.ssid || entity?.label || "unknown";
   return `${entity?.source || "unknown"}:${identity}`;

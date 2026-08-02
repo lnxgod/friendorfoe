@@ -627,8 +627,22 @@ h3 {
   color: var(--text) !important;
 }
 
+.leaflet-control-zoom a {
+  display: grid;
+  min-width: 44px;
+  min-height: 44px;
+  place-items: center;
+  line-height: 1 !important;
+}
+
+.leaflet-control-zoom a:focus-visible {
+  z-index: 1;
+  outline: 3px solid var(--focus);
+  outline-offset: 2px;
+}
+
 .leaflet-control-attribution a {
-  color: #0b5e6b !important;
+  color: #7ae4ef !important;
 }
 
 .leaflet-marker-icon.instrument-marker {

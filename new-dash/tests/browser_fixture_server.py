@@ -8,6 +8,8 @@ from html import escape
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 from pathlib import Path
+import threading
+import time
 from urllib.parse import parse_qs, urlsplit
 
 
@@ -197,11 +199,26 @@ TRAILS = {
         (1700000002.0, 37.7540, -122.4160, 96.0),
         (1700000003.0, 37.7560, -122.4140, 98.1),
     ],
+    "ble_rid:RID-NEXT": [
+        (1700000011.0, 37.7600, -122.4310, 101.0),
+        (1700000012.0, 37.7620, -122.4290, 103.0),
+    ],
 }
 
 
-def fixture_state(*, stale: bool, safe_usb: bool) -> dict[str, object]:
+def fixture_state(*, stale: bool, safe_usb: bool, keyset: str = "default") -> dict[str, object]:
     state = deepcopy(FIXTURE_STATE)
+    if keyset == "alternate":
+        alternate = state["status"]["entities"][0]
+        alternate["label"] = "RID-NEXT"
+        alternate["display_id"] = "RID-NEXT"
+        alternate["lat"] = 37.7620
+        alternate["lon"] = -122.4290
+        alternate["operator_lat"] = None
+        alternate["operator_lon"] = None
+        alternate["operator_id"] = None
+        state["status"]["entities"] = [alternate, *state["status"]["entities"][2:]]
+        state["status"]["counts"] = {"remote_id": 1, "drone": 2, "meta": 1}
     if stale:
         state["connection"]["phase"] = "reconnecting"
         state["connection"]["detail"] = "read_error"
@@ -241,6 +258,11 @@ def trail_items(stable_key: str, cursor: str | None) -> tuple[list[dict[str, obj
 class FixtureHandler(BaseHTTPRequestHandler):
     stale = False
     safe_usb = False
+    keyset = "default"
+    state_delay_ms = 0
+    state_requests_started = 0
+    state_requests_completed = 0
+    state_lock = threading.Lock()
 
     def log_message(self, format: str, *args: object) -> None:
         return
@@ -248,7 +270,25 @@ class FixtureHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         split = urlsplit(self.path)
         if split.path == "/api/state":
-            self.send_json({"ok": True, "data": fixture_state(stale=self.stale, safe_usb=self.safe_usb)})
+            with self.state_lock:
+                type(self).state_requests_started += 1
+                delay_ms = type(self).state_delay_ms
+                keyset = type(self).keyset
+            if delay_ms:
+                time.sleep(delay_ms / 1000)
+            try:
+                self.send_json({
+                    "ok": True,
+                    "data": fixture_state(
+                        stale=self.stale,
+                        safe_usb=self.safe_usb,
+                        keyset=keyset,
+                    ),
+                })
+            except (BrokenPipeError, ConnectionResetError):
+                return
+            with self.state_lock:
+                type(self).state_requests_completed += 1
             return
         if split.path == "/api/history":
             params = parse_qs(split.query)
@@ -256,6 +296,38 @@ class FixtureHandler(BaseHTTPRequestHandler):
             cursor = params.get("cursor", [None])[0]
             items, next_cursor = trail_items(stable_key, cursor)
             self.send_json({"ok": True, "data": {"items": items, "next_cursor": next_cursor}})
+            return
+        if split.path == "/fixture/stats":
+            with self.state_lock:
+                stats = {
+                    "state_requests_started": type(self).state_requests_started,
+                    "state_requests_completed": type(self).state_requests_completed,
+                    "keyset": type(self).keyset,
+                    "state_delay_ms": type(self).state_delay_ms,
+                }
+            self.send_json({"ok": True, "data": stats})
+            return
+        if split.path == "/fixture/config":
+            params = parse_qs(split.query)
+            with self.state_lock:
+                keyset = params.get("keyset", [type(self).keyset])[0]
+                if keyset not in {"default", "alternate"}:
+                    self.send_json({"ok": False, "error": {"code": "invalid_keyset"}}, status=400)
+                    return
+                try:
+                    delay_ms = int(params.get("state_delay_ms", [type(self).state_delay_ms])[0])
+                except (TypeError, ValueError):
+                    self.send_json({"ok": False, "error": {"code": "invalid_delay"}}, status=400)
+                    return
+                if delay_ms < 0 or delay_ms > 5000:
+                    self.send_json({"ok": False, "error": {"code": "invalid_delay"}}, status=400)
+                    return
+                type(self).keyset = keyset
+                type(self).state_delay_ms = delay_ms
+                if params.get("reset_stats", ["0"])[0] == "1":
+                    type(self).state_requests_started = 0
+                    type(self).state_requests_completed = 0
+            self.send_json({"ok": True, "data": {"keyset": keyset, "state_delay_ms": delay_ms}})
             return
         static = STATIC_FILES.get(split.path)
         if static is None or split.query:
