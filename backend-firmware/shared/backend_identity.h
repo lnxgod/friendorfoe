@@ -5,13 +5,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "backend_hardware_profile.h"
 #include "backend_version.h"
-
-#define FOF_BACKEND_UPLINK_TARGET "uplink-s3-backend"
-#define FOF_BACKEND_UPLINK_PROJECT "fof_backend_uplink"
-#define FOF_BACKEND_SCANNER_TARGET "scanner-s3-combo-backend"
-#define FOF_BACKEND_SCANNER_PROJECT "fof_backend_scanner"
-#define FOF_BACKEND_HARDWARE "seeed_xiao_esp32s3"
 
 #define FOF_BACKEND_IDENTITY_MAGIC UINT32_C(0x42464F46)
 #define FOF_BACKEND_IDENTITY_SCHEMA UINT16_C(1)
@@ -22,6 +17,9 @@ typedef enum {
 } backend_image_kind_t;
 
 typedef struct {
+    const char *product_family;
+    const char *firmware_line;
+    const char *component;
     const char *target;
     const char *project;
     const char *hardware;

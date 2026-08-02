@@ -3,6 +3,9 @@
 #include <string.h>
 
 static const backend_firmware_identity_t BACKEND_UPLINK_IDENTITY = {
+    .product_family = FOF_BACKEND_PRODUCT_FAMILY,
+    .firmware_line = FOF_BACKEND_FIRMWARE_LINE,
+    .component = "uplink",
     .target = FOF_BACKEND_UPLINK_TARGET,
     .project = FOF_BACKEND_UPLINK_PROJECT,
     .hardware = FOF_BACKEND_HARDWARE,
@@ -10,6 +13,9 @@ static const backend_firmware_identity_t BACKEND_UPLINK_IDENTITY = {
 };
 
 static const backend_firmware_identity_t BACKEND_SCANNER_IDENTITY = {
+    .product_family = FOF_BACKEND_PRODUCT_FAMILY,
+    .firmware_line = FOF_BACKEND_FIRMWARE_LINE,
+    .component = "scanner",
     .target = FOF_BACKEND_SCANNER_TARGET,
     .project = FOF_BACKEND_SCANNER_PROJECT,
     .hardware = FOF_BACKEND_HARDWARE,

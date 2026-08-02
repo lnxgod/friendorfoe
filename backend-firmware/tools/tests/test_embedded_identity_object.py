@@ -38,17 +38,18 @@ def _compiler_and_objcopy() -> tuple[str, str, list[str]]:
     raise AssertionError("a compatible C compiler and objcopy were not discoverable")
 
 
-def _compile_and_dump(tmp_path: Path, define: str) -> bytes:
+def _compile_and_dump(tmp_path: Path, *defines: str) -> bytes:
     cc, objcopy, compiler_flags = _compiler_and_objcopy()
-    obj = tmp_path / f"{define.lower()}.o"
-    section = tmp_path / f"{define.lower()}.bin"
+    stem = "_".join(define.lower() for define in defines)
+    obj = tmp_path / f"{stem}.o"
+    section = tmp_path / f"{stem}.bin"
     compile_result = subprocess.run(
         [
             cc,
             *compiler_flags,
             "-std=c11",
             f"-I{SHARED}",
-            f"-D{define}",
+            *[f"-D{define}" for define in defines],
             "-c",
             str(SOURCE),
             "-o",
@@ -79,33 +80,57 @@ def _decode_c_string(field: bytes, expected: str) -> None:
 
 
 @pytest.mark.parametrize(
-    ("define", "kind", "target", "project", "expected_crc"),
+    ("image_define", "profile_define", "kind", "target", "project", "hardware_identity", "expected_crc"),
     [
         (
             "FOF_BACKEND_UPLINK",
+            "FOF_BACKEND_PROFILE_BADGE_LITE=1",
             0,
             "uplink-s3-backend",
             "fof_backend_uplink",
-            0xF08BCDE4,
+            "seeed_xiao_esp32s3",
+            0xB42AE8FC,
         ),
         (
             "FOF_BACKEND_SCANNER",
+            "FOF_BACKEND_PROFILE_BADGE_LITE=1",
             1,
             "scanner-s3-combo-backend",
             "fof_backend_scanner",
-            0x9DD382FF,
+            "seeed_xiao_esp32s3",
+            0xD972A7E7,
+        ),
+        (
+            "FOF_BACKEND_UPLINK",
+            "FOF_BACKEND_PROFILE_S3_FULLSIZE=1",
+            0,
+            "uplink-s3-fullsize-backend",
+            "fof_backend_uplink_fullsize",
+            "esp32s3_n16r8_fullsize",
+            0xF03A379D,
+        ),
+        (
+            "FOF_BACKEND_SCANNER",
+            "FOF_BACKEND_PROFILE_S3_FULLSIZE=1",
+            1,
+            "scanner-s3-combo-fullsize-backend",
+            "fof_backend_scanner_fullsize",
+            "esp32s3_n16r8_fullsize",
+            0x86C70497,
         ),
     ],
 )
 def test_embedded_identity_object_contains_one_exact_static_record(
     tmp_path: Path,
-    define: str,
+    image_define: str,
+    profile_define: str,
     kind: int,
     target: str,
     project: str,
+    hardware_identity: str,
     expected_crc: int,
 ) -> None:
-    raw = _compile_and_dump(tmp_path, define)
+    raw = _compile_and_dump(tmp_path, image_define, profile_define)
 
     assert zlib.crc32(b"123456789") == 0xCBF43926
     assert len(raw) == 164
@@ -117,8 +142,8 @@ def test_embedded_identity_object_contains_one_exact_static_record(
     assert actual_kind == kind
     _decode_c_string(target_bytes, target)
     _decode_c_string(project_bytes, project)
-    _decode_c_string(hardware, "seeed_xiao_esp32s3")
-    _decode_c_string(version, "0.1.0-backend")
+    _decode_c_string(hardware, hardware_identity)
+    _decode_c_string(version, "0.2.0-backend")
     assert crc == expected_crc
     assert zlib.crc32(raw[:160]) & 0xFFFFFFFF == expected_crc
 
@@ -136,6 +161,7 @@ def test_embedded_identity_source_rejects_ambiguous_image_selection(
         *compiler_flags,
         "-std=c11",
         f"-I{SHARED}",
+        "-DFOF_BACKEND_PROFILE_BADGE_LITE=1",
         *[f"-D{define}" for define in defines],
         "-c",
         str(SOURCE),
@@ -146,3 +172,30 @@ def test_embedded_identity_source_rejects_ambiguous_image_selection(
 
     assert result.returncode != 0
     assert "exactly one backend image" in result.stderr
+
+
+@pytest.mark.parametrize(
+    "profile_defines",
+    [[], ["FOF_BACKEND_PROFILE_BADGE_LITE=1", "FOF_BACKEND_PROFILE_S3_FULLSIZE=1"]],
+)
+def test_embedded_identity_source_rejects_missing_or_ambiguous_hardware_profile(
+    tmp_path: Path, profile_defines: list[str]
+) -> None:
+    """Catches a backend build that silently defaults or mixes board identities."""
+    cc, _objcopy_path, compiler_flags = _compiler_and_objcopy()
+    command = [
+        cc,
+        *compiler_flags,
+        "-std=c11",
+        f"-I{SHARED}",
+        "-DFOF_BACKEND_UPLINK",
+        *[f"-D{define}" for define in profile_defines],
+        "-c",
+        str(SOURCE),
+        "-o",
+        str(tmp_path / "profile.o"),
+    ]
+    result = subprocess.run(command, capture_output=True, text=True)
+
+    assert result.returncode != 0
+    assert "select exactly one backend hardware profile" in result.stderr

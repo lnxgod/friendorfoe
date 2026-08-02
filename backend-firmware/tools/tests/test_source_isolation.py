@@ -1,6 +1,7 @@
 import importlib.util
 import json
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 
@@ -438,6 +439,19 @@ def test_backend_runtime_uses_only_backend_glasses_feature_gate() -> None:
     assert "config FOF_BACKEND_GLASSES_DETECTION" in kconfig
     assert "default y" in kconfig
     assert "CONFIG_FOF_BACKEND_GLASSES_DETECTION=y" in sdkconfig.splitlines()
+
+
+def test_hardware_profile_cannot_import_protected_native_firmware(
+    tmp_path: Path,
+) -> None:
+    """Catches a profile implementation that reaches into protected native firmware."""
+    root = make_backend_tree(tmp_path)
+    shutil.copyfile(
+        ROOT / "shared/backend_hardware_profile.h",
+        root / "shared/backend_hardware_profile.h",
+    )
+
+    assert _auditor().audit_tree(root, allowed_tool_roots=[]) == []
 
 
 def test_vendor_tool_rejects_unsafe_manifest_entries(tmp_path: Path) -> None:

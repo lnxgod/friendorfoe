@@ -4,6 +4,7 @@
 
 #include <unity.h>
 
+#include "backend_hardware_profile.h"
 #include "backend_identity.h"
 #include "backend_version.h"
 #include "../support/backend_test_main.h"
@@ -35,12 +36,17 @@ void test_backend_identities_are_exact_and_distinct(void)
     TEST_ASSERT_NOT_NULL(uplink);
     TEST_ASSERT_NOT_NULL(scanner);
     TEST_ASSERT_NOT_EQUAL(uplink, scanner);
-    TEST_ASSERT_EQUAL_STRING("uplink-s3-backend", uplink->target);
-    TEST_ASSERT_EQUAL_STRING("fof_backend_uplink", uplink->project);
-    TEST_ASSERT_EQUAL_STRING("scanner-s3-combo-backend", scanner->target);
-    TEST_ASSERT_EQUAL_STRING("fof_backend_scanner", scanner->project);
-    TEST_ASSERT_EQUAL_STRING("seeed_xiao_esp32s3", uplink->hardware);
-    TEST_ASSERT_EQUAL_STRING("0.1.0-backend", scanner->version);
+    TEST_ASSERT_EQUAL_STRING(FOF_BACKEND_PRODUCT_FAMILY,
+                             uplink->product_family);
+    TEST_ASSERT_EQUAL_STRING("backend", uplink->firmware_line);
+    TEST_ASSERT_EQUAL_STRING("uplink", uplink->component);
+    TEST_ASSERT_EQUAL_STRING("scanner", scanner->component);
+    TEST_ASSERT_EQUAL_STRING(FOF_BACKEND_UPLINK_TARGET, uplink->target);
+    TEST_ASSERT_EQUAL_STRING(FOF_BACKEND_UPLINK_PROJECT, uplink->project);
+    TEST_ASSERT_EQUAL_STRING(FOF_BACKEND_SCANNER_TARGET, scanner->target);
+    TEST_ASSERT_EQUAL_STRING(FOF_BACKEND_SCANNER_PROJECT, scanner->project);
+    TEST_ASSERT_EQUAL_STRING(FOF_BACKEND_HARDWARE, uplink->hardware);
+    TEST_ASSERT_EQUAL_STRING("0.2.0-backend", scanner->version);
     TEST_ASSERT_FALSE(backend_identity_matches(
         scanner, "scanner-s3-combo-fof_badge", "fof_badge_scanner",
         "seeed_xiao_esp32s3"));
@@ -50,8 +56,9 @@ void test_backend_identities_are_exact_and_distinct(void)
         BACKEND_IMAGE_SCANNER, &record));
     TEST_ASSERT_EQUAL_HEX32(FOF_BACKEND_IDENTITY_MAGIC, record.magic);
     TEST_ASSERT_EQUAL_UINT16(1, record.schema);
-    TEST_ASSERT_EQUAL_STRING("fof_backend_scanner", record.project);
+    TEST_ASSERT_EQUAL_STRING(FOF_BACKEND_SCANNER_PROJECT, record.project);
     TEST_ASSERT_TRUE(backend_identity_record_validate(&record));
+    TEST_ASSERT_EQUAL_UINT(sizeof(backend_embedded_identity_record_t), 164U);
 }
 
 void test_backend_identity_matching_requires_all_exact_non_null_values(void)
@@ -60,20 +67,20 @@ void test_backend_identity_matching_requires_all_exact_non_null_values(void)
         backend_identity_for_image(BACKEND_IMAGE_UPLINK);
 
     TEST_ASSERT_TRUE(backend_identity_matches(
-        uplink, "uplink-s3-backend", "fof_backend_uplink",
-        "seeed_xiao_esp32s3"));
+        uplink, FOF_BACKEND_UPLINK_TARGET, FOF_BACKEND_UPLINK_PROJECT,
+        FOF_BACKEND_HARDWARE));
     TEST_ASSERT_FALSE(backend_identity_matches(
-        uplink, NULL, "fof_backend_uplink", "seeed_xiao_esp32s3"));
+        uplink, NULL, FOF_BACKEND_UPLINK_PROJECT, FOF_BACKEND_HARDWARE));
     TEST_ASSERT_FALSE(backend_identity_matches(
-        uplink, "uplink-s3-backend", NULL, "seeed_xiao_esp32s3"));
+        uplink, FOF_BACKEND_UPLINK_TARGET, NULL, FOF_BACKEND_HARDWARE));
     TEST_ASSERT_FALSE(backend_identity_matches(
-        uplink, "uplink-s3-backend", "fof_backend_uplink", NULL));
+        uplink, FOF_BACKEND_UPLINK_TARGET, FOF_BACKEND_UPLINK_PROJECT, NULL));
     TEST_ASSERT_FALSE(backend_identity_matches(
-        NULL, "uplink-s3-backend", "fof_backend_uplink",
-        "seeed_xiao_esp32s3"));
+        NULL, FOF_BACKEND_UPLINK_TARGET, FOF_BACKEND_UPLINK_PROJECT,
+        FOF_BACKEND_HARDWARE));
     TEST_ASSERT_FALSE(backend_identity_matches(
-        uplink, "uplink-s3-backend-extra", "fof_backend_uplink",
-        "seeed_xiao_esp32s3"));
+        uplink, "uplink-s3-backend-extra", FOF_BACKEND_UPLINK_PROJECT,
+        FOF_BACKEND_HARDWARE));
 }
 
 void test_backend_record_builds_each_kind_with_zero_filled_tails_and_exact_crc(void)
@@ -87,20 +94,24 @@ void test_backend_record_builds_each_kind_with_zero_filled_tails_and_exact_crc(v
     TEST_ASSERT_TRUE(backend_identity_record_build(BACKEND_IMAGE_SCANNER, &scanner));
 
     TEST_ASSERT_EQUAL_UINT16(BACKEND_IMAGE_UPLINK, uplink.image_kind);
-    TEST_ASSERT_EQUAL_STRING("uplink-s3-backend", uplink.target);
-    TEST_ASSERT_EQUAL_STRING("fof_backend_uplink", uplink.project);
-    TEST_ASSERT_EQUAL_STRING("seeed_xiao_esp32s3", uplink.hardware);
+    TEST_ASSERT_EQUAL_STRING(FOF_BACKEND_UPLINK_TARGET, uplink.target);
+    TEST_ASSERT_EQUAL_STRING(FOF_BACKEND_UPLINK_PROJECT, uplink.project);
+    TEST_ASSERT_EQUAL_STRING(FOF_BACKEND_HARDWARE, uplink.hardware);
     TEST_ASSERT_EQUAL_STRING(FOF_VERSION_BACKEND, uplink.version);
-    TEST_ASSERT_EQUAL_HEX32(UINT32_C(0xF08BCDE4), uplink.crc32);
+    TEST_ASSERT_EQUAL_HEX32(
+        backend_identity_crc32(&uplink, offsetof(
+            backend_embedded_identity_record_t, crc32)), uplink.crc32);
     TEST_ASSERT_EQUAL_UINT8(0, uplink.target[strlen(uplink.target) + 1]);
     TEST_ASSERT_EQUAL_UINT8(0, uplink.project[sizeof(uplink.project) - 1]);
     TEST_ASSERT_EQUAL_UINT8(0, uplink.hardware[sizeof(uplink.hardware) - 1]);
     TEST_ASSERT_EQUAL_UINT8(0, uplink.version[sizeof(uplink.version) - 1]);
 
     TEST_ASSERT_EQUAL_UINT16(BACKEND_IMAGE_SCANNER, scanner.image_kind);
-    TEST_ASSERT_EQUAL_STRING("scanner-s3-combo-backend", scanner.target);
-    TEST_ASSERT_EQUAL_STRING("fof_backend_scanner", scanner.project);
-    TEST_ASSERT_EQUAL_HEX32(UINT32_C(0x9DD382FF), scanner.crc32);
+    TEST_ASSERT_EQUAL_STRING(FOF_BACKEND_SCANNER_TARGET, scanner.target);
+    TEST_ASSERT_EQUAL_STRING(FOF_BACKEND_SCANNER_PROJECT, scanner.project);
+    TEST_ASSERT_EQUAL_HEX32(
+        backend_identity_crc32(&scanner, offsetof(
+            backend_embedded_identity_record_t, crc32)), scanner.crc32);
     TEST_ASSERT_TRUE(backend_identity_record_validate(&uplink));
     TEST_ASSERT_TRUE(backend_identity_record_validate(&scanner));
 }
