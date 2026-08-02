@@ -1,3 +1,4 @@
+import asyncio
 import time
 import uuid
 from collections import deque
@@ -255,7 +256,10 @@ async def test_secondary_position_commit_failure_keeps_primary_acknowledged(
             app.dependency_overrides[get_db] = normal_override
 
     assert response.status_code == 200
+    assert response.json()["accepted"] == 1
     assert response.json()["processed"] == 1
+    assert response.json()["deduplicated"] == 0
+    assert response.json()["filtered"] == 0
     assert commit_count == 2
     assert f"_last_pos_{drone_id}" not in detections._position_dedup
     async with backend_sensor_session_factory() as verification_session:
@@ -271,6 +275,225 @@ async def test_secondary_position_commit_failure_keeps_primary_acknowledged(
         )
     assert detection_count == 1
     assert position_count == 0
+
+
+@pytest.mark.asyncio
+async def test_secondary_position_commit_and_rollback_failure_stays_acknowledged(
+    client, backend_sensor_session_factory, monkeypatch,
+):
+    drone_id = f"BLE:{uuid.uuid4().hex}"
+    device_id = f"fixed-{uuid.uuid4().hex}"
+    monkeypatch.setattr(detections, "_sensor_tracker", SensorTracker())
+    async with backend_sensor_session_factory() as setup_session:
+        setup_session.add(SensorNode(
+            device_id=device_id,
+            name=device_id,
+            lat=37.3340,
+            lon=-122.4450,
+            alt=12.0,
+            is_fixed=True,
+        ))
+        await setup_session.commit()
+
+    body = {
+        "device_id": device_id,
+        "timestamp": int(time.time()),
+        "detections": [{
+            "drone_id": drone_id,
+            "source": "ble_fingerprint",
+            "confidence": 0.8,
+            "bssid": "AA:BB:CC:DD:EE:FF",
+            "rssi": -48,
+            "latitude": 37.3345,
+            "longitude": -122.4455,
+            "altitude_m": 42.0,
+        }],
+    }
+    normal_override = app.dependency_overrides[get_db]
+    async with backend_sensor_session_factory() as failing_session:
+        real_commit = failing_session.commit
+        commit_count = 0
+
+        async def fail_secondary_commit():
+            nonlocal commit_count
+            commit_count += 1
+            if commit_count == 2:
+                raise RuntimeError("forced secondary commit failure")
+            await real_commit()
+
+        async def fail_rollback():
+            raise RuntimeError("forced secondary rollback failure")
+
+        monkeypatch.setattr(failing_session, "commit", fail_secondary_commit)
+        monkeypatch.setattr(failing_session, "rollback", fail_rollback)
+
+        async def failing_get_db():
+            yield failing_session
+
+        app.dependency_overrides[get_db] = failing_get_db
+        try:
+            response = await client.post("/detections/drones", json=body)
+        finally:
+            app.dependency_overrides[get_db] = normal_override
+
+    assert response.status_code == 200
+    assert response.json()["accepted"] == 1
+    assert response.json()["processed"] == 1
+    assert response.json()["deduplicated"] == 0
+    assert response.json()["filtered"] == 0
+    assert f"_last_pos_{drone_id}" not in detections._position_dedup
+    async with backend_sensor_session_factory() as verification_session:
+        detection_count = await verification_session.scalar(
+            select(func.count(DroneDetection.id)).where(
+                DroneDetection.drone_id == drone_id,
+            )
+        )
+        position_count = await verification_session.scalar(
+            select(func.count(TriangulatedPosition.id)).where(
+                TriangulatedPosition.drone_id == drone_id,
+            )
+        )
+    assert detection_count == 1
+    assert position_count == 0
+
+
+@pytest.mark.asyncio
+async def test_concurrent_position_writes_deduplicate_and_keep_newest_cache(
+    client, backend_sensor_session_factory, monkeypatch,
+):
+    """Force reversed secondary completion without relying on timing sleeps."""
+    device_id = f"fixed-{uuid.uuid4().hex}"
+    async with backend_sensor_session_factory() as setup_session:
+        setup_session.add(SensorNode(
+            device_id=device_id,
+            name=device_id,
+            lat=37.3340,
+            lon=-122.4450,
+            alt=12.0,
+            is_fixed=True,
+        ))
+        await setup_session.commit()
+
+    scenarios = (
+        ((37.3345, -122.4455), (37.3345, -122.4455)),
+        ((37.3350, -122.4460), (37.3355, -122.4465)),
+    )
+    observed = []
+    for older_position, newer_position in scenarios:
+        drone_id = f"BLE:{uuid.uuid4().hex}"
+        monkeypatch.setattr(detections, "_sensor_tracker", SensorTracker())
+        detections._position_dedup.clear()
+
+        older_secondary_staged = asyncio.Event()
+        newer_primary_committed = asyncio.Event()
+        newer_secondary_staged = asyncio.Event()
+        allow_older_secondary = asyncio.Event()
+        allow_newer_secondary = asyncio.Event()
+        request_index = 0
+
+        async def interleaving_get_db():
+            nonlocal request_index
+            current_request = request_index
+            request_index += 1
+            async with backend_sensor_session_factory() as session:
+                real_commit = session.commit
+                commit_count = 0
+
+                async def interleaved_commit():
+                    nonlocal commit_count
+                    commit_count += 1
+                    if commit_count == 1:
+                        await real_commit()
+                        if current_request == 1:
+                            newer_primary_committed.set()
+                        return
+
+                    if current_request == 0:
+                        older_secondary_staged.set()
+                        await allow_older_secondary.wait()
+                    else:
+                        newer_secondary_staged.set()
+                        await allow_newer_secondary.wait()
+                    await real_commit()
+
+                monkeypatch.setattr(session, "commit", interleaved_commit)
+                yield session
+
+        def body(position, bssid):
+            return {
+                "device_id": device_id,
+                "timestamp": int(time.time()),
+                "detections": [{
+                    "drone_id": drone_id,
+                    "source": "ble_fingerprint",
+                    "confidence": 0.8,
+                    "bssid": bssid,
+                    "rssi": -48,
+                    "latitude": position[0],
+                    "longitude": position[1],
+                    "altitude_m": 42.0,
+                }],
+            }
+
+        normal_override = app.dependency_overrides[get_db]
+        app.dependency_overrides[get_db] = interleaving_get_db
+        try:
+            older_task = asyncio.create_task(
+                client.post(
+                    "/detections/drones",
+                    json=body(older_position, "AA:BB:CC:DD:EE:01"),
+                )
+            )
+            await older_secondary_staged.wait()
+            newer_task = asyncio.create_task(
+                client.post(
+                    "/detections/drones",
+                    json=body(newer_position, "AA:BB:CC:DD:EE:02"),
+                )
+            )
+            await newer_primary_committed.wait()
+
+            # Event.set() does not yield: once this waiter resumes, the newer
+            # route is deterministically paused either at its secondary
+            # commit (the bug) or at serialized position persistence.
+            if newer_secondary_staged.is_set():
+                allow_newer_secondary.set()
+                newer_response = await newer_task
+                allow_older_secondary.set()
+                older_response = await older_task
+            else:
+                allow_older_secondary.set()
+                allow_newer_secondary.set()
+                older_response, newer_response = await asyncio.gather(
+                    older_task, newer_task,
+                )
+        finally:
+            allow_older_secondary.set()
+            allow_newer_secondary.set()
+            app.dependency_overrides[get_db] = normal_override
+
+        assert older_response.status_code == 200
+        assert newer_response.status_code == 200
+        for response in (older_response, newer_response):
+            assert response.json()["accepted"] == 1
+            assert response.json()["processed"] == 1
+            assert response.json()["deduplicated"] == 0
+            assert response.json()["filtered"] == 0
+        async with backend_sensor_session_factory() as verification_session:
+            position_count = await verification_session.scalar(
+                select(func.count(TriangulatedPosition.id)).where(
+                    TriangulatedPosition.drone_id == drone_id,
+                )
+            )
+        observed.append((
+            position_count,
+            detections._position_dedup.get(f"_last_pos_{drone_id}"),
+        ))
+
+    assert observed == [
+        (1, scenarios[0][1]),
+        (2, scenarios[1][1]),
+    ]
 
 
 @pytest.mark.asyncio
