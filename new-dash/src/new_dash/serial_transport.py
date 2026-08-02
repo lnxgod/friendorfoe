@@ -304,7 +304,13 @@ class BadgeSerialTransport:
             with self._write_lock:
                 serial_port.write(b"\nFOF_PING\n")
 
-            firmware_version = self._await_pong(serial_port, framer, stop_event)
+            handshake_deadline = self._monotonic_clock() + 3.0
+            firmware_version = self._await_pong(
+                serial_port,
+                framer,
+                stop_event,
+                handshake_deadline,
+            )
             if firmware_version is None:
                 if not stop_event.is_set():
                     self._emit(
@@ -316,15 +322,24 @@ class BadgeSerialTransport:
                     )
                 return
 
-            self._remembered_identity = identity
-            self._emit(
-                ConnectionUpdate(
-                    state="live",
-                    detail="verified",
-                    port=identity.device,
-                    firmware_version=firmware_version,
-                )
+            live_update = ConnectionUpdate(
+                state="live",
+                detail="verified",
+                port=identity.device,
+                firmware_version=firmware_version,
             )
+            if self._handshake_ended(handshake_deadline, stop_event):
+                if not stop_event.is_set():
+                    self._emit(
+                        ConnectionUpdate(
+                            state="error",
+                            detail="wrong_device",
+                            port=identity.device,
+                        )
+                    )
+                return
+            self._emit(live_update)
+            self._remembered_identity = identity
             stop_event.wait()
         except OSError:
             if not stop_event.is_set():
@@ -373,7 +388,8 @@ class BadgeSerialTransport:
                     port for port in exact if port.location == remembered.location
                 )
             else:
-                for port in ports:
+                path_candidates = ports if self._explicit_port is not None else exact
+                for port in path_candidates:
                     if port.device == remembered.device:
                         return port
                 candidate_paths = _candidate_paths(exact)
@@ -428,8 +444,8 @@ class BadgeSerialTransport:
         serial_port: Any,
         framer: LineFramer,
         stop_event: threading.Event,
+        deadline: float,
     ) -> str | None:
-        deadline = self._monotonic_clock() + 3.0
         while not self._handshake_ended(deadline, stop_event):
             chunk = serial_port.read(4096)
             if self._handshake_ended(deadline, stop_event):

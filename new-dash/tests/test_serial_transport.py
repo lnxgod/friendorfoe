@@ -350,6 +350,71 @@ class VerifiedSessionTest(unittest.TestCase):
 
         self.assertNotIn("live", [update.state for update in updates])
 
+    def test_stop_after_await_return_never_reaches_live_publication(self) -> None:
+        await_returned = threading.Event()
+        publish_release = threading.Event()
+
+        class PausingTransport(BadgeSerialTransport):
+            def _await_pong(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+                result = super()._await_pong(*args, **kwargs)
+                await_returned.set()
+                publish_release.wait(1.0)
+                return result
+
+        fake = FakeSerial([b"FOF_PONG:before-stop\n"])
+        updates: list[ConnectionUpdate] = []
+        transport = PausingTransport(
+            enumerate_ports=lambda: [espressif("101")],
+            serial_factory=lambda: fake,
+            on_connection=updates.append,
+        )
+
+        transport.start()
+        self.assertTrue(await_returned.wait(1.0), updates)
+        with self.assertRaises(TransportError):
+            transport.stop(timeout=0.0)
+        publish_release.set()
+        self.assertTrue(fake.closed.wait(1.0), updates)
+        transport.stop()
+
+        self.assertNotIn("live", [update.state for update in updates])
+
+    def test_deadline_after_await_return_never_reaches_live_publication(self) -> None:
+        await_returned = threading.Event()
+        publish_release = threading.Event()
+
+        class PausingTransport(BadgeSerialTransport):
+            def _await_pong(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+                result = super()._await_pong(*args, **kwargs)
+                await_returned.set()
+                publish_release.wait(1.0)
+                return result
+
+        clock = StepClock(step=0.0)
+        fake = FakeSerial([b"FOF_PONG:before-deadline\n"])
+        updates: list[ConnectionUpdate] = []
+        transport = PausingTransport(
+            enumerate_ports=lambda: [espressif("101")],
+            serial_factory=lambda: fake,
+            monotonic_clock=clock,
+            on_connection=updates.append,
+        )
+
+        transport.start()
+        self.assertTrue(await_returned.wait(1.0), updates)
+        clock.value = 4.0
+        publish_release.set()
+        deadline = time.monotonic() + 1.0
+        while not fake.closed.is_set() and not any(
+            update.state == "live" for update in updates
+        ):
+            self.assertLess(time.monotonic(), deadline, updates)
+            time.sleep(0.001)
+        transport.stop()
+
+        self.assertNotIn("live", [update.state for update in updates])
+        self.assertEqual(updates[-1].detail, "wrong_device")
+
     def test_explicit_path_still_requires_application_pong(self) -> None:
         explicit = PortIdentity("/dev/cu.manual", None, None, None, None, None, None)
         for incoming, expected_live in (([b"FOF_PONG:manual\n"], True), ([], False)):
@@ -544,6 +609,73 @@ class RememberedIdentityTest(unittest.TestCase):
         self.assertEqual(factory_calls, 1)
         self.assertEqual(updates[-1].state, "waiting")
         self.assertEqual(updates[-1].candidates, ((changed.device,),))
+
+    def test_automatic_remembered_path_rejects_reuse_by_wrong_ids(self) -> None:
+        first = espressif("101")
+        reused_by_other_device = PortIdentity(
+            first.device,
+            0x05AC,
+            0x1234,
+            "Not Espressif",
+            "Different serial device",
+            None,
+            None,
+        )
+        enumerations = iter(([first], [reused_by_other_device]))
+        fakes = iter(
+            (
+                FakeSerial([b"FOF_PONG:first\n"]),
+                FakeSerial([b"FOF_PONG:impostor\n"]),
+            )
+        )
+        factory_calls = 0
+        updates: list[ConnectionUpdate] = []
+
+        def factory() -> FakeSerial:
+            nonlocal factory_calls
+            factory_calls += 1
+            return next(fakes)
+
+        transport = BadgeSerialTransport(
+            enumerate_ports=lambda: next(enumerations),
+            serial_factory=factory,
+            on_connection=updates.append,
+        )
+
+        transport.start()
+        self._wait_for_live(updates, "first")
+        transport.stop()
+        transport.start()
+        deadline = time.monotonic() + 1.0
+        while updates[-1].detail != "no_badge" and not any(
+            update.firmware_version == "impostor" for update in updates
+        ):
+            self.assertLess(time.monotonic(), deadline, updates)
+            time.sleep(0.001)
+        transport.stop()
+
+        self.assertEqual(factory_calls, 1)
+        self.assertEqual(updates[-1].detail, "no_badge")
+        self.assertFalse(any(update.firmware_version == "impostor" for update in updates))
+
+    def test_explicit_metadata_less_path_remains_eligible_after_verification(self) -> None:
+        explicit = PortIdentity(
+            "/dev/cu.manual",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+
+        selected = self._run_two_starts(
+            [explicit],
+            [explicit],
+            explicit_port=explicit.device,
+        )
+
+        self.assertEqual(selected, explicit.device)
 
     def test_explicit_mode_follows_only_a_learned_stable_identity(self) -> None:
         first = espressif("101", serial_number="ABC")
