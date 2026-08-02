@@ -55,6 +55,7 @@ class _PersistenceAction:
     error: BaseException | None = None
     track_key: str | None = None
     track_fingerprint: tuple[object, ...] | None = None
+    track_action_id: int | None = None
 
 
 class NewDashApplication:
@@ -74,7 +75,10 @@ class NewDashApplication:
         self._connection: ConnectionUpdate | None = None
         self._recent_events: deque[tuple[DetectionEvent, float]] = deque(maxlen=20)
         self._persisted_track_fingerprints: dict[str, tuple[object, ...]] = {}
-        self._pending_track_fingerprints: dict[str, tuple[object, ...]] = {}
+        self._pending_track_actions: dict[
+            str, deque[tuple[int, tuple[object, ...]]]
+        ] = {}
+        self._next_track_action_id = 1
         self._history_available = True
         self._history_error: str | None = None
         self._persistence_drops = 0
@@ -116,11 +120,15 @@ class NewDashApplication:
                         continue
                     fingerprint = self._track_fingerprint(entity)
                     stable_key = entity.stable_key
-                    latest_fingerprint = self._pending_track_fingerprints.get(
-                        stable_key,
-                        self._persisted_track_fingerprints.get(stable_key),
+                    pending = self._pending_track_actions.get(stable_key)
+                    latest_fingerprint = (
+                        pending[-1][1]
+                        if pending
+                        else self._persisted_track_fingerprints.get(stable_key)
                     )
                     if latest_fingerprint != fingerprint:
+                        action_id = self._next_track_action_id
+                        self._next_track_action_id += 1
                         if self._enqueue_locked(
                             _PersistenceAction(
                                 "track",
@@ -128,9 +136,12 @@ class NewDashApplication:
                                 received_at,
                                 track_key=stable_key,
                                 track_fingerprint=fingerprint,
+                                track_action_id=action_id,
                             )
                         ):
-                            self._pending_track_fingerprints[stable_key] = fingerprint
+                            self._pending_track_actions.setdefault(
+                                stable_key, deque()
+                            ).append((action_id, fingerprint))
         self._prune_if_due(received_at)
 
     def handle_connection(self, update: ConnectionUpdate) -> None:
@@ -405,13 +416,21 @@ class NewDashApplication:
     ) -> None:
         stable_key = action.track_key
         fingerprint = action.track_fingerprint
-        if stable_key is None or fingerprint is None:
+        action_id = action.track_action_id
+        if stable_key is None or fingerprint is None or action_id is None:
             return
         with self._lock:
             if succeeded:
                 self._persisted_track_fingerprints[stable_key] = fingerprint
-            if self._pending_track_fingerprints.get(stable_key) == fingerprint:
-                del self._pending_track_fingerprints[stable_key]
+            pending = self._pending_track_actions.get(stable_key)
+            if pending is None:
+                return
+            for index, (pending_id, _pending_fingerprint) in enumerate(pending):
+                if pending_id == action_id:
+                    del pending[index]
+                    break
+            if not pending:
+                del self._pending_track_actions[stable_key]
 
     def _record_history_error(self, error: BaseException) -> None:
         message = self._bounded_error(error)

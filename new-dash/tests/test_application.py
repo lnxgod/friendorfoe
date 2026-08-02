@@ -82,6 +82,31 @@ class BlockingSecondTrackStore(ObservationStore):
         return super().add_track(entity, received_at)
 
 
+class SequencedTrackStore(ObservationStore):
+    def __init__(
+        self, *args: object, fail_first: bool = False, **kwargs: object
+    ) -> None:
+        self.fail_first = fail_first
+        self.track_attempts = 0
+        self.first_started = threading.Event()
+        self.release_first = threading.Event()
+        self.third_started = threading.Event()
+        self.release_third = threading.Event()
+        super().__init__(*args, **kwargs)
+
+    def add_track(self, entity: BadgeEntity, received_at: float) -> int | None:
+        self.track_attempts += 1
+        if self.track_attempts == 1:
+            self.first_started.set()
+            self.release_first.wait()
+            if self.fail_first:
+                raise RuntimeError("first A failed")
+        elif self.track_attempts == 3:
+            self.third_started.set()
+            self.release_third.wait()
+        return super().add_track(entity, received_at)
+
+
 class SlowClosingStore(ObservationStore):
     def __init__(self, *args: object, **kwargs: object) -> None:
         self.closed = False
@@ -240,6 +265,45 @@ class NewDashApplicationStateTest(unittest.TestCase):
             [track.latitude for track in tracks],
             [37.7749, 37.7750, 37.7749],
         )
+
+    def test_earlier_success_cannot_clear_later_pending_same_fingerprint(self) -> None:
+        self._assert_repeated_pending_action_identity(fail_first=False)
+
+    def test_earlier_failure_cannot_clear_later_pending_same_fingerprint(self) -> None:
+        self._assert_repeated_pending_action_identity(fail_first=True)
+
+    def _assert_repeated_pending_action_identity(self, *, fail_first: bool) -> None:
+        self.application.close()
+        suffix = "failure" if fail_first else "success"
+        store = SequencedTrackStore(
+            Path(self.temp.name) / f"track-token-{suffix}.sqlite3",
+            fail_first=fail_first,
+        )
+        self.application = NewDashApplication(store)
+        original = self._rich_status()
+        moved = replace(
+            original,
+            entities=(replace(original.entities[0], latitude=37.7750),),
+        )
+
+        self.application.handle_frame(MachineFrame("status", original), 10.0)
+        self.assertTrue(store.first_started.wait(1.0))
+        self.application.handle_frame(MachineFrame("status", moved), 11.0)
+        self.application.handle_frame(MachineFrame("status", original), 12.0)
+        store.release_first.set()
+        self.assertTrue(store.third_started.wait(1.0))
+        self.application.handle_frame(MachineFrame("status", moved), 13.0)
+        store.release_third.set()
+        self.assertTrue(self.application._persistence_barrier())
+
+        self.assertEqual(store.track_attempts, 4)
+        tracks = store.query(HistoryQuery(kind="track")).items
+        expected = (
+            [37.7750, 37.7749, 37.7750]
+            if fail_first
+            else [37.7750, 37.7749, 37.7750, 37.7749]
+        )
+        self.assertEqual([track.latitude for track in tracks], expected)
 
     @staticmethod
     def _rich_status() -> BadgeStatus:
@@ -400,6 +464,48 @@ class NewDashApplicationHealthTest(unittest.TestCase):
 
 
 class NewDashApplicationPersistenceTest(unittest.TestCase):
+    def test_shutdown_discard_removes_only_exact_pending_track_actions(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            store = SequencedTrackStore(Path(temp) / "track-discard.sqlite3")
+            application = NewDashApplication(store)
+            original = NewDashApplicationStateTest._rich_status()
+            moved = replace(
+                original,
+                entities=(replace(original.entities[0], latitude=37.7750),),
+            )
+            application.handle_frame(MachineFrame("status", original), 10.0)
+            self.assertTrue(store.first_started.wait(1.0))
+            application.handle_frame(MachineFrame("status", moved), 11.0)
+            application.handle_frame(MachineFrame("status", original), 12.0)
+            closer = threading.Thread(target=application.close)
+            try:
+                closer.start()
+                deadline = time.monotonic() + 4.0
+                while application._persistence_queue.qsize() and time.monotonic() < deadline:
+                    time.sleep(0.01)
+
+                stable_key = original.entities[0].stable_key
+                with application._lock:
+                    pending = tuple(application._pending_track_actions[stable_key])
+                self.assertEqual(len(pending), 1)
+                self.assertEqual(
+                    pending[0][1],
+                    application._track_fingerprint(original.entities[0]),
+                )
+                self.assertEqual(
+                    application.snapshot(now=13.0)["diagnostics"]["persistence_drops"],
+                    2,
+                )
+            finally:
+                store.release_first.set()
+                store.release_third.set()
+                closer.join(1.0)
+                application.close()
+
+            self.assertFalse(closer.is_alive())
+            with application._lock:
+                self.assertEqual(application._pending_track_actions, {})
+
     def test_clear_linearizes_a_record_accepted_before_its_barrier(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             store = ObservationStore(Path(temp) / "clear-race.sqlite3")
