@@ -19,16 +19,12 @@ same backend ingest path. Walk around with it during the day; mount it later as
 part of a multi-node sensor platform.
 
 > Current published tracks: Android/backend/production S3 firmware are on
-> `0.64.68-live-follow`; the published badge/factory release is
-> `0.64.76-badge-defcon34`. A local provisional canary source identity,
-> `0.64.87-badge-defcon34`, is limited to the connected three-board canary;
-> it is not a production-readiness or public-release version. The published
-> release adds the themed four-lane instrument UI, custom USB palettes, DEF
-> CON 34 Easter egg, quiet/off mode, and automatic integrity-checked scanner
-> updates from the USB-connected uplink. The local canary replaces that
-> physical quiet/off shortcut with a ten-second dual-button software reset.
-> The badge and production sensor fleet intentionally move on separate
-> firmware tracks.
+> `0.64.68-live-follow`; the native badge USB/factory default is
+> `0.67.2-badge-defcon34`. That badge release adds the themed four-lane
+> instrument UI, custom USB palettes, DEF CON 34 Easter egg, quiet/off mode,
+> and automatic integrity-checked scanner updates from the USB-connected
+> uplink. The native badge, production sensor fleet, and backend/Lite sensor
+> firmware intentionally remain separate firmware families.
 
 ## What The Badge Does
 
