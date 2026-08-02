@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import json
+import os
 from pathlib import Path
 import struct
 import time
@@ -638,21 +639,19 @@ def test_raw_ota_rejects_unknown_or_unparseable_images_by_default(
 
 
 @pytest.mark.parametrize(
-    ("role", "target", "backend_target"),
+    ("role", "target"),
     [
-        ("uplink", "uplink-s3-fof_badge", "uplink-s3-backend"),
+        ("uplink", "uplink-s3-fof_badge"),
         (
             "scanner",
             "scanner-s3-combo-fof_badge",
-            "scanner-s3-combo-backend",
         ),
     ],
 )
-def test_real_native_0672_bundle_routes_only_to_exact_badge_family(
+def test_real_native_0672_bundle_routes_to_exact_badge_family(
     monkeypatch,
     role: str,
     target: str,
-    backend_target: str,
 ):
     bundle = (
         Path(__file__).resolve().parents[2]
@@ -686,9 +685,32 @@ def test_real_native_0672_bundle_routes_only_to_exact_badge_family(
         )
         assert snapshot["heartbeat"]["device_id"] == "uplink_FAMILY"
 
-    backend_image = firmware_manager.FIRMWARE_TYPES[backend_target][
-        "local_bin"
-    ].read_bytes()
+
+@pytest.mark.parametrize(
+    ("target", "backend_target"),
+    [
+        ("uplink-s3-fof_badge", "uplink-s3-backend"),
+        ("scanner-s3-combo-fof_badge", "scanner-s3-combo-backend"),
+    ],
+)
+def test_real_backend_apps_are_rejected_against_native_badge_family(
+    monkeypatch,
+    target: str,
+    backend_target: str,
+):
+    backend_path = firmware_manager.FIRMWARE_TYPES[backend_target]["local_bin"]
+    if not backend_path.is_file():
+        if os.environ.get("FOF_REQUIRE_REAL_BACKEND_FIRMWARE") == "1":
+            pytest.fail(f"required built backend app is missing: {backend_path}")
+        pytest.skip("real backend app is verified after the firmware build")
+
+    heartbeat, uart = _heartbeat_for_firmware(target)
+    monkeypatch.setattr(
+        detections,
+        "_node_heartbeats",
+        {"uplink_FAMILY": heartbeat},
+    )
+    backend_image = backend_path.read_bytes()
     with pytest.raises(HTTPException) as error:
         nodes._require_ota_compatibility(
             "uplink_FAMILY",

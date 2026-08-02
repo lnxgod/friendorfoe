@@ -111,6 +111,15 @@ jobs:
           pio run -e uplink-s3-backend -t clean
           pio run -e uplink-s3-backend
 
+      - name: Verify real native badge and backend image separation
+        env:
+          FOF_REQUIRE_REAL_BACKEND_FIRMWARE: "1"
+        run: >-
+          cd backend &&
+          pytest -q
+          tests/test_backend_firmware_ingest.py::test_real_native_0672_bundle_routes_to_exact_badge_family
+          tests/test_backend_firmware_ingest.py::test_real_backend_apps_are_rejected_against_native_badge_family
+
       - name: Package backend-only maintenance flasher
         run: bash backend-firmware/web-flasher/build.sh
 
