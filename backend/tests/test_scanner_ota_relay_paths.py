@@ -47,6 +47,7 @@ def scanner_ota_state(monkeypatch: pytest.MonkeyPatch):
         {
             "uplink_TEST": {
                 "ip": "192.168.1.10",
+                "last_seen": time.time(),
                 "scanners": [{"uart": "ble", "ver": "0.63.0-svc140"}],
             }
         },
@@ -73,10 +74,12 @@ async def test_backend_scanner_ota_requires_exact_running_family(monkeypatch: py
         "app_project": "fof_backend_uplink",
         "hardware_type": "seeed_xiao_esp32s3",
         "scanners": [
-            {"uart": "ble", "firmware_target": "scanner-s3-combo-backend",
+            {"uart": "ble", "mac": "AA:BB:CC:DD:EE:01", "boot_id": 1,
+             "firmware_target": "scanner-s3-combo-backend",
              "app_project": "fof_backend_scanner", "hardware_type": "seeed_xiao_esp32s3",
              "ver": "0.1.0-backend", "cmd_rx": 1},
-            {"uart": "wifi", "firmware_target": "scanner-s3-combo-backend",
+            {"uart": "wifi", "mac": "AA:BB:CC:DD:EE:02", "boot_id": 2,
+             "firmware_target": "scanner-s3-combo-backend",
              "app_project": "fof_backend_scanner", "hardware_type": "seeed_xiao_esp32s3",
              "ver": "0.1.0-backend", "cmd_rx": 1},
         ],
@@ -133,6 +136,41 @@ async def test_backend_scanner_ota_requires_exact_running_family(monkeypatch: py
     assert production.status_code == 409
     assert both.status_code == 409
     assert blocked_stage.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_scanner_ota_both_rejects_duplicate_ble_identity(monkeypatch: pytest.MonkeyPatch):
+    now = time.time()
+    detections._node_heartbeats["uplink_TEST"] = {
+        "device_id": "uplink_TEST", "ip": "192.168.1.10", "last_seen": now,
+        "scanners": [
+            {"uart": "ble", "ver": "0.63.0-svc140"},
+            {"uart": "ble", "ver": "0.63.0-svc140"},
+        ],
+    }
+    # The endpoint must fail in preflight, without loading or transferring bytes.
+    async def must_not_load(name: str) -> bytes:
+        raise AssertionError("must reject ambiguous uart=both before firmware load")
+
+    monkeypatch.setattr(nodes._firmware_mgr, "get_firmware_binary", must_not_load)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        duplicate_uart = await client.post(
+            "/nodes/uplink_TEST/ota/scanner/scanner-s3-combo?uart=both&relay_mode=direct_legacy"
+        )
+        detections._node_heartbeats["uplink_TEST"]["scanners"] = [
+            {"uart": "ble", "mac": "AA:BB:CC:DD:EE:FF", "boot_id": 9},
+            {"uart": "wifi", "mac": "AA:BB:CC:DD:EE:FF", "boot_id": 9},
+        ]
+        duplicate_identity = await client.post(
+            "/nodes/uplink_TEST/ota/scanner/scanner-s3-combo?uart=both&relay_mode=direct_legacy"
+        )
+
+    assert duplicate_uart.status_code == 409
+    assert duplicate_identity.status_code == 409
+    assert "ambiguous" in duplicate_uart.json()["detail"]
+    assert "ambiguous" in duplicate_identity.json()["detail"]
 
 
 @pytest.mark.asyncio

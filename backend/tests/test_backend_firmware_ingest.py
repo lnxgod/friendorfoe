@@ -231,6 +231,59 @@ async def test_backend_uplink_is_not_sent_production_image(client, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_named_ota_rebinds_to_fresh_heartbeat_after_firmware_load(client, monkeypatch):
+    now = time.time()
+    detections._node_heartbeats["uplink_REBIND"] = {
+        "device_id": "uplink_REBIND", "ip": "10.0.0.10", "last_seen": now,
+        "firmware_target": "uplink-s3-backend",
+        "app_project": "fof_backend_uplink",
+        "hardware_type": "seeed_xiao_esp32s3",
+    }
+    calls: list[str] = []
+
+    async def swap_heartbeat(name: str) -> bytes:
+        assert name == "uplink-s3-backend"
+        detections._node_heartbeats["uplink_REBIND"] = {
+            **detections._node_heartbeats["uplink_REBIND"],
+            "ip": "10.0.0.11", "last_seen": time.time(),
+        }
+        return _backend_image(name)
+
+    async def capture_upload(cmd, **kwargs):
+        calls.append(next(part for part in cmd if isinstance(part, str) and part.startswith("http://")))
+        return __import__("subprocess").CompletedProcess(cmd, 0, b'{"ok":true}', b"")
+
+    monkeypatch.setattr(nodes._firmware_mgr, "get_firmware_binary", swap_heartbeat)
+    monkeypatch.setattr(nodes, "_run_subprocess", capture_upload)
+
+    response = await client.post("/nodes/uplink_REBIND/ota/uplink-s3-backend")
+
+    assert response.status_code == 200, response.text
+    assert calls == ["http://10.0.0.11/api/ota"]
+
+
+@pytest.mark.asyncio
+async def test_direct_ota_rejects_stale_heartbeat_before_upload(client, monkeypatch):
+    detections._node_heartbeats["uplink_STALE"] = {
+        "device_id": "uplink_STALE", "ip": "10.0.0.30", "last_seen": time.time() - 120,
+    }
+    upload = AsyncMock(side_effect=AssertionError("must reject stale heartbeat"))
+    monkeypatch.setattr(nodes, "_run_subprocess", upload)
+
+    responses = []
+    for last_seen in (time.time() - 120, None, "not-a-timestamp"):
+        detections._node_heartbeats["uplink_STALE"]["last_seen"] = last_seen
+        responses.append(await client.post(
+            "/nodes/uplink_STALE/ota",
+            files={"firmware": ("legacy.bin", b"L" * 1200, "application/octet-stream")},
+        ))
+
+    assert all(response.status_code == 409 for response in responses)
+    assert all("stale" in response.json()["detail"] for response in responses)
+    upload.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_direct_ota_upload_rejects_cross_family_and_invalid_backend_identity(client, monkeypatch):
     detections._node_heartbeats["uplink_BADGE1"] = {
         "device_id": "uplink_BADGE1", "ip": "10.0.0.20",

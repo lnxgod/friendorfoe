@@ -80,20 +80,65 @@ def _normalized_firmware_version(version: str | None) -> str:
     return value[1:] if value[:1].lower() == "v" else value
 
 
-def _reported_identities(device_id: str, uart: str | None) -> list[dict]:
+def _ota_target_snapshot(device_id: str, uart: str | None = None) -> dict:
+    """Return the current, immutable heartbeat view safe to bind an OTA to."""
     from app.routers.detections import _node_heartbeats
 
-    heartbeat = _node_heartbeats.get(device_id) or {}
+    heartbeat = _node_heartbeats.get(device_id)
+    if not isinstance(heartbeat, dict) or not heartbeat.get("ip"):
+        raise HTTPException(status_code=404, detail=f"Node '{device_id}' not found or no IP")
+    try:
+        stale = time.time() - float(heartbeat["last_seen"]) >= 120
+    except (KeyError, TypeError, ValueError):
+        stale = True
+    if stale:
+        raise HTTPException(status_code=409, detail=f"Node '{device_id}' heartbeat is stale")
+
+    scanners = [dict(item) for item in heartbeat.get("scanners") or [] if isinstance(item, dict)]
+    if uart is None:
+        selected: list[dict] = []
+    elif uart == "both":
+        by_uart = {name: [item for item in scanners if item.get("uart") == name] for name in ("ble", "wifi")}
+        if len(by_uart["ble"]) != 1 or len(by_uart["wifi"]) != 1 or len(scanners) != 2:
+            raise HTTPException(status_code=409, detail="scanner identity is ambiguous for uart=both")
+        selected = [by_uart["ble"][0], by_uart["wifi"][0]]
+        identity_tokens = []
+        for scanner in selected:
+            mac = str(scanner.get("mac") or scanner.get("hardware_mac") or "").strip().lower()
+            boot_id = scanner.get("boot_id")
+            if not mac and boot_id is None:
+                raise HTTPException(status_code=409, detail="scanner identity is incomplete for uart=both")
+            identity_tokens.append((mac, str(boot_id) if boot_id is not None else ""))
+        if identity_tokens[0] == identity_tokens[1] or (
+            identity_tokens[0][0] and identity_tokens[0][0] == identity_tokens[1][0]
+        ) or (
+            identity_tokens[0][1] and identity_tokens[0][1] == identity_tokens[1][1]
+        ):
+            raise HTTPException(status_code=409, detail="scanner identity is ambiguous for uart=both")
+    else:
+        selected = [item for item in scanners if item.get("uart") == uart]
+        if len(selected) != 1:
+            raise HTTPException(status_code=409, detail=f"scanner identity is ambiguous for uart={uart}")
+
+    return {
+        "device_id": device_id,
+        "ip": str(heartbeat["ip"]),
+        "heartbeat": dict(heartbeat),
+        "scanners": selected,
+    }
+
+
+def _reported_identities(device_id: str, uart: str | None, *, snapshot: dict | None = None) -> list[dict]:
+    if snapshot is None:
+        snapshot = _ota_target_snapshot(device_id, uart)
+    heartbeat = snapshot["heartbeat"]
     if uart is None:
         return [{
             "target": heartbeat.get("firmware_target") or heartbeat.get("firmware_name"),
             "project": heartbeat.get("app_project"),
             "hardware": heartbeat.get("hardware_type"),
         }]
-    scanners = [item for item in heartbeat.get("scanners") or [] if isinstance(item, dict)]
-    selected = scanners if uart == "both" else [
-        item for item in scanners if item.get("uart") == uart
-    ]
+    selected = snapshot["scanners"]
     return [{
         "target": item.get("firmware_target") or item.get("firmware_name"),
         "project": item.get("app_project"),
@@ -110,8 +155,9 @@ def _identity_is_backend(identity: dict) -> bool:
 
 def _require_named_family_preflight(
     device_id: str, firmware_name: str, uart: str | None = None,
-) -> None:
-    running = _reported_identities(device_id, uart)
+) -> dict:
+    snapshot = _ota_target_snapshot(device_id, uart)
+    running = _reported_identities(device_id, uart, snapshot=snapshot)
     required_count = 2 if uart == "both" else 1
     info = FIRMWARE_TYPES.get(firmware_name) or {}
     if firmware_name.endswith("-backend"):
@@ -128,6 +174,7 @@ def _require_named_family_preflight(
             status_code=409,
             detail=f"running firmware identity is incompatible with {firmware_name}",
         )
+    return snapshot
 
 
 def _require_ota_compatibility(
@@ -135,7 +182,9 @@ def _require_ota_compatibility(
     firmware_name: str | None,
     image: bytes,
     uart: str | None = None,
-) -> None:
+    *,
+    snapshot: dict | None = None,
+) -> dict:
     requested = None
     descriptor = _parse_app_desc_bytes(image)
     claims_backend = (
@@ -157,7 +206,8 @@ def _require_ota_compatibility(
         if requested is None:
             raise HTTPException(status_code=400, detail="invalid backend firmware identity")
 
-    running = _reported_identities(device_id, uart)
+    snapshot = snapshot or _ota_target_snapshot(device_id, uart)
+    running = _reported_identities(device_id, uart, snapshot=snapshot)
     required_count = 2 if uart == "both" else 1
     requested_is_backend = requested is not None
     if requested_is_backend:
@@ -175,6 +225,7 @@ def _require_ota_compatibility(
             status_code=409,
             detail=f"running firmware identity is incompatible with {label}",
         )
+    return snapshot
 
 
 def _named_identity_mismatch(device_id: str, firmware_name: str, uart: str | None) -> bool:
@@ -333,12 +384,15 @@ def _heartbeat_nodes(device_id: str | None = None, *, include_offline: bool = Fa
     for node_id, hb in _node_heartbeats.items():
         if device_id and node_id != device_id:
             continue
-        age_s = now - float(hb.get("last_seen", now) or now)
+        try:
+            age_s = now - float(hb["last_seen"])
+        except (KeyError, TypeError, ValueError):
+            age_s = float("inf")
         if not include_offline and age_s >= 120:
             continue
         node = dict(hb)
         node.setdefault("device_id", node_id)
-        node["age_s"] = round(age_s, 1)
+        node["age_s"] = round(age_s, 1) if age_s != float("inf") else None
         node["online"] = age_s < 120
         rows.append((node_id, node))
     rows.sort(key=lambda item: item[0])
@@ -379,7 +433,7 @@ async def _scanner_targets(
 
 
 async def _stage_scanner_firmware_on_uplink(
-    device_id: str, ip: str, firmware_name: str, uart: str = "both",
+    device_id: str, firmware_name: str, uart: str = "both",
 ) -> dict:
     _require_named_family_preflight(device_id, firmware_name, uart)
     fw_data = await _firmware_mgr.get_firmware_binary(firmware_name)
@@ -391,8 +445,10 @@ async def _stage_scanner_firmware_on_uplink(
             "state": "blocked",
             "error": "firmware_not_available",
         }
-    _require_ota_compatibility(device_id, firmware_name, fw_data, uart)
     fw_version = await _firmware_mgr.get_firmware_version(firmware_name) or firmware_name
+    snapshot = _require_named_family_preflight(device_id, firmware_name, uart)
+    _require_ota_compatibility(device_id, firmware_name, fw_data, uart, snapshot=snapshot)
+    ip = snapshot["ip"]
     checksum = zlib.crc32(fw_data) & 0xFFFFFFFF
     try:
         r_stage = await _run_subprocess(
@@ -523,7 +579,6 @@ async def _run_scanner_rollout(rollout_id: str, targets: list[dict], *, stage_fi
                 continue
             stage = await _stage_scanner_firmware_on_uplink(
                 target["device_id"],
-                target["ip"],
                 target["target_firmware"],
                 target["uart"],
             )
@@ -949,19 +1004,14 @@ async def push_ota_update(device_id: str, firmware: UploadFile = File(...)):
     The backend reads the uploaded file and POSTs it to the node's /api/ota endpoint.
     The node writes it to the inactive OTA partition and reboots.
     """
-    from app.routers.detections import _node_heartbeats
-
-    node_info = _node_heartbeats.get(device_id)
-    if not node_info or not node_info.get("ip"):
-        raise HTTPException(status_code=404, detail=f"Node '{device_id}' not found or no IP")
-
-    ip = node_info["ip"]
     fw_data = await firmware.read()
     fw_size = len(fw_data)
 
     if fw_size < 1024 or fw_size > 2 * 1024 * 1024:
         raise HTTPException(status_code=400, detail=f"Invalid firmware size: {fw_size} bytes")
-    _require_ota_compatibility(device_id, None, fw_data)
+    snapshot = _ota_target_snapshot(device_id)
+    _require_ota_compatibility(device_id, None, fw_data, snapshot=snapshot)
+    ip = snapshot["ip"]
 
     logger.warning("OTA push to %s (%s): %d bytes (%s)", device_id, ip, fw_size, firmware.filename)
 
@@ -1139,19 +1189,14 @@ async def push_firmware_by_name(device_id: str, firmware_name: str):
             detail=f"Firmware '{firmware_name}' is not an uplink image",
         )
 
-    from app.routers.detections import _node_heartbeats
-
-    node_info = _node_heartbeats.get(device_id)
-    if not node_info or not node_info.get("ip"):
-        raise HTTPException(status_code=404, detail=f"Node '{device_id}' not found or no IP")
     _require_named_family_preflight(device_id, firmware_name)
 
     fw_data = await _firmware_mgr.get_firmware_binary(firmware_name)
     if not fw_data:
         raise HTTPException(status_code=404, detail=f"Firmware '{firmware_name}' not available")
-    _require_ota_compatibility(device_id, firmware_name, fw_data)
-
-    ip = node_info["ip"]
+    snapshot = _require_named_family_preflight(device_id, firmware_name)
+    _require_ota_compatibility(device_id, firmware_name, fw_data, snapshot=snapshot)
+    ip = snapshot["ip"]
     logger.warning("OTA push %s to %s (%s): %d bytes", firmware_name, device_id, ip, len(fw_data))
 
     try:
@@ -1210,8 +1255,6 @@ async def push_scanner_firmware(
 
     from urllib.parse import quote
 
-    from app.routers.detections import _node_heartbeats
-
     relay_mode = (relay_mode or "auto").strip().lower().replace("-", "_")
     allowed_relay_modes = {"auto", "staged", "staged_legacy", "direct_legacy"}
     if relay_mode not in allowed_relay_modes:
@@ -1222,18 +1265,15 @@ async def push_scanner_firmware(
     if legacy and relay_mode in {"auto", "staged"}:
         relay_mode = "staged_legacy"
 
-    node_info = _node_heartbeats.get(device_id)
-    if not node_info or not node_info.get("ip"):
-        raise HTTPException(status_code=404, detail=f"Node '{device_id}' not found or no IP")
     _require_named_family_preflight(device_id, firmware_name, uart)
 
     fw_data = await _firmware_mgr.get_firmware_binary(firmware_name)
     if not fw_data:
         raise HTTPException(status_code=404, detail=f"Firmware '{firmware_name}' not available")
-    _require_ota_compatibility(device_id, firmware_name, fw_data, uart)
     fw_version = await _firmware_mgr.get_firmware_version(firmware_name) or firmware_name
-
-    ip = node_info["ip"]
+    snapshot = _require_named_family_preflight(device_id, firmware_name, uart)
+    _require_ota_compatibility(device_id, firmware_name, fw_data, uart, snapshot=snapshot)
+    ip = snapshot["ip"]
     size = len(fw_data)
     op_id = f"{device_id}-{int(time.time() * 1000)}"
     op = {
@@ -1477,20 +1517,15 @@ async def stage_scanner_firmware(
     import json
     from urllib.parse import quote
 
-    from app.routers.detections import _node_heartbeats
-
-    node_info = _node_heartbeats.get(device_id)
-    if not node_info or not node_info.get("ip"):
-        raise HTTPException(status_code=404, detail=f"Node '{device_id}' not found or no IP")
     _require_named_family_preflight(device_id, firmware_name, "both")
 
     fw_data = await _firmware_mgr.get_firmware_binary(firmware_name)
     if not fw_data:
         raise HTTPException(status_code=404, detail=f"Firmware '{firmware_name}' not available")
-    _require_ota_compatibility(device_id, firmware_name, fw_data, "both")
     fw_version = await _firmware_mgr.get_firmware_version(firmware_name) or firmware_name
-
-    ip = node_info["ip"]
+    snapshot = _require_named_family_preflight(device_id, firmware_name, "both")
+    _require_ota_compatibility(device_id, firmware_name, fw_data, "both", snapshot=snapshot)
+    ip = snapshot["ip"]
     try:
         r_stage = await _run_subprocess(
             ["curl", "-s", "-X", "POST",
@@ -1547,9 +1582,11 @@ async def scanner_firmware_readiness(
         target_version = _normalized_firmware_version(target["target_version"])
         already_current = bool(target_version and current == target_version)
         blockers = []
+        if not target.get("online"):
+            blockers.append("stale_heartbeat")
         if not target.get("ip"):
             blockers.append("missing_uplink_ip")
-        if _named_identity_mismatch(
+        if target.get("online") and _named_identity_mismatch(
             target["device_id"], target["target_firmware"], target["uart"],
         ):
             blockers.append("identity_mismatch")
@@ -1604,27 +1641,46 @@ async def stage_scanner_firmware_fleet(
         firmware_name=firmware_name,
         include_offline=include_offline,
     )
-    stage_keys: set[tuple[str, str]] = set()
-    results = []
+    stage_groups: dict[tuple[str, str], dict] = {}
     for target in targets:
         key = (target["device_id"], target["target_firmware"])
-        if key in stage_keys:
-            continue
-        stage_keys.add(key)
-        if not target.get("ip"):
+        group = stage_groups.setdefault(key, {"target": target, "uarts": set()})
+        group["uarts"].add(target["uart"])
+
+    # Validate every destination before the first transfer. A mixed or stale
+    # fleet must not partially stage firmware on otherwise valid uplinks.
+    results = []
+    ready: list[tuple[dict, str]] = []
+    for group in stage_groups.values():
+        target = group["target"]
+        uart = "both" if group["uarts"] == {"ble", "wifi"} else next(iter(group["uarts"]))
+        try:
+            snapshot = _require_named_family_preflight(
+                target["device_id"], target["target_firmware"], uart,
+            )
+        except HTTPException as exc:
             results.append({
                 "ok": False,
                 "device_id": target["device_id"],
                 "firmware": target["target_firmware"],
                 "state": "blocked",
-                "error": "missing_uplink_ip",
+                "error": "stale_heartbeat" if "stale" in str(exc.detail) else "identity_mismatch",
             })
             continue
+        ready.append((target, uart))
+
+    if results:
+        return {
+            "ok": False,
+            "count": len(results),
+            "results": results,
+        }
+
+    for target, uart in ready:
         results.append(await _stage_scanner_firmware_on_uplink(
             target["device_id"],
-            target["ip"],
             target["target_firmware"],
-            target["uart"],
+            uart,
         ))
     return {
         "ok": bool(results) and all(row.get("ok") for row in results),

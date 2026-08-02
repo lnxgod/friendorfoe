@@ -49,6 +49,8 @@ def scanner_fleet_state(monkeypatch: pytest.MonkeyPatch):
                 "scanners": [
                     {
                         "uart": "ble",
+                        "mac": "AA:BB:CC:DD:EE:01",
+                        "boot_id": 1,
                         "board": "scanner-s3-combo",
                         "ver": "0.63.0-svc140",
                         "cmd_rx": 3,
@@ -57,6 +59,8 @@ def scanner_fleet_state(monkeypatch: pytest.MonkeyPatch):
                     },
                     {
                         "uart": "wifi",
+                        "mac": "AA:BB:CC:DD:EE:02",
+                        "boot_id": 2,
                         "board": "scanner-s3-combo",
                         "ver": "0.63.0-svc140",
                         "cmd_rx": 1,
@@ -274,6 +278,60 @@ async def test_stage_fleet_records_version_size_and_crc(monkeypatch: pytest.Monk
     assert all(row["size"] == 19 for row in payload["results"])
     assert all(row["crc32"] for row in payload["results"])
     assert len(calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_stage_fleet_preflights_every_target_before_any_upload(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    now = time.time()
+    detections._node_heartbeats["uplink_A"].update({
+        "firmware_target": "uplink-s3-backend",
+        "app_project": "fof_backend_uplink",
+        "hardware_type": "seeed_xiao_esp32s3",
+        "scanners": [
+            {"uart": "ble", "mac": "AA:BB:CC:DD:EE:10", "boot_id": 10,
+             "firmware_target": "scanner-s3-combo-backend",
+             "app_project": "fof_backend_scanner", "hardware_type": "seeed_xiao_esp32s3"},
+            {"uart": "wifi", "mac": "AA:BB:CC:DD:EE:11", "boot_id": 11,
+             "firmware_target": "scanner-s3-combo-fof_badge",
+             "app_project": "fof_badge_scanner", "hardware_type": "seeed_xiao_esp32s3"},
+        ],
+    })
+    detections._node_heartbeats["uplink_B"]["last_seen"] = now - 120
+    calls: list[str] = []
+
+    async def backend_version(name: str) -> str:
+        assert name == "scanner-s3-combo-backend"
+        return "0.1.0-backend"
+
+    async def must_not_transfer(cmd, **kwargs):
+        calls.append(next(part for part in cmd if isinstance(part, str) and part.startswith("http://")))
+        raise AssertionError("fleet must finish preflight before any upload")
+
+    monkeypatch.setattr(nodes._firmware_mgr, "get_firmware_version", backend_version)
+    monkeypatch.setattr(nodes, "_run_subprocess", must_not_transfer)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        readiness = await client.get(
+            "/nodes/firmware/scanner/readiness"
+            "?firmware_name=scanner-s3-combo-backend&include_offline=true"
+        )
+        response = await client.post(
+            "/nodes/firmware/scanner/stage-fleet"
+            "?firmware_name=scanner-s3-combo-backend&include_offline=true"
+        )
+
+    stale = next(row for row in readiness.json()["scanners"] if row["device_id"] == "uplink_B")
+    assert "stale_heartbeat" in stale["blockers"]
+    assert "identity_mismatch" not in stale["blockers"]
+    assert response.status_code == 200, response.text
+    assert response.json()["ok"] is False
+    assert {row["error"] for row in response.json()["results"]} == {
+        "identity_mismatch", "stale_heartbeat",
+    }
+    assert calls == []
 
 
 @pytest.mark.asyncio
