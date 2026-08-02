@@ -53,6 +53,8 @@ class _PersistenceAction:
     completion: threading.Event | None = None
     result: object | None = None
     error: BaseException | None = None
+    track_key: str | None = None
+    track_fingerprint: tuple[object, ...] | None = None
 
 
 class NewDashApplication:
@@ -71,7 +73,8 @@ class NewDashApplication:
         self._status_received_at: float | None = None
         self._connection: ConnectionUpdate | None = None
         self._recent_events: deque[tuple[DetectionEvent, float]] = deque(maxlen=20)
-        self._track_fingerprints: dict[str, tuple[object, ...]] = {}
+        self._persisted_track_fingerprints: dict[str, tuple[object, ...]] = {}
+        self._pending_track_fingerprints: dict[str, tuple[object, ...]] = {}
         self._history_available = True
         self._history_error: str | None = None
         self._persistence_drops = 0
@@ -99,9 +102,10 @@ class NewDashApplication:
                 if not self._accepting:
                     return
                 self._recent_events.append((frame.value, received_at))
-            self._enqueue(_PersistenceAction("event", frame.value, received_at))
+                self._enqueue_locked(
+                    _PersistenceAction("event", frame.value, received_at)
+                )
         elif frame.kind == "status" and isinstance(frame.value, BadgeStatus):
-            tracks: list[tuple[BadgeEntity, tuple[object, ...]]] = []
             with self._lock:
                 if not self._accepting:
                     return
@@ -111,12 +115,22 @@ class NewDashApplication:
                     if entity.stale or not entity.is_remote_id or not entity.has_position:
                         continue
                     fingerprint = self._track_fingerprint(entity)
-                    if self._track_fingerprints.get(entity.stable_key) != fingerprint:
-                        tracks.append((entity, fingerprint))
-            for entity, fingerprint in tracks:
-                if self._enqueue(_PersistenceAction("track", entity, received_at)):
-                    with self._lock:
-                        self._track_fingerprints[entity.stable_key] = fingerprint
+                    stable_key = entity.stable_key
+                    latest_fingerprint = self._pending_track_fingerprints.get(
+                        stable_key,
+                        self._persisted_track_fingerprints.get(stable_key),
+                    )
+                    if latest_fingerprint != fingerprint:
+                        if self._enqueue_locked(
+                            _PersistenceAction(
+                                "track",
+                                entity,
+                                received_at,
+                                track_key=stable_key,
+                                track_fingerprint=fingerprint,
+                            )
+                        ):
+                            self._pending_track_fingerprints[stable_key] = fingerprint
         self._prune_if_due(received_at)
 
     def handle_connection(self, update: ConnectionUpdate) -> None:
@@ -157,8 +171,8 @@ class NewDashApplication:
                 for event, received_at in reversed(recent)
             ],
             "diagnostics": {
-                "malformed_lines": connection.malformed_frames if connection else 0,
-                "overlong_lines": connection.overlong_lines if connection else 0,
+                "malformed_lines": connection.malformed_frames if connection else None,
+                "overlong_lines": connection.overlong_lines if connection else None,
                 "history_available": history_available,
                 "history_error": history_error,
                 "persistence_queue_depth": self._persistence_queue.qsize(),
@@ -170,10 +184,12 @@ class NewDashApplication:
         """Read a bounded history page without involving the serial callback."""
 
         try:
-            return self._store.query(query)
+            result = self._store.query(query)
         except Exception as error:
             self._record_history_error(error)
             raise
+        self._record_history_success()
+        return result
 
     def export_history(self, query: HistoryQuery) -> Iterator[object]:
         """Stream history while recording storage degradation on iteration."""
@@ -183,6 +199,7 @@ class NewDashApplication:
         except Exception as error:
             self._record_history_error(error)
             raise
+        self._record_history_success()
 
     def clear_history(self, timeout: float = 3.0) -> int:
         """Delete history after every mutation queued before this call."""
@@ -288,6 +305,8 @@ class NewDashApplication:
                 break
             if action.kind in {"event", "track"}:
                 dropped_records += 1
+            if action.kind == "track":
+                self._finish_track_action(action, succeeded=False)
             action.error = ApplicationError(
                 "application_closing", "The application stopped before this action ran."
             )
@@ -300,16 +319,28 @@ class NewDashApplication:
 
     def _enqueue(self, action: _PersistenceAction) -> bool:
         with self._lock:
-            accepting = self._accepting
-        if not accepting and action.kind != "barrier":
-            self._record_drop()
+            return self._enqueue_locked(action)
+
+    def _enqueue_locked(self, action: _PersistenceAction) -> bool:
+        if not self._accepting and action.kind != "barrier":
+            self._record_submission_failure(action, "The application is closing.")
             return False
         try:
             self._persistence_queue.put_nowait(action)
         except Full:
-            self._record_drop()
+            self._record_submission_failure(action, "The persistence queue is full.")
             return False
         return True
+
+    def _record_submission_failure(
+        self, action: _PersistenceAction, message: str
+    ) -> None:
+        if action.kind in {"event", "track"}:
+            self._record_drop()
+            if action.kind == "track":
+                self._finish_track_action(action, succeeded=False)
+            return
+        self._record_history_error(ApplicationError("history_busy", message))
 
     def _run_persistence(self) -> None:
         while not self._worker_stop.is_set() or not self._persistence_queue.empty():
@@ -318,22 +349,32 @@ class NewDashApplication:
             except Empty:
                 continue
             try:
+                storage_succeeded = False
                 if action.kind == "event":
                     self._store.add_event(
                         cast(DetectionEvent, action.value),
                         cast(float, action.received_at),
                     )
+                    storage_succeeded = True
                 elif action.kind == "track":
                     self._store.add_track(
                         cast(BadgeEntity, action.value),
                         cast(float, action.received_at),
                     )
+                    self._finish_track_action(action, succeeded=True)
+                    storage_succeeded = True
                 elif action.kind == "prune":
                     action.result = self._store.prune(action.received_at)
+                    storage_succeeded = True
                 elif action.kind == "clear":
                     action.result = self._store.clear()
+                    storage_succeeded = True
+                if storage_succeeded:
+                    self._record_history_success()
             except Exception as error:
                 action.error = error
+                if action.kind == "track":
+                    self._finish_track_action(action, succeeded=False)
                 self._record_history_error(error)
                 if action.kind in {"event", "track"}:
                     self._record_drop()
@@ -359,11 +400,29 @@ class NewDashApplication:
         with self._lock:
             self._persistence_drops += 1
 
+    def _finish_track_action(
+        self, action: _PersistenceAction, *, succeeded: bool
+    ) -> None:
+        stable_key = action.track_key
+        fingerprint = action.track_fingerprint
+        if stable_key is None or fingerprint is None:
+            return
+        with self._lock:
+            if succeeded:
+                self._persisted_track_fingerprints[stable_key] = fingerprint
+            if self._pending_track_fingerprints.get(stable_key) == fingerprint:
+                del self._pending_track_fingerprints[stable_key]
+
     def _record_history_error(self, error: BaseException) -> None:
         message = self._bounded_error(error)
         with self._lock:
             self._history_available = False
             self._history_error = message
+
+    def _record_history_success(self) -> None:
+        with self._lock:
+            self._history_available = True
+            self._history_error = None
 
     @staticmethod
     def _track_fingerprint(entity: BadgeEntity) -> tuple[object, ...]:
@@ -438,7 +497,7 @@ class NewDashApplication:
                 "port": None,
                 "candidates": [],
                 "firmware_version": None,
-                "reconnect_attempt": 0,
+                "reconnect_attempt": None,
             }
         return {
             "phase": update.state,
@@ -457,13 +516,15 @@ class NewDashApplication:
     ) -> dict[str, object]:
         if received_at is None:
             return {"state": "unavailable", "age_s": None}
-        age = round(max(now - received_at, 0.0), 1)
+        exact_age = max(now - received_at, 0.0)
         state = (
             "fresh"
-            if connection is not None and connection.state == "live" and age <= 5.0
+            if connection is not None
+            and connection.state == "live"
+            and exact_age < 6.0
             else "stale"
         )
-        return {"state": state, "age_s": age}
+        return {"state": state, "age_s": round(exact_age, 1)}
 
     @classmethod
     def _sensing_health(
@@ -480,9 +541,23 @@ class NewDashApplication:
         freshness = cls._freshness_dict(connection, received_at, now)["state"]
         if freshness != "fresh":
             return "degraded"
+        if not status.scanners:
+            return "unknown"
+        has_incomplete_evidence = False
         for scanner in status.scanners:
-            if isinstance(scanner, Mapping) and scanner.get("connected") is not True:
+            if not isinstance(scanner, Mapping):
+                has_incomplete_evidence = True
+                continue
+            connected = scanner.get("connected")
+            health = scanner.get("health")
+            if connected is False or (
+                health is not None and health not in {"ok", "healthy"}
+            ):
                 return "degraded"
+            if connected is not True or health not in {"ok", "healthy"}:
+                has_incomplete_evidence = True
+        if has_incomplete_evidence:
+            return "unknown"
         return "healthy"
 
     @staticmethod
