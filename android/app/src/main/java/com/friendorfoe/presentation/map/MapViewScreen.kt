@@ -1,5 +1,7 @@
 package com.friendorfoe.presentation.map
 
+import android.content.Context
+import android.view.View
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
@@ -32,6 +34,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
@@ -100,6 +103,20 @@ internal fun mapOverlayPlan(
         renderPreciseUserOverlays =
             locationPermissionState == PermissionUiState.Granted && hasValidUserPosition,
         locationPermissionUsable = locationPermissionState.isUsable(),
+    )
+}
+
+@Composable
+internal fun <T : View> StableAndroidViewHost(
+    revealed: Boolean,
+    factory: (Context) -> T,
+    modifier: Modifier = Modifier,
+    update: (T) -> Unit = {},
+) {
+    AndroidView(
+        factory = factory,
+        modifier = modifier.alpha(if (revealed) 1f else 0f),
+        update = update,
     )
 }
 
@@ -233,27 +250,27 @@ fun MapViewScreen(
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
-        if (revealMap) {
-            AndroidView(
-                factory = { mapView },
-                modifier = Modifier.fillMaxSize(),
-                update = {
-                    overlayController.render(
-                        mapTracks = mapTracks,
-                        userPosition = userPosition,
-                        followCompass = followCompass,
-                        stabilizedMapHeading = stabilizedMapHeading,
-                        activeVisualFocusIds = activeVisualFocusIds,
-                        remoteSensors = remoteSensors,
-                        sensorDrones = sensorDrones,
-                        remoteSearchResults = remoteSearchResults,
-                        remoteSearchCenter = remoteSearchCenter,
-                        userControlsCamera = userControlsCamera,
-                        overlayPlan = overlayPlan,
-                    )
-                }
-            )
-        } else {
+        StableAndroidViewHost(
+            revealed = revealMap,
+            factory = { mapView },
+            modifier = Modifier.fillMaxSize(),
+            update = {
+                overlayController.render(
+                    mapTracks = mapTracks,
+                    userPosition = userPosition,
+                    followCompass = followCompass,
+                    stabilizedMapHeading = stabilizedMapHeading,
+                    activeVisualFocusIds = activeVisualFocusIds,
+                    remoteSensors = remoteSensors,
+                    sensorDrones = sensorDrones,
+                    remoteSearchResults = remoteSearchResults,
+                    remoteSearchCenter = remoteSearchCenter,
+                    userControlsCamera = userControlsCamera,
+                    overlayPlan = overlayPlan,
+                )
+            },
+        )
+        if (!revealMap) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()

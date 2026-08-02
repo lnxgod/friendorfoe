@@ -48,6 +48,15 @@ import kotlinx.coroutines.launch
 import javax.inject.Inject
 
 private const val MAP_FRAME_INTERVAL_MS = 250L
+private const val MAX_LAST_KNOWN_LOCATION_AGE_NANOS = 30_000_000_000L
+
+internal fun shouldSeedMapFromLastKnownLocation(
+    locationElapsedRealtimeNanos: Long,
+    nowElapsedRealtimeNanos: Long,
+): Boolean {
+    val ageNanos = nowElapsedRealtimeNanos - locationElapsedRealtimeNanos
+    return ageNanos in 0..MAX_LAST_KNOWN_LOCATION_AGE_NANOS
+}
 
 internal fun mapFrameClock(
     epochNowMs: () -> Long = System::currentTimeMillis,
@@ -415,7 +424,11 @@ class MapViewModel @Inject constructor(
 
             val lastKnown = locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER)
                 ?: locationManager.getLastKnownLocation(LocationManager.NETWORK_PROVIDER)
-            if (lastKnown != null) {
+            if (lastKnown != null && shouldSeedMapFromLastKnownLocation(
+                    locationElapsedRealtimeNanos = lastKnown.elapsedRealtimeNanos,
+                    nowElapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos(),
+                )
+            ) {
                 _userPosition.value = Position(
                     latitude = lastKnown.latitude,
                     longitude = lastKnown.longitude,

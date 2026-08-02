@@ -16,6 +16,24 @@ import org.junit.Test
 
 class MapPresentationTest {
     @Test
+    fun staleLastKnownLocationCannotInitializeTheMapCamera() {
+        val nowElapsedRealtimeNanos = 120_000_000_000L
+
+        assertFalse(
+            shouldSeedMapFromLastKnownLocation(
+                locationElapsedRealtimeNanos = 1_000_000_000L,
+                nowElapsedRealtimeNanos = nowElapsedRealtimeNanos,
+            )
+        )
+        assertTrue(
+            shouldSeedMapFromLastKnownLocation(
+                locationElapsedRealtimeNanos = 115_000_000_000L,
+                nowElapsedRealtimeNanos = nowElapsedRealtimeNanos,
+            )
+        )
+    }
+
+    @Test
     fun loadingPermissionWithInvalidPositionKeepsTheLocatingSurface() {
         assertFalse(
             shouldRevealMap(

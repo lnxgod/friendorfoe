@@ -26,7 +26,7 @@ data class StalkerAlertPresentation(
 )
 
 internal fun GlassesDetection.isSupportedPrivacyFinding(): Boolean =
-    matchReason != "ble_behavioral:serial_skimmer"
+    !matchReason.startsWith("ble_behavioral:") || matchReason == "ble_behavioral:pairing_spam"
 
 @Singleton
 class PrivacyAlertPolicy internal constructor(
