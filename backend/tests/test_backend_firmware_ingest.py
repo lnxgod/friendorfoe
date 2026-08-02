@@ -174,6 +174,15 @@ def test_backend_batch_preserves_identity_health_and_queue_metadata():
             "ota_state": "idle", "rollback_state": "valid",
         }],
         "led_state": "drone_meta",
+        "health": {
+            "clock_valid": True,
+            "epoch_ms": 1785600000123,
+            "ap_active": False,
+            "config_generation": 9,
+            "command_success_count": 11,
+            "command_failure_count": 2,
+            "uptime_ms": 9000,
+        },
         "upload_queue": {"depth_batches": 7, "capacity_batches": 512, "overflow_dropped_batches": 2, "quarantined_batches": 1},
         "upload": {"ok": 11, "failed": 3, "retry_count": 4, "last_success_age_s": 8},
         "detections": [PORTABLE_EVIDENCE],
@@ -181,6 +190,7 @@ def test_backend_batch_preserves_identity_health_and_queue_metadata():
     batch = DroneDetectionBatch.model_validate(payload)
     assert batch.model_dump()["firmware_target"] == "uplink-s3-backend"
     assert batch.model_dump()["upload_queue"]["capacity_batches"] == 512
+    assert batch.model_dump()["health"] == payload["health"]
     assert batch.model_dump()["detections"][0]["fused_confidence"] == 0.93
     scanner = batch.model_dump()["scanners"][0]
     assert scanner["uart"] == "ble"
@@ -189,6 +199,32 @@ def test_backend_batch_preserves_identity_health_and_queue_metadata():
     assert scanner["hardware_type"] == "seeed_xiao_esp32s3"
     assert scanner["boot_id"] == 305419896
     assert scanner["rollback_state"] == "valid"
+
+
+def test_backend_lite_health_rejects_coerced_wire_types():
+    health = {
+        "clock_valid": False,
+        "ap_active": True,
+        "config_generation": 4,
+        "command_success_count": 3,
+        "command_failure_count": 1,
+        "uptime_ms": 8000,
+    }
+    for field, invalid in (
+        ("clock_valid", "false"),
+        ("ap_active", 1),
+        ("config_generation", "4"),
+        ("command_success_count", False),
+        ("uptime_ms", 8000.0),
+    ):
+        malformed = dict(health)
+        malformed[field] = invalid
+        with pytest.raises(ValueError):
+            DroneDetectionBatch.model_validate({
+                "device_id": "uplink_CB77A4",
+                "health": malformed,
+                "detections": [],
+            })
 
 
 @pytest.mark.asyncio
@@ -243,6 +279,34 @@ async def test_backend_heartbeat_accepts_empty_detection_array(client):
         "deduplicated": 0,
         "filtered": 0,
     }
+
+
+@pytest.mark.asyncio
+async def test_backend_lite_health_round_trips_to_node_status(client):
+    device_id = f"uplink_{uuid.uuid4().hex[:6].upper()}"
+    health = {
+        "clock_valid": False,
+        "ap_active": True,
+        "config_generation": 4,
+        "command_success_count": 3,
+        "command_failure_count": 1,
+        "uptime_ms": 8000,
+    }
+    response = await client.post("/detections/drones", json={
+        "device_id": device_id,
+        "firmware_target": "uplink-s3-backend",
+        "health": health,
+        "detections": [],
+    })
+    assert response.status_code == 200, response.text
+
+    status = await client.get("/detections/nodes/status")
+    assert status.status_code == 200, status.text
+    node = next(
+        row for row in status.json()["nodes"]
+        if row["device_id"] == device_id
+    )
+    assert node["health"] == health
 
 
 @pytest.mark.asyncio
@@ -1240,6 +1304,17 @@ def test_future_detection_timestamp_falls_back_to_batch_observation():
     ) == 1_784_000_000.0
 
 
+def test_exact_firmware_epoch_boundary_is_valid_for_batch_and_detection():
+    observation_time, skew = bounded_observation_time(
+        1_700_000_000, 1_700_000_100.0,
+    )
+    assert observation_time == 1_700_000_000.0
+    assert skew == -100.0
+    assert bounded_detection_time(
+        1_700_000_000_000, 1_699_999_999.0, 1_700_000_100.0,
+    ) == 1_700_000_000.0
+
+
 def test_backend_heartbeat_keeps_operational_device_id_and_sticky_metadata():
     previous = {
         "device_id": "uplink_CB77A4", "total_batches": 4,
@@ -1249,6 +1324,14 @@ def test_backend_heartbeat_keeps_operational_device_id_and_sticky_metadata():
         device_id="uplink_CB77A4",
         firmware_target="uplink-s3-backend",
         hardware_mac="A4:CF:12:CB:77:A4",
+        health={
+            "clock_valid": False,
+            "ap_active": True,
+            "config_generation": 4,
+            "command_success_count": 3,
+            "command_failure_count": 1,
+            "uptime_ms": 8000,
+        },
         detections=[],
     )
     merged = merge_backend_heartbeat(previous, batch, "10.0.0.15", 1000.0)
@@ -1259,6 +1342,7 @@ def test_backend_heartbeat_keeps_operational_device_id_and_sticky_metadata():
     assert (merged["lat"], merged["lon"], merged["alt"]) == (36.1, -115.1, 700.0)
     assert merged["firmware_target"] == "uplink-s3-backend"
     assert merged["hardware_mac"] == "A4:CF:12:CB:77:A4"
+    assert merged["health"]["config_generation"] == 4
 
 
 @pytest.mark.asyncio

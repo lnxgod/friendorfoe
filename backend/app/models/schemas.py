@@ -338,6 +338,24 @@ class BackendUploadTelemetry(BaseModel):
     last_success_age_s: int | None = Field(None, ge=0)
 
 
+class BackendSensorHealth(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    clock_valid: bool
+    epoch_ms: int | None = Field(None, ge=1_700_000_000_000)
+    ap_active: bool
+    config_generation: int = Field(ge=0)
+    command_success_count: int = Field(ge=0)
+    command_failure_count: int = Field(ge=0)
+    uptime_ms: int = Field(ge=0)
+
+    @model_validator(mode="after")
+    def require_epoch_only_for_valid_clock(self):
+        if self.clock_valid != (self.epoch_ms is not None):
+            raise ValueError("epoch_ms presence must match clock_valid")
+        return self
+
+
 class DroneDetectionBatch(BaseModel):
     """Batch of drone detections from a single ESP32 sensor node."""
 
@@ -370,6 +388,7 @@ class DroneDetectionBatch(BaseModel):
     ] | None = None
     upload_queue: BackendUploadQueueTelemetry | None = None
     upload: BackendUploadTelemetry | None = None
+    health: BackendSensorHealth | None = None
     board_type: str | None = Field(None, description="Board type (uplink-s3)")
     scanners: list[dict] | None = Field(
         None,

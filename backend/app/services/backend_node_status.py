@@ -11,7 +11,7 @@ STICKY_BATCH_FIELDS = (
     "scanners", "time_sync", "reporting", "scan_mode", "scan_profile",
     "calibration_uuid", "dedup_seen", "dedup_sent", "dedup_collapsed",
     "cal_seen", "cal_sent", "wifi_ssid", "wifi_rssi", "led_state",
-    "upload_queue", "upload",
+    "upload_queue", "upload", "health",
 )
 
 
@@ -23,7 +23,7 @@ def bounded_observation_time(
     if batch_timestamp is None:
         return server_received_at, None
     skew = float(batch_timestamp) - server_received_at
-    if batch_timestamp <= 1_700_000_000 or skew > MAX_TRUSTED_CLOCK_SKEW_S:
+    if batch_timestamp < 1_700_000_000 or skew > MAX_TRUSTED_CLOCK_SKEW_S:
         return server_received_at, skew
     return float(batch_timestamp), skew
 
@@ -36,7 +36,7 @@ def bounded_detection_time(
     """Use valid scanner epoch time, otherwise the validated batch time."""
     if (
         detection_timestamp_ms is None
-        or detection_timestamp_ms <= 1_700_000_000_000
+        or detection_timestamp_ms < 1_700_000_000_000
     ):
         return batch_observed_at
     observed = detection_timestamp_ms / 1000.0
@@ -75,5 +75,7 @@ def merge_backend_heartbeat(
     for field in STICKY_BATCH_FIELDS:
         value = getattr(batch, field)
         if value is not None:
+            if field == "health":
+                value = value.model_dump(exclude_none=True)
             merged[field] = value
     return merged
