@@ -332,6 +332,12 @@ static bool upload_context_locked(
     memset(context, 0, sizeof(*context));
     copy_text(context->device_id, sizeof(context->device_id),
               s_runtime.config.device_id);
+    copy_text(context->product_family, sizeof(context->product_family),
+              identity->product_family);
+    copy_text(context->firmware_line, sizeof(context->firmware_line),
+              identity->firmware_line);
+    copy_text(context->component, sizeof(context->component),
+              identity->component);
     copy_text(context->firmware_version, sizeof(context->firmware_version),
               identity->version);
     copy_text(context->firmware_target, sizeof(context->firmware_target),
@@ -345,13 +351,23 @@ static bool upload_context_locked(
     copy_text(context->node_name, sizeof(context->node_name),
               s_runtime.config.display_name[0] != '\0'
                   ? s_runtime.config.display_name : s_runtime.config.device_id);
-    copy_text(context->capabilities[0], sizeof(context->capabilities[0]),
-              "scanner_uart");
-    copy_text(context->capabilities[1], sizeof(context->capabilities[1]),
-              "http_uplink");
-    copy_text(context->capabilities[2], sizeof(context->capabilities[2]),
-              "threat_led");
-    context->capability_count = 3U;
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    static const char *const capabilities[] = {
+        "display_none", "rgb_led", "scanner_uart", "http_uplink",
+        "config_ap", "remote_ota", "uart_relay_ota",
+    };
+#else
+    static const char *const capabilities[] = {
+        "display_none", "yellow_led", "scanner_uart", "http_uplink",
+        "config_ap", "remote_ota", "uart_relay_ota",
+    };
+#endif
+    for (size_t index = 0U;
+         index < sizeof(capabilities) / sizeof(capabilities[0]); ++index) {
+        copy_text(context->capabilities[index],
+                  sizeof(context->capabilities[index]), capabilities[index]);
+    }
+    context->capability_count = sizeof(capabilities) / sizeof(capabilities[0]);
     context->has_device_location = s_runtime.config.has_location;
     context->device_lat = s_runtime.config.latitude;
     context->device_lon = s_runtime.config.longitude;
@@ -2359,13 +2375,18 @@ static void build_boot_line(void)
     (void)snprintf(
         s_runtime.boot_line,
         sizeof(s_runtime.boot_line),
-        "FOF_BACKEND_BOOT {\"target\":\"%s\",\"project\":\"%s\","
+        "FOF_BACKEND_BOOT {\"product_family\":\"%s\","
+        "\"firmware_line\":\"%s\",\"component\":\"%s\","
+        "\"target\":\"%s\",\"project\":\"%s\","
         "\"hardware\":\"%s\",\"version\":\"%s\",\"mac\":\"%s\","
         "\"boot_id\":%" PRIu32 ",\"device_id\":\"%s\","
         "\"config_state\":\"loaded\",\"config_generation\":%" PRIu32 ","
         "\"nvs_erased\":false,\"auto_update_enabled\":%s,"
         "\"uart0_started\":%s,\"uart1_started\":%s,"
         "\"network_state\":\"%s\",\"ota_state\":\"%s\"}",
+        identity->product_family,
+        identity->firmware_line,
+        identity->component,
         identity->target,
         identity->project,
         identity->hardware,
@@ -2390,14 +2411,23 @@ static void build_health_line(void)
     (void)snprintf(
         s_runtime.health_line,
         sizeof(s_runtime.health_line),
-        "FOF_BACKEND_HEALTH {\"target\":\"%s\",\"mac\":\"%s\","
+        "FOF_BACKEND_HEALTH {\"product_family\":\"%s\","
+        "\"firmware_line\":\"%s\",\"component\":\"%s\","
+        "\"target\":\"%s\",\"project\":\"%s\","
+        "\"hardware\":\"%s\",\"version\":\"%s\",\"mac\":\"%s\","
         "\"boot_id\":%" PRIu32 ",\"device_id\":\"%s\","
         "\"config_state\":\"loaded\",\"config_generation\":%" PRIu32 ","
         "\"nvs_loaded\":true,\"nvs_erased\":false,"
         "\"auto_update_enabled\":%s,\"uart0_started\":%s,"
         "\"uart1_started\":%s,\"coordinator_started\":%s,"
         "\"network_state\":\"%s\",\"rollback_clear\":%s}",
+        identity->product_family,
+        identity->firmware_line,
+        identity->component,
         identity->target,
+        identity->project,
+        identity->hardware,
+        identity->version,
         s_runtime.mac_text,
         s_runtime.boot_id,
         s_runtime.config.device_id,

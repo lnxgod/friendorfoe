@@ -50,7 +50,6 @@
 #define APP_BOOT_RECORD_BYTES 512U
 #define APP_HEALTH_RECORD_BYTES 512U
 #define APP_SUPERVISOR_PERIOD_MS 250U
-#define APP_TARGET "scanner-s3-combo-backend"
 
 typedef struct {
     drone_detection_t detection;
@@ -602,9 +601,11 @@ static const char *time_source_name(
 
 static bool send_status(void)
 {
+    const backend_firmware_identity_t *identity =
+        backend_identity_for_image(BACKEND_IMAGE_SCANNER);
     backend_scanner_status_t status;
     memset(&status, 0, sizeof(status));
-    if (!app_lock()) {
+    if (identity == NULL || !app_lock()) {
         return false;
     }
     if (s_app.status_sequence != UINT32_MAX) {
@@ -617,13 +618,11 @@ static bool send_status(void)
     status.sequence = s_app.status_sequence;
     status.boot_id = s_app.boot_id;
     memcpy(status.mac, s_app.mac, sizeof(status.mac));
-    memcpy(status.target, APP_TARGET, sizeof(APP_TARGET));
-    memcpy(status.project, FOF_BACKEND_SCANNER_PROJECT,
-           sizeof(FOF_BACKEND_SCANNER_PROJECT));
-    memcpy(status.hardware, FOF_BACKEND_HARDWARE,
-           sizeof(FOF_BACKEND_HARDWARE));
-    memcpy(status.version, FOF_VERSION_BACKEND,
-           sizeof(FOF_VERSION_BACKEND));
+    memcpy(status.target, identity->target, strlen(identity->target) + 1U);
+    memcpy(status.project, identity->project, strlen(identity->project) + 1U);
+    memcpy(status.hardware, identity->hardware,
+           strlen(identity->hardware) + 1U);
+    memcpy(status.version, identity->version, strlen(identity->version) + 1U);
     status.profile = backend_scanner_runtime_profile(&s_app.runtime);
     status.role_generation = s_app.runtime.role.generation;
     status.role_acked = s_app.role_acked;
@@ -1015,9 +1014,11 @@ static void usb_status_task(void *argument)
 
 static void maybe_emit_health(void)
 {
+    const backend_firmware_identity_t *identity =
+        backend_identity_for_image(BACKEND_IMAGE_SCANNER);
     char record[APP_HEALTH_RECORD_BYTES];
     bool changed = false;
-    if (!app_lock()) {
+    if (identity == NULL || !app_lock()) {
         return;
     }
     const backend_scan_profile_t profile =
@@ -1032,11 +1033,16 @@ static void maybe_emit_health(void)
     if (ready) {
         const int written = snprintf(
             record, sizeof(record),
-            "FOF_BACKEND_HEALTH {\"target\":\"%s\",\"mac\":\"%s\","
+            "FOF_BACKEND_HEALTH {\"product_family\":\"%s\","
+            "\"firmware_line\":\"%s\",\"component\":\"%s\","
+            "\"target\":\"%s\",\"project\":\"%s\","
+            "\"hardware\":\"%s\",\"version\":\"%s\",\"mac\":\"%s\","
             "\"boot_id\":%" PRIu32 ",\"nvs_erased\":%s,"
             "\"role\":\"%s\",\"command_ingress_boot_id\":%" PRIu32 ","
             "\"radio_healthy\":true,\"rollback_clear\":true}",
-            APP_TARGET, s_app.mac, s_app.boot_id,
+            identity->product_family, identity->firmware_line,
+            identity->component, identity->target, identity->project,
+            identity->hardware, identity->version, s_app.mac, s_app.boot_id,
             s_app.nvs_erased ? "true" : "false", profile_name(profile),
             s_app.command_ingress_boot_id);
         if (written > 0 && (size_t)written < sizeof(record) &&
@@ -1350,14 +1356,24 @@ void app_main(void)
     s_app.command_ingress_healthy = true;
     s_app.command_ingress_boot_id = s_app.boot_id;
 
+    const backend_firmware_identity_t *identity =
+        backend_identity_for_image(BACKEND_IMAGE_SCANNER);
+    if (identity == NULL) {
+        ESP_LOGE(TAG, "Scanner identity unavailable");
+        (void)backend_status_led_set_state(BACKEND_LED_FATAL);
+        return;
+    }
     const int boot_written = snprintf(
         s_app.boot_record, sizeof(s_app.boot_record),
-        "FOF_BACKEND_BOOT {\"target\":\"%s\",\"project\":\"%s\","
+        "FOF_BACKEND_BOOT {\"product_family\":\"%s\","
+        "\"firmware_line\":\"%s\",\"component\":\"%s\","
+        "\"target\":\"%s\",\"project\":\"%s\","
         "\"hardware\":\"%s\",\"version\":\"%s\",\"mac\":\"%s\","
         "\"boot_id\":%" PRIu32 ",\"nvs_erased\":%s,"
         "\"uart_ingress\":true,\"ota_state\":\"%s\"}",
-        APP_TARGET, FOF_BACKEND_SCANNER_PROJECT,
-        FOF_BACKEND_HARDWARE, FOF_VERSION_BACKEND, s_app.mac,
+        identity->product_family, identity->firmware_line,
+        identity->component, identity->target, identity->project,
+        identity->hardware, identity->version, s_app.mac,
         s_app.boot_id, s_app.nvs_erased ? "true" : "false",
         s_app.running_pending_verify ? "pending_verify" : "valid");
     if (boot_written <= 0 ||

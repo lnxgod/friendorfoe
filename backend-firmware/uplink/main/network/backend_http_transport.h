@@ -6,12 +6,14 @@
 #include <stdint.h>
 #include <sys/types.h>
 
+#include "backend_upload_batch.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 #define BACKEND_HTTP_MAX_RESPONSE_HEADERS 2048U
-#define BACKEND_HTTP_MAX_JSON_BODY 4096U
+#define BACKEND_HTTP_MAX_JSON_BODY BACKEND_UPLOAD_MAX_JSON
 #define BACKEND_HTTP_MAX_CHUNK_LINE 256U
 #define BACKEND_HTTP_JSON_TIMEOUT_MS 5000U
 #define BACKEND_HTTP_BINARY_TIMEOUT_MS 60000U

@@ -43,20 +43,29 @@ static backend_scanner_status_t fixture_scanner(
 
 static backend_batch_context_t fixture_context(void)
 {
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    static const char *const capabilities[] = {
+        "display_none", "rgb_led", "scanner_uart", "http_uplink",
+        "config_ap", "remote_ota", "uart_relay_ota",
+    };
+#else
+    static const char *const capabilities[] = {
+        "display_none", "yellow_led", "scanner_uart", "http_uplink",
+        "config_ap", "remote_ota", "uart_relay_ota",
+    };
+#endif
     backend_batch_context_t context = {
         .device_id = "uplink_CB77A4",
+        .product_family = FOF_BACKEND_PRODUCT_FAMILY,
+        .firmware_line = FOF_BACKEND_FIRMWARE_LINE,
+        .component = "uplink",
         .firmware_version = FOF_VERSION_BACKEND,
         .firmware_target = FOF_BACKEND_UPLINK_TARGET,
         .app_project = FOF_BACKEND_UPLINK_PROJECT,
         .hardware_type = FOF_BACKEND_HARDWARE,
         .hardware_mac = "A4:CF:12:CB:77:A4",
         .node_name = "Roof backend sensor",
-        .capabilities = {
-            "dual_scanner",
-            "ble_investigation",
-            "uart_ota",
-        },
-        .capability_count = 3U,
+        .capability_count = sizeof(capabilities) / sizeof(capabilities[0]),
         .has_device_location = true,
         .device_lat = 36.1699,
         .device_lon = -115.1398,
@@ -87,6 +96,12 @@ static backend_batch_context_t fixture_context(void)
         },
         .sequence = 41U,
     };
+
+    for (size_t index = 0U;
+         index < sizeof(capabilities) / sizeof(capabilities[0]); ++index) {
+        snprintf(context.capabilities[index], sizeof(context.capabilities[index]),
+                 "%s", capabilities[index]);
+    }
 
     context.scanners[0] = fixture_scanner(
         12U, UINT32_C(0x12345678), "AA:BB:CC:DD:EE:01",

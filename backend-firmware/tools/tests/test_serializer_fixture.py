@@ -3,7 +3,11 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from tools.emit_serializer_fixture import (
+    PROFILE_BADGE_LITE,
+    PROFILE_S3_FULLSIZE,
     PRODUCTION_DEPENDENCIES,
     PRODUCTION_SOURCES,
     emit_fixture,
@@ -11,6 +15,40 @@ from tools.emit_serializer_fixture import (
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
+
+
+@pytest.mark.parametrize(
+    "relative_source, component, runtime_role",
+    (
+        ("backend-firmware/scanner/main/main.c", "scanner", True),
+        ("backend-firmware/uplink/main/main.c", "uplink", False),
+    ),
+)
+def test_usb_boot_and_health_records_carry_complete_runtime_identity(
+    relative_source: str,
+    component: str,
+    runtime_role: bool,
+):
+    source = (REPO_ROOT / relative_source).read_text(encoding="utf-8")
+
+    assert "FOF_BACKEND_BOOT" in source
+    assert "FOF_BACKEND_HEALTH" in source
+    for field in (
+        "product_family",
+        "firmware_line",
+        "component",
+        "target",
+        "project",
+        "hardware",
+        "version",
+        "mac",
+    ):
+        assert f'\\"{field}\\"' in source
+    assert f'identity->component' in source
+    if runtime_role:
+        assert '\\"role\\"' in source
+        assert "backend_identity_for_image(BACKEND_IMAGE_SCANNER)" in source
+        assert "APP_TARGET" not in source
 
 
 def test_serializer_fixture_links_only_exact_backend_owned_sources():
@@ -26,16 +64,49 @@ def test_serializer_fixture_links_only_exact_backend_owned_sources():
     )
 
 
-def test_real_serializer_emits_complete_bounded_fixture(tmp_path: Path):
-    payload = emit_fixture(REPO_ROOT, compiler="cc", build_dir=tmp_path)
+def test_http_request_body_cap_is_the_central_upload_batch_cap():
+    header = (REPO_ROOT / "backend-firmware/uplink/main/network"
+              / "backend_http_transport.h").read_text(encoding="utf-8")
+
+    assert '#include "backend_upload_batch.h"' in header
+    assert (
+        "#define BACKEND_HTTP_MAX_JSON_BODY BACKEND_UPLOAD_MAX_JSON"
+        in header
+    )
+
+
+@pytest.mark.parametrize(
+    ("profile", "product_family", "uplink_target", "scanner_target", "led"),
+    (
+        (PROFILE_BADGE_LITE, "badge_lite", "uplink-s3-backend",
+         "scanner-s3-combo-backend", "yellow_led"),
+        (PROFILE_S3_FULLSIZE, "s3_fullsize", "uplink-s3-fullsize-backend",
+         "scanner-s3-combo-fullsize-backend", "rgb_led"),
+    ),
+)
+def test_real_serializer_emits_complete_bounded_fixture(
+    tmp_path: Path,
+    profile: str,
+    product_family: str,
+    uplink_target: str,
+    scanner_target: str,
+    led: str,
+):
+    payload = emit_fixture(
+        REPO_ROOT, compiler="cc", build_dir=tmp_path, profile=profile,
+    )
     body = json.loads(payload)
 
-    assert len(payload) + 1 <= 4096
+    assert len(payload) + 1 <= 5120
     assert not payload.endswith(b"\n")
+    assert payload.endswith(b"}")
     assert {
         key: body[key]
         for key in (
             "device_id",
+            "product_family",
+            "firmware_line",
+            "component",
             "firmware_target",
             "app_project",
             "hardware_type",
@@ -47,15 +118,28 @@ def test_real_serializer_emits_complete_bounded_fixture(tmp_path: Path):
         )
     } == {
         "device_id": "uplink_CB77A4",
-        "firmware_target": "uplink-s3-backend",
-        "app_project": "fof_backend_uplink",
-        "hardware_type": "seeed_xiao_esp32s3",
+        "product_family": product_family,
+        "firmware_line": "backend",
+        "component": "uplink",
+        "firmware_target": uplink_target,
+        "app_project": (
+            "fof_backend_uplink_fullsize"
+            if profile == PROFILE_S3_FULLSIZE else "fof_backend_uplink"
+        ),
+        "hardware_type": (
+            "esp32s3_n16r8_fullsize"
+            if profile == PROFILE_S3_FULLSIZE else "seeed_xiao_esp32s3"
+        ),
         "hardware_mac": "A4:CF:12:CB:77:A4",
         "led_state": "drone_meta",
         "wifi_ssid": "FoF Lab",
         "wifi_rssi": -53,
         "timestamp": 1_785_600_000,
     }
+    assert body["capabilities"] == [
+        "display_none", led, "scanner_uart", "http_uplink", "config_ap",
+        "remote_ota", "uart_relay_ota",
+    ]
     assert body["upload_queue"] == {
         "depth_batches": 7,
         "capacity_batches": 512,
@@ -84,13 +168,27 @@ def test_real_serializer_emits_complete_bounded_fixture(tmp_path: Path):
     ]
     assert {
         scanner["firmware_target"] for scanner in body["scanners"]
-    } == {"scanner-s3-combo-backend"}
+    } == {scanner_target}
     assert {
         scanner["app_project"] for scanner in body["scanners"]
-    } == {"fof_backend_scanner"}
+    } == ({"fof_backend_scanner_fullsize"}
+          if profile == PROFILE_S3_FULLSIZE else {"fof_backend_scanner"})
     assert {
         scanner["hardware_type"] for scanner in body["scanners"]
-    } == {"seeed_xiao_esp32s3"}
+    } == ({"esp32s3_n16r8_fullsize"}
+          if profile == PROFILE_S3_FULLSIZE else {"seeed_xiao_esp32s3"})
+    assert all(scanner["product_family"] == product_family
+               for scanner in body["scanners"])
+    assert all(scanner["firmware_line"] == "backend"
+               for scanner in body["scanners"])
+    assert all(scanner["component"] == "scanner"
+               for scanner in body["scanners"])
+    assert all(scanner["capabilities"] == [
+        "display_none", led, "ble_wifi_sensing", "uart_control", "uart_ota",
+        "remote_ota_via_uplink",
+    ] for scanner in body["scanners"])
+    assert all("config_ap" not in scanner["capabilities"]
+               for scanner in body["scanners"])
     assert len(body["detections"]) == 2
     drone, meta = body["detections"]
     assert {
@@ -202,8 +300,10 @@ def test_real_serializer_emits_complete_bounded_fixture(tmp_path: Path):
 def test_serializer_fixture_cli_writes_and_checks_exact_bytes(tmp_path: Path):
     script = REPO_ROOT / "backend-firmware/tools/emit_serializer_fixture.py"
     output = tmp_path / "fixture.json"
+    fullsize_output = tmp_path / "fullsize-fixture.json"
     emit = subprocess.run(
-        [sys.executable, str(script), "--output", str(output)],
+        [sys.executable, str(script), "--output", str(output),
+         "--fullsize-output", str(fullsize_output)],
         cwd=REPO_ROOT,
         check=True,
         capture_output=True,
@@ -211,9 +311,11 @@ def test_serializer_fixture_cli_writes_and_checks_exact_bytes(tmp_path: Path):
 
     assert emit.stdout == b""
     assert output.read_bytes().endswith(b"\n")
+    assert fullsize_output.read_bytes().endswith(b"\n")
     assert not output.read_bytes().endswith(b"\n\n")
     subprocess.run(
-        [sys.executable, str(script), "--check", str(output)],
+        [sys.executable, str(script), "--check", str(output),
+         "--fullsize-check", str(fullsize_output)],
         cwd=REPO_ROOT,
         check=True,
         capture_output=True,

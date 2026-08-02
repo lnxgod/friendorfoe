@@ -275,6 +275,10 @@ static bool valid_context(const backend_batch_context_t *context)
         context->capability_count > 16U ||
         !valid_text(context->device_id, sizeof(context->device_id)) ||
         context->device_id[0] == '\0' ||
+        !valid_text(context->product_family,
+                    sizeof(context->product_family)) ||
+        !valid_text(context->firmware_line, sizeof(context->firmware_line)) ||
+        !valid_text(context->component, sizeof(context->component)) ||
         !valid_text(context->firmware_version,
                     sizeof(context->firmware_version)) ||
         context->firmware_version[0] == '\0' ||
@@ -302,7 +306,10 @@ static bool valid_context(const backend_batch_context_t *context)
         backend_identity_for_image(BACKEND_IMAGE_UPLINK);
     if (!backend_identity_matches(identity, context->firmware_target,
                                   context->app_project,
-                                  context->hardware_type)) {
+                                  context->hardware_type) ||
+        strcmp(context->product_family, identity->product_family) != 0 ||
+        strcmp(context->firmware_line, identity->firmware_line) != 0 ||
+        strcmp(context->component, identity->component) != 0) {
         return false;
     }
     if (context->has_device_location &&
@@ -672,16 +679,36 @@ static bool append_scanner(backend_json_writer_t *writer,
                            const backend_scanner_status_t *status,
                            size_t slot)
 {
+    const backend_firmware_identity_t *identity =
+        backend_identity_for_image(BACKEND_IMAGE_SCANNER);
     const char *profile = profile_name(status->profile);
     bool radio_healthy = backend_scanner_required_radio_healthy(
         status->profile, status->ble_healthy, status->wifi_healthy);
+    static const char *const capabilities[] = {
+        "display_none",
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+        "rgb_led",
+#else
+        "yellow_led",
+#endif
+        "ble_wifi_sensing",
+        "uart_control",
+        "uart_ota",
+        "remote_ota_via_uplink",
+    };
+    if (identity == NULL) {
+        return false;
+    }
     return backend_json_append(writer, "{\"uart\":") &&
            backend_json_append_escaped(writer, slot == 0U ? "ble" : "wifi") &&
            append_u64(writer, "slot", slot) &&
-           append_string(writer, "firmware_target", status->target) &&
-           append_string(writer, "app_project", status->project) &&
-           append_string(writer, "hardware_type", status->hardware) &&
-           append_string(writer, "firmware_version", status->version) &&
+           append_string(writer, "product_family", identity->product_family) &&
+           append_string(writer, "firmware_line", identity->firmware_line) &&
+           append_string(writer, "component", identity->component) &&
+           append_string(writer, "firmware_target", identity->target) &&
+           append_string(writer, "app_project", identity->project) &&
+           append_string(writer, "hardware_type", identity->hardware) &&
+           append_string(writer, "firmware_version", identity->version) &&
            append_string(writer, "mac", status->mac) &&
            append_u64(writer, "boot_id", status->boot_id) &&
            append_string(writer, "profile", profile) &&
@@ -694,7 +721,20 @@ static bool append_scanner(backend_json_writer_t *writer,
            append_bool(writer, "wifi_healthy", status->wifi_healthy) &&
            append_string(writer, "ota_state", status->ota_state) &&
            append_string(writer, "rollback_state",
-                         status->rollback_state) &&
+                         status->rollback_state) && append_key(writer, "capabilities") &&
+           backend_json_append(writer, "[") &&
+           backend_json_append_escaped(writer, capabilities[0]) &&
+           backend_json_append(writer, ",") &&
+           backend_json_append_escaped(writer, capabilities[1]) &&
+           backend_json_append(writer, ",") &&
+           backend_json_append_escaped(writer, capabilities[2]) &&
+           backend_json_append(writer, ",") &&
+           backend_json_append_escaped(writer, capabilities[3]) &&
+           backend_json_append(writer, ",") &&
+           backend_json_append_escaped(writer, capabilities[4]) &&
+           backend_json_append(writer, ",") &&
+           backend_json_append_escaped(writer, capabilities[5]) &&
+           backend_json_append(writer, "]") &&
            backend_json_append(writer, "}");
 }
 
@@ -711,6 +751,9 @@ static size_t encode_prefix(const backend_batch_context_t *context,
     backend_json_writer_init(&writer, output, capacity);
     backend_json_append(&writer, "{\"device_id\":");
     backend_json_append_escaped(&writer, context->device_id);
+    append_string(&writer, "product_family", context->product_family);
+    append_string(&writer, "firmware_line", context->firmware_line);
+    append_string(&writer, "component", context->component);
     append_string(&writer, "firmware_version", context->firmware_version);
     append_string(&writer, "firmware_target", context->firmware_target);
     append_string(&writer, "app_project", context->app_project);

@@ -12,7 +12,7 @@
 extern "C" {
 #endif
 
-#define BACKEND_UPLOAD_MAX_JSON 4096U
+#define BACKEND_UPLOAD_MAX_JSON 5120U
 #define BACKEND_UPLOAD_FIFO_CAPACITY 512U
 
 typedef struct {
@@ -47,6 +47,9 @@ typedef struct {
 
 typedef struct {
     char device_id[33];
+    char product_family[24];
+    char firmware_line[24];
+    char component[16];
     char firmware_version[32];
     char firmware_target[40];
     char app_project[40];

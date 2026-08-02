@@ -14,6 +14,33 @@
 void setUp(void) {}
 void tearDown(void) {}
 
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+#define EXPECTED_PRODUCT_FAMILY "s3_fullsize"
+#define EXPECTED_LED_CAPABILITY "rgb_led"
+#else
+#define EXPECTED_PRODUCT_FAMILY "badge_lite"
+#define EXPECTED_LED_CAPABILITY "yellow_led"
+#endif
+
+static const char *const EXPECTED_UPLINK_CAPABILITIES[] = {
+    "display_none",
+    EXPECTED_LED_CAPABILITY,
+    "scanner_uart",
+    "http_uplink",
+    "config_ap",
+    "remote_ota",
+    "uart_relay_ota",
+};
+
+static const char *const EXPECTED_SCANNER_CAPABILITIES[] = {
+    "display_none",
+    EXPECTED_LED_CAPABILITY,
+    "ble_wifi_sensing",
+    "uart_control",
+    "uart_ota",
+    "remote_ota_via_uplink",
+};
+
 static backend_scanner_status_t fixture_scanner(
     uint32_t sequence, uint32_t boot_id, const char *mac,
     backend_scan_profile_t profile)
@@ -34,7 +61,7 @@ static backend_scanner_status_t fixture_scanner(
     strcpy(status.target, FOF_BACKEND_SCANNER_TARGET);
     strcpy(status.project, FOF_BACKEND_SCANNER_PROJECT);
     strcpy(status.hardware, FOF_BACKEND_HARDWARE);
-    strcpy(status.version, "0.1.0-backend");
+    strcpy(status.version, FOF_VERSION_BACKEND);
     strcpy(status.ota_state, "idle");
     strcpy(status.rollback_state, "valid");
     return status;
@@ -43,7 +70,7 @@ static backend_scanner_status_t fixture_scanner(
 static backend_batch_context_t fixture_batch_context(void)
 {
     backend_batch_context_t context = {
-        .capability_count = 3U,
+        .capability_count = 7U,
         .has_device_location = true,
         .device_lat = 36.1699,
         .device_lon = -115.1398,
@@ -74,15 +101,21 @@ static backend_batch_context_t fixture_batch_context(void)
         .sequence = 41U,
     };
     strcpy(context.device_id, "uplink_CB77A4");
-    strcpy(context.firmware_version, "0.1.0-backend");
+    strcpy(context.product_family, EXPECTED_PRODUCT_FAMILY);
+    strcpy(context.firmware_line, "backend");
+    strcpy(context.component, "uplink");
+    strcpy(context.firmware_version, FOF_VERSION_BACKEND);
     strcpy(context.firmware_target, FOF_BACKEND_UPLINK_TARGET);
     strcpy(context.app_project, FOF_BACKEND_UPLINK_PROJECT);
     strcpy(context.hardware_type, FOF_BACKEND_HARDWARE);
     strcpy(context.hardware_mac, "A4:CF:12:CB:77:A4");
     strcpy(context.node_name, "Roof backend sensor");
-    strcpy(context.capabilities[0], "dual_scanner");
-    strcpy(context.capabilities[1], "ble_investigation");
-    strcpy(context.capabilities[2], "uart_ota");
+    for (size_t index = 0U;
+         index < sizeof(EXPECTED_UPLINK_CAPABILITIES) /
+                     sizeof(EXPECTED_UPLINK_CAPABILITIES[0]);
+         ++index) {
+        strcpy(context.capabilities[index], EXPECTED_UPLINK_CAPABILITIES[index]);
+    }
     strcpy(context.wifi_ssid, "FoF Lab");
     context.scanners[0] = fixture_scanner(
         12U, UINT32_C(0x12345678), "AA:BB:CC:DD:EE:01",
@@ -337,6 +370,24 @@ static uint32_t independent_crc32(const void *data, size_t length)
     return ~crc;
 }
 
+static void assert_string_array(const char *json,
+                                const backend_json_token_t *tokens,
+                                size_t count, size_t object,
+                                const char *key,
+                                const char *const *expected,
+                                size_t expected_count)
+{
+    size_t array = require_key(json, tokens, count, object, key);
+    TEST_ASSERT_EQUAL(BACKEND_JSON_ARRAY, tokens[array].kind);
+    TEST_ASSERT_EQUAL_UINT16(expected_count, tokens[array].child_count);
+    for (size_t index = 0U; index < expected_count; ++index) {
+        char actual[41];
+        TEST_ASSERT_TRUE(backend_json_copy_string(
+            json, &tokens[array + index + 1U], actual, sizeof(actual)));
+        TEST_ASSERT_EQUAL_STRING(expected[index], actual);
+    }
+}
+
 void test_empty_batch_has_exact_identity_health_and_scanner_bridge(void)
 {
     backend_batch_context_t context = fixture_batch_context();
@@ -358,10 +409,11 @@ void test_empty_batch_has_exact_identity_health_and_scanner_bridge(void)
     backend_json_token_t tokens[BACKEND_JSON_MAX_TOKENS];
     size_t count = parse_object(
         batch.json, batch.json_len, tokens, BACKEND_JSON_MAX_TOKENS);
-    TEST_ASSERT_EQUAL_UINT16(40U, tokens[0].child_count);
+    TEST_ASSERT_EQUAL_UINT16(46U, tokens[0].child_count);
     static const char *const top_level_keys[] = {
-        "device_id", "firmware_version", "firmware_target", "app_project",
-        "hardware_type", "hardware_mac", "node_name", "capabilities",
+        "device_id", "product_family", "firmware_line", "component",
+        "firmware_version", "firmware_target", "app_project", "hardware_type",
+        "hardware_mac", "node_name", "capabilities",
         "device_lat", "device_lon", "device_alt", "timestamp", "scanners",
         "wifi_ssid", "wifi_rssi", "led_state", "upload_queue", "upload",
         "health", "detections",
@@ -373,7 +425,13 @@ void test_empty_batch_has_exact_identity_health_and_scanner_bridge(void)
     assert_string_key(batch.json, tokens, count, 0U,
                       "device_id", "uplink_CB77A4");
     assert_string_key(batch.json, tokens, count, 0U,
-                      "firmware_version", "0.1.0-backend");
+                      "product_family", EXPECTED_PRODUCT_FAMILY);
+    assert_string_key(batch.json, tokens, count, 0U,
+                      "firmware_line", "backend");
+    assert_string_key(batch.json, tokens, count, 0U,
+                      "component", "uplink");
+    assert_string_key(batch.json, tokens, count, 0U,
+                      "firmware_version", FOF_VERSION_BACKEND);
     assert_string_key(batch.json, tokens, count, 0U,
                       "firmware_target", FOF_BACKEND_UPLINK_TARGET);
     assert_string_key(batch.json, tokens, count, 0U,
@@ -403,23 +461,10 @@ void test_empty_batch_has_exact_identity_health_and_scanner_bridge(void)
     assert_key_absent(batch.json, tokens, count, 0U, "ap_active");
     assert_key_absent(batch.json, tokens, count, 0U, "config_generation");
 
-    size_t capabilities = require_key(
-        batch.json, tokens, count, 0U, "capabilities");
-    TEST_ASSERT_EQUAL(BACKEND_JSON_ARRAY, tokens[capabilities].kind);
-    TEST_ASSERT_EQUAL_UINT16(3U, tokens[capabilities].child_count);
-    char capability[41];
-    TEST_ASSERT_TRUE(backend_json_copy_string(
-        batch.json, &tokens[capabilities + 1U], capability,
-        sizeof(capability)));
-    TEST_ASSERT_EQUAL_STRING("dual_scanner", capability);
-    TEST_ASSERT_TRUE(backend_json_copy_string(
-        batch.json, &tokens[capabilities + 2U], capability,
-        sizeof(capability)));
-    TEST_ASSERT_EQUAL_STRING("ble_investigation", capability);
-    TEST_ASSERT_TRUE(backend_json_copy_string(
-        batch.json, &tokens[capabilities + 3U], capability,
-        sizeof(capability)));
-    TEST_ASSERT_EQUAL_STRING("uart_ota", capability);
+    assert_string_array(batch.json, tokens, count, 0U, "capabilities",
+                        EXPECTED_UPLINK_CAPABILITIES,
+                        sizeof(EXPECTED_UPLINK_CAPABILITIES) /
+                            sizeof(EXPECTED_UPLINK_CAPABILITIES[0]));
 
     size_t scanners = require_key(batch.json, tokens, count, 0U, "scanners");
     TEST_ASSERT_EQUAL(BACKEND_JSON_ARRAY, tokens[scanners].kind);
@@ -469,11 +514,17 @@ void test_empty_batch_has_exact_identity_health_and_scanner_bridge(void)
     backend_json_token_t scanner_tokens[96];
     size_t scanner_count = parse_object(
         scanner_json, scanner_length, scanner_tokens, 96U);
-    TEST_ASSERT_EQUAL_UINT16(36U, scanner_tokens[0].child_count);
+    TEST_ASSERT_EQUAL_UINT16(44U, scanner_tokens[0].child_count);
     assert_string_key(scanner_json, scanner_tokens, scanner_count, 0U,
                       "uart", "ble");
     assert_i64_key(scanner_json, scanner_tokens, scanner_count, 0U,
                    "slot", 0);
+    assert_string_key(scanner_json, scanner_tokens, scanner_count, 0U,
+                      "product_family", EXPECTED_PRODUCT_FAMILY);
+    assert_string_key(scanner_json, scanner_tokens, scanner_count, 0U,
+                      "firmware_line", "backend");
+    assert_string_key(scanner_json, scanner_tokens, scanner_count, 0U,
+                      "component", "scanner");
     assert_string_key(scanner_json, scanner_tokens, scanner_count, 0U,
                       "firmware_target", FOF_BACKEND_SCANNER_TARGET);
     assert_string_key(scanner_json, scanner_tokens, scanner_count, 0U,
@@ -481,7 +532,7 @@ void test_empty_batch_has_exact_identity_health_and_scanner_bridge(void)
     assert_string_key(scanner_json, scanner_tokens, scanner_count, 0U,
                       "hardware_type", FOF_BACKEND_HARDWARE);
     assert_string_key(scanner_json, scanner_tokens, scanner_count, 0U,
-                      "firmware_version", "0.1.0-backend");
+                      "firmware_version", FOF_VERSION_BACKEND);
     assert_string_key(scanner_json, scanner_tokens, scanner_count, 0U,
                       "mac", "AA:BB:CC:DD:EE:01");
     assert_i64_key(scanner_json, scanner_tokens, scanner_count, 0U,
@@ -506,6 +557,10 @@ void test_empty_batch_has_exact_identity_health_and_scanner_bridge(void)
                       "ota_state", "idle");
     assert_string_key(scanner_json, scanner_tokens, scanner_count, 0U,
                       "rollback_state", "valid");
+    assert_string_array(scanner_json, scanner_tokens, scanner_count, 0U,
+                        "capabilities", EXPECTED_SCANNER_CAPABILITIES,
+                        sizeof(EXPECTED_SCANNER_CAPABILITIES) /
+                            sizeof(EXPECTED_SCANNER_CAPABILITIES[0]));
     static const char *const forbidden[] = {
         "target", "project", "hardware", "version", "sequence",
         "uart_slot", "flow_paused", "rx_errors", "tx_drops", "uptime_ms",
@@ -520,7 +575,7 @@ void test_empty_batch_has_exact_identity_health_and_scanner_bridge(void)
         &scanner_length));
     scanner_count = parse_object(
         scanner_json, scanner_length, scanner_tokens, 96U);
-    TEST_ASSERT_EQUAL_UINT16(36U, scanner_tokens[0].child_count);
+    TEST_ASSERT_EQUAL_UINT16(44U, scanner_tokens[0].child_count);
     assert_string_key(scanner_json, scanner_tokens, scanner_count, 0U,
                       "uart", "wifi");
     assert_i64_key(scanner_json, scanner_tokens, scanner_count, 0U,
@@ -798,7 +853,7 @@ void test_invalid_clock_and_optional_fields_are_absent_and_context_is_copied(voi
     backend_json_token_t tokens[BACKEND_JSON_MAX_TOKENS];
     size_t count = parse_object(
         batch.json, batch.json_len, tokens, BACKEND_JSON_MAX_TOKENS);
-    TEST_ASSERT_EQUAL_UINT16(32U, tokens[0].child_count);
+    TEST_ASSERT_EQUAL_UINT16(38U, tokens[0].child_count);
     assert_string_key(batch.json, tokens, count, 0U,
                       "device_id", "uplink_CB77A4");
     assert_string_key(batch.json, tokens, count, 0U,
@@ -884,6 +939,8 @@ void test_finish_failure_preserves_batch_sequence_and_unpublished_output(void)
         builder.context.capabilities[capability]
             [sizeof(builder.context.capabilities[capability]) - 1U] = '\0';
     }
+    memset(builder.context.capabilities[0], 1,
+           sizeof(builder.context.capabilities[0]));
     const uint32_t sequence = builder.context.sequence;
     const uint16_t item_count = builder.item_count;
     const size_t json_len = builder.json_len;
@@ -1041,7 +1098,7 @@ void test_tick_rejects_invalid_time_and_flushes_safely_at_int64_max(void)
     TEST_ASSERT_EQUAL_HEX8(0xa5, ((const uint8_t *)&output)[0]);
 }
 
-void test_oversized_single_item_and_invalid_context_fail_without_partial_json(void)
+void test_serialization_rejects_above_cap_without_partial_json(void)
 {
     backend_batch_context_t context = fixture_batch_context();
     context.scanner_present[0] = false;
@@ -1106,6 +1163,6 @@ int main(void)
     BACKEND_RUN_TEST(
         test_tick_rejects_invalid_time_and_flushes_safely_at_int64_max);
     BACKEND_RUN_TEST(
-        test_oversized_single_item_and_invalid_context_fail_without_partial_json);
+        test_serialization_rejects_above_cap_without_partial_json);
     return UNITY_END();
 }

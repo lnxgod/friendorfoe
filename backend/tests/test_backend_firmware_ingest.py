@@ -942,15 +942,54 @@ async def test_backend_evidence_survives_history_persistence(client):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("fixture_name", "product_family", "uplink_target", "scanner_target", "led"),
+    (
+        ("backend_firmware_detection_batch.json", "badge_lite",
+         "uplink-s3-backend", "scanner-s3-combo-backend", "yellow_led"),
+        ("backend_firmware_fullsize_detection_batch.json", "s3_fullsize",
+         "uplink-s3-fullsize-backend", "scanner-s3-combo-fullsize-backend",
+         "rgb_led"),
+    ),
+)
 async def test_real_backend_firmware_serializer_contract(
     client,
     backend_sensor_session_factory,
+    fixture_name,
+    product_family,
+    uplink_target,
+    scanner_target,
+    led,
 ):
     fixture = (
         Path(__file__).parent
-        / "fixtures/backend_firmware_detection_batch.json"
+        / "fixtures" / fixture_name
     )
     body = json.loads(fixture.read_text(encoding="utf-8"))
+
+    assert body["product_family"] == product_family
+    assert body["firmware_line"] == "backend"
+    assert body["component"] == "uplink"
+    assert body["firmware_target"] == uplink_target
+    assert body["capabilities"] == [
+        "display_none", led, "scanner_uart", "http_uplink", "config_ap",
+        "remote_ota", "uart_relay_ota",
+    ]
+    assert {scanner["firmware_target"] for scanner in body["scanners"]} == {
+        scanner_target,
+    }
+    assert all(scanner["product_family"] == product_family
+               for scanner in body["scanners"])
+    assert all(scanner["firmware_line"] == "backend"
+               for scanner in body["scanners"])
+    assert all(scanner["component"] == "scanner"
+               for scanner in body["scanners"])
+    assert all(scanner["capabilities"] == [
+        "display_none", led, "ble_wifi_sensing", "uart_control", "uart_ota",
+        "remote_ota_via_uplink",
+    ] for scanner in body["scanners"])
+    assert all("config_ap" not in scanner["capabilities"]
+               for scanner in body["scanners"])
 
     response = await client.post("/detections/drones", json=body)
 
