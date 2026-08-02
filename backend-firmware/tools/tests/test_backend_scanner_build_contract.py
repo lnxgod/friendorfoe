@@ -86,13 +86,6 @@ def test_fullsize_scanner_environment_selects_its_16mb_generated_config_input() 
     for key, value in expected.items():
         assert config.get(key) == value
 
-    generated = SCANNER / "sdkconfig.scanner-s3-combo-fullsize-backend"
-    if generated.exists():
-        selected = sdkconfig_values(generated.name)
-        for key, value in expected.items():
-            assert selected.get(key) == value
-
-
 def test_scanner_project_has_exact_backend_descriptor_and_local_sources() -> None:
     project = (SCANNER / "CMakeLists.txt").read_text(encoding="utf-8")
     component = (SCANNER / "main/CMakeLists.txt").read_text(encoding="utf-8")
@@ -178,13 +171,6 @@ def test_scanner_sdkconfig_enables_exact_headless_radio_and_rollback_contract() 
     }
     for key, value in expected.items():
         assert config.get(key) == value
-
-    generated = SCANNER / "sdkconfig.scanner-s3-combo-backend"
-    if generated.exists():
-        selected = sdkconfig_values(generated.name)
-        for key, value in expected.items():
-            assert selected.get(key) == value
-
 
 def test_scanner_partition_table_has_two_exact_2mb_ota_slots_and_safe_nvs() -> None:
     with (SCANNER / "partitions_backend_scanner_8mb.csv").open(

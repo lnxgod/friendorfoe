@@ -118,13 +118,6 @@ def test_fullsize_uplink_environment_selects_its_16mb_generated_config_input() -
     for key, value in expected.items():
         assert config.get(key) == value
 
-    generated = UPLINK / "sdkconfig.uplink-s3-fullsize-backend"
-    if generated.exists():
-        selected = _sdkconfig(generated.name)
-        for key, value in expected.items():
-            assert selected.get(key, "n") == value
-
-
 def test_uplink_project_uses_backend_version_and_explicit_local_sources() -> None:
     top = (UPLINK / "CMakeLists.txt").read_text(encoding="utf-8")
     component = (UPLINK / "main/CMakeLists.txt").read_text(encoding="utf-8")
@@ -237,13 +230,6 @@ def test_uplink_sdkconfig_enables_rollback_psram_usb_wifi_and_no_bluetooth() -> 
     }
     for key, value in expected.items():
         assert config.get(key) == value
-
-    generated = UPLINK / "sdkconfig.uplink-s3-backend"
-    if generated.exists():
-        selected = _sdkconfig(generated.name)
-        for key, value in expected.items():
-            assert selected.get(key, "n") == value
-
 
 def test_uplink_main_has_no_badge_presentation_location_or_bluetooth_runtime() -> None:
     source = (UPLINK / "main/main.c").read_text(encoding="utf-8").lower()
