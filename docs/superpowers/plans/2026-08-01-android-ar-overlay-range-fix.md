@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Make valid ADS-B aircraft appear in Android AR out to 12 statute miles and stop approximate location from blanking the radio overlay.
+**Goal:** Make valid ADS-B aircraft appear in Android AR out to 12 statute miles, stop approximate location from blanking the radio overlay, and remove two confirmed resume/location blockers from the same rendering path.
 
-**Architecture:** Put aircraft/drone range decisions in one pure sensor-layer policy consumed by both projection and off-screen arrow selection. Pass the complete location permission state into the AR screen and derive overlay eligibility from the existing `PermissionUiState.isUsable()` contract, so precise and approximate grants follow one rule.
+**Architecture:** Put aircraft/drone range decisions in one pure sensor-layer policy consumed by both projection and off-screen arrow selection. Pass the complete location permission state into the AR screen and derive overlay eligibility from the existing `PermissionUiState.isUsable()` contract. Make portrait FOV setup repeatable across resumes and select only the freshest valid last-known location when seeding ADS-B.
 
 **Tech Stack:** Kotlin, Jetpack Compose, Android location permissions, JUnit4, Gradle, GitHub Actions
 
@@ -17,6 +17,8 @@
 - Approximate and precise location grants permit positional overlays; denied location or a missing fix does not.
 - Preserve grounded, below-30-meter, and stale-aircraft filters.
 - Preserve the 50-nautical-mile ADS-B acquisition radius and ADS-B-on default.
+- Repeated camera calculate-and-portrait cycles must preserve the same portrait FOV dimensions.
+- Initial AR positioning must reject invalid, future, and older-than-30-second cached fixes and choose the freshest usable GPS or network fix.
 - Use only focused regression tests during implementation, followed by one final debug APK build.
 
 ---
@@ -165,12 +167,60 @@
 
 ---
 
-### Task 3: Package and verify the Android patch release
+### Task 3: Stabilize portrait FOV and initial AR location across resumes
+
+**Files:**
+
+- Modify: `android/app/src/main/java/com/friendorfoe/sensor/CameraFovCalculator.kt`
+- Modify: `android/app/src/test/java/com/friendorfoe/sensor/CameraFovCalculatorTest.kt`
+- Modify: `android/app/src/main/java/com/friendorfoe/presentation/ar/ArViewModel.kt:1000-1100`
+- Create: `android/app/src/test/java/com/friendorfoe/presentation/ar/ArLocationSeedPolicyTest.kt`
+
+**Interfaces:**
+
+- Produces repeatable `calculateFromFocalLengthAndSensorSize(...); swapForPortrait()` behavior.
+- Produces `selectFreshestArLastKnownLocationFix(gps, network, nowElapsedRealtimeNanos)` with a 30-second maximum age.
+
+- [ ] **Step 1: Write both focused failing regressions**
+
+  In `CameraFovCalculatorTest`, calculate landscape FOV, swap to portrait, record both dimensions, then repeat calculate and swap on the same calculator. Assert the second portrait dimensions equal the first. In `ArLocationSeedPolicyTest`, provide a stale GPS fix and a fresh network fix and assert the network position is selected; also assert an invalid newer fix does not hide a fresh valid fix.
+
+- [ ] **Step 2: Run only the two relevant test classes and verify red**
+
+  ```bash
+  cd android && ./gradlew testDebugUnitTest --tests 'com.friendorfoe.sensor.CameraFovCalculatorTest' --tests 'com.friendorfoe.presentation.ar.ArLocationSeedPolicyTest' --console=plain
+  ```
+
+  Expected: repeated portrait setup returns landscape dimensions under the sticky `portraitSwapped` flag, and the AR location selection contract is missing.
+
+- [ ] **Step 3: Reset orientation state when raw hardware FOV is recalculated**
+
+  Whenever either focal-length calculation overload writes landscape sensor dimensions, reset `portraitSwapped` before the next `swapForPortrait()` call. Keep repeated `swapForPortrait()` calls without recalculation idempotent.
+
+- [ ] **Step 4: Add a pure AR last-known-location selector and use it at startup**
+
+  Represent each candidate with `Position`, validated accuracy, and `elapsedRealtimeNanos`. Reject non-finite/out-of-range coordinates, the uninitialized `(0, 0)` sentinel, future timestamps, and fixes older than 30 seconds. Choose the valid candidate with the greatest elapsed-realtime timestamp. In `startSensors`, read GPS and network independently, select once using `SystemClock.elapsedRealtimeNanos()`, and only mark GPS locked/start ADS-B when a usable fix exists; otherwise start scanner-only sources as today.
+
+- [ ] **Step 5: Re-run the focused tests and verify green**
+
+  Run the command from Step 2. Expected: both classes pass.
+
+- [ ] **Step 6: Commit the resume/location fixes**
+
+  ```bash
+  git add android/app/src/main/java/com/friendorfoe/sensor/CameraFovCalculator.kt android/app/src/main/java/com/friendorfoe/presentation/ar/ArViewModel.kt android/app/src/test/java/com/friendorfoe/sensor/CameraFovCalculatorTest.kt android/app/src/test/java/com/friendorfoe/presentation/ar/ArLocationSeedPolicyTest.kt docs/superpowers
+  git commit -m "android: stabilize AR positioning after resume"
+  ```
+
+---
+
+### Task 4: Package and verify the Android patch release
 
 **Files:**
 
 - Modify: `android/app/build.gradle.kts:26-27`
 - Modify: `.github/workflows/android-build.yml:114`
+- Modify: `backend/tests/test_android_release_workflow_contract.py:8-9`
 
 **Interfaces:**
 
@@ -191,7 +241,13 @@
 - [ ] **Step 2: Run the final focused regression set once**
 
   ```bash
-  cd android && ./gradlew testDebugUnitTest --tests 'com.friendorfoe.sensor.SkyPositionMapperTest' --tests 'com.friendorfoe.presentation.ar.ArOverlayPolicyTest' --tests 'com.friendorfoe.presentation.permissions.FeaturePermissionsTest' --console=plain
+  cd android && ./gradlew testDebugUnitTest --tests 'com.friendorfoe.sensor.SkyPositionMapperTest' --tests 'com.friendorfoe.sensor.CameraFovCalculatorTest' --tests 'com.friendorfoe.presentation.ar.ArOverlayPolicyTest' --tests 'com.friendorfoe.presentation.ar.ArLocationSeedPolicyTest' --tests 'com.friendorfoe.presentation.permissions.FeaturePermissionsTest' --console=plain
+  ```
+
+  Run the single release workflow contract test after updating its exact version constants:
+
+  ```bash
+  cd backend && pytest tests/test_android_release_workflow_contract.py -q
   ```
 
 - [ ] **Step 3: Build one final debug APK**
@@ -208,7 +264,7 @@
   git diff --check
   git status --short
   git diff --stat origin/main...HEAD
-  git add android/app/build.gradle.kts .github/workflows/android-build.yml docs/superpowers/plans/2026-08-01-android-ar-overlay-range-fix.md
+  git add android/app/build.gradle.kts .github/workflows/android-build.yml backend/tests/test_android_release_workflow_contract.py docs/superpowers
   git commit -m "v0.67.7: prepare Android AR overlay release"
   ```
 
