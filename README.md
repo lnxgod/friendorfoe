@@ -151,6 +151,7 @@ field console.
 | Path | Purpose |
 |------|---------|
 | `android/` | Kotlin + Jetpack Compose app, badge console, privacy views, AR/list/map screens |
+| `new-dash/` | Compact macOS USB browser console for one badge; independent local SQLite history and safe display controls |
 | `backend/` | FastAPI ingest, enrichment, dashboard, triangulation, calibration, firmware endpoints |
 | `esp32/scanner/` | ESP32-S3 scanner firmware for BLE/Wi-Fi detection |
 | `esp32/uplink/` | ESP32-S3 uplink firmware, display, USB-C control, read-only local status, UART OTA relay |
@@ -185,6 +186,20 @@ source .venv/bin/activate
 pip install -r requirements.txt
 pytest tests -v
 ```
+
+New Dash source launch and tests (separate from `backend/`):
+
+```sh
+cd new-dash
+./run.sh
+
+PYTHONPATH=src python3 -m unittest discover -s tests -v
+python3 -m compileall -q src tests
+node --test tests/browser_behavior_test.mjs
+```
+
+See [`new-dash/README.md`](new-dash/README.md) for explicit USB-port selection,
+local data, controls, telemetry limits, and troubleshooting.
 
 ESP32 native policy tests:
 
