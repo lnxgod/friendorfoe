@@ -43,6 +43,7 @@ from tools.backend_canary import (
     parse_live_inventory,
     parse_ota_evidence,
     redact_secrets,
+    redact_text,
     resolve_toolchain,
     validate_flash_ranges,
     validate_final_health_set,
@@ -605,6 +606,29 @@ def test_redaction_removes_secret_keys_recursively():
     for secret in ("wifi", "Bearer x", "abc", "sid=1"):
         assert secret not in rendered
     assert redacted["nested"]["safe"] == 7
+
+
+@pytest.mark.parametrize(
+    "key",
+    (
+        "wifi_pass",
+        "ap_pass",
+        "passphrase",
+        "pwd",
+        "psk",
+        "api-key",
+        "apiKey",
+    ),
+)
+def test_core_redaction_normalizes_real_credential_aliases(key: str):
+    secret = f"{key}-must-not-survive"
+    redacted = redact_secrets({key: secret, "safe": 7})
+    assert redacted == {key: "[REDACTED]", "safe": 7}
+    assert secret not in json.dumps(redacted)
+
+    rendered = redact_text(f'{key}={secret}\n"{key}": "{secret}"')
+    assert secret not in rendered
+    assert rendered.count("[REDACTED]") == 2
 
 
 def partition_binary(entries: tuple[tuple[str, str, str, int, int], ...]) -> bytes:

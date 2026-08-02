@@ -164,6 +164,21 @@ SECRET_KEY = re.compile(
     r"password|secret|credential|token|authorization|cookie|set-cookie|api_key",
     re.IGNORECASE,
 )
+NORMALIZED_SECRET_MARKERS = (
+    "password",
+    "passphrase",
+    "pwd",
+    "psk",
+    "wifipass",
+    "appass",
+    "secret",
+    "credential",
+    "token",
+    "authorization",
+    "cookie",
+    "setcookie",
+    "apikey",
+)
 HEX64 = re.compile(r"^[0-9a-fA-F]{64}$")
 MAC_RE = re.compile(r"^[0-9A-F]{2}(?::[0-9A-F]{2}){5}$")
 
@@ -448,10 +463,18 @@ def _write_all(descriptor: int, payload: bytes) -> None:
         view = view[written:]
 
 
+def _is_secret_key(value: str) -> bool:
+    normalized = re.sub(r"[^a-z0-9]", "", value.casefold())
+    return bool(
+        SECRET_KEY.search(value)
+        or any(marker in normalized for marker in NORMALIZED_SECRET_MARKERS)
+    )
+
+
 def redact_secrets(value: Any) -> Any:
     if isinstance(value, Mapping):
         return {
-            str(key): "[REDACTED]" if SECRET_KEY.search(str(key))
+            str(key): "[REDACTED]" if _is_secret_key(str(key))
             else redact_secrets(item)
             for key, item in value.items()
         }
@@ -566,12 +589,21 @@ def _run_checked(
 def redact_text(value: str) -> str:
     """Redact common HTTP/JSON secret assignments from diagnostic text."""
     result = value
-    patterns = (
-        r'(?i)(password|secret|credential|token|authorization|cookie|set-cookie|api_key)(\s*[=:]\s*)[^\s,}\"]+',
-        r'(?i)("(?:password|secret|credential|token|authorization|cookie|set-cookie|api_key)"\s*:\s*)"[^"]*"',
+    key = (
+        r"password|passphrase|pwd|psk|wifi[_-]?pass|ap[_-]?pass|"
+        r"secret|credential|token|authorization|cookie|set[-_]?cookie|"
+        r"api[_-]?key"
     )
-    for pattern in patterns:
-        result = re.sub(pattern, lambda match: match.group(1) + "[REDACTED]", result)
+    result = re.sub(
+        rf'(?i)("(?:{key})"\s*:\s*)"[^"]*"',
+        lambda match: match.group(1) + '"[REDACTED]"',
+        result,
+    )
+    result = re.sub(
+        rf"(?i)({key})(\s*[=:]\s*)[^\r\n,}}]+",
+        lambda match: match.group(1) + match.group(2) + "[REDACTED]",
+        result,
+    )
     return result
 
 
