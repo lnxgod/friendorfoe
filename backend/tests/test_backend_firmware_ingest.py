@@ -192,6 +192,41 @@ def test_backend_batch_preserves_identity_health_and_queue_metadata():
 
 
 @pytest.mark.asyncio
+async def test_diagnostics_use_canonical_scanner_target_and_version(client, monkeypatch):
+    device_id = "uplink_CANON_DIAG"
+    monkeypatch.setattr(detections, "_node_heartbeats", {
+        device_id: {
+            "device_id": device_id,
+            "ip": "192.168.1.71",
+            "last_seen": time.time(),
+            "firmware_target": "uplink-s3-backend",
+            "firmware_version": "0.1.0-backend",
+            "scanners": [{
+                "firmware_target": "scanner-s3-combo-backend",
+                "app_project": "fof_backend_scanner",
+                "hardware_type": "seeed_xiao_esp32s3",
+                "firmware_version": "0.1.0-backend",
+                "ver": "legacy-shadow-version",
+                "mac": "AA:BB:CC:DD:EE:71",
+                "boot_id": 71,
+                "uart": "ble",
+            }],
+        },
+    })
+
+    response = await client.get("/detections/diagnostics")
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["firmware_readiness"]["scanner_versions_seen"] == {"0.1.0-backend": 1}
+    assert [
+        warning for warning in payload["system_warnings"]
+        if warning.get("device_id") == device_id
+        and warning["code"].startswith("scanner_firmware_")
+    ] == []
+
+
+@pytest.mark.asyncio
 async def test_backend_heartbeat_accepts_empty_detection_array(client):
     response = await client.post("/detections/drones", json={
         "device_id": "uplink_CB77A4",

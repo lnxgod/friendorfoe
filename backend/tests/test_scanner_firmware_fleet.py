@@ -203,6 +203,70 @@ async def test_scanner_readiness_flags_missing_target_version(
 
 
 @pytest.mark.asyncio
+async def test_default_readiness_and_stage_use_canonical_backend_scanner_identity(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(
+        detections,
+        "_node_heartbeats",
+        {
+            "uplink_CANON": {
+                "device_id": "uplink_CANON",
+                "ip": "192.168.1.70",
+                "last_seen": time.time(),
+                "scanners": [{
+                    "firmware_target": "scanner-s3-combo-backend",
+                    "app_project": "fof_backend_scanner",
+                    "hardware_type": "seeed_xiao_esp32s3",
+                    "firmware_version": "0.1.0-backend",
+                    "mac": "AA:BB:CC:DD:EE:70",
+                    "boot_id": 70,
+                    "uart": "ble",
+                }],
+            },
+        },
+    )
+    uploads: list[str] = []
+
+    async def backend_binary(name: str) -> bytes:
+        assert name == "scanner-s3-combo-backend"
+        return b"canonical backend scanner image"
+
+    async def backend_version(name: str) -> str:
+        assert name == "scanner-s3-combo-backend"
+        return "0.1.0-backend"
+
+    async def capture_upload(cmd, **kwargs):
+        uploads.append(next(part for part in cmd if isinstance(part, str) and part.startswith("http://")))
+        return _completed(cmd, b'{"ok":true,"stored":true}')
+
+    def accept_test_image(device_id, firmware_name, image, uart=None, **kwargs):
+        assert firmware_name == "scanner-s3-combo-backend"
+        return kwargs.get("snapshot")
+
+    monkeypatch.setattr(nodes._firmware_mgr, "get_firmware_binary", backend_binary)
+    monkeypatch.setattr(nodes._firmware_mgr, "get_firmware_version", backend_version)
+    monkeypatch.setattr(nodes, "_require_ota_compatibility", accept_test_image)
+    monkeypatch.setattr(nodes, "_run_subprocess", capture_upload)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        readiness = await client.get("/nodes/firmware/scanner/readiness")
+        staged = await client.post("/nodes/firmware/scanner/stage-fleet")
+
+    assert readiness.status_code == 200, readiness.text
+    scanner = readiness.json()["scanners"][0]
+    assert scanner["target_firmware"] == "scanner-s3-combo-backend"
+    assert scanner["current_version"] == "0.1.0-backend"
+    assert scanner["already_current"] is True
+    assert staged.status_code == 200, staged.text
+    assert staged.json()["results"][0]["firmware"] == "scanner-s3-combo-backend"
+    assert uploads == [
+        "http://192.168.1.70/api/fw/upload?name=scanner-s3-combo-backend&version=0.1.0-backend"
+    ]
+
+
+@pytest.mark.asyncio
 async def test_backend_scanner_identity_mismatch_is_blocked_from_fleet_execution(
     monkeypatch: pytest.MonkeyPatch,
 ):

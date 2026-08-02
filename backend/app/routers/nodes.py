@@ -293,7 +293,7 @@ def _scanner_version_from_node_info(node_info: dict | None, uart: str) -> tuple[
     for scanner in node_info.get("scanners") or []:
         if scanner.get("uart") != uart:
             continue
-        version = scanner.get("ver") or scanner.get("firmware_version") or scanner.get("version") or ""
+        version = scanner.get("firmware_version") or scanner.get("ver") or scanner.get("version") or ""
         return str(version), scanner
     return "", None
 
@@ -391,6 +391,9 @@ async def _run_direct_legacy_scanner_relay(ip: str, uart: str, fw_data: bytes) -
 def _scanner_target_name(scanner: dict, firmware_name: str | None = None) -> str:
     if firmware_name:
         return firmware_name
+    canonical = str(scanner.get("firmware_target") or scanner.get("firmware_name") or "").strip()
+    if canonical.startswith("scanner-"):
+        return canonical
     board = str(scanner.get("board") or "").strip()
     if board.startswith("scanner-"):
         return board
@@ -398,7 +401,7 @@ def _scanner_target_name(scanner: dict, firmware_name: str | None = None) -> str
 
 
 def _scanner_current_version(scanner: dict) -> str:
-    return str(scanner.get("ver") or scanner.get("firmware_version") or scanner.get("version") or "")
+    return str(scanner.get("firmware_version") or scanner.get("ver") or scanner.get("version") or "")
 
 
 def _scanner_self_update_capable(scanner: dict) -> bool:

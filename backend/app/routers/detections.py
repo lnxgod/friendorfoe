@@ -2576,7 +2576,7 @@ async def get_detection_diagnostics(
             })
         for sc in scanners:
             scanner_count += 1
-            sc_ver = sc.get("ver")
+            sc_ver = sc.get("firmware_version") or sc.get("ver") or sc.get("version")
             sc_target = sc.get("firmware_target") or sc.get("firmware_name")
             if sc_ver:
                 scanner_versions[str(sc_ver)] += 1
