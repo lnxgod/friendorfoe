@@ -1,6 +1,9 @@
 package com.friendorfoe.presentation.privacy
 
 import com.friendorfoe.detection.GlassesDetection
+import com.friendorfoe.detection.GlassesDetector
+import com.friendorfoe.detection.BlePromptFamily
+import com.friendorfoe.detection.BleThreatSignal
 import com.friendorfoe.detection.PrivacyCategory
 import com.friendorfoe.presentation.components.FofTone
 import java.time.Instant
@@ -61,6 +64,35 @@ class PrivacyAlertPolicyTest {
         )
 
         assertNull(PrivacyAlertPolicy.fromDetection(legacySkimmer))
+    }
+
+    @Test
+    fun pairingSpamDetectionRemainsAlertEligible() {
+        val detection = GlassesDetector.behavioralDetection(
+            signal = BleThreatSignal.PairingSpam(
+                entityKey = "ble:pairing-spam",
+                families = setOf(BlePromptFamily.MICROSOFT_SWIFT_PAIR),
+                uniqueMacs = 12,
+                observationCount = 24,
+                strongestRssi = -44,
+                rssiSpan = 6,
+                windowMs = 8_000L,
+            ),
+            now = Instant.ofEpochMilli(100_000L),
+            observedAtElapsedMs = 1_000L,
+        )
+
+        val candidate = PrivacyAlertPolicy.fromDetection(detection)
+
+        assertNotNull(candidate)
+        assertEquals(PrivacyCategory.ATTACK_TOOL.threatLevel, candidate?.threatLevel)
+        assertTrue(
+            PrivacyAlertPolicy().shouldNotify(
+                candidate = requireNotNull(candidate),
+                ignoredMacs = emptySet(),
+                nowMs = 1_000L,
+            ),
+        )
     }
 
     @Test

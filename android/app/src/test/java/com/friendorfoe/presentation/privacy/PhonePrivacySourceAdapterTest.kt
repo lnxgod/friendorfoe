@@ -4,7 +4,10 @@ import com.friendorfoe.data.DetectionSettings
 import com.friendorfoe.data.repository.LocalDetectionPermissions
 import com.friendorfoe.data.time.MonotonicClock
 import com.friendorfoe.detection.BleTracker
+import com.friendorfoe.detection.BlePromptFamily
+import com.friendorfoe.detection.BleThreatSignal
 import com.friendorfoe.detection.GlassesDetection
+import com.friendorfoe.detection.GlassesDetector
 import com.friendorfoe.detection.GlassesScanEvent
 import com.friendorfoe.detection.PrivacyCategory
 import com.friendorfoe.detection.UltrasonicDetector
@@ -219,6 +222,46 @@ class PhonePrivacySourceAdapterTest {
         runCurrent()
 
         assertTrue(adapter.bleSnapshot().findings.isEmpty())
+    }
+
+    @Test
+    fun pairingSpamObservationRemainsASupportedPhoneFinding() = runTest {
+        val settings = MutableStateFlow(
+            DetectionSettings.defaults().copy(phonePrivacyScanEnabled = true),
+        )
+        val permissions = MutableStateFlow(LocalDetectionPermissions.None.copy(bluetoothScan = true))
+        val events = MutableSharedFlow<GlassesScanEvent>(extraBufferCapacity = 1)
+        val adapter = adapter(
+            settings = settings,
+            permissions = permissions,
+            bleEvents = { events },
+        )
+        val detection = GlassesDetector.behavioralDetection(
+            signal = BleThreatSignal.PairingSpam(
+                entityKey = "ble:pairing-spam",
+                families = setOf(BlePromptFamily.MICROSOFT_SWIFT_PAIR),
+                uniqueMacs = 12,
+                observationCount = 24,
+                strongestRssi = -44,
+                rssiSpan = 6,
+                windowMs = 8_000L,
+            ),
+            now = Instant.ofEpochMilli(100_000L),
+            observedAtElapsedMs = 1_000L,
+        )
+        runCurrent()
+
+        events.emit(GlassesScanEvent.Observation(detection))
+        runCurrent()
+
+        val finding = adapter.bleSnapshot().findings.single()
+        assertEquals("BLE Pairing Spam", finding.title)
+        assertEquals(PrivacyCategory.ATTACK_TOOL, finding.category)
+        assertEquals("ble:pairing-spam", finding.stableSourceId)
+        assertEquals(
+            "observation:ble:pairing-spam",
+            finding.observationKey.sourceRecordId,
+        )
     }
 
     @Test

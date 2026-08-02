@@ -48,6 +48,7 @@ import com.friendorfoe.presentation.reference.ReferenceGuideScreen
 import com.friendorfoe.presentation.permissions.AppFeature
 import com.friendorfoe.presentation.permissions.ContextualPermissionGate
 import com.friendorfoe.presentation.permissions.FeaturePermissionGate
+import com.friendorfoe.presentation.permissions.PermissionBindings
 import com.friendorfoe.presentation.permissions.PermissionUiState
 import com.friendorfoe.presentation.permissions.rememberPermissionBindings
 
@@ -243,32 +244,45 @@ internal fun AboutTopLevelRoute(
     }
 }
 
+@Composable
+internal fun AboutSettingsRoute(
+    navController: NavHostController,
+    viewModel: AboutViewModel?,
+    permissionBindings: PermissionBindings? = null,
+) {
+    Column(Modifier.fillMaxSize().testTag("screen_about_settings")) {
+        FofSecondaryScreenHeader(
+            title = "App settings",
+            onBack = navController::popBackStack,
+        )
+        InfoSettingsScreen(
+            viewModel = viewModel,
+            onNavigateToCalibrate = {
+                navController.navigate(Screen.Calibrate.route) { launchSingleTop = true }
+            },
+            onNavigateToEmfSweep = {
+                navController.navigate(Screen.EmfSweep.route) { launchSingleTop = true }
+            },
+            onNavigateToIrCameraScan = {
+                navController.navigate(Screen.IrCameraScan.route) { launchSingleTop = true }
+            },
+            onNavigateToReference = {
+                navController.navigate(REFERENCE_GUIDE_BASE_ROUTE) { launchSingleTop = true }
+            },
+            permissionBindings = permissionBindings,
+            modifier = Modifier.weight(1f),
+        )
+    }
+}
+
 private fun NavGraphBuilder.registerSecondaryDestinations(
     navController: NavHostController,
 ) {
     composable(Screen.AboutSettings.route) {
-        Column(Modifier.fillMaxSize()) {
-            FofSecondaryScreenHeader(
-                title = "App settings",
-                onBack = navController::popBackStack,
-            )
-            InfoSettingsScreen(
-                viewModel = hiltViewModel<AboutViewModel>(),
-                onNavigateToCalibrate = {
-                    navController.navigate(Screen.Calibrate.route) { launchSingleTop = true }
-                },
-                onNavigateToEmfSweep = {
-                    navController.navigate(Screen.EmfSweep.route) { launchSingleTop = true }
-                },
-                onNavigateToIrCameraScan = {
-                    navController.navigate(Screen.IrCameraScan.route) { launchSingleTop = true }
-                },
-                onNavigateToReference = {
-                    navController.navigate(REFERENCE_GUIDE_BASE_ROUTE) { launchSingleTop = true }
-                },
-                modifier = Modifier.weight(1f),
-            )
-        }
+        AboutSettingsRoute(
+            navController = navController,
+            viewModel = hiltViewModel<AboutViewModel>(),
+        )
     }
 
     composable(

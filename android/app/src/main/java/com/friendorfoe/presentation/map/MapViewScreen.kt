@@ -1,6 +1,7 @@
 package com.friendorfoe.presentation.map
 
 import android.content.Context
+import android.os.SystemClock
 import android.view.View
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
@@ -27,16 +28,18 @@ import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.unit.dp
@@ -52,6 +55,7 @@ import com.friendorfoe.presentation.detail.DroneDetailContent
 import com.friendorfoe.presentation.filter.FilterBar
 import com.friendorfoe.presentation.permissions.PermissionUiState
 import com.friendorfoe.presentation.permissions.isUsable
+import com.friendorfoe.domain.model.Position
 import org.osmdroid.config.Configuration
 import org.osmdroid.events.MapEventsReceiver
 import org.osmdroid.tileprovider.tilesource.TileSourceFactory
@@ -120,6 +124,53 @@ internal fun <T : View> StableAndroidViewHost(
     )
 }
 
+internal fun View.installMapCameraTouchListener(
+    isMapRevealed: () -> Boolean,
+    onUserTouch: () -> Unit,
+) {
+    setOnTouchListener { _, event ->
+        if (!isMapRevealed()) {
+            true
+        } else {
+            if (event.action == android.view.MotionEvent.ACTION_DOWN) onUserTouch()
+            false
+        }
+    }
+}
+
+@Composable
+internal fun MapLocatingOverlay(modifier: Modifier = Modifier) {
+    Box(
+        modifier = modifier
+            .fillMaxSize()
+            .pointerInput(Unit) {
+                awaitPointerEventScope {
+                    while (true) {
+                        awaitPointerEvent(PointerEventPass.Initial).changes.forEach { it.consume() }
+                    }
+                }
+            }
+            .background(MaterialTheme.colorScheme.surface),
+        contentAlignment = Alignment.Center,
+    ) {
+        androidx.compose.foundation.layout.Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(12.dp),
+        ) {
+            CircularProgressIndicator()
+            Text(
+                text = "Finding your location…",
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+@Composable
+internal fun rememberMapCameraOwnership(mapInstance: Any): MutableState<Boolean> =
+    remember(mapInstance) { mutableStateOf(false) }
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MapViewScreen(
@@ -136,7 +187,7 @@ fun MapViewScreen(
     val skyObjects by viewModel.skyObjects.collectAsStateWithLifecycle()
     val mapTracks by viewModel.mapTracks.collectAsStateWithLifecycle()
     val filterState by viewModel.filterState.collectAsStateWithLifecycle()
-    val userPosition by viewModel.userPosition.collectAsStateWithLifecycle()
+    val userLocationFix by viewModel.userLocationFix.collectAsStateWithLifecycle()
     val selectedObjectId by viewModel.selectedObjectId.collectAsStateWithLifecycle()
     val detailState by detailViewModel.detailState.collectAsStateWithLifecycle()
     val followCompass by viewModel.followCompass.collectAsStateWithLifecycle()
@@ -180,8 +231,6 @@ fun MapViewScreen(
         selectedObjectId?.let { detailViewModel.loadDetail(it) }
     }
 
-    var userControlsCamera by rememberSaveable { mutableStateOf(false) }
-
     val isDarkTheme = androidx.compose.foundation.isSystemInDarkTheme()
 
     val mapView = remember {
@@ -190,14 +239,6 @@ fun MapViewScreen(
             setMultiTouchControls(true)
             controller.setZoom(10.0)
             zoomController.setVisibility(org.osmdroid.views.CustomZoomButtonsController.Visibility.NEVER)
-            // Any deliberate map touch leaves the camera under user control.
-            setOnTouchListener { _, event ->
-                if (event.action == android.view.MotionEvent.ACTION_DOWN) {
-                    userControlsCamera = true
-                    viewModel.stopFollowingCompass()
-                }
-                false  // Don't consume — let the map handle it
-            }
             // Long-press: search 250 NM radius at tapped point (ocean search)
             overlays.add(0, MapEventsOverlay(object : MapEventsReceiver {
                 override fun singleTapConfirmedHelper(p: org.osmdroid.util.GeoPoint): Boolean = false
@@ -211,6 +252,8 @@ fun MapViewScreen(
             }))
         }
     }
+    val cameraOwnership = rememberMapCameraOwnership(mapView)
+    var userControlsCamera by cameraOwnership
     val overlayController = remember(mapView) {
         MapOverlayController(
             context = context,
@@ -222,6 +265,18 @@ fun MapViewScreen(
             },
         )
     }
+    var acceptedUserPosition by remember(mapView, locationPermissionState.isUsable()) {
+        mutableStateOf<Position?>(null)
+    }
+    LaunchedEffect(mapView, userLocationFix) {
+        acceptedUserPosition = updateMapPositionForInstance(
+            acceptedPosition = acceptedUserPosition,
+            candidate = userLocationFix,
+            nowElapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos(),
+        )
+    }
+    val userPosition = acceptedUserPosition
+        ?: Position(latitude = 0.0, longitude = 0.0, altitudeMeters = 0.0)
     val overlayPlan = mapOverlayPlan(
         locationPermissionState = locationPermissionState,
         hasValidUserPosition = userPosition.hasValidMapCoordinates(),
@@ -230,6 +285,16 @@ fun MapViewScreen(
         locationPermissionState = locationPermissionState,
         userPosition = userPosition,
     )
+    DisposableEffect(mapView, viewModel, cameraOwnership, revealMap) {
+        mapView.installMapCameraTouchListener(
+            isMapRevealed = { revealMap },
+            onUserTouch = {
+                cameraOwnership.value = true
+                viewModel.stopFollowingCompass()
+            },
+        )
+        onDispose { mapView.setOnTouchListener(null) }
+    }
 
     // Apply dark mode color filter to map tiles
     LaunchedEffect(isDarkTheme) {
@@ -271,24 +336,7 @@ fun MapViewScreen(
             },
         )
         if (!revealMap) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(MaterialTheme.colorScheme.surface),
-                contentAlignment = Alignment.Center,
-            ) {
-                androidx.compose.foundation.layout.Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(12.dp),
-                ) {
-                    CircularProgressIndicator()
-                    Text(
-                        text = "Finding your location…",
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
+            MapLocatingOverlay()
         }
 
         if (!locationPermissionState.isUsable()) {

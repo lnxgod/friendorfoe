@@ -50,8 +50,8 @@ import javax.inject.Inject
 private const val MAP_FRAME_INTERVAL_MS = 250L
 private const val MAX_LAST_KNOWN_LOCATION_AGE_NANOS = 30_000_000_000L
 
-internal data class MapLastKnownLocationCandidate<T>(
-    val value: T,
+internal data class MapLocationFix(
+    val position: Position,
     val elapsedRealtimeNanos: Long,
 )
 
@@ -63,19 +63,43 @@ internal fun shouldSeedMapFromLastKnownLocation(
     return ageNanos in 0..MAX_LAST_KNOWN_LOCATION_AGE_NANOS
 }
 
-internal fun <T> selectFreshestMapLastKnownLocation(
-    gps: MapLastKnownLocationCandidate<T>?,
-    network: MapLastKnownLocationCandidate<T>?,
+internal fun usableMapPosition(
+    fix: MapLocationFix?,
     nowElapsedRealtimeNanos: Long,
-): T? = listOfNotNull(gps, network)
-    .filter { candidate ->
+): Position? = fix?.position?.takeIf { position ->
+    position.hasValidMapCoordinates() &&
         shouldSeedMapFromLastKnownLocation(
-            locationElapsedRealtimeNanos = candidate.elapsedRealtimeNanos,
+            locationElapsedRealtimeNanos = fix.elapsedRealtimeNanos,
             nowElapsedRealtimeNanos = nowElapsedRealtimeNanos,
         )
+}
+
+internal fun updateMapPositionForInstance(
+    acceptedPosition: Position?,
+    candidate: MapLocationFix?,
+    nowElapsedRealtimeNanos: Long,
+): Position? = usableMapPosition(candidate, nowElapsedRealtimeNanos)
+    ?: acceptedPosition?.takeIf(Position::hasValidMapCoordinates)
+
+internal fun selectFreshestMapLastKnownLocationFix(
+    gps: MapLocationFix?,
+    network: MapLocationFix?,
+    nowElapsedRealtimeNanos: Long,
+): MapLocationFix? = listOfNotNull(gps, network)
+    .filter { candidate ->
+        usableMapPosition(candidate, nowElapsedRealtimeNanos) != null
     }
-    .maxByOrNull(MapLastKnownLocationCandidate<T>::elapsedRealtimeNanos)
-    ?.value
+    .maxByOrNull(MapLocationFix::elapsedRealtimeNanos)
+
+internal fun selectFreshestMapLastKnownLocation(
+    gps: MapLocationFix?,
+    network: MapLocationFix?,
+    nowElapsedRealtimeNanos: Long,
+): Position? = selectFreshestMapLastKnownLocationFix(
+    gps = gps,
+    network = network,
+    nowElapsedRealtimeNanos = nowElapsedRealtimeNanos,
+)?.position
 
 internal fun mapFrameClock(
     epochNowMs: () -> Long = System::currentTimeMillis,
@@ -283,10 +307,8 @@ class MapViewModel @Inject constructor(
         initialValue = emptySet()
     )
 
-    private val _userPosition = MutableStateFlow(
-        Position(latitude = 0.0, longitude = 0.0, altitudeMeters = 0.0)
-    )
-    val userPosition: StateFlow<Position> = _userPosition.asStateFlow()
+    private val _userLocationFix = MutableStateFlow<MapLocationFix?>(null)
+    internal val userLocationFix: StateFlow<MapLocationFix?> = _userLocationFix.asStateFlow()
 
     private val _selectedObjectId = backendIntegrationState.selectedObjectId
     val selectedObjectId: StateFlow<String?> = _selectedObjectId.asStateFlow()
@@ -389,10 +411,12 @@ class MapViewModel @Inject constructor(
 
     private val locationListener = object : LocationListener {
         override fun onLocationChanged(location: Location) {
-            _userPosition.value = Position(
-                latitude = location.latitude,
-                longitude = location.longitude,
-                altitudeMeters = location.altitude
+            val nowElapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos()
+            val candidate = location.toMapLocationFix()
+            _userLocationFix.value = selectFreshestMapLastKnownLocationFix(
+                gps = _userLocationFix.value,
+                network = candidate,
+                nowElapsedRealtimeNanos = nowElapsedRealtimeNanos,
             )
 
             // Ensure scanning is running even if AR was never visited
@@ -444,22 +468,21 @@ class MapViewModel @Inject constructor(
             val gpsLastKnown = locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER)
             val networkLastKnown =
                 locationManager.getLastKnownLocation(LocationManager.NETWORK_PROVIDER)
-            val lastKnown = selectFreshestMapLastKnownLocation(
+            val nowElapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos()
+            val lastKnown = selectFreshestMapLastKnownLocationFix(
                 gps = gpsLastKnown?.let { location ->
-                    MapLastKnownLocationCandidate(location, location.elapsedRealtimeNanos)
+                    location.toMapLocationFix()
                 },
                 network = networkLastKnown?.let { location ->
-                    MapLastKnownLocationCandidate(location, location.elapsedRealtimeNanos)
+                    location.toMapLocationFix()
                 },
-                nowElapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos(),
+                nowElapsedRealtimeNanos = nowElapsedRealtimeNanos,
             )
-            if (lastKnown != null) {
-                _userPosition.value = Position(
-                    latitude = lastKnown.latitude,
-                    longitude = lastKnown.longitude,
-                    altitudeMeters = lastKnown.altitude
-                )
-            }
+            _userLocationFix.value = selectFreshestMapLastKnownLocationFix(
+                gps = _userLocationFix.value,
+                network = lastKnown,
+                nowElapsedRealtimeNanos = nowElapsedRealtimeNanos,
+            )
         } catch (e: SecurityException) {
             Log.e(TAG, "Location permission not granted", e)
         }
@@ -481,4 +504,13 @@ class MapViewModel @Inject constructor(
         compassSensorLease?.close()
         compassSensorLease = null
     }
+
+    private fun Location.toMapLocationFix(): MapLocationFix = MapLocationFix(
+        position = Position(
+            latitude = latitude,
+            longitude = longitude,
+            altitudeMeters = altitude,
+        ),
+        elapsedRealtimeNanos = elapsedRealtimeNanos,
+    )
 }

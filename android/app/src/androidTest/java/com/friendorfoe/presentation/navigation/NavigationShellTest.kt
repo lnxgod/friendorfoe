@@ -24,6 +24,9 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navigation
 import androidx.test.espresso.Espresso.pressBack
+import com.friendorfoe.presentation.permissions.AppFeature
+import com.friendorfoe.presentation.permissions.PermissionBindings
+import com.friendorfoe.presentation.permissions.PermissionUiState
 import com.friendorfoe.presentation.theme.FriendOrFoeTheme
 import org.junit.Assert.assertEquals
 import org.junit.Rule
@@ -142,5 +145,41 @@ class NavigationShellTest {
         compose.onNodeWithTag("about_reference").performClick()
 
         compose.onNodeWithTag("screen_reference_guide").assertIsDisplayed()
+    }
+
+    @Test
+    fun productionAboutSettingsRouteReturnsToAboutOnBack() {
+        compose.setContent {
+            FriendOrFoeTheme {
+                val navController = rememberNavController()
+                NavHost(navController = navController, startDestination = Screen.About.route) {
+                    composable(Screen.About.route) {
+                        AboutTopLevelRoute(navController = navController)
+                    }
+                    composable(Screen.AboutSettings.route) {
+                        AboutSettingsRoute(
+                            navController = navController,
+                            viewModel = null,
+                            permissionBindings = PermissionBindings(
+                                states = AppFeature.entries.associateWith {
+                                    PermissionUiState.Granted
+                                },
+                                requestFeature = { _, onResolved ->
+                                    onResolved(PermissionUiState.Granted)
+                                },
+                                openFeatureSettings = { _, _ -> },
+                            ),
+                        )
+                    }
+                }
+            }
+        }
+
+        compose.onNodeWithTag("about_app_settings").performClick()
+        compose.onNodeWithTag("screen_about_settings").assertIsDisplayed()
+
+        pressBack()
+
+        compose.onNodeWithTag("about_landing").assertIsDisplayed()
     }
 }

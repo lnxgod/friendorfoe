@@ -18,16 +18,18 @@ class MapPresentationTest {
     @Test
     fun staleGpsDoesNotHideAFreshNetworkLocation() {
         val nowElapsedRealtimeNanos = 120_000_000_000L
+        val staleGps = Position(37.0, -122.0, 0.0)
+        val freshNetwork = Position(36.1699, -115.1398, 0.0)
 
         assertEquals(
-            "network",
+            freshNetwork,
             selectFreshestMapLastKnownLocation(
-                gps = MapLastKnownLocationCandidate(
-                    value = "gps",
+                gps = MapLocationFix(
+                    position = staleGps,
                     elapsedRealtimeNanos = 1_000_000_000L,
                 ),
-                network = MapLastKnownLocationCandidate(
-                    value = "network",
+                network = MapLocationFix(
+                    position = freshNetwork,
                     elapsedRealtimeNanos = 115_000_000_000L,
                 ),
                 nowElapsedRealtimeNanos = nowElapsedRealtimeNanos,
@@ -36,11 +38,35 @@ class MapPresentationTest {
     }
 
     @Test
+    fun newerInvalidProviderDoesNotHideAnOlderFreshValidLocation() {
+        val validNetworkPosition = Position(
+            latitude = 36.1699,
+            longitude = -115.1398,
+            altitudeMeters = 620.0,
+        )
+
+        assertEquals(
+            validNetworkPosition,
+            selectFreshestMapLastKnownLocation(
+                gps = MapLocationFix(
+                    position = Position(0.0, 0.0, 0.0),
+                    elapsedRealtimeNanos = 119_000_000_000L,
+                ),
+                network = MapLocationFix(
+                    position = validNetworkPosition,
+                    elapsedRealtimeNanos = 110_000_000_000L,
+                ),
+                nowElapsedRealtimeNanos = 120_000_000_000L,
+            ),
+        )
+    }
+
+    @Test
     fun futureLastKnownLocationIsRejected() {
         assertNull(
             selectFreshestMapLastKnownLocation(
-                gps = MapLastKnownLocationCandidate(
-                    value = "future-gps",
+                gps = MapLocationFix(
+                    position = Position(36.1699, -115.1398, 0.0),
                     elapsedRealtimeNanos = 121_000_000_000L,
                 ),
                 network = null,
@@ -51,15 +77,89 @@ class MapPresentationTest {
 
     @Test
     fun exactFreshnessBoundaryIsAccepted() {
+        val boundaryNetwork = Position(36.1699, -115.1398, 0.0)
+
         assertEquals(
-            "boundary-network",
+            boundaryNetwork,
             selectFreshestMapLastKnownLocation(
                 gps = null,
-                network = MapLastKnownLocationCandidate(
-                    value = "boundary-network",
+                network = MapLocationFix(
+                    position = boundaryNetwork,
                     elapsedRealtimeNanos = 90_000_000_000L,
                 ),
                 nowElapsedRealtimeNanos = 120_000_000_000L,
+            ),
+        )
+    }
+
+    @Test
+    fun staleRetainedLocationCannotRevealOrInitializeARecreatedMap() {
+        val staleFix = MapLocationFix(
+            position = Position(36.1699, -115.1398, 620.0),
+            elapsedRealtimeNanos = 80_000_000_000L,
+        )
+
+        val cameraPosition = usableMapPosition(
+            fix = staleFix,
+            nowElapsedRealtimeNanos = 120_000_000_000L,
+        )
+        val unavailablePosition = cameraPosition ?: Position(0.0, 0.0, 0.0)
+
+        assertNull(cameraPosition)
+        assertFalse(
+            shouldRevealMap(
+                locationPermissionState = PermissionUiState.Granted,
+                userPosition = unavailablePosition,
+            ),
+        )
+        assertEquals(
+            MapCameraAction.WaitForLocation,
+            mapCameraAction(
+                locationPermissionUsable = true,
+                userPosition = unavailablePosition,
+                cameraInitialized = false,
+                followPhone = false,
+                userControlsCamera = false,
+            ),
+        )
+    }
+
+    @Test
+    fun freshRetainedLocationRemainsUsableForARecreatedMap() {
+        val position = Position(36.1699, -115.1398, 620.0)
+
+        assertEquals(
+            position,
+            usableMapPosition(
+                fix = MapLocationFix(
+                    position = position,
+                    elapsedRealtimeNanos = 110_000_000_000L,
+                ),
+                nowElapsedRealtimeNanos = 120_000_000_000L,
+            ),
+        )
+    }
+
+    @Test
+    fun initializedMapKeepsItsAcceptedPositionWhenTheFixAgesOut() {
+        val position = Position(36.1699, -115.1398, 620.0)
+        val fix = MapLocationFix(
+            position = position,
+            elapsedRealtimeNanos = 110_000_000_000L,
+        )
+        val accepted = updateMapPositionForInstance(
+            acceptedPosition = null,
+            candidate = fix,
+            nowElapsedRealtimeNanos = 120_000_000_000L,
+        )
+
+        assertEquals(position, accepted)
+        assertEquals(
+            position,
+            updateMapPositionForInstance(
+                acceptedPosition = accepted,
+                candidate = fix,
+                nowElapsedRealtimeNanos = 150_000_000_001L,
             ),
         )
     }
