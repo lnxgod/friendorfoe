@@ -6,9 +6,11 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path, PurePosixPath
 import re
 import subprocess
+import tempfile
 from typing import Any
 
 
@@ -72,6 +74,44 @@ def _blob_at_commit(repository: Path, base: str, source: PurePosixPath) -> bytes
     return _git(repository, "show", f"{base}:{source_name}").stdout
 
 
+def _reject_symlink_components(path: Path, boundary: Path) -> None:
+    try:
+        relative = path.relative_to(boundary)
+    except ValueError as exc:
+        raise ValueError(f"unsafe vendor destination outside output root: {path}") from exc
+    current = boundary
+    for part in relative.parts:
+        current = current / part
+        if current.is_symlink():
+            raise ValueError(f"unsafe vendor destination symlink: {current}")
+
+
+def _write_provenance_atomically(path: Path, payload: str, output_root: Path) -> None:
+    _reject_symlink_components(path, output_root)
+    temporary_name: str | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=output_root,
+            prefix=".VENDORED_SHA256.",
+            suffix=".tmp",
+            delete=False,
+        ) as temporary:
+            temporary.write(payload)
+            temporary.flush()
+            os.fsync(temporary.fileno())
+            temporary_name = temporary.name
+        os.replace(temporary_name, path)
+        temporary_name = None
+    finally:
+        if temporary_name is not None:
+            try:
+                Path(temporary_name).unlink()
+            except FileNotFoundError:
+                pass
+
+
 def snapshot(
     repository: Path,
     manifest_path: Path,
@@ -79,7 +119,11 @@ def snapshot(
 ) -> dict[str, str]:
     repository = repository.resolve(strict=True)
     manifest_path = manifest_path.resolve(strict=True)
-    output_root = output_root.resolve(strict=False)
+    requested_output_root = output_root.expanduser()
+    if requested_output_root.is_symlink():
+        raise ValueError(f"unsafe vendor output root symlink: {requested_output_root}")
+    output_root = requested_output_root.resolve(strict=False)
+    output_root.mkdir(parents=True, exist_ok=True)
     manifest = load_manifest(manifest_path)
     base = manifest["base"]
 
@@ -94,20 +138,25 @@ def snapshot(
             source = source_root / PurePosixPath(entry)
             data = _blob_at_commit(repository, base, source)
             relative_destination = Path("vendor") / group / Path(entry)
-            destination = (output_root / relative_destination).resolve(strict=False)
+            group_root = output_root / "vendor" / group
+            destination = output_root / relative_destination
+            _reject_symlink_components(destination, output_root)
+            canonical_group_root = group_root.resolve(strict=False)
+            canonical_destination = destination.resolve(strict=False)
             try:
-                destination.relative_to(output_root)
+                canonical_destination.relative_to(canonical_group_root)
             except ValueError as exc:
                 raise ValueError(f"unsafe vendor destination: {entry}") from exc
             destination.parent.mkdir(parents=True, exist_ok=True)
+            _reject_symlink_components(destination, output_root)
             destination.write_bytes(data)
             hashes[relative_destination.as_posix()] = hashlib.sha256(data).hexdigest()
 
     provenance = output_root / "VENDORED_SHA256.json"
-    provenance.parent.mkdir(parents=True, exist_ok=True)
-    provenance.write_text(
+    _write_provenance_atomically(
+        provenance,
         json.dumps(dict(sorted(hashes.items())), indent=2) + "\n",
-        encoding="utf-8",
+        output_root,
     )
     return dict(sorted(hashes.items()))
 

@@ -17,11 +17,28 @@ from typing import Iterable, Sequence
 SOURCE_SUFFIXES = {".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx"}
 EXCLUDED_NAMES = {"VENDOR_MANIFEST.json", "VENDORED_SHA256.json"}
 QUOTED_PATH = re.compile(r"[\"']([^\"']+)[\"']")
-INCLUDE_PATH = re.compile(r"^\s*#\s*include\s*[\"]([^\"]+)[\"]", re.MULTILINE)
+INCLUDE_PATH = re.compile(
+    r"^\s*#\s*include\s*[<\"]([^>\"]+)[>\"]", re.MULTILINE
+)
 ANGLE_FILTER_PATH = re.compile(r"[+-]?<([^>]+)>")
 INCLUDE_FLAG = re.compile(r"(?:^|\s)(?:-I|-isystem\s+)([^\s]+)")
 UNQUOTED_PATH = re.compile(
-    r"(?<![A-Za-z0-9_])((?:\.\.?/|/)[A-Za-z0-9_./@+~-]+)"
+    r"(?<![A-Za-z0-9_}$%])((?:\.\.?/|/)[A-Za-z0-9_./@+~-]+)"
+)
+BARE_PATH = re.compile(
+    r"(?<![A-Za-z0-9_$%{}])"
+    r"([A-Za-z0-9_.@+~-]+(?:/[A-Za-z0-9_.*?@+~-]+)+)"
+)
+KNOWN_ROOT_VARIABLES = (
+    "${CMAKE_SOURCE_DIR}",
+    "${PROJECT_SOURCE_DIR}",
+    "${PROJECT_DIR}",
+    "$PROJECT_DIR",
+    "%PROJECT_DIR%",
+)
+KNOWN_LOCAL_VARIABLES = (
+    "${CMAKE_CURRENT_LIST_DIR}",
+    "${CMAKE_CURRENT_SOURCE_DIR}",
 )
 
 
@@ -33,7 +50,7 @@ def _is_within(path: Path, parent: Path) -> bool:
     return True
 
 
-def _discover_tool_roots() -> list[Path]:
+def _discover_tool_roots(root: Path, repository_root: Path) -> list[Path]:
     roots: set[Path] = set()
     platformio_packages = Path.home() / ".platformio" / "packages"
     if platformio_packages.exists():
@@ -46,7 +63,20 @@ def _discover_tool_roots() -> list[Path]:
         found = shutil.which(executable)
         if found:
             roots.add(Path(found).resolve().parent)
-    return sorted(roots, key=str)
+    safe_roots: list[Path] = []
+    filesystem_root = Path(repository_root.anchor)
+    for candidate in roots:
+        if (
+            candidate == filesystem_root
+            or _is_within(repository_root, candidate)
+            or (
+                _is_within(candidate, repository_root)
+                and not _is_within(candidate, root)
+            )
+        ):
+            continue
+        safe_roots.append(candidate)
+    return sorted(safe_roots, key=str)
 
 
 def _has_symlink_component(path: Path, repository_root: Path) -> bool:
@@ -67,6 +97,15 @@ def _clean_candidate(candidate: str) -> str:
     return candidate.strip().strip("\"'<>(),;[]")
 
 
+def _expand_known_variables(candidate: str, root: Path, base_directory: Path) -> str:
+    expanded = candidate
+    for variable in KNOWN_ROOT_VARIABLES:
+        expanded = expanded.replace(variable, str(root))
+    for variable in KNOWN_LOCAL_VARIABLES:
+        expanded = expanded.replace(variable, str(base_directory))
+    return expanded
+
+
 def _finding_for_path(
     *,
     display_file: str,
@@ -76,11 +115,12 @@ def _finding_for_path(
     repository_root: Path,
     allowed_tool_roots: Sequence[Path],
 ) -> str | None:
-    candidate = _clean_candidate(candidate)
-    if not candidate or candidate.startswith(("http://", "https://")):
+    original_candidate = _clean_candidate(candidate)
+    if not original_candidate or original_candidate.startswith(("http://", "https://")):
         return None
+    candidate = _expand_known_variables(original_candidate, root, base_directory)
     if "$" in candidate or "%" in candidate:
-        return None
+        return f"{display_file}: unresolved build path {original_candidate}"
 
     lexical = Path(candidate).expanduser()
     was_absolute = lexical.is_absolute()
@@ -88,18 +128,20 @@ def _finding_for_path(
         lexical = base_directory / lexical
 
     if _has_symlink_component(lexical, repository_root):
-        return f"{display_file}: repository symlink build path {candidate}"
+        return f"{display_file}: repository symlink build path {original_candidate}"
 
     canonical = lexical.resolve(strict=False)
     if _is_within(canonical, root / "vendor"):
-        return f"{display_file}: vendor source compiled {candidate}"
+        return f"{display_file}: vendor source compiled {original_candidate}"
     if _is_within(canonical, root):
         return None
+    if _is_within(canonical, repository_root):
+        return f"{display_file}: protected or escaping build path {original_candidate}"
     if any(_is_within(canonical, tool_root) for tool_root in allowed_tool_roots):
         return None
-    if not was_absolute or _is_within(canonical, repository_root):
-        return f"{display_file}: protected or escaping build path {candidate}"
-    return f"{display_file}: absolute build path outside allowed roots {candidate}"
+    if not was_absolute:
+        return f"{display_file}: protected or escaping build path {original_candidate}"
+    return f"{display_file}: absolute build path outside allowed roots {original_candidate}"
 
 
 def _config_candidates(path: Path, text: str) -> Iterable[str]:
@@ -110,6 +152,7 @@ def _config_candidates(path: Path, text: str) -> Iterable[str]:
     yield from ANGLE_FILTER_PATH.findall(text)
     yield from INCLUDE_FLAG.findall(text)
     yield from UNQUOTED_PATH.findall(text)
+    yield from BARE_PATH.findall(text)
 
 
 def _build_files(root: Path) -> Iterable[Path]:
@@ -208,7 +251,7 @@ def audit_tree(
     root = root.expanduser().resolve(strict=True)
     repository_root = root.parent.resolve(strict=True)
     if allowed_tool_roots is None:
-        tool_roots = _discover_tool_roots()
+        tool_roots = _discover_tool_roots(root, repository_root)
     else:
         tool_roots = [Path(path).expanduser().resolve(strict=False) for path in allowed_tool_roots]
 
@@ -238,8 +281,6 @@ def audit_tree(
                 seen.add(finding)
 
     for database in sorted(root.rglob("compile_commands.json")):
-        if "vendor" in database.relative_to(root).parts:
-            continue
         for finding in _compile_database_findings(
             database,
             root=root,
