@@ -4,12 +4,120 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="new-dash-control-token" content="{{CONTROL_TOKEN}}">
-  <title>Friend or Foe — New Dash</title>
+  <title>New Dash — Friend or Foe</title>
+  <link rel="stylesheet" href="/static/vendor/leaflet/leaflet.css">
+  <link rel="stylesheet" href="/static/styles.css">
+  <script defer src="/static/vendor/leaflet/leaflet.js"></script>
+  <script type="module" src="/static/app.js"></script>
 </head>
 <body>
-  <main>
-    <h1>Friend or Foe</h1>
-    <p>New Dash is starting.</p>
+  <header class="app-header">
+    <div class="header-primary">
+      <h1>New Dash</h1>
+      <nav class="view-tabs" aria-label="Primary views" role="tablist">
+        <button id="tab-live" type="button" role="tab" data-view-target="live" aria-controls="view-live">Live</button>
+        <button id="tab-map" type="button" role="tab" data-view-target="map" aria-controls="view-map">Map</button>
+        <button id="tab-history" type="button" role="tab" data-view-target="history" aria-controls="view-history">History</button>
+        <button id="tab-badge" type="button" role="tab" data-view-target="badge" aria-controls="view-badge">Badge</button>
+      </nav>
+    </div>
+    <div id="connection-status" class="connection-status" aria-live="polite" aria-atomic="true">
+      <span id="connection-phase" class="connection-phase">USB status unavailable</span>
+      <span id="connection-freshness">Freshness unavailable</span>
+      <span id="connection-firmware">Firmware missing</span>
+      <span id="connection-scanners">Scanners missing</span>
+      <span id="connection-port">Port missing</span>
+    </div>
+  </header>
+
+  <main id="dashboard-main">
+    <div id="request-status" class="request-status" role="status" aria-live="polite" hidden></div>
+
+    <details id="presentation-filter-panel" class="presentation-filter-panel" open>
+      <summary>Presentation filters <span id="filter-summary">All</span></summary>
+    <form id="presentation-filters" class="filter-rail" aria-label="Dashboard presentation filters">
+      <label>Class
+        <select id="filter-class" name="class">
+          <option value="all">All classes</option>
+          <option value="drone">Drone</option>
+          <option value="meta">Meta</option>
+          <option value="tracker">Tracker</option>
+          <option value="wifi_attack">Wi-Fi attack</option>
+          <option value="other">Other</option>
+        </select>
+      </label>
+      <label>Source
+        <select id="filter-source" name="source">
+          <option value="all">All sources</option>
+          <option value="ble_rid">BLE Remote ID</option>
+          <option value="wifi_rid">Wi-Fi Remote ID</option>
+          <option value="wifi_dji_ie">DJI vendor IE</option>
+          <option value="wifi_ssid">Wi-Fi SSID</option>
+          <option value="wifi_oui">Wi-Fi OUI</option>
+          <option value="wifi_probe">Wi-Fi probe</option>
+          <option value="ble_fingerprint">BLE fingerprint</option>
+          <option value="wifi_assoc">Wi-Fi association</option>
+          <option value="wifi_inventory">Wi-Fi inventory</option>
+        </select>
+      </label>
+      <label>Minimum confidence
+        <select id="filter-confidence" name="confidence">
+          <option value="all">Any reported value</option>
+          <option value="50">50% or higher</option>
+          <option value="70">70% or higher</option>
+          <option value="90">90% or higher</option>
+        </select>
+      </label>
+      <label>Live / stale
+        <select id="filter-freshness" name="freshness">
+          <option value="all">Live and host-stale</option>
+          <option value="live">Live only</option>
+          <option value="stale">Host-stale only</option>
+        </select>
+      </label>
+      <button id="reset-filters" class="secondary-button" type="reset">Reset filters</button>
+    </form>
+    </details>
+
+    <section id="view-live" class="view-panel" role="tabpanel" aria-label="Live" aria-labelledby="tab-live" tabindex="-1">
+      <h2 class="visually-hidden">Live</h2>
+      <div id="live-root"></div>
+    </section>
+
+    <section id="view-map" class="view-panel map-view" role="tabpanel" aria-label="Map" aria-labelledby="tab-map" tabindex="-1" hidden>
+      <h2 class="visually-hidden">Map</h2>
+      <div class="map-layout">
+        <aside class="map-context" aria-label="Map entities and legend">
+          <div>
+            <p class="rail-label">Selected Remote ID</p>
+            <p id="map-selected" class="map-selected">None</p>
+          </div>
+          <div class="rail-section">
+            <h3>Positioned entities</h3>
+            <div id="map-entity-list" class="map-entity-list"></div>
+          </div>
+          <div class="rail-section map-legend" aria-label="Map legend">
+            <h3>Legend</h3>
+            <p><span class="legend-symbol marker-drone" aria-hidden="true"></span>Remote ID drone</p>
+            <p><span class="legend-symbol marker-operator" aria-hidden="true"></span>Operator</p>
+            <p><span class="legend-line link-line" aria-hidden="true"></span>Drone to operator link</p>
+            <p><span class="legend-line trail-line" aria-hidden="true"></span>Host-observed trail</p>
+          </div>
+          <div id="map-offline" class="map-offline" role="status" hidden></div>
+        </aside>
+        <div id="map-canvas" class="map-canvas" aria-label="Remote ID coordinate map"></div>
+      </div>
+    </section>
+
+    <section id="view-history" class="view-panel placeholder-view" role="tabpanel" aria-label="History" aria-labelledby="tab-history" tabindex="-1" hidden>
+      <h2>History</h2>
+      <p>History controls are not loaded in this view yet.</p>
+    </section>
+
+    <section id="view-badge" class="view-panel placeholder-view" role="tabpanel" aria-label="Badge" aria-labelledby="tab-badge" tabindex="-1" hidden>
+      <h2>Badge</h2>
+      <p>Badge diagnostics and display controls are not loaded in this view yet.</p>
+    </section>
   </main>
 </body>
 </html>

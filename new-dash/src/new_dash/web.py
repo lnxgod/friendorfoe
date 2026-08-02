@@ -35,12 +35,45 @@ _MAX_CURSOR = 2_048
 _MAX_SQLITE_ROW_ID = 9_223_372_036_854_775_807
 _CSP = (
     "default-src 'self'; "
+    "script-src 'self'; "
+    "style-src 'self'; "
     "img-src 'self' data: https://*.tile.openstreetmap.org; "
     "connect-src 'self'; "
     "frame-ancestors 'none'; "
     "base-uri 'none'; object-src 'none'"
 )
-_STATIC_FILES = {"/": ("index.html", "text/html; charset=utf-8")}
+_STATIC_FILES = {
+    "/": ("index.html", "text/html; charset=utf-8", True),
+    "/static/styles.css": ("styles.css", "text/css; charset=utf-8", False),
+    "/static/api.js": ("api.js", "text/javascript; charset=utf-8", False),
+    "/static/ui.js": ("ui.js", "text/javascript; charset=utf-8", False),
+    "/static/views/live.js": (
+        "views/live.js",
+        "text/javascript; charset=utf-8",
+        False,
+    ),
+    "/static/views/map.js": (
+        "views/map.js",
+        "text/javascript; charset=utf-8",
+        False,
+    ),
+    "/static/app.js": ("app.js", "text/javascript; charset=utf-8", False),
+    "/static/vendor/leaflet/leaflet.css": (
+        "vendor/leaflet/leaflet.css",
+        "text/css; charset=utf-8",
+        False,
+    ),
+    "/static/vendor/leaflet/leaflet.js": (
+        "vendor/leaflet/leaflet.js",
+        "text/javascript; charset=utf-8",
+        False,
+    ),
+    "/static/vendor/leaflet/LICENSE": (
+        "vendor/leaflet/LICENSE",
+        "text/plain; charset=utf-8",
+        False,
+    ),
+}
 _STATIC_ROOT = Path(__file__).with_name("static").resolve()
 _HISTORY_PARAMETERS = frozenset(
     {"since", "until", "kind", "source", "class", "text", "positioned", "cursor", "limit"}
@@ -487,19 +520,25 @@ class _NewDashRequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.close_connection = True
 
-    def _send_static(self, filename: str, content_type: str) -> None:
+    def _send_static(
+        self,
+        filename: str,
+        content_type: str,
+        substitute_control_token: bool,
+    ) -> None:
         path = (_STATIC_ROOT / filename).resolve()
-        if path.parent != _STATIC_ROOT:
+        if not path.is_relative_to(_STATIC_ROOT):
             self._send_error(404, "not_found", "Route not found.")
             return
         try:
-            body = path.read_text(encoding="utf-8")
+            body = path.read_bytes()
         except OSError:
             self._send_error(500, "internal_error", "The request could not be completed.")
             return
-        body = body.replace(
-            "{{CONTROL_TOKEN}}", escape(self.server.control_token, quote=True)
-        ).encode("utf-8")
+        if substitute_control_token:
+            body = path.read_text(encoding="utf-8").replace(
+                "{{CONTROL_TOKEN}}", escape(self.server.control_token, quote=True)
+            ).encode("utf-8")
         self._send_bytes(200, body, content_type)
 
     def _send_json(self, status: int, value: Mapping[str, object]) -> None:

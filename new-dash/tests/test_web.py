@@ -4,9 +4,11 @@ from base64 import urlsafe_b64encode
 from contextlib import redirect_stderr
 import csv
 from dataclasses import replace
+from html.parser import HTMLParser
 import http.client
 import io
 import json
+from pathlib import Path
 import socket
 import threading
 import unittest
@@ -23,6 +25,63 @@ from new_dash.serial_transport import ControlTimeout, TransportUnavailable
 from new_dash.storage import HistoryPage, HistoryQuery
 from new_dash.web import create_http_server
 from tests.test_controls import THEME, complete_policy
+
+
+STATIC_ROOT = Path(__file__).parents[1] / "src" / "new_dash" / "static"
+PROJECT_ROOT = Path(__file__).parents[1]
+
+STATIC_ASSETS = {
+    "/static/styles.css": "text/css; charset=utf-8",
+    "/static/api.js": "text/javascript; charset=utf-8",
+    "/static/ui.js": "text/javascript; charset=utf-8",
+    "/static/views/live.js": "text/javascript; charset=utf-8",
+    "/static/views/map.js": "text/javascript; charset=utf-8",
+    "/static/app.js": "text/javascript; charset=utf-8",
+    "/static/vendor/leaflet/leaflet.css": "text/css; charset=utf-8",
+    "/static/vendor/leaflet/leaflet.js": "text/javascript; charset=utf-8",
+    "/static/vendor/leaflet/LICENSE": "text/plain; charset=utf-8",
+}
+
+
+class DashboardHTMLParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.h1_text: list[str] = []
+        self.navigation_targets: list[str] = []
+        self.view_labels: list[str] = []
+        self.inline_handlers: list[str] = []
+        self.local_urls: list[str] = []
+        self.connection_live_regions = 0
+        self.main_landmarks = 0
+        self._in_h1 = False
+
+    def handle_starttag(
+        self, tag: str, attrs: list[tuple[str, str | None]]
+    ) -> None:
+        attributes = dict(attrs)
+        if tag == "h1":
+            self._in_h1 = True
+        if tag == "button" and "data-view-target" in attributes:
+            self.navigation_targets.append(attributes["data-view-target"] or "")
+        if tag == "section" and "aria-label" in attributes:
+            self.view_labels.append(attributes["aria-label"] or "")
+        if tag == "main":
+            self.main_landmarks += 1
+        if attributes.get("aria-live") == "polite" and attributes.get("id") == "connection-status":
+            self.connection_live_regions += 1
+        for name, value in attrs:
+            if name.lower().startswith("on"):
+                self.inline_handlers.append(name)
+            if name in {"href", "src"} and value is not None:
+                self.local_urls.append(value)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "h1":
+            self._in_h1 = False
+
+    def handle_data(self, data: str) -> None:
+        if self._in_h1:
+            self.h1_text.append(data)
 
 
 SNAPSHOT = {
@@ -308,6 +367,132 @@ class StaticAndStateRouteTest(WebServerTestCase):
         )
         self.assertNotIn(b"{{CONTROL_TOKEN}}", body)
         self.assert_security_headers(response)
+
+    def test_every_dashboard_asset_is_allowlisted_with_exact_mime_type(self) -> None:
+        for path, content_type in STATIC_ASSETS.items():
+            with self.subTest(path=path):
+                response, body = self.request("GET", path)
+                self.assertEqual(response.status, 200)
+                self.assertEqual(response.getheader("Content-Type"), content_type)
+                self.assertTrue(body)
+                self.assertEqual(response.getheader("Cache-Control"), "no-store")
+                self.assert_security_headers(response)
+
+    def test_static_assets_are_not_subject_to_control_token_substitution(self) -> None:
+        for path in ("/static/app.js", "/static/styles.css", "/static/vendor/leaflet/leaflet.js"):
+            with self.subTest(path=path):
+                response, body = self.request("GET", path)
+                self.assertEqual(response.status, 200)
+                disk_body = (STATIC_ROOT / path.removeprefix("/static/")).read_bytes()
+                self.assertEqual(body, disk_body)
+
+    def test_dashboard_shell_has_semantic_views_and_local_assets(self) -> None:
+        response, body = self.request("GET", "/")
+        parser = DashboardHTMLParser()
+        parser.feed(body.decode("utf-8"))
+
+        self.assertEqual(response.status, 200)
+        self.assertIn("New Dash", "".join(parser.h1_text))
+        self.assertEqual(
+            parser.navigation_targets,
+            ["live", "map", "history", "badge"],
+        )
+        self.assertEqual(parser.connection_live_regions, 1)
+        self.assertEqual(parser.main_landmarks, 1)
+        self.assertEqual(parser.view_labels, ["Live", "Map", "History", "Badge"])
+        self.assertEqual(parser.inline_handlers, [])
+        self.assertIn("/static/vendor/leaflet/leaflet.css", parser.local_urls)
+        self.assertIn("/static/vendor/leaflet/leaflet.js", parser.local_urls)
+        self.assertIn("/static/app.js", parser.local_urls)
+        self.assertFalse(
+            any(url.startswith(("http://", "https://", "//")) for url in parser.local_urls)
+        )
+
+    def test_csp_allows_only_local_code_and_https_map_tiles(self) -> None:
+        response, _ = self.request("GET", "/")
+        csp = response.getheader("Content-Security-Policy") or ""
+
+        self.assertIn("script-src 'self'", csp)
+        self.assertIn("style-src 'self'", csp)
+        self.assertIn("connect-src 'self'", csp)
+        self.assertIn(
+            "img-src 'self' data: https://*.tile.openstreetmap.org",
+            csp,
+        )
+
+    def test_first_party_modules_use_safe_dom_and_bounded_browser_contracts(self) -> None:
+        sources = {
+            path.relative_to(STATIC_ROOT).as_posix(): path.read_text(encoding="utf-8")
+            for path in STATIC_ROOT.rglob("*.js")
+            if "vendor" not in path.parts
+        }
+        combined = "\n".join(sources.values())
+
+        self.assertEqual(
+            set(sources),
+            {"api.js", "ui.js", "views/live.js", "views/map.js", "app.js"},
+        )
+        self.assertNotIn(".innerHTML", combined)
+        self.assertNotIn("insertAdjacentHTML", combined)
+        self.assertNotIn("setInterval", sources["app.js"])
+        self.assertIn("setTimeout", sources["app.js"])
+        self.assertIn("AbortController", sources["api.js"])
+        self.assertIn("5000", sources["api.js"])
+        self.assertIn("new URLSearchParams", combined)
+        self.assertIn("hashchange", sources["app.js"])
+        for key in ("ArrowLeft", "ArrowRight", "Home", "End"):
+            self.assertIn(key, sources["app.js"])
+        self.assertIn("newDash.v1.", sources["app.js"])
+
+    def test_live_and_map_modules_preserve_source_truth_and_budgets(self) -> None:
+        live_path = STATIC_ROOT / "views" / "live.js"
+        map_path = STATIC_ROOT / "views" / "map.js"
+        app_path = STATIC_ROOT / "app.js"
+        self.assertTrue(live_path.is_file())
+        self.assertTrue(map_path.is_file())
+        self.assertTrue(app_path.is_file())
+        live_source = live_path.read_text(encoding="utf-8")
+        map_source = map_path.read_text(encoding="utf-8")
+        app_source = app_path.read_text(encoding="utf-8")
+
+        self.assertIn('"ble_rid"', live_source)
+        self.assertIn('"wifi_rid"', live_source)
+        self.assertIn("DJI evidence — not Remote ID", live_source)
+        self.assertIn("entity.stale === true", live_source)
+        self.assertIn("Missing", live_source)
+        self.assertIn("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", map_source)
+        self.assertIn("https://www.openstreetmap.org/copyright", map_source)
+        self.assertIn("Basemap offline — coordinates and observations remain available", map_source)
+        self.assertIn("Host-observed trail", map_source)
+        self.assertIn("MAX_TRAIL_PAGES = 4", app_source)
+        self.assertIn("MAX_TRAIL_ROWS = 2000", app_source)
+        for query_contract in ('"kind", "track"', '"positioned", "true"', '"limit", "500"'):
+            self.assertIn(query_contract, app_source)
+
+    def test_responsive_shell_keeps_desktop_compact_and_mobile_filters_reachable(self) -> None:
+        html = (STATIC_ROOT / "index.html").read_text(encoding="utf-8")
+        css = (STATIC_ROOT / "styles.css").read_text(encoding="utf-8")
+        app_source = (STATIC_ROOT / "app.js").read_text(encoding="utf-8")
+
+        self.assertIn('<details id="presentation-filter-panel"', html)
+        self.assertIn("<summary", html)
+        self.assertIn("@media (min-width: 760px)", css)
+        self.assertIn(".presentation-filter-panel", css)
+        self.assertIn(".view-panel:focus-visible", css)
+        self.assertIn('matchMedia("(min-width: 760px)")', app_source)
+
+    def test_fixture_is_standalone_deterministic_and_includes_hostile_usb_text(self) -> None:
+        fixture_path = PROJECT_ROOT / "tests" / "browser_fixture_server.py"
+        self.assertTrue(fixture_path.is_file())
+        fixture_source = fixture_path.read_text(encoding="utf-8")
+
+        self.assertNotIn("serial_transport", fixture_source)
+        self.assertNotIn("pyserial", fixture_source.lower())
+        self.assertIn("<script>window.fixturePwned=true</script>", fixture_source)
+        self.assertIn("--stale", fixture_source)
+        self.assertIn("--safe-usb", fixture_source)
+        ui_source = (STATIC_ROOT / "ui.js").read_text(encoding="utf-8")
+        self.assertIn("textContent", ui_source)
 
     def test_state_returns_exact_snapshot_in_success_envelope(self) -> None:
         response, body = self.request("GET", "/api/state")
