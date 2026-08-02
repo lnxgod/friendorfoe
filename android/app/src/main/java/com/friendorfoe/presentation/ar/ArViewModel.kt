@@ -12,6 +12,7 @@ import android.location.LocationListener
 import android.location.LocationManager
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
+import android.os.SystemClock
 import android.util.Log
 import androidx.camera.core.Camera
 import androidx.camera.core.ImageCapture
@@ -115,6 +116,46 @@ internal suspend fun collectArBackend(
         },
     )
 }
+
+private const val MAX_AR_LAST_KNOWN_LOCATION_AGE_NANOS = 30_000_000_000L
+
+internal data class ArLocationFix(
+    val position: Position,
+    val accuracyMeters: Float,
+    val elapsedRealtimeNanos: Long,
+)
+
+internal fun selectFreshestArLastKnownLocationFix(
+    gps: ArLocationFix?,
+    network: ArLocationFix?,
+    nowElapsedRealtimeNanos: Long,
+): ArLocationFix? = listOfNotNull(gps, network)
+    .filter { candidate ->
+        candidate.isUsableArLastKnownLocation(nowElapsedRealtimeNanos)
+    }
+    .maxByOrNull(ArLocationFix::elapsedRealtimeNanos)
+
+private fun ArLocationFix.isUsableArLastKnownLocation(
+    nowElapsedRealtimeNanos: Long,
+): Boolean {
+    val ageNanos = nowElapsedRealtimeNanos - elapsedRealtimeNanos
+    return position.latitude.isFinite() &&
+        position.longitude.isFinite() &&
+        position.latitude in -90.0..90.0 &&
+        position.longitude in -180.0..180.0 &&
+        (position.latitude != 0.0 || position.longitude != 0.0) &&
+        ageNanos in 0..MAX_AR_LAST_KNOWN_LOCATION_AGE_NANOS
+}
+
+private fun Location.toArLocationFix(): ArLocationFix = ArLocationFix(
+    position = Position(
+        latitude = latitude,
+        longitude = longitude,
+        altitudeMeters = altitude,
+    ),
+    accuracyMeters = validatedLocationAccuracyMeters(),
+    elapsedRealtimeNanos = elapsedRealtimeNanos,
+)
 
 /**
  * ViewModel for the AR viewfinder screen.
@@ -1074,22 +1115,26 @@ class ArViewModel @Inject constructor(
 
                 locationListenerRegistered = true
 
-                // Use last known location as initial position while waiting for GPS fix
-                val lastKnown = locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER)
-                    ?: locationManager.getLastKnownLocation(LocationManager.NETWORK_PROVIDER)
+                // Use the freshest valid last-known location while waiting for a live fix.
+                val gpsLastKnown = locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER)
+                val networkLastKnown = locationManager.getLastKnownLocation(LocationManager.NETWORK_PROVIDER)
+                val lastKnown = selectFreshestArLastKnownLocationFix(
+                    gps = gpsLastKnown?.toArLocationFix(),
+                    network = networkLastKnown?.toArLocationFix(),
+                    nowElapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos(),
+                )
 
                 if (lastKnown != null) {
-                    _userPosition.value = Position(
-                        latitude = lastKnown.latitude,
-                        longitude = lastKnown.longitude,
-                        altitudeMeters = lastKnown.altitude
-                    )
+                    _userPosition.value = lastKnown.position
                     _gpsStatus.value = GpsStatus.LOCKED
-                    Log.d(TAG, "Using last known location: (${lastKnown.latitude}, ${lastKnown.longitude})")
+                    Log.d(
+                        TAG,
+                        "Using last known location: (${lastKnown.position.latitude}, ${lastKnown.position.longitude})",
+                    )
                     skyObjectRepository.ensureStarted(
-                        lastKnown.latitude,
-                        lastKnown.longitude,
-                        lastKnown.validatedLocationAccuracyMeters(),
+                        lastKnown.position.latitude,
+                        lastKnown.position.longitude,
+                        lastKnown.accuracyMeters,
                     )
                 } else {
                     // Start BLE/WiFi scanners only (they don't need GPS)
