@@ -279,6 +279,24 @@ class SkyPositionMapperTest {
     }
 
     @Test
+    fun `aircraft overlay includes twelve statute miles but excludes farther aircraft`() {
+        val user = Position(40.0, -74.0, 0.0)
+        val orientation = DeviceOrientation(0f, 90f, 0f)
+        val results = mapper.mapToScreen(
+            user,
+            listOf(
+                createTestAircraft("INSIDE", Position(40.0, -74.0, 19_200.0)),
+                createTestAircraft("OUTSIDE", Position(40.0, -74.0, 19_400.0)),
+            ),
+            orientation,
+            CameraFovCalculator(),
+        )
+
+        assertTrue(results.single { it.skyObject.id == "INSIDE" }.isInView)
+        assertFalse(results.single { it.skyObject.id == "OUTSIDE" }.isInView)
+    }
+
+    @Test
     fun `multiple objects are all mapped`() {
         val userPos = Position(latitude = 40.0, longitude = -74.0, altitudeMeters = 0.0)
         val fovCalc = CameraFovCalculator()

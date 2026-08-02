@@ -71,6 +71,7 @@ class CameraFovCalculator {
     fun calculateFromFocalLengthAndSensorSize(focalLengthMm: Float, sensorSize: SizeF) {
         horizontalFovRadians = 2.0 * atan(sensorSize.width / (2.0 * focalLengthMm))
         verticalFovRadians = 2.0 * atan(sensorSize.height / (2.0 * focalLengthMm))
+        portraitSwapped = false
     }
 
     /**
@@ -87,6 +88,7 @@ class CameraFovCalculator {
     ) {
         horizontalFovRadians = 2.0 * atan(sensorWidthMm / (2.0 * focalLengthMm))
         verticalFovRadians = 2.0 * atan(sensorHeightMm / (2.0 * focalLengthMm))
+        portraitSwapped = false
     }
 
     /**

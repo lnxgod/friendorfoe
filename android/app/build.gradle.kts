@@ -23,8 +23,8 @@ android {
         applicationId = "com.friendorfoe"
         minSdk = 26
         targetSdk = 34
-        versionCode = 115
-        versionName = "0.67.6-android-about-map-cleanup"
+        versionCode = 116
+        versionName = "0.67.7-android-ar-overlay-range"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

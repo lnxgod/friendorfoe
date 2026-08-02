@@ -154,7 +154,7 @@ fun permissionExplanation(feature: AppFeature): String = when (feature) {
         "The IR-like light tool uses the camera to inspect light that may be hard to see."
 
     AppFeature.AR_MAP_LOCATION ->
-        "Location centers nearby results. Approximate access keeps the view usable, but precise distance and bearing stay hidden."
+        "Location centers nearby results. With approximate access, placement, distance, and bearing may be less accurate."
 
     AppFeature.LOCAL_RADIO_DISCOVERY ->
         "Bluetooth and Wi-Fi access lets this phone look for nearby broadcast signals. Android also requires fine location for Wi-Fi scan results because they can reveal nearby location."

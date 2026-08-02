@@ -1,7 +1,5 @@
 package com.friendorfoe.sensor
 
-import com.friendorfoe.domain.model.Aircraft
-import com.friendorfoe.domain.model.Drone
 import com.friendorfoe.domain.model.Position
 import com.friendorfoe.domain.model.SkyObject
 import kotlin.math.atan2
@@ -30,12 +28,6 @@ class SkyPositionMapper {
     companion object {
         /** Mean Earth radius in meters (WGS84 approximation) */
         private const val EARTH_RADIUS_METERS = 6_371_000.0
-
-        /** Max visual range for aircraft: ~7 nm (13 km) — beyond this, aircraft are specks */
-        private const val MAX_AIRCRAFT_VISUAL_RANGE_M = 13_000.0
-
-        /** Max visual range for drones: ~2 km — small objects invisible further */
-        private const val MAX_DRONE_VISUAL_RANGE_M = 2_000.0
 
         /** Normalized screen margin used to identify objects close enough for visual rescue. */
         private const val NEAR_VIEWPORT_MARGIN = 0.35f
@@ -98,11 +90,7 @@ class SkyPositionMapper {
 
         // Step 5: Check if within FOV and within visual range
         val slantDistance = calculateSlantDistance(groundDistanceMeters, altitudeDiff)
-        val maxVisualRange = when (skyObject) {
-            is Aircraft -> MAX_AIRCRAFT_VISUAL_RANGE_M
-            is Drone -> MAX_DRONE_VISUAL_RANGE_M
-        }
-        val withinRange = slantDistance <= maxVisualRange
+        val withinRange = ArVisualRangePolicy.includes(skyObject, slantDistance)
         val aboveHorizon = elevationDeg > -2f  // Must be at or above horizon (allow -2° for Earth curvature)
         val isInView = fovCalculator.isInFieldOfView(azimuthOffsetRad, elevationOffsetRad) && withinRange && aboveHorizon
 
@@ -265,11 +253,7 @@ class SkyPositionMapper {
         val azimuthOffsetRad = Math.toRadians(azimuthOffsetDeg.toDouble())
         val elevationOffsetRad = Math.toRadians(elevationOffsetDeg.toDouble())
         val slantDistance = calculateSlantDistance(groundDistanceMeters, altitudeDiff)
-        val maxVisualRange = when (skyObject) {
-            is Aircraft -> MAX_AIRCRAFT_VISUAL_RANGE_M
-            is Drone -> MAX_DRONE_VISUAL_RANGE_M
-        }
-        val withinRange = slantDistance <= maxVisualRange
+        val withinRange = ArVisualRangePolicy.includes(skyObject, slantDistance)
         val aboveHorizon = elevationDeg > -2f
         val isInView = fovCalculator.isInFieldOfView(azimuthOffsetRad, elevationOffsetRad) && withinRange && aboveHorizon
         val halfHFovRad = fovCalculator.horizontalFovRadians / 2.0
