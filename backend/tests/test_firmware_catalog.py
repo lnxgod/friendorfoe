@@ -1,6 +1,8 @@
 import hashlib
 import struct
 import time
+import zipfile
+from pathlib import Path
 import zlib
 
 import pytest
@@ -12,6 +14,23 @@ from app.services.firmware_manager import FIRMWARE_TYPES, FirmwareAsset, Firmwar
 PRODUCTION_VERSION = "0.64.68-live-follow"
 BADGE_VERSION = "0.67.2-badge-defcon34"
 RELEASE_TAG = "v0.64.68-live-follow"
+
+BADGE_IDENTITIES = {
+    "uplink-s3-fof_badge": ("fof_badge_uplink", "seeed_xiao_esp32s3"),
+    "scanner-s3-combo-fof_badge": (
+        "fof_badge_scanner",
+        "seeed_xiao_esp32s3",
+    ),
+}
+NONBACKEND_IDENTITIES = {
+    "uplink-s3": ("fof_uplink", "esp32-s3-devkitc-1"),
+    "uplink-s3-fof_badge": BADGE_IDENTITIES["uplink-s3-fof_badge"],
+    "scanner-s3-combo": ("fof_scanner", "esp32-s3-devkitc-1"),
+    "scanner-s3-combo-seed": ("fof_scanner_seed", "esp32-s3-devkitc-1"),
+    "scanner-s3-combo-fof_badge": BADGE_IDENTITIES[
+        "scanner-s3-combo-fof_badge"
+    ],
+}
 
 
 def _esp_firmware_image(
@@ -86,6 +105,42 @@ def _backend_image(
         identity_records=identity_records or (identity,),
         trailer=trailer,
         payload_fill=payload_fill,
+    )
+
+
+def _badge_image(
+    target: str,
+    *,
+    version: str = BADGE_VERSION,
+    project: str | None = None,
+    target_marker: str | None = None,
+    hardware_marker: str | None = None,
+) -> bytes:
+    expected_project, expected_hardware = BADGE_IDENTITIES[target]
+    trailer = b"\0".join((
+        (target_marker or target).encode("ascii"),
+        (hardware_marker or expected_hardware).encode("ascii"),
+    )) + b"\0"
+    return _esp_firmware_image(
+        version,
+        project=project or expected_project,
+        trailer=trailer,
+    )
+
+
+def _named_nonbackend_image(
+    target: str,
+    *,
+    version: str | None = None,
+) -> bytes:
+    project, hardware = NONBACKEND_IDENTITIES[target]
+    embedded_version = version or (
+        BADGE_VERSION if target.endswith("-fof_badge") else PRODUCTION_VERSION
+    )
+    return _esp_firmware_image(
+        embedded_version,
+        project=project,
+        trailer=f"{target}\0{hardware}\0".encode("ascii"),
     )
 
 
@@ -188,6 +243,31 @@ def test_backend_targets_have_exact_identity_and_isolated_paths():
     assert str(FIRMWARE_TYPES["scanner-s3-combo-backend"]["local_bin"]).endswith(
         "/backend-firmware/scanner/.pio/build/scanner-s3-combo-backend/firmware.bin"
     )
+
+
+def test_every_catalog_target_declares_its_exact_runtime_family_identity():
+    expected = {
+        "uplink-s3": ("fof_uplink", "esp32-s3-devkitc-1"),
+        "uplink-s3-fof_badge": ("fof_badge_uplink", "seeed_xiao_esp32s3"),
+        "uplink-s3-backend": ("fof_backend_uplink", "seeed_xiao_esp32s3"),
+        "scanner-s3-combo": ("fof_scanner", "esp32-s3-devkitc-1"),
+        "scanner-s3-combo-seed": ("fof_scanner_seed", "esp32-s3-devkitc-1"),
+        "scanner-s3-combo-fof_badge": (
+            "fof_badge_scanner",
+            "seeed_xiao_esp32s3",
+        ),
+        "scanner-s3-combo-backend": (
+            "fof_backend_scanner",
+            "seeed_xiao_esp32s3",
+        ),
+    }
+
+    actual = {
+        name: (info.get("project"), info.get("hardware"))
+        for name, info in FIRMWARE_TYPES.items()
+    }
+
+    assert actual == expected
 
 
 def test_live_fleet_targets_point_at_expected_local_builds():
@@ -337,7 +417,12 @@ async def test_cached_github_firmware_version_comes_from_image(
     manager = _github_manager(
         monkeypatch,
         tmp_path,
-        {name: _esp_firmware_image(embedded_version)},
+        {
+            name: _named_nonbackend_image(
+                name,
+                version=embedded_version,
+            )
+        },
     )
 
     assert await manager.get_firmware_version(name) == embedded_version
@@ -352,8 +437,12 @@ async def test_catalog_uses_production_and_badge_versions_from_github_images(
         monkeypatch,
         tmp_path,
         {
-            "scanner-s3-combo": _esp_firmware_image(PRODUCTION_VERSION),
-            "scanner-s3-combo-fof_badge": _esp_firmware_image(BADGE_VERSION),
+            "scanner-s3-combo": _named_nonbackend_image(
+                "scanner-s3-combo",
+            ),
+            "scanner-s3-combo-fof_badge": _badge_image(
+                "scanner-s3-combo-fof_badge",
+            ),
         },
     )
 
@@ -376,7 +465,7 @@ async def test_malformed_github_image_version_fails_closed(
     assert await manager.get_firmware_version(name) is None
     catalog = {row["name"]: row for row in await manager.get_catalog()}
     assert catalog[name]["version"] is None
-    assert catalog[name]["available"] is True
+    assert catalog[name]["available"] is False
 
 
 @pytest.mark.asyncio
@@ -393,7 +482,10 @@ async def test_local_binary_version_wins_over_repo_source_header(
     embedded_version = "0.64.60-stale-local"
     local_bin = tmp_path / "local" / name / "firmware.bin"
     local_bin.parent.mkdir(parents=True)
-    local_bin.write_bytes(_esp_firmware_image(embedded_version))
+    local_bin.write_bytes(_named_nonbackend_image(
+        name,
+        version=embedded_version,
+    ))
     monkeypatch.setitem(FIRMWARE_TYPES[name], "local_bin", local_bin)
 
     manager = FirmwareManager()
@@ -406,7 +498,7 @@ async def test_local_binary_version_wins_over_repo_source_header(
         name,
         FIRMWARE_TYPES[name]["description"],
         RELEASE_TAG,
-        len(_esp_firmware_image(PRODUCTION_VERSION)),
+        len(_named_nonbackend_image(name)),
         f"https://example.test/{name}.bin",
     )
 
@@ -425,7 +517,7 @@ async def test_unusable_github_cache_clears_stale_cached_path(
     cache_state: str,
 ):
     name = "uplink-s3"
-    image = _esp_firmware_image(PRODUCTION_VERSION)
+    image = _named_nonbackend_image(name)
     manager = _github_manager(monkeypatch, tmp_path, {name: image}, cached=False)
     asset = manager.assets[name]
     cache_path = firmware_manager.CACHE_DIR / f"{RELEASE_TAG}_{name}.bin"
@@ -465,7 +557,7 @@ async def test_downloaded_github_image_version_is_parsed_and_download_reused(
     tmp_path,
 ):
     name = "uplink-s3"
-    image = _esp_firmware_image(PRODUCTION_VERSION)
+    image = _named_nonbackend_image(name)
     manager = _github_manager(monkeypatch, tmp_path, {name: image}, cached=False)
     download_url = manager.assets[name].download_url
     download_calls: list[str] = []
@@ -525,6 +617,82 @@ async def test_backend_catalog_rejects_badge_project_under_backend_target(monkey
     )
     manager = _github_manager(monkeypatch, tmp_path, {"uplink-s3-backend": wrong})
     assert await manager.get_firmware_binary("uplink-s3-backend") is None
+
+
+@pytest.mark.parametrize("target", sorted(BADGE_IDENTITIES))
+@pytest.mark.parametrize(
+    "version",
+    [BADGE_VERSION, "0.68.0-badge-defcon34"],
+)
+def test_badge_catalog_accepts_exact_identity_for_current_and_future_versions(
+    target: str,
+    version: str,
+):
+    manager = FirmwareManager()
+
+    assert manager.validate_firmware_image(
+        target,
+        _badge_image(target, version=version),
+    )
+
+
+@pytest.mark.parametrize("target", sorted(BADGE_IDENTITIES))
+@pytest.mark.parametrize(
+    "mutation",
+    ["descriptor", "version", "project", "target", "hardware"],
+)
+def test_badge_catalog_rejects_missing_or_cross_family_identity(
+    target: str,
+    mutation: str,
+):
+    kwargs: dict[str, str] = {}
+    if mutation == "version":
+        kwargs["version"] = "0.68.0-backend"
+    elif mutation == "project":
+        kwargs["project"] = "fof_backend_uplink"
+    elif mutation == "target":
+        kwargs["target_marker"] = "uplink-s3-backend"
+    elif mutation == "hardware":
+        kwargs["hardware_marker"] = "esp32-s3-devkitc-1"
+    image = b"not-an-esp-image" if mutation == "descriptor" else _badge_image(target, **kwargs)
+
+    assert not FirmwareManager().validate_firmware_image(target, image)
+
+
+@pytest.mark.parametrize(
+    ("role", "target"),
+    [
+        ("uplink", "uplink-s3-fof_badge"),
+        ("scanner", "scanner-s3-combo-fof_badge"),
+    ],
+)
+def test_badge_catalog_accepts_the_native_0672_usb_bundle(role: str, target: str):
+    bundle = (
+        Path(__file__).resolve().parents[2]
+        / "tools/badge_flasher/resources/badge-factory-flasher-embedded.zip"
+    )
+    with zipfile.ZipFile(bundle) as archive:
+        image = archive.read(f"{role}/firmware.bin")
+
+    assert FirmwareManager().validate_firmware_image(target, image)
+
+
+@pytest.mark.parametrize(
+    ("requested_target", "image_target"),
+    [
+        ("uplink-s3", "uplink-s3-fof_badge"),
+        ("scanner-s3-combo", "scanner-s3-combo-seed"),
+        ("scanner-s3-combo-seed", "scanner-s3-combo-fof_badge"),
+    ],
+)
+def test_nonbadge_catalog_rejects_another_named_family_image(
+    requested_target: str,
+    image_target: str,
+):
+    assert not FirmwareManager().validate_firmware_image(
+        requested_target,
+        _named_nonbackend_image(image_target),
+    )
 
 
 @pytest.mark.asyncio

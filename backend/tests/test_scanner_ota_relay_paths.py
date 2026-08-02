@@ -39,6 +39,24 @@ def _backend_scanner_image() -> bytes:
     return bytes(image)
 
 
+def _production_scanner_image() -> bytes:
+    app_desc = bytearray(112)
+    struct.pack_into("<I", app_desc, 0, 0xABCD5432)
+    app_desc[16:48] = b"0.63.0-svc148".ljust(32, b"\0")
+    app_desc[48:80] = b"fof_scanner".ljust(32, b"\0")
+    app_desc[80:96] = b"12:00:00".ljust(16, b"\0")
+    app_desc[96:112] = b"2026-08-01".ljust(16, b"\0")
+    image = bytearray(1200)
+    image[0] = 0xE9
+    image[0x20:0x90] = app_desc
+    markers = b"scanner-s3-combo\0esp32-s3-devkitc-1\0"
+    image[256:256 + len(markers)] = markers
+    return bytes(image)
+
+
+PRODUCTION_SCANNER_IMAGE = _production_scanner_image()
+
+
 @pytest.fixture(autouse=True)
 def scanner_ota_state(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(
@@ -48,14 +66,20 @@ def scanner_ota_state(monkeypatch: pytest.MonkeyPatch):
             "uplink_TEST": {
                 "ip": "192.168.1.10",
                 "last_seen": time.time(),
-                "scanners": [{"uart": "ble", "ver": "0.63.0-svc140"}],
+                "scanners": [{
+                    "uart": "ble",
+                    "ver": "0.63.0-svc140",
+                    "firmware_target": "scanner-s3-combo",
+                    "app_project": "fof_scanner",
+                    "hardware_type": "esp32-s3-devkitc-1",
+                }],
             }
         },
     )
 
     async def fake_binary(name: str) -> bytes:
         assert name == "scanner-s3-combo"
-        return b"fake firmware"
+        return PRODUCTION_SCANNER_IMAGE
 
     async def fake_version(name: str) -> str:
         assert name == "scanner-s3-combo"
@@ -241,7 +265,7 @@ async def test_scanner_ota_auto_tries_direct_legacy_but_requires_version_proof(
                 b'{"ok":false,"stage":"stop","error":"stop_ack_timeout"}',
             )
         if "/api/ota/relay" in url:
-            assert kwargs.get("input") == b"fake firmware"
+            assert kwargs.get("input") == PRODUCTION_SCANNER_IMAGE
             return _completed(
                 cmd,
                 b'{"ok":true,"mode":"streaming","legacy":true,"bytes":13,'
@@ -271,7 +295,10 @@ async def test_scanner_ota_auto_tries_direct_legacy_but_requires_version_proof(
         "staged_legacy",
         "direct_legacy",
     ]
-    assert any("/api/ota/relay" in url and body == b"fake firmware" for url, body in calls)
+    assert any(
+        "/api/ota/relay" in url and body == PRODUCTION_SCANNER_IMAGE
+        for url, body in calls
+    )
 
 
 @pytest.mark.asyncio
@@ -285,7 +312,7 @@ async def test_scanner_ota_direct_legacy_succeeds_only_after_heartbeat_version_m
         calls.append(url)
         assert "/api/fw/upload" not in url
         assert "/api/ota/relay" in url
-        assert kwargs.get("input") == b"fake firmware"
+        assert kwargs.get("input") == PRODUCTION_SCANNER_IMAGE
         return _completed(
             cmd,
             b'{"ok":true,"mode":"streaming","legacy":true,"bytes":13,'

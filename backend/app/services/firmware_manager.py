@@ -32,6 +32,9 @@ _APP_DESC_MIN_SIZE = 112
 _BACKEND_IDENTITY_MAGIC = struct.pack("<I", 0x42464F46)
 _BACKEND_IDENTITY_STRUCT = struct.Struct("<IHH40s40s40s32sI")
 _BACKEND_VERSION_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+-backend$")
+_BADGE_VERSION_RE = re.compile(
+    r"^[0-9]+\.[0-9]+\.[0-9]+-badge(?:-[0-9A-Za-z][0-9A-Za-z._-]*)?$"
+)
 
 # Repo root relative to backend/app/services/firmware_manager.py
 _REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -43,30 +46,40 @@ FIRMWARE_TYPES = {
         "description": "Uplink node (ESP32-S3 N16R8)",
         "asset_pattern": "uplink-s3",
         "board": "esp32s3",
+        "project": "fof_uplink",
+        "hardware": "esp32-s3-devkitc-1",
         "local_bin": _REPO_ROOT / "esp32/uplink/.pio/build/uplink-s3/firmware.bin",
     },
     "uplink-s3-fof_badge": {
         "description": "FoF Badge uplink (Seeed XIAO ESP32-S3)",
         "asset_pattern": "uplink-s3-fof_badge",
         "board": "esp32s3",
+        "project": "fof_badge_uplink",
+        "hardware": "seeed_xiao_esp32s3",
         "local_bin": _REPO_ROOT / "esp32/uplink/.pio/build/uplink-s3-fof_badge/firmware.bin",
     },
     "scanner-s3-combo-seed": {
         "description": "BLE + WiFi scanner (ESP32-S3 Seed/Mini N8R8)",
         "asset_pattern": "scanner-s3-combo-seed",
         "board": "esp32s3",
+        "project": "fof_scanner_seed",
+        "hardware": "esp32-s3-devkitc-1",
         "local_bin": _REPO_ROOT / "esp32/scanner/.pio/build/scanner-s3-combo-seed/firmware.bin",
     },
     "scanner-s3-combo-fof_badge": {
         "description": "FoF Badge BLE + WiFi scanner (Seeed XIAO ESP32-S3)",
         "asset_pattern": "scanner-s3-combo-fof_badge",
         "board": "esp32s3",
+        "project": "fof_badge_scanner",
+        "hardware": "seeed_xiao_esp32s3",
         "local_bin": _REPO_ROOT / "esp32/scanner/.pio/build/scanner-s3-combo-fof_badge/firmware.bin",
     },
     "scanner-s3-combo": {
         "description": "BLE + WiFi scanner (ESP32-S3)",
         "asset_pattern": "scanner-s3-combo",
         "board": "esp32s3",
+        "project": "fof_scanner",
+        "hardware": "esp32-s3-devkitc-1",
         "local_bin": _REPO_ROOT / "esp32/scanner/.pio/build/scanner-s3-combo/firmware.bin",
     },
     "uplink-s3-backend": {
@@ -227,6 +240,43 @@ def _parse_app_desc(bin_path: Path) -> dict | None:
         return _parse_app_desc_bytes(bin_path.read_bytes())
     except OSError:
         return None
+
+
+def _validated_named_image_info(name: str, image: bytes) -> dict | None:
+    """Validate a non-backend image against its exact catalog identity."""
+    info = FIRMWARE_TYPES.get(name)
+    if info is None or name.endswith("-backend"):
+        return None
+    desc = _parse_app_desc_bytes(image)
+    if desc is None or desc["project"] != info["project"]:
+        return None
+    badge_version = _BADGE_VERSION_RE.fullmatch(desc["version"]) is not None
+    backend_version = _BACKEND_VERSION_RE.fullmatch(desc["version"]) is not None
+    if name.endswith("-fof_badge"):
+        if not badge_version:
+            return None
+    elif badge_version or backend_version:
+        return None
+    required_markers = (
+        name.encode("ascii") + b"\0",
+        info["hardware"].encode("ascii") + b"\0",
+    )
+    if any(marker not in image for marker in required_markers):
+        return None
+    return {
+        "target": name,
+        "project": info["project"],
+        "hardware": info["hardware"],
+        "version": desc["version"],
+        "size": len(image),
+    }
+
+
+def _validated_badge_image_info(name: str, image: bytes) -> dict | None:
+    """Validate one badge image without pinning it to a specific release."""
+    if not name.endswith("-fof_badge"):
+        return None
+    return _validated_named_image_info(name, image)
 
 
 @dataclass
@@ -408,7 +458,7 @@ class FirmwareManager:
     def validate_firmware_image(self, name: str, image: bytes) -> bool:
         if name.endswith("-backend"):
             return _validated_backend_image_info(name, image) is not None
-        return True
+        return _validated_named_image_info(name, image) is not None
 
     def set_custom_firmware(self, name: str, data: bytes):
         """Upload a custom firmware binary (overrides GitHub for testing)."""

@@ -39,6 +39,7 @@ from app.services.firmware_manager import (
     _parse_app_desc_bytes,
     _parse_backend_identity,
     _validated_backend_image_info,
+    _validated_named_image_info,
 )
 from app.services.node_commands import (
     NodeCommandConflict,
@@ -203,22 +204,29 @@ def _identity_is_backend(identity: dict) -> bool:
     )
 
 
+def _expected_named_firmware_identity(firmware_name: str) -> dict | None:
+    info = FIRMWARE_TYPES.get(firmware_name)
+    if info is None or not info.get("project") or not info.get("hardware"):
+        return None
+    return {
+        "target": firmware_name,
+        "project": info["project"],
+        "hardware": info["hardware"],
+    }
+
+
 def _require_named_family_preflight(
     device_id: str, firmware_name: str, uart: str | None = None,
 ) -> dict:
     snapshot = _ota_target_snapshot(device_id, uart)
     running = _reported_identities(device_id, uart, snapshot=snapshot)
     required_count = 2 if uart == "both" else 1
-    info = FIRMWARE_TYPES.get(firmware_name) or {}
-    if firmware_name.endswith("-backend"):
-        expected = {
-            "target": firmware_name,
-            "project": info.get("project"),
-            "hardware": info.get("hardware"),
-        }
-        compatible = len(running) == required_count and all(item == expected for item in running)
-    else:
-        compatible = len(running) == required_count and not any(_identity_is_backend(item) for item in running)
+    expected = _expected_named_firmware_identity(firmware_name)
+    compatible = (
+        expected is not None
+        and len(running) == required_count
+        and all(item == expected for item in running)
+    )
     if not compatible:
         raise HTTPException(
             status_code=409,
@@ -247,6 +255,10 @@ def _require_ota_compatibility(
         requested = _validated_backend_image_info(firmware_name, image)
         if requested is None:
             raise HTTPException(status_code=400, detail="invalid backend firmware identity")
+    elif firmware_name and firmware_name in FIRMWARE_TYPES:
+        requested = _validated_named_image_info(firmware_name, image)
+        if requested is None:
+            raise HTTPException(status_code=400, detail="invalid firmware identity")
     elif claims_backend:
         identity = _parse_backend_identity(image)
         claimed_name = identity.get("target") if identity else None
@@ -260,8 +272,17 @@ def _require_ota_compatibility(
     snapshot = snapshot or _ota_target_snapshot(device_id, uart)
     running = _reported_identities(device_id, uart, snapshot=snapshot)
     required_count = 2 if uart == "both" else 1
-    requested_is_backend = requested is not None
-    if requested_is_backend:
+    named_expected = (
+        _expected_named_firmware_identity(firmware_name)
+        if firmware_name is not None else None
+    )
+    if named_expected is not None:
+        expected = named_expected
+        compatible = (
+            len(running) == required_count
+            and all(identity == expected for identity in running)
+        )
+    elif requested is not None:
         expected = {
             "target": requested["target"],
             "project": requested["project"],

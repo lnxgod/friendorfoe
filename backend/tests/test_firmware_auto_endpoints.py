@@ -21,6 +21,17 @@ PRODUCTION_VERSION = "0.64.68-live-follow"
 BADGE_VERSION = "0.67.2-badge-defcon34"
 RELEASE_TAG = "v0.64.68-live-follow"
 
+NAMED_IDENTITIES = {
+    "uplink-s3": ("fof_uplink", "esp32-s3-devkitc-1"),
+    "uplink-s3-fof_badge": ("fof_badge_uplink", "seeed_xiao_esp32s3"),
+    "scanner-s3-combo": ("fof_scanner", "esp32-s3-devkitc-1"),
+    "scanner-s3-combo-seed": ("fof_scanner_seed", "esp32-s3-devkitc-1"),
+    "scanner-s3-combo-fof_badge": (
+        "fof_badge_scanner",
+        "seeed_xiao_esp32s3",
+    ),
+}
+
 
 def _esp_firmware_image(
     version: str,
@@ -41,6 +52,18 @@ def _esp_firmware_image(
         image.extend(record)
     image.extend(payload_fill * 4096)
     return bytes(image)
+
+
+def _named_firmware_image(name: str, version: str) -> bytes:
+    project, hardware = NAMED_IDENTITIES[name]
+    return _esp_firmware_image(
+        version,
+        project=project,
+    ) + f"{name}\0{hardware}\0".encode("ascii")
+
+
+def _badge_firmware_image(name: str, version: str = BADGE_VERSION) -> bytes:
+    return _named_firmware_image(name, version)
 
 
 def _fixed_identity_string(value: str, width: int) -> bytes:
@@ -118,7 +141,7 @@ async def test_latest_returns_404_for_unknown_name():
 
 @pytest.mark.asyncio
 async def test_latest_returns_metadata_for_uploaded_custom_firmware():
-    payload = b"\xE9" + b"FW" + b"\x00" * 4093  # 4 KB blob; large enough to pass upload size check
+    payload = _named_firmware_image("uplink-s3", PRODUCTION_VERSION)
     nodes._firmware_mgr.set_custom_firmware("uplink-s3", payload)
     try:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
@@ -138,7 +161,7 @@ async def test_latest_returns_metadata_for_uploaded_custom_firmware():
 
 @pytest.mark.asyncio
 async def test_download_returns_bytes_with_sha256_etag():
-    payload = b"\xE9SCANNER-PAYLOAD" + b"\x00" * 4080
+    payload = _named_firmware_image("scanner-s3-combo-seed", PRODUCTION_VERSION)
     nodes._firmware_mgr.set_custom_firmware("scanner-s3-combo-seed", payload)
     expected_sha = hashlib.sha256(payload).hexdigest()
     try:
@@ -155,8 +178,8 @@ async def test_download_returns_bytes_with_sha256_etag():
 
 @pytest.mark.asyncio
 async def test_badge_scanner_firmware_name_is_served_for_auto_refresh():
-    payload = b"\xE9BADGE-SCANNER-PAYLOAD" + b"\x00" * 4074
     firmware_name = "scanner-s3-combo-fof_badge"
+    payload = _badge_firmware_image(firmware_name)
     nodes._firmware_mgr.set_custom_firmware(firmware_name, payload)
     try:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
@@ -187,7 +210,11 @@ async def test_github_fallback_endpoints_report_embedded_image_version(
     name: str,
     embedded_version: str,
 ):
-    image = _esp_firmware_image(embedded_version)
+    image = (
+        _badge_firmware_image(name, embedded_version)
+        if name.endswith("-fof_badge")
+        else _named_firmware_image(name, embedded_version)
+    )
     manager = _cached_github_manager(monkeypatch, tmp_path, name, image)
     monkeypatch.setattr(nodes, "_firmware_mgr", manager)
 
@@ -202,7 +229,7 @@ async def test_github_fallback_endpoints_report_embedded_image_version(
     assert download.content == image
     assert download.headers["x-fof-firmware-version"] == embedded_version
 @pytest.mark.asyncio
-async def test_malformed_github_fallback_endpoint_version_is_unknown(
+async def test_malformed_github_fallback_endpoint_is_rejected(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
 ):
@@ -215,13 +242,11 @@ async def test_malformed_github_fallback_endpoint_version_is_unknown(
         latest = await c.get(f"/nodes/firmware/latest/{name}")
         download = await c.get(f"/nodes/firmware/download/{name}")
 
-    assert latest.status_code == 200, latest.text
-    assert latest.json()["version"] == "unknown"
-    assert download.status_code == 200
-    assert download.headers["x-fof-firmware-version"] == "unknown"
+    assert latest.status_code == 404
+    assert download.status_code == 404
 @pytest.mark.asyncio
 async def test_download_returns_304_on_matching_if_none_match():
-    payload = b"\xE9NOT-MODIFIED" + b"\x00" * 4083
+    payload = _named_firmware_image("scanner-s3-combo", PRODUCTION_VERSION)
     nodes._firmware_mgr.set_custom_firmware("scanner-s3-combo", payload)
     sha = hashlib.sha256(payload).hexdigest()
     try:
@@ -315,7 +340,7 @@ async def test_custom_backend_upload_rejects_mismatched_identity(client):
 @pytest.mark.asyncio
 async def test_custom_legacy_upload_still_reports_custom_version(client):
     name = "uplink-s3"
-    payload = b"\xE9legacy" + bytes(4096)
+    payload = _named_firmware_image(name, PRODUCTION_VERSION)
     try:
         nodes._firmware_mgr.set_custom_firmware(name, payload)
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:

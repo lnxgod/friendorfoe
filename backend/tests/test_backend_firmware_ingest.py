@@ -9,6 +9,7 @@ from collections import deque
 from unittest.mock import AsyncMock
 
 import pytest
+from fastapi import HTTPException
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import func, select
 
@@ -98,6 +99,67 @@ def _backend_image(target: str, *, valid_crc: bool = True) -> bytes:
     image[0x20:0x20 + len(app_desc)] = app_desc
     image[256:256 + len(record)] = record
     return bytes(image)
+
+
+NAMED_FIRMWARE_IDENTITIES = {
+    "uplink-s3": ("fof_uplink", "esp32-s3-devkitc-1"),
+    "uplink-s3-fof_badge": ("fof_badge_uplink", "seeed_xiao_esp32s3"),
+    "uplink-s3-backend": ("fof_backend_uplink", "seeed_xiao_esp32s3"),
+    "scanner-s3-combo": ("fof_scanner", "esp32-s3-devkitc-1"),
+    "scanner-s3-combo-seed": ("fof_scanner_seed", "esp32-s3-devkitc-1"),
+    "scanner-s3-combo-fof_badge": (
+        "fof_badge_scanner",
+        "seeed_xiao_esp32s3",
+    ),
+    "scanner-s3-combo-backend": (
+        "fof_backend_scanner",
+        "seeed_xiao_esp32s3",
+    ),
+}
+
+
+def _named_firmware_image(target: str) -> bytes:
+    if target.endswith("-backend"):
+        return _backend_image(target)
+    project, hardware = NAMED_FIRMWARE_IDENTITIES[target]
+    version = "0.67.2-badge-defcon34" if target.endswith("-fof_badge") \
+        else "0.64.68-live-follow"
+    app_desc = bytearray(112)
+    struct.pack_into("<I", app_desc, 0, 0xABCD5432)
+    app_desc[16:48] = version.encode().ljust(32, b"\0")
+    app_desc[48:80] = project.encode().ljust(32, b"\0")
+    app_desc[80:96] = b"12:00:00".ljust(16, b"\0")
+    app_desc[96:112] = b"2026-08-01".ljust(16, b"\0")
+    image = bytearray(1200)
+    image[0] = 0xE9
+    image[0x20:0x20 + len(app_desc)] = app_desc
+    markers = f"{target}\0{hardware}\0".encode("ascii")
+    image[256:256 + len(markers)] = markers
+    return bytes(image)
+
+
+def _heartbeat_for_firmware(target: str) -> tuple[dict, str | None]:
+    project, hardware = NAMED_FIRMWARE_IDENTITIES[target]
+    identity = {
+        "firmware_target": target,
+        "app_project": project,
+        "hardware_type": hardware,
+    }
+    heartbeat = {
+        "device_id": "uplink_FAMILY",
+        "ip": "10.0.0.42",
+        "last_seen": time.time(),
+    }
+    if target.startswith("uplink-"):
+        heartbeat.update(identity)
+        return heartbeat, None
+    heartbeat["scanners"] = [{
+        "uart": "ble",
+        "mac": "AA:BB:CC:DD:EE:42",
+        "boot_id": 1,
+        **identity,
+    }]
+    return heartbeat, "ble"
 
 
 PERSISTED_BACKEND_FIELDS = (
@@ -378,6 +440,123 @@ async def test_backend_named_image_is_not_sent_to_badge_uplink(client, monkeypat
 
     assert response.status_code == 409
     assert response.json()["detail"] == "running firmware identity is incompatible with uplink-s3-backend"
+
+
+@pytest.mark.parametrize(
+    ("running_target", "requested_target"),
+    [
+        ("uplink-s3", "uplink-s3-fof_badge"),
+        ("uplink-s3", "uplink-s3-backend"),
+        ("uplink-s3-fof_badge", "uplink-s3"),
+        ("uplink-s3-fof_badge", "uplink-s3-backend"),
+        ("uplink-s3-backend", "uplink-s3"),
+        ("uplink-s3-backend", "uplink-s3-fof_badge"),
+        ("scanner-s3-combo", "scanner-s3-combo-seed"),
+        ("scanner-s3-combo", "scanner-s3-combo-fof_badge"),
+        ("scanner-s3-combo", "scanner-s3-combo-backend"),
+        ("scanner-s3-combo-seed", "scanner-s3-combo"),
+        ("scanner-s3-combo-seed", "scanner-s3-combo-fof_badge"),
+        ("scanner-s3-combo-seed", "scanner-s3-combo-backend"),
+        ("scanner-s3-combo-fof_badge", "scanner-s3-combo"),
+        ("scanner-s3-combo-fof_badge", "scanner-s3-combo-seed"),
+        ("scanner-s3-combo-fof_badge", "scanner-s3-combo-backend"),
+        ("scanner-s3-combo-backend", "scanner-s3-combo"),
+        ("scanner-s3-combo-backend", "scanner-s3-combo-seed"),
+        ("scanner-s3-combo-backend", "scanner-s3-combo-fof_badge"),
+    ],
+)
+def test_named_ota_family_gates_reject_every_cross_family_pair(
+    monkeypatch,
+    running_target: str,
+    requested_target: str,
+):
+    heartbeat, uart = _heartbeat_for_firmware(running_target)
+    monkeypatch.setattr(
+        detections,
+        "_node_heartbeats",
+        {"uplink_FAMILY": heartbeat},
+    )
+
+    with pytest.raises(HTTPException) as preflight_error:
+        nodes._require_named_family_preflight(
+            "uplink_FAMILY",
+            requested_target,
+            uart,
+        )
+    with pytest.raises(HTTPException) as image_error:
+        nodes._require_ota_compatibility(
+            "uplink_FAMILY",
+            requested_target,
+            _named_firmware_image(requested_target),
+            uart,
+        )
+
+    assert preflight_error.value.status_code == 409
+    assert image_error.value.status_code == 409
+
+
+@pytest.mark.parametrize("target", sorted(NAMED_FIRMWARE_IDENTITIES))
+def test_named_ota_family_gates_accept_only_the_exact_running_identity(
+    monkeypatch,
+    target: str,
+):
+    heartbeat, uart = _heartbeat_for_firmware(target)
+    monkeypatch.setattr(
+        detections,
+        "_node_heartbeats",
+        {"uplink_FAMILY": heartbeat},
+    )
+
+    snapshot = nodes._require_named_family_preflight(
+        "uplink_FAMILY",
+        target,
+        uart,
+    )
+
+    assert nodes._require_ota_compatibility(
+        "uplink_FAMILY",
+        target,
+        _named_firmware_image(target),
+        uart,
+        snapshot=snapshot,
+    ) == snapshot
+
+
+@pytest.mark.parametrize(
+    ("requested_target", "image_target"),
+    [
+        ("uplink-s3", "uplink-s3-fof_badge"),
+        ("scanner-s3-combo", "scanner-s3-combo-seed"),
+        ("scanner-s3-combo-seed", "scanner-s3-combo-fof_badge"),
+    ],
+)
+def test_named_ota_rejects_a_mislabeled_image_for_the_exact_running_target(
+    monkeypatch,
+    requested_target: str,
+    image_target: str,
+):
+    heartbeat, uart = _heartbeat_for_firmware(requested_target)
+    monkeypatch.setattr(
+        detections,
+        "_node_heartbeats",
+        {"uplink_FAMILY": heartbeat},
+    )
+    snapshot = nodes._require_named_family_preflight(
+        "uplink_FAMILY",
+        requested_target,
+        uart,
+    )
+
+    with pytest.raises(HTTPException) as error:
+        nodes._require_ota_compatibility(
+            "uplink_FAMILY",
+            requested_target,
+            _named_firmware_image(image_target),
+            uart,
+            snapshot=snapshot,
+        )
+
+    assert error.value.status_code == 400
 
 
 @pytest.mark.asyncio
