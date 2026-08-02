@@ -89,6 +89,10 @@ fun DetailOverviewContent(
             }
         }
 
+        model.aircraftVisual?.let { visual ->
+            AircraftPhotoCard(visual)
+        }
+
         DetailFieldsSection(title = "At a glance", fields = model.summary)
 
         if (model.identifiers.isNotEmpty()) {

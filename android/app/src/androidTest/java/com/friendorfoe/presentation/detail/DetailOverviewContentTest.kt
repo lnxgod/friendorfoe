@@ -2,6 +2,7 @@ package com.friendorfoe.presentation.detail
 
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
@@ -28,6 +29,7 @@ class DetailOverviewContentTest {
         compose.onNodeWithText("Historical detection").assertIsDisplayed()
         compose.onNodeWithText("Immutable snapshot from History").assertIsDisplayed()
         compose.onNodeWithText("History record").assertDoesNotExist()
+        compose.onNodeWithTag("detail_aircraft_photo").assertDoesNotExist()
 
         compose.onNodeWithTag("detail_raw").performClick()
         compose.onNodeWithText("History record").assertIsDisplayed()
@@ -54,6 +56,63 @@ class DetailOverviewContentTest {
         compose.onNodeWithText("Retry details").assertIsDisplayed()
         compose.onNodeWithTag("detail_retry").performClick()
         compose.runOnIdle { assertEquals(1, retries) }
+    }
+
+    @Test
+    fun knownAircraftTypeLoadsItsBundledPhoto() {
+        compose.setContent {
+            FriendOrFoeTheme {
+                DetailOverviewContent(
+                    model = model(isLive = true).copy(
+                        aircraftVisual = AircraftVisual(
+                            photoUrl = null,
+                            typeCode = "B738",
+                            description = "Boeing 737-800",
+                            category = com.friendorfoe.domain.model.ObjectCategory.COMMERCIAL,
+                        ),
+                    ),
+                )
+            }
+        }
+
+        compose.onNodeWithTag("detail_aircraft_photo").assertIsDisplayed()
+        compose.waitUntil(timeoutMillis = 5_000) {
+            compose.onAllNodesWithTag(
+                "detail_aircraft_photo_image",
+                useUnmergedTree = true,
+            ).fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.onNodeWithTag(
+            "detail_aircraft_photo_image",
+            useUnmergedTree = true,
+        ).assertIsDisplayed()
+    }
+
+    @Test
+    fun unknownAircraftTypeKeepsAVisibleSilhouette() {
+        compose.setContent {
+            FriendOrFoeTheme {
+                DetailOverviewContent(
+                    model = model(isLive = true).copy(
+                        aircraftVisual = AircraftVisual(
+                            photoUrl = null,
+                            typeCode = "ZZZZ",
+                            description = null,
+                            category = com.friendorfoe.domain.model.ObjectCategory.COMMERCIAL,
+                        ),
+                    ),
+                )
+            }
+        }
+
+        compose.onNodeWithTag(
+            "detail_aircraft_silhouette",
+            useUnmergedTree = true,
+        ).assertIsDisplayed()
+        compose.onNodeWithTag(
+            "detail_aircraft_photo_image",
+            useUnmergedTree = true,
+        ).assertDoesNotExist()
     }
 
     private fun model(isLive: Boolean) = DetailPresentation(

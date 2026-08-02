@@ -24,6 +24,13 @@ data class DetailIdentifier(
     val copyable: Boolean,
 )
 
+data class AircraftVisual(
+    val photoUrl: String?,
+    val typeCode: String?,
+    val description: String?,
+    val category: ObjectCategory,
+)
+
 data class DetailPresentation(
     val title: String,
     val statusLabel: String,
@@ -35,41 +42,55 @@ data class DetailPresentation(
     val retryLabel: String?,
     val supportingMessage: String? = null,
     val rawExpandedByDefault: Boolean = false,
+    val aircraftVisual: AircraftVisual? = null,
 )
 
-fun presentHistoricalDetail(row: HistoryEntity): DetailPresentation = DetailPresentation(
-    title = row.displayName.takeIf(String::isNotBlank) ?: row.objectId,
-    statusLabel = "Historical detection",
-    isLive = false,
-    summary = listOf(
-        DetailField("Source", historicalSourceLabel(row.detectionSource)),
-        DetailField("Category", historyCategoryLabel(row.category)),
-        DetailField("Observed", formatDetailInstant(Instant.ofEpochMilli(row.lastSeen))),
-    ),
-    identifiers = listOfNotNull(
-        identifier("Object ID", row.objectId),
-    ),
-    advanced = buildList {
-        row.description?.takeIf(String::isNotBlank)?.let { add(DetailField("Description", it)) }
-        row.distanceMeters?.let { add(DetailField("Distance at observation", formatDetailDistance(it))) }
-        formatKnownPosition(row.latitude, row.longitude)?.let {
-            add(DetailField("Position at observation", it))
-        }
-        add(DetailField("Altitude at observation", formatAltitude(row.altitudeMeters)))
-        add(DetailField("Confidence", formatConfidence(row.confidence)))
-    },
-    raw = listOf(
-        DetailField("History record", row.id.toString()),
-        DetailField("Object type", row.objectType),
-        DetailField("First observed", formatDetailInstant(Instant.ofEpochMilli(row.firstSeen))),
-        DetailField("Last observed", formatDetailInstant(Instant.ofEpochMilli(row.lastSeen))),
-    ) + listOfNotNull(
-        formatKnownPosition(row.userLatitude, row.userLongitude)?.let {
-            DetailField("Phone position at observation", it)
+fun presentHistoricalDetail(row: HistoryEntity): DetailPresentation {
+    val category = historicalCategory(row.category)
+    return DetailPresentation(
+        title = row.displayName.takeIf(String::isNotBlank) ?: row.objectId,
+        statusLabel = "Historical detection",
+        isLive = false,
+        summary = listOf(
+            DetailField("Source", historicalSourceLabel(row.detectionSource)),
+            DetailField("Category", historyCategoryLabel(row.category)),
+            DetailField("Observed", formatDetailInstant(Instant.ofEpochMilli(row.lastSeen))),
+        ),
+        identifiers = listOfNotNull(
+            identifier("Object ID", row.objectId),
+        ),
+        advanced = buildList {
+            row.description?.takeIf(String::isNotBlank)?.let { add(DetailField("Description", it)) }
+            row.distanceMeters?.let { add(DetailField("Distance at observation", formatDetailDistance(it))) }
+            formatKnownPosition(row.latitude, row.longitude)?.let {
+                add(DetailField("Position at observation", it))
+            }
+            add(DetailField("Altitude at observation", formatAltitude(row.altitudeMeters)))
+            add(DetailField("Confidence", formatConfidence(row.confidence)))
         },
-    ),
-    retryLabel = null,
-)
+        raw = listOf(
+            DetailField("History record", row.id.toString()),
+            DetailField("Object type", row.objectType),
+            DetailField("First observed", formatDetailInstant(Instant.ofEpochMilli(row.firstSeen))),
+            DetailField("Last observed", formatDetailInstant(Instant.ofEpochMilli(row.lastSeen))),
+        ) + listOfNotNull(
+            formatKnownPosition(row.userLatitude, row.userLongitude)?.let {
+                DetailField("Phone position at observation", it)
+            },
+        ),
+        retryLabel = null,
+        aircraftVisual = if (row.objectType.equals("aircraft", ignoreCase = true)) {
+            AircraftVisual(
+                photoUrl = row.photoUrl?.takeIf(String::isNotBlank),
+                typeCode = null,
+                description = null,
+                category = category,
+            )
+        } else {
+            null
+        },
+    )
+}
 
 fun presentLiveDetail(
     aircraft: Aircraft,
@@ -118,6 +139,12 @@ fun presentLiveDetail(
         },
         retryLabel = remoteFailure?.takeIf(String::isNotBlank)?.let { "Retry details" },
         supportingMessage = remoteFailure?.takeIf(String::isNotBlank),
+        aircraftVisual = AircraftVisual(
+            photoUrl = aircraft.photoUrl,
+            typeCode = aircraftType,
+            description = model,
+            category = aircraft.category,
+        ),
     )
 }
 
@@ -206,6 +233,10 @@ private fun historyCategoryLabel(category: String): String = ObjectCategory.entr
     ?.humanLabel()
     ?: category.replace('_', ' ').trim().replaceFirstChar { it.titlecase(Locale.US) }
         .ifBlank { "Unclassified" }
+
+private fun historicalCategory(raw: String): ObjectCategory = ObjectCategory.entries
+    .firstOrNull { it.name.equals(raw.trim(), ignoreCase = true) }
+    ?: ObjectCategory.UNKNOWN
 
 private fun Position.formatKnown(): String? = formatKnownPosition(latitude, longitude)
 
