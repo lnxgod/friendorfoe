@@ -149,9 +149,12 @@ export function createDraftState(validate) {
       const validated = validate(draft);
       dirty = !(validated.ok && current && equal(validated.value, current));
     },
-    accept() {
-      const validated = validate(draft);
-      if (dirty && validated.ok) awaiting = clone(validated.value);
+    accept(value = draft) {
+      const validated = validate(value);
+      if (!validated.ok) return { confirmed: false };
+      const confirmed = Boolean(current && equal(current, validated.value));
+      awaiting = confirmed ? null : clone(validated.value);
+      return { confirmed };
     },
     snapshot() {
       return {
@@ -213,10 +216,12 @@ export function createMutationCoordinator({ post, onChange = () => {} }) {
         notify();
         return { accepted: false, message };
       }
-      const reply = await submit(path, result.value);
+      const submitted = clone(result.value);
+      const reply = await submit(path, clone(submitted));
       if (reply.accepted) {
         awaitingConfirmation = path;
         notify();
+        return { ...reply, submitted };
       }
       return reply;
     },
@@ -236,6 +241,14 @@ export function observeDraftStatus({ draft, mutations, path, label: labelText, v
   const observation = draft.observe(value);
   if (observation.confirmed) mutations.confirm(path, labelText);
   return observation;
+}
+
+export async function submitDraft({ draft, mutations, path, label: labelText, validate }) {
+  const reply = await mutations.submitValidated(path, draft.snapshot().draft, validate);
+  if (!reply.accepted) return reply;
+  const observation = draft.accept(reply.submitted);
+  if (observation.confirmed) mutations.confirm(path, labelText);
+  return reply;
 }
 
 function label(name) {
@@ -543,8 +556,10 @@ export function createBadgeView({ post }) {
   });
   themeForm.addEventListener("submit", async (event) => {
     event.preventDefault();
-    const reply = await mutations.submitValidated("/api/control/theme", themeDraft.snapshot().draft, validateTheme);
-    if (reply.accepted) themeDraft.accept();
+    await submitDraft({
+      draft: themeDraft, mutations, path: "/api/control/theme", label: "Theme",
+      validate: validateTheme,
+    });
     syncDisabled();
   });
   policyForm.addEventListener("input", () => {
@@ -557,10 +572,10 @@ export function createBadgeView({ post }) {
   });
   policyForm.addEventListener("submit", async (event) => {
     event.preventDefault();
-    const reply = await mutations.submitValidated(
-      "/api/control/display-policy", policyDraft.snapshot().draft, validatePolicy,
-    );
-    if (reply.accepted) policyDraft.accept();
+    await submitDraft({
+      draft: policyDraft, mutations, path: "/api/control/display-policy",
+      label: "Display policy", validate: validatePolicy,
+    });
     syncDisabled();
   });
 

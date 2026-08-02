@@ -587,6 +587,97 @@ test("Badge accepted reordered draft becomes confirmed on schema-equal status", 
   assert.equal(draft.snapshot().awaiting, null);
 });
 
+test("Badge status before deferred acceptance confirms canonical theme and policy submissions", async () => {
+  const themeCurrent = {
+    version: 1, palette: "night", background: "dark", brightness: 80,
+    accents: { drone: 1, meta: 2, tracker: 3, flock: 4, wifi_attack: 5, clear: 6 },
+  };
+  const themeSubmitted = {
+    accents: { clear: 60, wifi_attack: 50, flock: 40, tracker: 30, meta: 20, drone: 10 },
+    brightness: 70, background: "dim", palette: "field", version: 1,
+  };
+  const themeStatus = {
+    palette: "field", version: 1,
+    accents: { meta: 20, drone: 10, clear: 60, tracker: 30, wifi_attack: 50, flock: 40 },
+    background: "dim", brightness: 70,
+  };
+  const policyCurrent = completePolicy();
+  const policySubmitted = structuredClone(policyCurrent);
+  policySubmitted.classes.drone.priority = 99;
+  const policyStatus = {
+    classes: Object.fromEntries(Object.entries(policySubmitted.classes).reverse().map(([name, row]) => [
+      name,
+      {
+        priority: row.priority, min_proximity: row.min_proximity,
+        lane: row.lane, enabled: row.enabled,
+      },
+    ])),
+    version: 1,
+  };
+  const policyNewerDraft = structuredClone(policySubmitted);
+  policyNewerDraft.classes.drone.priority = 88;
+  const cases = [
+    {
+      name: "theme", path: "/api/control/theme", label: "Theme",
+      validate: badgeView.validateTheme, current: themeCurrent,
+      submitted: themeSubmitted, status: themeStatus,
+      readCurrent: (snapshot) => snapshot.current.brightness,
+      readDraft: (snapshot) => snapshot.draft.brightness,
+      before: 80, confirmed: 70, finalDraft: 70,
+    },
+    {
+      name: "policy", path: "/api/control/display-policy", label: "Display policy",
+      validate: badgeView.validatePolicy, current: policyCurrent,
+      submitted: policySubmitted, status: policyStatus, newerDraft: policyNewerDraft,
+      readCurrent: (snapshot) => snapshot.current.classes.drone.priority,
+      readDraft: (snapshot) => snapshot.draft.classes.drone.priority,
+      before: 0, confirmed: 99, finalDraft: 88,
+    },
+  ];
+
+  for (const scenario of cases) {
+    const pending = deferred();
+    const draft = badgeView.createDraftState(scenario.validate);
+    const mutations = badgeView.createMutationCoordinator({ post: () => pending.promise });
+    draft.observe(scenario.current);
+    draft.edit(scenario.submitted);
+
+    const command = badgeView.submitDraft({
+      draft, mutations, path: scenario.path, label: scenario.label,
+      validate: scenario.validate,
+    });
+    assert.equal(mutations.snapshot().pending, true, `${scenario.name} POST is pending`);
+    assert.equal(
+      scenario.readCurrent(draft.snapshot()), scenario.before,
+      `${scenario.name} submission must not optimistically mutate current status`,
+    );
+    if (scenario.newerDraft) draft.edit(scenario.newerDraft);
+
+    const observation = badgeView.observeDraftStatus({
+      draft, mutations, path: scenario.path, label: scenario.label, value: scenario.status,
+    });
+    assert.equal(observation.confirmed, false, `${scenario.name} cannot confirm before acceptance`);
+    assert.equal(scenario.readCurrent(draft.snapshot()), scenario.confirmed);
+    const observedCurrent = structuredClone(draft.snapshot().current);
+
+    pending.resolve({ ok: true, ble_sent: true, wifi_sent: true });
+    const reply = await command;
+    assert.equal(reply.accepted, true);
+    assert.deepEqual(
+      draft.snapshot().current, observedCurrent,
+      `${scenario.name} acceptance must not optimistically mutate current status`,
+    );
+    assert.equal(
+      mutations.snapshot().message,
+      `${scenario.label} confirmed by firmware status.`,
+    );
+    assert.equal(mutations.snapshot().awaitingConfirmation, null);
+    assert.equal(draft.snapshot().awaiting, null);
+    assert.equal(scenario.readDraft(draft.snapshot()), scenario.finalDraft);
+    assert.equal(draft.snapshot().dirty, Boolean(scenario.newerDraft));
+  }
+});
+
 test("Badge incomplete objects disable Apply and validation sends no request", async () => {
   const posts = [];
   const mutations = badgeView.createMutationCoordinator({
