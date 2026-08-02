@@ -1,11 +1,26 @@
 import json
+import sqlite3
 import tempfile
 import unittest
+from base64 import urlsafe_b64encode
 from dataclasses import replace
 from pathlib import Path
 
 from new_dash.models import BadgeEntity, DetectionEvent
 from new_dash.storage import HistoryQuery, ObservationStore
+
+
+class TrackingObservationStore(ObservationStore):
+    """Records real SQLite connections so lifecycle behavior can be exercised."""
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        self.opened_connections: list[sqlite3.Connection] = []
+        super().__init__(*args, **kwargs)
+
+    def _connect(self) -> sqlite3.Connection:
+        connection = super()._connect()
+        self.opened_connections.append(connection)
+        return connection
 
 
 class ObservationStoreTest(unittest.TestCase):
@@ -166,7 +181,7 @@ class ObservationStoreTest(unittest.TestCase):
     def test_prune_keeps_newest_fifty_thousand_rows(self) -> None:
         now = 1_700_000_000.0
         store = ObservationStore(self.path, retention_days=30, max_observations=50_000)
-        with store._connect() as connection:
+        with store._connection() as connection:
             connection.executemany(
                 """INSERT INTO observations (
                 kind, received_at, observed_at, stable_key, source, extras_json
@@ -175,7 +190,7 @@ class ObservationStoreTest(unittest.TestCase):
             )
 
         self.assertEqual(store.prune(now), 3)
-        with store._connect() as connection:
+        with store._connection() as connection:
             count = connection.execute("SELECT COUNT(*) FROM observations").fetchone()[0]
             oldest = connection.execute("SELECT MIN(id) FROM observations").fetchone()[0]
         self.assertEqual(count, 50_000)
@@ -186,6 +201,35 @@ class ObservationStoreTest(unittest.TestCase):
             ObservationStore(self.path, retention_days=0, max_observations=1)
         with self.assertRaises(ValueError):
             ObservationStore(self.path, retention_days=1, max_observations=0)
+
+    def test_constructor_uses_documented_retention_defaults(self) -> None:
+        store = ObservationStore(self.path)
+
+        self.assertEqual(store.retention_days, 30)
+        self.assertEqual(store.max_observations, 50_000)
+
+    def test_public_operations_close_their_real_sqlite_connections(self) -> None:
+        store = TrackingObservationStore(self.path)
+        store.add_event(self._event("one"), 10.0)
+        store.query(HistoryQuery())
+        store.add_track(self._positioned_entity(), 20.0)
+        list(store.iter_export(HistoryQuery()))
+        store.prune(now=1_700_000_000.0)
+        store.clear()
+        store.close()
+
+        self.assertGreaterEqual(len(store.opened_connections), 7)
+        for connection in store.opened_connections:
+            with self.subTest(connection=connection):
+                with self.assertRaises(sqlite3.ProgrammingError):
+                    connection.execute("SELECT 1")
+
+    def test_query_rejects_cursor_with_huge_received_at_integer(self) -> None:
+        store = ObservationStore(self.path)
+        cursor = urlsafe_b64encode(json.dumps({"received_at": 10 ** 1_000, "id": 1}).encode()).decode()
+
+        with self.assertRaises(ValueError):
+            store.query(HistoryQuery(cursor=cursor))
 
     def _positioned_entity(self) -> BadgeEntity:
         fixture = Path(__file__).parent / "fixtures" / "badge_status_remote_id.json"

@@ -8,6 +8,7 @@ import threading
 import time
 from base64 import b64decode, urlsafe_b64encode
 from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from math import isfinite
 from pathlib import Path
@@ -79,7 +80,13 @@ CREATE INDEX IF NOT EXISTS observations_threat_class_idx ON observations (threat
 class ObservationStore:
     """Owns short-lived SQLite connections for persisted badge observations."""
 
-    def __init__(self, path: Path | str, *, retention_days: int, max_observations: int) -> None:
+    def __init__(
+        self,
+        path: Path | str,
+        *,
+        retention_days: int = 30,
+        max_observations: int = 50_000,
+    ) -> None:
         if retention_days < 1:
             raise ValueError("retention_days must be at least 1")
         if max_observations < 1:
@@ -90,7 +97,7 @@ class ObservationStore:
         self._write_lock = threading.Lock()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self._write_lock:
-            with self._connect() as connection:
+            with self._connection() as connection:
                 connection.executescript(_SCHEMA)
                 connection.execute(
                     "INSERT INTO schema_meta (version) "
@@ -104,6 +111,20 @@ class ObservationStore:
         connection.row_factory = sqlite3.Row
         return connection
 
+    @contextmanager
+    def _connection(self) -> Iterator[sqlite3.Connection]:
+        """Commit or roll back one operation, then always close its connection."""
+        connection = self._connect()
+        try:
+            yield connection
+        except BaseException:
+            connection.rollback()
+            raise
+        else:
+            connection.commit()
+        finally:
+            connection.close()
+
     def add_event(self, event: DetectionEvent, received_at: float) -> int:
         """Persist an emitted event; protocol events are never deduplicated."""
         values = (
@@ -115,13 +136,13 @@ class ObservationStore:
             json.dumps(event.to_dict(), separators=(",", ":"), allow_nan=False),
         )
         with self._write_lock:
-            with self._connect() as connection:
+            with self._connection() as connection:
                 return _insert_observation(connection, values)
 
     def query(self, query: HistoryQuery) -> HistoryPage:
         limit = min(max(query.limit, 1), 500)
         where, parameters = _where_clause(query, include_cursor=True)
-        with self._connect() as connection:
+        with self._connection() as connection:
             rows = connection.execute(
                 f"SELECT * FROM observations{where} "
                 "ORDER BY received_at DESC, id DESC LIMIT ?",
@@ -148,7 +169,7 @@ class ObservationStore:
             ),
         )
         with self._write_lock:
-            with self._connect() as connection:
+            with self._connection() as connection:
                 previous = connection.execute(
                     """SELECT latitude, longitude, altitude_m, events, seen_count
                     FROM observations WHERE stable_key = ? AND kind = 'track'
@@ -168,7 +189,7 @@ class ObservationStore:
     def iter_export(self, query: HistoryQuery) -> Iterator[Observation]:
         """Yield all matching observations, optionally continuing from a cursor."""
         where, parameters = _where_clause(query, include_cursor=True)
-        with self._connect() as connection:
+        with self._connection() as connection:
             cursor = connection.execute(
                 f"SELECT * FROM observations{where} ORDER BY received_at DESC, id DESC",
                 parameters,
@@ -181,7 +202,7 @@ class ObservationStore:
         cutoff_now = time.time() if now is None else _finite_number(now, "now")
         cutoff = cutoff_now - self.retention_days * 86_400
         with self._write_lock:
-            with self._connect() as connection:
+            with self._connection() as connection:
                 deleted = connection.execute(
                     "DELETE FROM observations WHERE received_at < ?", (cutoff,)
                 ).rowcount
@@ -199,7 +220,7 @@ class ObservationStore:
     def clear(self) -> int:
         """Delete all retained observations and return their number."""
         with self._write_lock:
-            with self._connect() as connection:
+            with self._connection() as connection:
                 return connection.execute("DELETE FROM observations").rowcount
 
     def close(self) -> None:
@@ -305,9 +326,15 @@ def _decode_cursor(cursor: str) -> tuple[float, int]:
 
 
 def _finite_number(value: Any, name: str) -> float:
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or not isfinite(value):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ValueError(f"{name} must be finite numeric")
-    return float(value)
+    try:
+        converted = float(value)
+    except OverflowError as error:
+        raise ValueError(f"{name} must be finite numeric") from error
+    if not isfinite(converted):
+        raise ValueError(f"{name} must be finite numeric")
+    return converted
 
 
 def _positive_int(value: Any, name: str) -> int:
