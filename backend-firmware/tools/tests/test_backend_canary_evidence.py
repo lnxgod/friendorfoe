@@ -1598,6 +1598,33 @@ def test_soak_computes_heartbeat_gap_instead_of_trusting_reported_summary(tmp_pa
         verify_soak(path, expected_duration_s=91, max_heartbeat_gap_s=90)
 
 
+def test_soak_rejects_multi_hour_monitor_sample_hole(tmp_path):
+    path = write_soak_fixture(tmp_path, duration_s=7_200, heartbeat_gap_s=90)
+    rows = [json.loads(line) for line in path.read_text().splitlines()]
+    path.write_text("".join(
+        json.dumps(row) + "\n" for row in (rows[0], rows[1], rows[-1])
+    ))
+
+    with pytest.raises(EvidenceError, match="monitor sample gap"):
+        verify_soak(
+            path,
+            expected_duration_s=7_200,
+            max_heartbeat_gap_s=10_000,
+            max_sample_gap_s=90,
+        )
+
+
+def test_soak_rejects_nonpositive_monitor_sample_limit(tmp_path):
+    path = write_soak_fixture(tmp_path, duration_s=90)
+    with pytest.raises(EvidenceError, match="limits must be positive"):
+        verify_soak(
+            path,
+            expected_duration_s=90,
+            max_heartbeat_gap_s=90,
+            max_sample_gap_s=0,
+        )
+
+
 def test_soak_rejects_86399_seconds_and_accepts_86400(tmp_path):
     short = write_soak_fixture(tmp_path, duration_s=86_399)
     with pytest.raises(EvidenceError, match="duration"):

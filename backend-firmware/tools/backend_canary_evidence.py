@@ -2116,9 +2116,14 @@ def verify_soak(
     *,
     expected_duration_s: int,
     max_heartbeat_gap_s: int,
+    max_sample_gap_s: int = 90,
 ) -> SoakResult:
     """Verify a complete JSONL soak without trusting recorder-derived claims."""
-    if expected_duration_s <= 0 or max_heartbeat_gap_s <= 0:
+    limits = (expected_duration_s, max_heartbeat_gap_s, max_sample_gap_s)
+    if any(
+        isinstance(value, bool) or not isinstance(value, int) or value <= 0
+        for value in limits
+    ):
         raise EvidenceError("soak verification limits must be positive")
     source = path.expanduser().resolve()
     if not source.is_file():
@@ -2213,6 +2218,8 @@ def verify_soak(
         )
         if observed < previous_observed or heartbeat > observed:
             raise EvidenceError("soak heartbeat/timestamp ordering is invalid")
+        if observed - previous_observed > max_sample_gap_s * 1000:
+            raise EvidenceError("soak monitor sample gap exceeds the limit")
         previous_observed = observed
         backend = _validate_soak_backend(row.get("backend"))
         reported_gap = _required_int(
@@ -2340,6 +2347,7 @@ def _build_parser() -> argparse.ArgumentParser:
     verify.add_argument("--input", type=Path, required=True)
     verify.add_argument("--duration-s", type=int, default=86_400)
     verify.add_argument("--max-heartbeat-gap-s", type=int, default=90)
+    verify.add_argument("--max-sample-gap-s", type=int, default=90)
     return parser
 
 
@@ -2411,6 +2419,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.input,
                 expected_duration_s=args.duration_s,
                 max_heartbeat_gap_s=args.max_heartbeat_gap_s,
+                max_sample_gap_s=args.max_sample_gap_s,
             ))
     except EvidenceError as exc:
         print(f"backend canary evidence refused: {exc}", file=sys.stderr)
