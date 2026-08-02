@@ -6,6 +6,7 @@ import struct
 import time
 import uuid
 import zlib
+import zipfile
 from collections import deque
 from unittest.mock import AsyncMock
 
@@ -634,6 +635,68 @@ def test_raw_ota_rejects_unknown_or_unparseable_images_by_default(
         nodes._require_ota_compatibility("uplink_FAMILY", None, image)
 
     assert error.value.status_code == 400
+
+
+@pytest.mark.parametrize(
+    ("role", "target", "backend_target"),
+    [
+        ("uplink", "uplink-s3-fof_badge", "uplink-s3-backend"),
+        (
+            "scanner",
+            "scanner-s3-combo-fof_badge",
+            "scanner-s3-combo-backend",
+        ),
+    ],
+)
+def test_real_native_0672_bundle_routes_only_to_exact_badge_family(
+    monkeypatch,
+    role: str,
+    target: str,
+    backend_target: str,
+):
+    bundle = (
+        Path(__file__).resolve().parents[2]
+        / "tools/badge_flasher/resources/badge-factory-flasher-embedded.zip"
+    )
+    with zipfile.ZipFile(bundle) as archive:
+        manifest = json.loads(archive.read("manifest.json"))
+        image = archive.read(f"{role}/firmware.bin")
+
+    expected_version = "0.67.2-badge-defcon34"
+    assert manifest["version"] == expected_version
+    assert manifest["layouts"][role]["identity"] == {
+        "project": NAMED_FIRMWARE_IDENTITIES[target][0],
+        "target": target,
+        "version": expected_version,
+    }
+    assert firmware_manager._parse_app_desc_bytes(image)["version"] == expected_version
+
+    heartbeat, uart = _heartbeat_for_firmware(target)
+    monkeypatch.setattr(
+        detections,
+        "_node_heartbeats",
+        {"uplink_FAMILY": heartbeat},
+    )
+    for firmware_name in (None, target):
+        snapshot = nodes._require_ota_compatibility(
+            "uplink_FAMILY",
+            firmware_name,
+            image,
+            uart,
+        )
+        assert snapshot["heartbeat"]["device_id"] == "uplink_FAMILY"
+
+    backend_image = firmware_manager.FIRMWARE_TYPES[backend_target][
+        "local_bin"
+    ].read_bytes()
+    with pytest.raises(HTTPException) as error:
+        nodes._require_ota_compatibility(
+            "uplink_FAMILY",
+            None,
+            backend_image,
+            uart,
+        )
+    assert error.value.status_code == 409
 
 
 def test_unchanged_badge_uplink_and_scanner_bindings_survive_fetch(monkeypatch):

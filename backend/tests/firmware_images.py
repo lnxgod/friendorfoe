@@ -39,16 +39,23 @@ def esp32s3_app_image(
 
     header = bytearray(ESP_IMAGE_HEADER_SIZE)
     header[0] = 0xE9
-    header[1] = 1
+    header[1] = 2
     struct.pack_into("<I", header, 4, 0x40374000)
     struct.pack_into("<H", header, 12, 9)
     header[23] = 1
-    segment_header = struct.pack("<II", 0x3C000020, len(payload))
-    image = header + segment_header + payload
+    executable_payload = b"\x36\x41\x00" + bytes(253)
+    segments = (
+        (0x3C000020, bytes(payload)),
+        (0x40374000, executable_payload),
+    )
+    image = bytearray(header)
 
     checksum = 0xEF
-    for value in payload:
-        checksum ^= value
+    for load_address, segment_payload in segments:
+        image.extend(struct.pack("<II", load_address, len(segment_payload)))
+        image.extend(segment_payload)
+        for value in segment_payload:
+            checksum ^= value
     checksum_offset = ((len(image) + 16) // 16) * 16 - 1
     image.extend(bytes(checksum_offset - len(image)))
     image.append(checksum)

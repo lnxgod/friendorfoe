@@ -294,6 +294,7 @@ def _parse_esp_image_layout(image: bytes) -> tuple[int, int] | None:
     checksum = 0xEF
     first_segment_offset = 0
     first_segment_size = 0
+    entry_covered_by_executable_segment = False
     for segment_index in range(segment_count):
         header_end = cursor + _ESP_SEGMENT_HEADER_SIZE
         if header_end > len(image):
@@ -305,6 +306,11 @@ def _parse_esp_image_layout(image: bytes) -> tuple[int, int] | None:
             for low, high in _ESP32_S3_SEGMENT_RANGES
         ):
             return None
+        if load_address <= entry_address < load_end and any(
+            low <= load_address and load_end <= high
+            for low, high in _ESP32_S3_EXECUTABLE_RANGES
+        ):
+            entry_covered_by_executable_segment = True
         payload_offset = header_end
         payload_end = payload_offset + segment_size
         if payload_end > len(image):
@@ -315,6 +321,9 @@ def _parse_esp_image_layout(image: bytes) -> tuple[int, int] | None:
         for value in image[payload_offset:payload_end]:
             checksum ^= value
         cursor = payload_end
+
+    if not entry_covered_by_executable_segment:
+        return None
 
     checksum_offset = ((cursor + 16) // 16) * 16 - 1
     digest_offset = checksum_offset + 1

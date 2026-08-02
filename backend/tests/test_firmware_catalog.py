@@ -450,6 +450,7 @@ def test_catalog_rejects_descriptor_and_record_only_backend_bytes():
     "mutation",
     [
         "entry_address",
+        "entry_uncovered",
         "load_address",
         "load_range",
         "chip_id",
@@ -467,6 +468,9 @@ def test_catalog_rejects_invalid_esp32s3_image_layout(mutation: str):
     image = bytearray(_badge_image("uplink-s3-fof_badge"))
     if mutation == "entry_address":
         struct.pack_into("<I", image, 4, 0)
+        image = bytearray(resign_esp_image(bytes(image)))
+    elif mutation == "entry_uncovered":
+        struct.pack_into("<I", image, 4, 0x40375000)
         image = bytearray(resign_esp_image(bytes(image)))
     elif mutation == "load_address":
         struct.pack_into("<I", image, 24, 0)
