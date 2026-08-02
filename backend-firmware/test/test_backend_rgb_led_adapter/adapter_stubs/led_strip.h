@@ -41,3 +41,4 @@ esp_err_t led_strip_set_pixel(
     uint32_t blue);
 esp_err_t led_strip_refresh(led_strip_handle_t strip);
 esp_err_t led_strip_clear(led_strip_handle_t strip);
+esp_err_t led_strip_del(led_strip_handle_t strip);

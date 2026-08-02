@@ -23,13 +23,18 @@ static unsigned strip_create_count;
 static unsigned strip_set_count;
 static unsigned strip_refresh_count;
 static unsigned strip_clear_count;
+static unsigned strip_delete_count;
 static bool strip_create_fails;
+static unsigned strip_set_fail_on_call;
+static unsigned strip_refresh_fail_on_call;
+static unsigned strip_clear_fail_on_call;
 static uint32_t observed_red[4];
 static uint32_t observed_green[4];
 static uint32_t observed_blue[4];
 static TaskFunction_t captured_task;
 static void *captured_task_argument;
 static unsigned task_create_count;
+static bool task_create_fails;
 static int delay_scenario;
 static unsigned delay_count;
 static jmp_buf task_exit;
@@ -66,6 +71,9 @@ esp_err_t led_strip_set_pixel(
     observed_red[strip_set_count] = red;
     observed_green[strip_set_count] = green;
     observed_blue[strip_set_count++] = blue;
+    if (strip_set_count == strip_set_fail_on_call) {
+        return -1;
+    }
     return ESP_OK;
 }
 
@@ -73,6 +81,9 @@ esp_err_t led_strip_refresh(led_strip_handle_t strip)
 {
     TEST_ASSERT_EQUAL_PTR(&observed_strip, strip);
     ++strip_refresh_count;
+    if (strip_refresh_count == strip_refresh_fail_on_call) {
+        return -1;
+    }
     return ESP_OK;
 }
 
@@ -80,6 +91,16 @@ esp_err_t led_strip_clear(led_strip_handle_t strip)
 {
     TEST_ASSERT_EQUAL_PTR(&observed_strip, strip);
     ++strip_clear_count;
+    if (strip_clear_count == strip_clear_fail_on_call) {
+        return -1;
+    }
+    return ESP_OK;
+}
+
+esp_err_t led_strip_del(led_strip_handle_t strip)
+{
+    TEST_ASSERT_EQUAL_PTR(&observed_strip, strip);
+    ++strip_delete_count;
     return ESP_OK;
 }
 
@@ -101,6 +122,9 @@ TaskHandle_t xTaskCreateStatic(
     ++task_create_count;
     captured_task = task;
     captured_task_argument = argument;
+    if (task_create_fails) {
+        return NULL;
+    }
     return task_buffer;
 }
 
@@ -131,13 +155,18 @@ void setUp(void)
     strip_set_count = 0U;
     strip_refresh_count = 0U;
     strip_clear_count = 0U;
+    strip_delete_count = 0U;
     strip_create_fails = false;
+    strip_set_fail_on_call = 0U;
+    strip_refresh_fail_on_call = 0U;
+    strip_clear_fail_on_call = 0U;
     memset(observed_red, 0, sizeof(observed_red));
     memset(observed_green, 0, sizeof(observed_green));
     memset(observed_blue, 0, sizeof(observed_blue));
     captured_task = NULL;
     captured_task_argument = NULL;
     task_create_count = 0U;
+    task_create_fails = false;
     delay_scenario = 0;
     delay_count = 0U;
 }
@@ -182,6 +211,91 @@ void test_fullsize_rgb_led_propagates_strip_initialization_failure(void)
     TEST_ASSERT_EQUAL_UINT(0, task_create_count);
 }
 
+void test_fullsize_rgb_led_releases_after_initial_clear_failure_before_retry(void)
+{
+    strip_clear_fail_on_call = 1U;
+    TEST_ASSERT_FALSE(backend_fullsize_rgb_led_init(BACKEND_LED_DRONE));
+    TEST_ASSERT_EQUAL_UINT(1, strip_create_count);
+    TEST_ASSERT_EQUAL_UINT(2, strip_clear_count);
+    TEST_ASSERT_EQUAL_UINT(1, strip_delete_count);
+    TEST_ASSERT_NULL(s_strip);
+    TEST_ASSERT_FALSE(backend_fullsize_rgb_led_set_state(BACKEND_LED_META));
+
+    strip_clear_fail_on_call = 0U;
+    TEST_ASSERT_TRUE(backend_fullsize_rgb_led_init(BACKEND_LED_META));
+    TEST_ASSERT_EQUAL_UINT(2, strip_create_count);
+    TEST_ASSERT_EQUAL_UINT(1, task_create_count);
+    TEST_ASSERT_EQUAL(BACKEND_LED_META, backend_fullsize_rgb_led_state());
+}
+
+void test_fullsize_rgb_led_releases_after_task_creation_failure_before_retry(void)
+{
+    task_create_fails = true;
+    TEST_ASSERT_FALSE(backend_fullsize_rgb_led_init(BACKEND_LED_DRONE));
+    TEST_ASSERT_EQUAL_UINT(1, strip_create_count);
+    TEST_ASSERT_EQUAL_UINT(2, strip_clear_count);
+    TEST_ASSERT_EQUAL_UINT(1, strip_delete_count);
+    TEST_ASSERT_NULL(s_strip);
+    TEST_ASSERT_FALSE(backend_fullsize_rgb_led_set_state(BACKEND_LED_META));
+
+    task_create_fails = false;
+    TEST_ASSERT_TRUE(backend_fullsize_rgb_led_init(BACKEND_LED_META));
+    TEST_ASSERT_EQUAL_UINT(2, strip_create_count);
+    TEST_ASSERT_EQUAL_UINT(2, task_create_count);
+    TEST_ASSERT_EQUAL(BACKEND_LED_META, backend_fullsize_rgb_led_state());
+}
+
+void test_fullsize_rgb_led_faults_without_refresh_after_set_pixel_failure(void)
+{
+    TEST_ASSERT_TRUE(backend_fullsize_rgb_led_init(BACKEND_LED_DRONE));
+    strip_set_fail_on_call = 1U;
+    if (setjmp(task_exit) == 0) {
+        captured_task(captured_task_argument);
+    }
+
+    TEST_ASSERT_EQUAL_UINT(1, strip_set_count);
+    TEST_ASSERT_EQUAL_UINT(0, strip_refresh_count);
+    TEST_ASSERT_EQUAL_UINT(2, strip_clear_count);
+    TEST_ASSERT_EQUAL_UINT(1, strip_delete_count);
+    TEST_ASSERT_NULL(s_strip);
+    TEST_ASSERT_FALSE(backend_fullsize_rgb_led_set_state(BACKEND_LED_META));
+    TEST_ASSERT_TRUE(backend_fullsize_rgb_led_init(BACKEND_LED_META));
+}
+
+void test_fullsize_rgb_led_faults_after_refresh_failure(void)
+{
+    TEST_ASSERT_TRUE(backend_fullsize_rgb_led_init(BACKEND_LED_DRONE));
+    strip_refresh_fail_on_call = 1U;
+    if (setjmp(task_exit) == 0) {
+        captured_task(captured_task_argument);
+    }
+
+    TEST_ASSERT_EQUAL_UINT(1, strip_set_count);
+    TEST_ASSERT_EQUAL_UINT(1, strip_refresh_count);
+    TEST_ASSERT_EQUAL_UINT(2, strip_clear_count);
+    TEST_ASSERT_EQUAL_UINT(1, strip_delete_count);
+    TEST_ASSERT_NULL(s_strip);
+    TEST_ASSERT_FALSE(backend_fullsize_rgb_led_set_state(BACKEND_LED_META));
+    TEST_ASSERT_TRUE(backend_fullsize_rgb_led_init(BACKEND_LED_META));
+}
+
+void test_fullsize_rgb_led_faults_after_off_step_clear_failure(void)
+{
+    TEST_ASSERT_TRUE(backend_fullsize_rgb_led_init(BACKEND_LED_DRONE));
+    strip_clear_fail_on_call = 2U;
+    if (setjmp(task_exit) == 0) {
+        captured_task(captured_task_argument);
+    }
+
+    TEST_ASSERT_EQUAL_UINT(1, strip_set_count);
+    TEST_ASSERT_EQUAL_UINT(1, strip_refresh_count);
+    TEST_ASSERT_EQUAL_UINT(3, strip_clear_count);
+    TEST_ASSERT_EQUAL_UINT(1, strip_delete_count);
+    TEST_ASSERT_NULL(s_strip);
+    TEST_ASSERT_FALSE(backend_fullsize_rgb_led_set_state(BACKEND_LED_META));
+    TEST_ASSERT_TRUE(backend_fullsize_rgb_led_init(BACKEND_LED_META));
+}
+
 void test_fullsize_rgb_led_interrupts_a_step_after_an_atomic_state_revision(void)
 {
     TEST_ASSERT_TRUE(backend_fullsize_rgb_led_init(BACKEND_LED_DRONE));
@@ -206,6 +320,15 @@ int main(void)
         test_fullsize_rgb_led_sets_color_then_refreshes_and_clears_off_steps);
     BACKEND_RUN_TEST(
         test_fullsize_rgb_led_propagates_strip_initialization_failure);
+    BACKEND_RUN_TEST(
+        test_fullsize_rgb_led_releases_after_initial_clear_failure_before_retry);
+    BACKEND_RUN_TEST(
+        test_fullsize_rgb_led_releases_after_task_creation_failure_before_retry);
+    BACKEND_RUN_TEST(
+        test_fullsize_rgb_led_faults_without_refresh_after_set_pixel_failure);
+    BACKEND_RUN_TEST(test_fullsize_rgb_led_faults_after_refresh_failure);
+    BACKEND_RUN_TEST(
+        test_fullsize_rgb_led_faults_after_off_step_clear_failure);
     BACKEND_RUN_TEST(
         test_fullsize_rgb_led_interrupts_a_step_after_an_atomic_state_revision);
     return UNITY_END();

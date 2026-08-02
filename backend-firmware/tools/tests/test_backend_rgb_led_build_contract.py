@@ -18,6 +18,54 @@ FORBIDDEN_LITE_ARTIFACT_MARKERS = (
 
 
 @pytest.mark.parametrize(
+    ("project", "discovery_name", "final_name"),
+    (
+        ("scanner", "untrusted_project", "fof_backend_scanner"),
+        ("uplink", "untrusted_project", "fof_backend_uplink"),
+        ("scanner", "fof_backend_scanner", "fof_backend_scanner_fullsize"),
+        ("uplink", "fof_backend_uplink", "fof_backend_uplink_fullsize"),
+    ),
+)
+def test_component_led_selector_rejects_contradictory_project_identities(
+    tmp_path: Path,
+    project: str,
+    discovery_name: str,
+    final_name: str,
+) -> None:
+    """Component discovery must not replace an asserted project identity."""
+    script = tmp_path / "component_selector.cmake"
+    script.write_text(
+        "\n".join(
+            (
+                'set(PROJECT_NAME "${TEST_DISCOVERY_NAME}")',
+                'set(CMAKE_PROJECT_NAME "${TEST_FINAL_NAME}")',
+                "macro(idf_component_register)",
+                "endmacro()",
+                'include("${COMPONENT_FILE}")',
+            )
+        ),
+        encoding="utf-8",
+    )
+    result = subprocess.run(
+        [
+            "cmake",
+            f"-DTEST_DISCOVERY_NAME={discovery_name}",
+            f"-DTEST_FINAL_NAME={final_name}",
+            f"-DCOMPONENT_FILE={ROOT / project / 'main/CMakeLists.txt'}",
+            "-P",
+            str(script),
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode != 0
+    assert "Unknown backend" in result.stdout + result.stderr or "mismatch" in (
+        result.stdout + result.stderr
+    )
+
+
+@pytest.mark.parametrize(
     ("project", "project_name", "profile_name", "expected"),
     (
         ("scanner", "fof_backend_scanner_fullsize", "badge_lite", "mismatch"),
