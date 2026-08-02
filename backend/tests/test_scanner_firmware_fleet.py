@@ -18,6 +18,19 @@ def test_release_catalog_versions_match_live_follow():
     assert detections._EXPECTED_BADGE_FIRMWARE_VERSION == "0.64.76-badge-defcon34"
 
 
+def test_backend_versions_are_target_aware_without_repurposing_api_version():
+    assert detections._EXPECTED_BACKEND_VERSION == app.version
+    assert detections._firmware_version_state(
+        "0.1.0-backend", "uplink-s3-backend",
+    ) == "current"
+    assert detections._firmware_version_state(
+        "0.1.1-backend", "uplink-s3-backend",
+    ) == "drift"
+    assert detections._firmware_version_state(
+        detections._EXPECTED_FIRMWARE_VERSION, "uplink-s3",
+    ) == "current"
+
+
 def _completed(cmd, stdout: bytes):
     return subprocess.CompletedProcess(cmd, 0, stdout=stdout, stderr=b"")
 
@@ -183,6 +196,57 @@ async def test_scanner_readiness_flags_missing_target_version(
     payload = resp.json()
     assert payload["scanners"][0]["target_version"] == ""
     assert "target_version_unknown" in payload["scanners"][0]["blockers"]
+
+
+@pytest.mark.asyncio
+async def test_backend_scanner_identity_mismatch_is_blocked_from_fleet_execution(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    now = time.time()
+    monkeypatch.setattr(
+        detections,
+        "_node_heartbeats",
+        {
+            "uplink_BACK": {
+                "device_id": "uplink_BACK", "ip": "192.168.1.10", "last_seen": now,
+                "firmware_target": "uplink-s3-backend",
+                "app_project": "fof_backend_uplink", "hardware_type": "seeed_xiao_esp32s3",
+                "scanners": [
+                    {"uart": "ble", "firmware_target": "scanner-s3-combo-backend",
+                     "app_project": "fof_backend_scanner", "hardware_type": "seeed_xiao_esp32s3",
+                     "ver": "0.1.0-backend", "cmd_rx": 1, "fw_check_count": 1},
+                    {"uart": "wifi", "firmware_target": "scanner-s3-combo-fof_badge",
+                     "app_project": "fof_badge_scanner", "hardware_type": "seeed_xiao_esp32s3",
+                     "ver": "0.64.76-badge-defcon34", "cmd_rx": 1, "fw_check_count": 1},
+                ],
+            },
+        },
+    )
+
+    async def fake_version(name: str) -> str:
+        assert name == "scanner-s3-combo-backend"
+        return "0.1.0-backend"
+
+    async def no_rollout(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(nodes._firmware_mgr, "get_firmware_version", fake_version)
+    monkeypatch.setattr(nodes, "_run_scanner_rollout", no_rollout)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        readiness = await client.get(
+            "/nodes/firmware/scanner/readiness?firmware_name=scanner-s3-combo-backend"
+        )
+        rollout = await client.post(
+            "/nodes/firmware/scanner/rollout?firmware_name=scanner-s3-combo-backend"
+        )
+
+    assert readiness.status_code == 200, readiness.text
+    mismatched = next(row for row in readiness.json()["scanners"] if row["uart"] == "wifi")
+    assert "identity_mismatch" in mismatched["blockers"]
+    assert rollout.status_code == 200, rollout.text
+    assert [row["uart"] for row in rollout.json()["targets"]] == ["ble"]
 
 
 @pytest.mark.asyncio

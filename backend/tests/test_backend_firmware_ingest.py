@@ -1,9 +1,12 @@
 import asyncio
 import hashlib
 import json
+import struct
 import time
 import uuid
+import zlib
 from collections import deque
+from unittest.mock import AsyncMock
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -12,7 +15,8 @@ from sqlalchemy import func, select
 from app.main import app
 from app.models.db_models import DroneDetection, SensorNode, TriangulatedPosition
 from app.models.schemas import DroneDetectionBatch, DroneDetectionItem
-from app.routers import detections
+from app.routers import detections, nodes
+from app.services import firmware_manager
 from app.services.applied_calibration import AppliedCalibrationStore
 from app.services.backend_node_status import (
     bounded_detection_time,
@@ -68,6 +72,32 @@ PORTABLE_EVIDENCE = {
     "scanner_slot": 1,
     "scanner_slots_seen": 3,
 }
+
+
+def _backend_image(target: str, *, valid_crc: bool = True) -> bytes:
+    info = firmware_manager.FIRMWARE_TYPES[target]
+    version = "0.1.0-backend"
+    app_desc = bytearray(112)
+    struct.pack_into("<I", app_desc, 0, 0xABCD5432)
+    app_desc[16:48] = version.encode().ljust(32, b"\0")
+    app_desc[48:80] = info["project"].encode().ljust(32, b"\0")
+    app_desc[80:96] = b"12:00:00".ljust(16, b"\0")
+    app_desc[96:112] = b"2026-08-01".ljust(16, b"\0")
+    record = bytearray(firmware_manager._BACKEND_IDENTITY_STRUCT.size)
+    firmware_manager._BACKEND_IDENTITY_STRUCT.pack_into(
+        record, 0, 0x42464F46, 1, info["image_kind"],
+        target.encode().ljust(40, b"\0"),
+        info["project"].encode().ljust(40, b"\0"),
+        info["hardware"].encode().ljust(40, b"\0"),
+        version.encode().ljust(32, b"\0"), 0,
+    )
+    crc = zlib.crc32(record[:160]) & 0xFFFFFFFF
+    struct.pack_into("<I", record, 160, crc if valid_crc else crc ^ 1)
+    image = bytearray(1200)
+    image[0] = 0xE9
+    image[0x20:0x20 + len(app_desc)] = app_desc
+    image[256:256 + len(record)] = record
+    return bytes(image)
 
 
 PERSISTED_BACKEND_FIELDS = (
@@ -159,6 +189,82 @@ def test_backend_batch_preserves_identity_health_and_queue_metadata():
     assert scanner["hardware_type"] == "seeed_xiao_esp32s3"
     assert scanner["boot_id"] == 305419896
     assert scanner["rollback_state"] == "valid"
+
+
+@pytest.mark.asyncio
+async def test_backend_named_image_is_not_sent_to_badge_uplink(client, monkeypatch):
+    detections._node_heartbeats["uplink_BADGE1"] = {
+        "device_id": "uplink_BADGE1", "ip": "10.0.0.20",
+        "firmware_target": "uplink-s3-fof_badge",
+        "app_project": "fof_badge_uplink",
+        "hardware_type": "seeed_xiao_esp32s3",
+        "last_seen": time.time(),
+    }
+    monkeypatch.setattr(
+        nodes._firmware_mgr, "get_firmware_binary",
+        AsyncMock(side_effect=AssertionError("must reject before loading image")),
+    )
+
+    response = await client.post("/nodes/uplink_BADGE1/ota/uplink-s3-backend")
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "running firmware identity is incompatible with uplink-s3-backend"
+
+
+@pytest.mark.asyncio
+async def test_backend_uplink_is_not_sent_production_image(client, monkeypatch):
+    detections._node_heartbeats["uplink_BACK01"] = {
+        "device_id": "uplink_BACK01", "ip": "10.0.0.21",
+        "firmware_target": "uplink-s3-backend",
+        "app_project": "fof_backend_uplink",
+        "hardware_type": "seeed_xiao_esp32s3",
+        "firmware_version": "0.1.0-backend", "last_seen": time.time(),
+    }
+    monkeypatch.setattr(
+        nodes._firmware_mgr, "get_firmware_binary",
+        AsyncMock(side_effect=AssertionError("must reject before loading image")),
+    )
+
+    response = await client.post("/nodes/uplink_BACK01/ota/uplink-s3")
+
+    assert response.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_direct_ota_upload_rejects_cross_family_and_invalid_backend_identity(client, monkeypatch):
+    detections._node_heartbeats["uplink_BADGE1"] = {
+        "device_id": "uplink_BADGE1", "ip": "10.0.0.20",
+        "firmware_target": "uplink-s3-fof_badge",
+        "app_project": "fof_badge_uplink",
+        "hardware_type": "seeed_xiao_esp32s3", "last_seen": time.time(),
+    }
+    detections._node_heartbeats["uplink_BACK01"] = {
+        "device_id": "uplink_BACK01", "ip": "10.0.0.21",
+        "firmware_target": "uplink-s3-backend",
+        "app_project": "fof_backend_uplink",
+        "hardware_type": "seeed_xiao_esp32s3", "last_seen": time.time(),
+    }
+    monkeypatch.setattr(
+        nodes, "_run_subprocess",
+        AsyncMock(side_effect=AssertionError("must reject before upload")),
+    )
+
+    badge = await client.post(
+        "/nodes/uplink_BADGE1/ota",
+        files={"firmware": ("backend.bin", _backend_image("uplink-s3-backend"), "application/octet-stream")},
+    )
+    invalid = await client.post(
+        "/nodes/uplink_BADGE1/ota",
+        files={"firmware": ("invalid.bin", _backend_image("uplink-s3-backend", valid_crc=False), "application/octet-stream")},
+    )
+    legacy = await client.post(
+        "/nodes/uplink_BACK01/ota",
+        files={"firmware": ("legacy.bin", b"L" * 1200, "application/octet-stream")},
+    )
+
+    assert badge.status_code == 409
+    assert invalid.status_code == 400
+    assert legacy.status_code == 409
 
 
 @pytest.mark.asyncio

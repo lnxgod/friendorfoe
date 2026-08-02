@@ -938,21 +938,28 @@ def _uplink_time_sync_health(info: dict | None) -> str:
 _EXPECTED_BACKEND_VERSION = "0.64.68-live-follow"
 _EXPECTED_FIRMWARE_VERSION = "0.64.68-live-follow"
 _EXPECTED_BADGE_FIRMWARE_VERSION = "0.64.76-badge-defcon34"
+_EXPECTED_BACKEND_FIRMWARE_VERSIONS = {
+    "uplink-s3-backend": "0.1.0-backend",
+    "scanner-s3-combo-backend": "0.1.0-backend",
+}
 
 
 def _expected_firmware_versions_label() -> str:
     return f"{_EXPECTED_FIRMWARE_VERSION} or {_EXPECTED_BADGE_FIRMWARE_VERSION}"
 
 
-def _firmware_version_state(version: str | None) -> str:
+def _expected_firmware_version(target: str | None) -> str | None:
+    return _EXPECTED_BACKEND_FIRMWARE_VERSIONS.get(str(target or ""))
+
+
+def _firmware_version_state(version: str | None, target: str | None = None) -> str:
     if not version:
         return "unknown"
-    v = str(version)
-    if (
-        _EXPECTED_FIRMWARE_VERSION in v
-        or _EXPECTED_BADGE_FIRMWARE_VERSION in v
-        or _EXPECTED_BACKEND_VERSION in v
-    ):
+    backend_expected = _expected_firmware_version(target)
+    if backend_expected is not None:
+        return "current" if str(version) == backend_expected else "drift"
+    value = str(version)
+    if _EXPECTED_FIRMWARE_VERSION in value or _EXPECTED_BADGE_FIRMWARE_VERSION in value:
         return "current"
     return "drift"
 
@@ -2536,9 +2543,10 @@ async def get_detection_diagnostics(
     for node in nodes:
         node_id = node.get("device_id")
         version = node.get("firmware_version")
+        target = node.get("firmware_target") or node.get("firmware_name")
         if version:
             firmware_versions[str(version)] += 1
-        state = _firmware_version_state(version)
+        state = _firmware_version_state(version, target)
         if state == "current":
             current_fw += 1
         elif state == "drift":
@@ -2546,7 +2554,7 @@ async def get_detection_diagnostics(
             system_warnings.append({
                 "code": "uplink_firmware_drift",
                 "severity": "warning",
-                "message": f"{node_id} reports {version}; expected {_expected_firmware_versions_label()}",
+                "message": f"{node_id} reports {version}; expected {_expected_firmware_version(target) or _expected_firmware_versions_label()}",
                 "device_id": node_id,
             })
         else:
@@ -2569,9 +2577,10 @@ async def get_detection_diagnostics(
         for sc in scanners:
             scanner_count += 1
             sc_ver = sc.get("ver")
+            sc_target = sc.get("firmware_target") or sc.get("firmware_name")
             if sc_ver:
                 scanner_versions[str(sc_ver)] += 1
-            sc_state = _firmware_version_state(sc_ver)
+            sc_state = _firmware_version_state(sc_ver, sc_target)
             if sc_state == "current":
                 current_fw += 1
             elif sc_state == "drift":
@@ -2579,7 +2588,7 @@ async def get_detection_diagnostics(
                 system_warnings.append({
                     "code": "scanner_firmware_drift",
                     "severity": "warning",
-                    "message": f"{node_id}/{sc.get('uart', '?')} reports {sc_ver}; expected {_expected_firmware_versions_label()}",
+                    "message": f"{node_id}/{sc.get('uart', '?')} reports {sc_ver}; expected {_expected_firmware_version(sc_target) or _expected_firmware_versions_label()}",
                     "device_id": node_id,
                     "uart": sc.get("uart"),
                 })
@@ -2702,6 +2711,7 @@ async def get_detection_diagnostics(
         },
         "firmware_readiness": {
             "expected_backend_version": _EXPECTED_BACKEND_VERSION,
+            "expected_backend_firmware_versions": dict(_EXPECTED_BACKEND_FIRMWARE_VERSIONS),
             "expected_firmware_version": _EXPECTED_FIRMWARE_VERSION,
             "expected_badge_firmware_version": _EXPECTED_BADGE_FIRMWARE_VERSION,
             "expected_firmware_versions": _expected_firmware_versions_label(),

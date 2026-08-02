@@ -32,7 +32,14 @@ from app.models.schemas import (
 )
 from app.services.database import get_db
 
-from app.services.firmware_manager import FirmwareManager
+from app.services.firmware_manager import (
+    FIRMWARE_TYPES,
+    FirmwareManager,
+    _BACKEND_IDENTITY_MAGIC,
+    _parse_app_desc_bytes,
+    _parse_backend_identity,
+    _validated_backend_image_info,
+)
 from app.services.node_commands import (
     NodeCommandConflict,
     NodeCommandNotFound,
@@ -71,6 +78,111 @@ def _normalized_firmware_version(version: str | None) -> str:
         return ""
     value = str(version).strip()
     return value[1:] if value[:1].lower() == "v" else value
+
+
+def _reported_identities(device_id: str, uart: str | None) -> list[dict]:
+    from app.routers.detections import _node_heartbeats
+
+    heartbeat = _node_heartbeats.get(device_id) or {}
+    if uart is None:
+        return [{
+            "target": heartbeat.get("firmware_target") or heartbeat.get("firmware_name"),
+            "project": heartbeat.get("app_project"),
+            "hardware": heartbeat.get("hardware_type"),
+        }]
+    scanners = [item for item in heartbeat.get("scanners") or [] if isinstance(item, dict)]
+    selected = scanners if uart == "both" else [
+        item for item in scanners if item.get("uart") == uart
+    ]
+    return [{
+        "target": item.get("firmware_target") or item.get("firmware_name"),
+        "project": item.get("app_project"),
+        "hardware": item.get("hardware_type"),
+    } for item in selected]
+
+
+def _identity_is_backend(identity: dict) -> bool:
+    return (
+        str(identity.get("target") or "").endswith("-backend")
+        or str(identity.get("project") or "").startswith("fof_backend_")
+    )
+
+
+def _require_named_family_preflight(
+    device_id: str, firmware_name: str, uart: str | None = None,
+) -> None:
+    running = _reported_identities(device_id, uart)
+    required_count = 2 if uart == "both" else 1
+    info = FIRMWARE_TYPES.get(firmware_name) or {}
+    if firmware_name.endswith("-backend"):
+        expected = {
+            "target": firmware_name,
+            "project": info.get("project"),
+            "hardware": info.get("hardware"),
+        }
+        compatible = len(running) == required_count and all(item == expected for item in running)
+    else:
+        compatible = len(running) == required_count and not any(_identity_is_backend(item) for item in running)
+    if not compatible:
+        raise HTTPException(
+            status_code=409,
+            detail=f"running firmware identity is incompatible with {firmware_name}",
+        )
+
+
+def _require_ota_compatibility(
+    device_id: str,
+    firmware_name: str | None,
+    image: bytes,
+    uart: str | None = None,
+) -> None:
+    requested = None
+    descriptor = _parse_app_desc_bytes(image)
+    claims_backend = (
+        _BACKEND_IDENTITY_MAGIC in image
+        or str((descriptor or {}).get("project") or "").startswith("fof_backend_")
+        or str((descriptor or {}).get("version") or "").endswith("-backend")
+    )
+    if firmware_name and firmware_name.endswith("-backend"):
+        requested = _validated_backend_image_info(firmware_name, image)
+        if requested is None:
+            raise HTTPException(status_code=400, detail="invalid backend firmware identity")
+    elif claims_backend:
+        identity = _parse_backend_identity(image)
+        claimed_name = identity.get("target") if identity else None
+        requested = (
+            _validated_backend_image_info(claimed_name, image)
+            if claimed_name else None
+        )
+        if requested is None:
+            raise HTTPException(status_code=400, detail="invalid backend firmware identity")
+
+    running = _reported_identities(device_id, uart)
+    required_count = 2 if uart == "both" else 1
+    requested_is_backend = requested is not None
+    if requested_is_backend:
+        expected = {
+            "target": requested["target"],
+            "project": requested["project"],
+            "hardware": requested["hardware"],
+        }
+        compatible = len(running) == required_count and all(identity == expected for identity in running)
+    else:
+        compatible = len(running) == required_count and not any(_identity_is_backend(item) for item in running)
+    if not compatible:
+        label = firmware_name or (requested["target"] if requested else "legacy image")
+        raise HTTPException(
+            status_code=409,
+            detail=f"running firmware identity is incompatible with {label}",
+        )
+
+
+def _named_identity_mismatch(device_id: str, firmware_name: str, uart: str | None) -> bool:
+    try:
+        _require_named_family_preflight(device_id, firmware_name, uart)
+    except HTTPException as exc:
+        return exc.status_code == 409
+    return False
 
 
 def _scanner_version_from_node_info(node_info: dict | None, uart: str) -> tuple[str, dict | None]:
@@ -266,7 +378,10 @@ async def _scanner_targets(
     return targets
 
 
-async def _stage_scanner_firmware_on_uplink(device_id: str, ip: str, firmware_name: str) -> dict:
+async def _stage_scanner_firmware_on_uplink(
+    device_id: str, ip: str, firmware_name: str, uart: str = "both",
+) -> dict:
+    _require_named_family_preflight(device_id, firmware_name, uart)
     fw_data = await _firmware_mgr.get_firmware_binary(firmware_name)
     if not fw_data:
         return {
@@ -276,6 +391,7 @@ async def _stage_scanner_firmware_on_uplink(device_id: str, ip: str, firmware_na
             "state": "blocked",
             "error": "firmware_not_available",
         }
+    _require_ota_compatibility(device_id, firmware_name, fw_data, uart)
     fw_version = await _firmware_mgr.get_firmware_version(firmware_name) or firmware_name
     checksum = zlib.crc32(fw_data) & 0xFFFFFFFF
     try:
@@ -409,6 +525,7 @@ async def _run_scanner_rollout(rollout_id: str, targets: list[dict], *, stage_fi
                 target["device_id"],
                 target["ip"],
                 target["target_firmware"],
+                target["uart"],
             )
             rollout["stage_results"].append(stage)
 
@@ -844,6 +961,7 @@ async def push_ota_update(device_id: str, firmware: UploadFile = File(...)):
 
     if fw_size < 1024 or fw_size > 2 * 1024 * 1024:
         raise HTTPException(status_code=400, detail=f"Invalid firmware size: {fw_size} bytes")
+    _require_ota_compatibility(device_id, None, fw_data)
 
     logger.warning("OTA push to %s (%s): %d bytes (%s)", device_id, ip, fw_size, firmware.filename)
 
@@ -1026,10 +1144,12 @@ async def push_firmware_by_name(device_id: str, firmware_name: str):
     node_info = _node_heartbeats.get(device_id)
     if not node_info or not node_info.get("ip"):
         raise HTTPException(status_code=404, detail=f"Node '{device_id}' not found or no IP")
+    _require_named_family_preflight(device_id, firmware_name)
 
     fw_data = await _firmware_mgr.get_firmware_binary(firmware_name)
     if not fw_data:
         raise HTTPException(status_code=404, detail=f"Firmware '{firmware_name}' not available")
+    _require_ota_compatibility(device_id, firmware_name, fw_data)
 
     ip = node_info["ip"]
     logger.warning("OTA push %s to %s (%s): %d bytes", firmware_name, device_id, ip, len(fw_data))
@@ -1105,10 +1225,12 @@ async def push_scanner_firmware(
     node_info = _node_heartbeats.get(device_id)
     if not node_info or not node_info.get("ip"):
         raise HTTPException(status_code=404, detail=f"Node '{device_id}' not found or no IP")
+    _require_named_family_preflight(device_id, firmware_name, uart)
 
     fw_data = await _firmware_mgr.get_firmware_binary(firmware_name)
     if not fw_data:
         raise HTTPException(status_code=404, detail=f"Firmware '{firmware_name}' not available")
+    _require_ota_compatibility(device_id, firmware_name, fw_data, uart)
     fw_version = await _firmware_mgr.get_firmware_version(firmware_name) or firmware_name
 
     ip = node_info["ip"]
@@ -1360,10 +1482,12 @@ async def stage_scanner_firmware(
     node_info = _node_heartbeats.get(device_id)
     if not node_info or not node_info.get("ip"):
         raise HTTPException(status_code=404, detail=f"Node '{device_id}' not found or no IP")
+    _require_named_family_preflight(device_id, firmware_name, "both")
 
     fw_data = await _firmware_mgr.get_firmware_binary(firmware_name)
     if not fw_data:
         raise HTTPException(status_code=404, detail=f"Firmware '{firmware_name}' not available")
+    _require_ota_compatibility(device_id, firmware_name, fw_data, "both")
     fw_version = await _firmware_mgr.get_firmware_version(firmware_name) or firmware_name
 
     ip = node_info["ip"]
@@ -1425,6 +1549,10 @@ async def scanner_firmware_readiness(
         blockers = []
         if not target.get("ip"):
             blockers.append("missing_uplink_ip")
+        if _named_identity_mismatch(
+            target["device_id"], target["target_firmware"], target["uart"],
+        ):
+            blockers.append("identity_mismatch")
         if not target.get("self_update_capable") and not already_current:
             blockers.append("scanner_command_ingress_unreachable")
         if not target.get("target_version"):
@@ -1443,7 +1571,7 @@ async def scanner_firmware_readiness(
             "last_fw_error": target["scanner"].get("last_fw_error") or "",
             "self_update_capable": target["self_update_capable"],
             "already_current": already_current,
-            "state": "verified" if already_current else ("blocked" if blockers else "pending"),
+            "state": "blocked" if blockers else ("verified" if already_current else "pending"),
             "blockers": blockers,
             "needs_usb_recovery": "scanner_command_ingress_unreachable" in blockers,
             "next_action": (
@@ -1454,7 +1582,10 @@ async def scanner_firmware_readiness(
         })
     return {
         "count": len(rows),
-        "ready_count": sum(1 for row in rows if row["self_update_capable"] or row["already_current"]),
+        "ready_count": sum(
+            1 for row in rows
+            if not row["blockers"] and (row["self_update_capable"] or row["already_current"])
+        ),
         "blocked_count": sum(1 for row in rows if row["blockers"]),
         "needs_usb_recovery_count": sum(1 for row in rows if row["needs_usb_recovery"]),
         "scanners": rows,
@@ -1493,6 +1624,7 @@ async def stage_scanner_firmware_fleet(
             target["device_id"],
             target["ip"],
             target["target_firmware"],
+            target["uart"],
         ))
     return {
         "ok": bool(results) and all(row.get("ok") for row in results),
@@ -1555,6 +1687,12 @@ async def start_scanner_firmware_rollout(
         raise HTTPException(status_code=400, detail="canary_uart must be ble, wifi, or both")
 
     targets = await _scanner_targets(firmware_name=firmware_name)
+    targets = [
+        target for target in targets
+        if not _named_identity_mismatch(
+            target["device_id"], target["target_firmware"], target["uart"],
+        )
+    ]
     if canary_device_id:
         targets = [t for t in targets if t["device_id"] == canary_device_id]
     if canary_uart_filter in {"ble", "wifi"}:

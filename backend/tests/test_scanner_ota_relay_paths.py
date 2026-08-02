@@ -1,14 +1,42 @@
 import subprocess
+import struct
+import time
+import zlib
 
 import pytest
 from httpx import ASGITransport, AsyncClient
 
 from app.main import app
 from app.routers import detections, nodes
+from app.services import firmware_manager
 
 
 def _completed(cmd, stdout: bytes):
     return subprocess.CompletedProcess(cmd, 0, stdout=stdout, stderr=b"")
+
+
+def _backend_scanner_image() -> bytes:
+    info = firmware_manager.FIRMWARE_TYPES["scanner-s3-combo-backend"]
+    app_desc = bytearray(112)
+    struct.pack_into("<I", app_desc, 0, 0xABCD5432)
+    app_desc[16:48] = b"0.1.0-backend".ljust(32, b"\0")
+    app_desc[48:80] = info["project"].encode().ljust(32, b"\0")
+    app_desc[80:96] = b"12:00:00".ljust(16, b"\0")
+    app_desc[96:112] = b"2026-08-01".ljust(16, b"\0")
+    record = bytearray(firmware_manager._BACKEND_IDENTITY_STRUCT.size)
+    firmware_manager._BACKEND_IDENTITY_STRUCT.pack_into(
+        record, 0, 0x42464F46, 1, info["image_kind"],
+        b"scanner-s3-combo-backend".ljust(40, b"\0"),
+        info["project"].encode().ljust(40, b"\0"),
+        info["hardware"].encode().ljust(40, b"\0"),
+        b"0.1.0-backend".ljust(32, b"\0"), 0,
+    )
+    struct.pack_into("<I", record, 160, zlib.crc32(record[:160]) & 0xFFFFFFFF)
+    image = bytearray(1200)
+    image[0] = 0xE9
+    image[0x20:0x90] = app_desc
+    image[256:256 + len(record)] = record
+    return bytes(image)
 
 
 @pytest.fixture(autouse=True)
@@ -34,6 +62,77 @@ def scanner_ota_state(monkeypatch: pytest.MonkeyPatch):
 
     monkeypatch.setattr(nodes._firmware_mgr, "get_firmware_binary", fake_binary)
     monkeypatch.setattr(nodes._firmware_mgr, "get_firmware_version", fake_version)
+
+
+@pytest.mark.asyncio
+async def test_backend_scanner_ota_requires_exact_running_family(monkeypatch: pytest.MonkeyPatch):
+    now = time.time()
+    detections._node_heartbeats["uplink_TEST"] = {
+        "device_id": "uplink_TEST", "ip": "192.168.1.10", "last_seen": now,
+        "firmware_target": "uplink-s3-backend",
+        "app_project": "fof_backend_uplink",
+        "hardware_type": "seeed_xiao_esp32s3",
+        "scanners": [
+            {"uart": "ble", "firmware_target": "scanner-s3-combo-backend",
+             "app_project": "fof_backend_scanner", "hardware_type": "seeed_xiao_esp32s3",
+             "ver": "0.1.0-backend", "cmd_rx": 1},
+            {"uart": "wifi", "firmware_target": "scanner-s3-combo-backend",
+             "app_project": "fof_backend_scanner", "hardware_type": "seeed_xiao_esp32s3",
+             "ver": "0.1.0-backend", "cmd_rx": 1},
+        ],
+    }
+
+    async def fake_binary(name: str) -> bytes:
+        return _backend_scanner_image() if name.endswith("-backend") else b"P" * 1200
+
+    async def fake_version(name: str) -> str:
+        return "0.1.0-backend" if name.endswith("-backend") else "0.64.68-live-follow"
+
+    async def fake_run_subprocess(cmd, **kwargs):
+        url = next((part for part in cmd if isinstance(part, str) and part.startswith("http://")), "")
+        if "/api/fw/upload" in url:
+            return _completed(cmd, b'{"ok":true,"stored":true}')
+        if "/api/ota/relay" in url:
+            return _completed(cmd, b'{"ok":true,"scanner_response":"sent"}')
+        raise AssertionError(f"unexpected upload route {url}")
+
+    async def exact_version(*args, **kwargs):
+        return True, "0.1.0-backend", detections._node_heartbeats["uplink_TEST"]["scanners"][0]
+
+    monkeypatch.setattr(nodes._firmware_mgr, "get_firmware_binary", fake_binary)
+    monkeypatch.setattr(nodes._firmware_mgr, "get_firmware_version", fake_version)
+    monkeypatch.setattr(nodes, "_run_subprocess", fake_run_subprocess)
+    monkeypatch.setattr(nodes, "_wait_for_scanner_version", exact_version)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        pushed = await client.post(
+            "/nodes/uplink_TEST/ota/scanner/scanner-s3-combo-backend?uart=ble&relay_mode=direct_legacy"
+        )
+        staged = await client.post(
+            "/nodes/uplink_TEST/ota/scanner/scanner-s3-combo-backend/stage"
+        )
+        detections._node_heartbeats["uplink_TEST"]["scanners"][1]["firmware_target"] = "scanner-s3-combo-fof_badge"
+        detections._node_heartbeats["uplink_TEST"]["scanners"][1]["app_project"] = "fof_badge_scanner"
+        badge = await client.post(
+            "/nodes/uplink_TEST/ota/scanner/scanner-s3-combo-backend?uart=wifi&relay_mode=direct_legacy"
+        )
+        production = await client.post(
+            "/nodes/uplink_TEST/ota/scanner/scanner-s3-combo?uart=ble&relay_mode=direct_legacy"
+        )
+        both = await client.post(
+            "/nodes/uplink_TEST/ota/scanner/scanner-s3-combo-backend?uart=both&relay_mode=direct_legacy"
+        )
+        blocked_stage = await client.post(
+            "/nodes/uplink_TEST/ota/scanner/scanner-s3-combo-backend/stage"
+        )
+
+    assert pushed.status_code == 200, pushed.text
+    assert staged.status_code == 200, staged.text
+    assert badge.status_code == 409
+    assert production.status_code == 409
+    assert both.status_code == 409
+    assert blocked_stage.status_code == 409
 
 
 @pytest.mark.asyncio
