@@ -91,6 +91,7 @@ void test_ble_meta_reacquire_blocks_calibration_or_ota(void);
 void test_ble_meta_reacquire_requires_scan_sync_and_adv_delta(void);
 void test_french_dri_fixture_preserves_identity_position_altitude_source_and_rssi(void);
 void test_wifi_beacon_rid_fixture_preserves_identity_position_altitude_source_and_rssi(void);
+void test_backend_pairing_spam_identity_survives_rotating_macs(void);
 void test_backend_feature_matrix_emits_complete_detection_snapshots(void);
 void test_ble_threat_swift_pair_rotating_flood_alerts_once(void);
 void test_ble_threat_scan_duplicate_is_deduped(void);
@@ -283,6 +284,7 @@ int main(void)
     BACKEND_RUN_TEST(test_ble_meta_reacquire_requires_scan_sync_and_adv_delta);
     BACKEND_RUN_TEST(test_french_dri_fixture_preserves_identity_position_altitude_source_and_rssi);
     BACKEND_RUN_TEST(test_wifi_beacon_rid_fixture_preserves_identity_position_altitude_source_and_rssi);
+    BACKEND_RUN_TEST(test_backend_pairing_spam_identity_survives_rotating_macs);
     BACKEND_RUN_TEST(test_backend_feature_matrix_emits_complete_detection_snapshots);
     BACKEND_RUN_TEST(test_ble_threat_swift_pair_rotating_flood_alerts_once);
     BACKEND_RUN_TEST(test_ble_threat_scan_duplicate_is_deduped);

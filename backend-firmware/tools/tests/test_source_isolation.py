@@ -386,11 +386,20 @@ def test_backend_runtime_uses_only_backend_glasses_feature_gate() -> None:
     classifier_header = (
         ROOT / "scanner/main/detection/backend_glasses_classifier.h"
     ).read_text(encoding="utf-8")
+    kconfig = (ROOT / "scanner/main/Kconfig.projbuild").read_text(
+        encoding="utf-8"
+    )
+    sdkconfig = (ROOT / "scanner/sdkconfig.defaults").read_text(
+        encoding="utf-8"
+    )
 
     assert "CONFIG_FOF_GLASSES_DETECTION" not in runtime
     assert "CONFIG_FOF_GLASSES_DETECTION" not in classifier_header
     assert runtime.count("CONFIG_FOF_BACKEND_GLASSES_DETECTION") == 5
     assert "CONFIG_FOF_BACKEND_GLASSES_DETECTION" in classifier_header
+    assert "config FOF_BACKEND_GLASSES_DETECTION" in kconfig
+    assert "default y" in kconfig
+    assert "CONFIG_FOF_BACKEND_GLASSES_DETECTION=y" in sdkconfig.splitlines()
 
 
 def test_vendor_tool_rejects_unsafe_manifest_entries(tmp_path: Path) -> None:

@@ -118,6 +118,7 @@ static ble_fingerprint_t emit_ble_observation(
     const uint8_t *advertisement,
     size_t length,
     const uint8_t mac[6],
+    uint8_t addr_type,
     int8_t rssi,
     float confidence,
     int64_t observed_ms,
@@ -125,10 +126,11 @@ static ble_fingerprint_t emit_ble_observation(
 {
     ble_fingerprint_t fingerprint;
     ble_fingerprint_compute(
-        advertisement, (int)length, 1, 0, &fingerprint);
+        advertisement, (int)length, addr_type, 0, &fingerprint);
     const backend_ble_feature_observation_t observation = {
         .fingerprint = &fingerprint,
         .threat = threat,
+        .addr_type = addr_type,
         .rssi = rssi,
         .confidence = confidence,
         .first_seen_ms = observed_ms - 100,
@@ -183,6 +185,45 @@ static bool observe_serial_skimmer(ble_threat_signal_t *signal)
     return ble_threat_detector_observe(&observation, signal);
 }
 
+void test_backend_pairing_spam_identity_survives_rotating_macs(void)
+{
+    matrix_capture_t capture = {0};
+    backend_detection_sink_register(capture_matrix_detection, &capture);
+
+    ble_threat_signal_t pairing_signal = {0};
+    TEST_ASSERT_TRUE(observe_pairing_burst(&pairing_signal));
+    TEST_ASSERT_EQUAL_HEX32(0xFE69A532, pairing_signal.entity_hash);
+    TEST_ASSERT_FLOAT_WITHIN(0.0001f, 1.0f, pairing_signal.confidence);
+
+    static const uint8_t pairing_adv[] = {
+        5, 0xFF, 0x06, 0x00, 0x01, 0x02
+    };
+    static const uint8_t rotating_macs[2][6] = {
+        {0x02, 0x00, 0x00, 0x00, 0x00, 0x71},
+        {0x02, 0x00, 0x00, 0x00, 0x00, 0x72},
+    };
+    (void)emit_ble_observation(
+        pairing_adv, sizeof(pairing_adv), rotating_macs[0], 2, -51,
+        pairing_signal.confidence, 18000, &pairing_signal);
+    (void)emit_ble_observation(
+        pairing_adv, sizeof(pairing_adv), rotating_macs[1], 3, -49,
+        pairing_signal.confidence, 18100, &pairing_signal);
+
+    TEST_ASSERT_EQUAL_size_t(2, capture.count);
+    TEST_ASSERT_EQUAL_STRING("BLE-PAIR:FE69A532",
+                             capture.detections[0].drone_id);
+    TEST_ASSERT_EQUAL_STRING("BLE-PAIR:FE69A532",
+                             capture.detections[1].drone_id);
+    TEST_ASSERT_EQUAL_STRING("FP:FE69A532", capture.detections[0].model);
+    TEST_ASSERT_EQUAL_STRING("FP:FE69A532", capture.detections[1].model);
+    TEST_ASSERT_EQUAL_STRING("02:00:00:00:00:71", capture.detections[0].bssid);
+    TEST_ASSERT_EQUAL_STRING("02:00:00:00:00:72", capture.detections[1].bssid);
+    TEST_ASSERT_EQUAL_INT8(-51, capture.detections[0].rssi);
+    TEST_ASSERT_EQUAL_INT8(-49, capture.detections[1].rssi);
+    TEST_ASSERT_EQUAL_UINT8(2, capture.detections[0].ble_addr_type);
+    TEST_ASSERT_EQUAL_UINT8(3, capture.detections[1].ble_addr_type);
+}
+
 void test_backend_feature_matrix_emits_complete_detection_snapshots(void)
 {
     matrix_capture_t capture = {0};
@@ -211,13 +252,13 @@ void test_backend_feature_matrix_emits_complete_detection_snapshots(void)
         {0xC0, 0x98, 0xE5, 0x00, 0x00, 0x01},
     };
     ble_fingerprint_t privacy_fp = emit_ble_observation(
-        privacy, sizeof(privacy), macs[0], -43, 0.80f, 1100, NULL);
+        privacy, sizeof(privacy), macs[0], 0, -43, 0.80f, 1100, NULL);
     ble_fingerprint_t meta_fp = emit_ble_observation(
-        meta, sizeof(meta), macs[1], -47, 0.95f, 1200, NULL);
+        meta, sizeof(meta), macs[1], 1, -47, 0.95f, 1200, NULL);
     ble_fingerprint_t tracker_fp = emit_ble_observation(
-        tracker, sizeof(tracker), macs[2], -52, 0.85f, 1300, NULL);
+        tracker, sizeof(tracker), macs[2], 2, -52, 0.85f, 1300, NULL);
     ble_fingerprint_t venue_fp = emit_ble_observation(
-        venue, sizeof(venue), macs[3], -55, 0.70f, 1400, NULL);
+        venue, sizeof(venue), macs[3], 3, -55, 0.70f, 1400, NULL);
 
     TEST_ASSERT_EQUAL(BLE_DEV_HIDDEN_CAMERA, privacy_fp.device_type);
     TEST_ASSERT_EQUAL(BLE_DEV_META_GLASSES, meta_fp.device_type);
@@ -231,7 +272,7 @@ void test_backend_feature_matrix_emits_complete_detection_snapshots(void)
         5, 0xFF, 0x06, 0x00, 0x01, 0x02
     };
     (void)emit_ble_observation(
-        pairing_adv, sizeof(pairing_adv), macs[4], -48,
+        pairing_adv, sizeof(pairing_adv), macs[4], 2, -48,
         pairing_signal.confidence, 17000, &pairing_signal);
 
     TEST_ASSERT_EQUAL_INT(1, FOF_SERIAL_SKIMMER_DETECTION_ENABLED);
@@ -242,7 +283,7 @@ void test_backend_feature_matrix_emits_complete_detection_snapshots(void)
         3, 0x03, 0xE0, 0xFF, 3, 0x09, 'B', 'T'
     };
     (void)emit_ble_observation(
-        serial_adv, sizeof(serial_adv), macs[5], -45,
+        serial_adv, sizeof(serial_adv), macs[5], 0, -60,
         serial_signal.confidence, 25100, &serial_signal);
 
     const backend_wifi_feature_observation_t wifi[] = {
@@ -332,7 +373,7 @@ void test_backend_feature_matrix_emits_complete_detection_snapshots(void)
     static const char *expected_ids[11] = {
         "BLE:02:00:00:00:00:01", "BLE:02:00:00:00:00:02",
         "BLE:02:00:00:00:00:03", "BLE:02:00:00:00:00:04",
-        "BLE-PAIR:02:00:00:00:00:05", "BLE-SERIAL:C0:98:E5:00:00:01",
+        "BLE-PAIR:FE69A532", "BLE-SERIAL:15A42060",
         "AP:10:20:30:40:50:01", "PROBE:10:20:30:40:50:02",
         "STA:22:33:44:55:66:77:AP:10:20:30:40:50:03",
         "ANOMALY:10:20:30:40:50:04", "LOCKON:10:20:30:40:50:05",
@@ -345,21 +386,31 @@ void test_backend_feature_matrix_emits_complete_detection_snapshots(void)
         DETECTION_SRC_WIFI_ASSOC, DETECTION_SRC_WIFI_ASSOC,
         DETECTION_SRC_WIFI_OUI,
     };
+    static const float expected_confidences[11] = {
+        0.80f, 0.95f, 0.85f, 0.70f, 1.0f, 1.0f,
+        0.62f, 0.55f, 0.40f, 0.82f, 0.90f,
+    };
     for (size_t index = 0; index < 11; ++index) {
         TEST_ASSERT_EQUAL_STRING(expected_ids[index], capture.detections[index].drone_id);
         TEST_ASSERT_EQUAL_UINT8(expected_sources[index], capture.detections[index].source);
-        TEST_ASSERT_TRUE(capture.detections[index].confidence > 0.0f);
+        TEST_ASSERT_FLOAT_WITHIN(
+            0.0001f, expected_confidences[index],
+            capture.detections[index].confidence);
     }
     TEST_ASSERT_EQUAL_STRING("Hidden Camera (suspect)", capture.detections[0].manufacturer);
+    TEST_ASSERT_EQUAL_UINT8(0, capture.detections[0].ble_addr_type);
     TEST_ASSERT_EQUAL_STRING("Meta Glasses", capture.detections[1].manufacturer);
     TEST_ASSERT_EQUAL_HEX16(0xFD44, capture.detections[2].ble_service_uuids[0]);
     TEST_ASSERT_EQUAL_HEX16(0x004C, capture.detections[3].ble_company_id);
     TEST_ASSERT_EQUAL_UINT8(BLE_THREAT_KIND_PAIRING_SPAM,
                             capture.detections[4].ble_threat_kind);
+    TEST_ASSERT_EQUAL_STRING("FP:FE69A532", capture.detections[4].model);
     TEST_ASSERT_EQUAL_UINT8(BLE_PROMPT_SWIFT_PAIR,
                             capture.detections[4].ble_prompt_family_mask);
     TEST_ASSERT_EQUAL_UINT8(BLE_THREAT_KIND_SERIAL_SKIMMER,
                             capture.detections[5].ble_threat_kind);
+    TEST_ASSERT_EQUAL_STRING("FP:15A42060", capture.detections[5].model);
+    TEST_ASSERT_EQUAL_INT8(-45, capture.detections[5].rssi);
     TEST_ASSERT_EQUAL_HEX16(0xFFE0,
                            capture.detections[5].ble_serial_service_uuid);
     TEST_ASSERT_TRUE(capture.detections[5].ble_threat_evidence_mask != 0);

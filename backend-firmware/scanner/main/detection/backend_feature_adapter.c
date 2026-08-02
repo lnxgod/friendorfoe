@@ -43,6 +43,7 @@ bool backend_feature_emit_ble(
 {
     if (observation == NULL || observation->fingerprint == NULL ||
         !mac_is_present(observation->mac) || observation->observed_ms <= 0 ||
+        observation->addr_type > 3 ||
         observation->first_seen_ms <= 0 ||
         observation->first_seen_ms > observation->observed_ms) {
         return false;
@@ -56,12 +57,18 @@ bool backend_feature_emit_ble(
     }
 
     uint8_t threat_kind = BLE_THREAT_KIND_NONE;
+    uint32_t identity_hash = fingerprint->hash;
+    int8_t emission_rssi = observation->rssi;
     const char *identity_prefix = "BLE";
     const char *manufacturer = fingerprint->type_name != NULL
         ? fingerprint->type_name : ble_device_type_name(fingerprint->device_type);
     const char *reason = fingerprint->class_reason[0] != '\0'
         ? fingerprint->class_reason : "ble_fingerprint";
     if (threat != NULL) {
+        if (threat->entity_hash == 0) {
+            return false;
+        }
+        identity_hash = threat->entity_hash;
         if (threat->kind == BLE_THREAT_PAIRING_SPAM) {
             threat_kind = BLE_THREAT_KIND_PAIRING_SPAM;
             identity_prefix = "BLE-PAIR";
@@ -73,6 +80,7 @@ bool backend_feature_emit_ble(
             identity_prefix = "BLE-SERIAL";
             manufacturer = "Possible Skimmer";
             reason = "behavioral:serial_skimmer";
+            emission_rssi = threat->strongest_rssi;
 #else
             return false;
 #endif
@@ -84,26 +92,31 @@ bool backend_feature_emit_ble(
     drone_detection_t detection = {0};
     char mac[18];
     format_mac(observation->mac, mac);
-    snprintf(detection.drone_id, sizeof(detection.drone_id),
-             "%s:%s", identity_prefix, mac);
+    if (threat != NULL) {
+        snprintf(detection.drone_id, sizeof(detection.drone_id),
+                 "%s:%08lX", identity_prefix, (unsigned long)identity_hash);
+    } else {
+        snprintf(detection.drone_id, sizeof(detection.drone_id),
+                 "%s:%s", identity_prefix, mac);
+    }
     detection.source = DETECTION_SRC_BLE_FINGERPRINT;
     detection.confidence = confidence;
     detection.fused_confidence = confidence;
-    detection.rssi = observation->rssi;
-    detection.estimated_distance_m = rssi_distance_estimate_m(observation->rssi);
+    detection.rssi = emission_rssi;
+    detection.estimated_distance_m = rssi_distance_estimate_m(emission_rssi);
     detection.first_seen_ms = observation->first_seen_ms;
     detection.last_updated_ms = observation->observed_ms;
     copy_text(detection.bssid, sizeof(detection.bssid), mac);
     copy_text(detection.manufacturer, sizeof(detection.manufacturer), manufacturer);
     snprintf(detection.model, sizeof(detection.model), "FP:%08lX",
-             (unsigned long)fingerprint->hash);
+             (unsigned long)identity_hash);
     copy_text(detection.class_reason, sizeof(detection.class_reason), reason);
     copy_text(detection.ble_name, sizeof(detection.ble_name), fingerprint->local_name);
     detection.ble_company_id = fingerprint->company_id;
     detection.ble_apple_type = fingerprint->apple_type;
     detection.ble_ad_type_count = fingerprint->ad_type_count;
     detection.ble_payload_len = fingerprint->payload_len;
-    detection.ble_addr_type = 1;
+    detection.ble_addr_type = observation->addr_type;
     memcpy(detection.ble_apple_auth, fingerprint->apple_auth,
            sizeof(detection.ble_apple_auth));
     detection.ble_apple_activity = fingerprint->apple_activity;

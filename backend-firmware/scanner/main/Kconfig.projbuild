@@ -1,0 +1,10 @@
+menu "Friend or Foe Backend Scanner"
+
+config FOF_BACKEND_GLASSES_DETECTION
+    bool "Enable backend Meta glasses detection"
+    default y
+    help
+        Keep the badge-derived Meta glasses classifier enabled in the
+        headless backend scanner runtime.
+
+endmenu

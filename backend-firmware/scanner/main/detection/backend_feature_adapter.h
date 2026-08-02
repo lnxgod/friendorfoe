@@ -14,6 +14,7 @@ typedef struct {
     uint8_t mac[6];
     const ble_fingerprint_t *fingerprint;
     const ble_threat_signal_t *threat;
+    uint8_t addr_type;
     int8_t rssi;
     float confidence;
     int64_t first_seen_ms;
