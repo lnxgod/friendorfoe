@@ -1,0 +1,27 @@
+{
+  "name": "Friend or Foe Backend Uplink (XIAO ESP32-S3)",
+  "version": "0.1.0-backend",
+  "builds": [
+    {
+      "chipFamily": "ESP32-S3",
+      "parts": [
+        {
+          "path": "firmware/uplink-s3-backend/uplink-s3-backend-bootloader.bin",
+          "offset": 0
+        },
+        {
+          "path": "firmware/uplink-s3-backend/uplink-s3-backend-partition-table.bin",
+          "offset": 32768
+        },
+        {
+          "path": "firmware/uplink-s3-backend/uplink-s3-backend-ota-data-initial.bin",
+          "offset": 61440
+        },
+        {
+          "path": "firmware/uplink-s3-backend/uplink-s3-backend-firmware.bin",
+          "offset": 131072
+        }
+      ]
+    }
+  ]
+}

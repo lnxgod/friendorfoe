@@ -3,3 +3,4 @@
 __pycache__/
 *.py[cod]
 compile_commands.json
+/web-flasher/firmware/**/*.bin

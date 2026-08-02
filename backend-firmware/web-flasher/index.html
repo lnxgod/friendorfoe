@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Friend or Foe Backend Sensor Recovery</title>
+  <script
+    type="module"
+    src="https://unpkg.com/esp-web-tools@10.4.0/dist/web/install-button.js?module"
+  ></script>
+  <style>
+    :root {
+      color-scheme: dark;
+      font-family: ui-sans-serif, system-ui, sans-serif;
+      background: #101317;
+      color: #f5f7fa;
+    }
+    body {
+      margin: 0;
+      padding: 2rem 1rem;
+    }
+    main {
+      width: min(52rem, 100%);
+      margin: 0 auto;
+    }
+    .warning {
+      padding: 1.25rem;
+      border: 2px solid #ffb020;
+      border-radius: 0.75rem;
+      background: #2b220f;
+    }
+    .warning strong {
+      display: block;
+      margin-bottom: 0.75rem;
+      color: #ffd27a;
+    }
+    .choices {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr));
+      gap: 1rem;
+      margin-top: 1.5rem;
+    }
+    section {
+      padding: 1.25rem;
+      border: 1px solid #3b4654;
+      border-radius: 0.75rem;
+      background: #191f26;
+    }
+    h1, h2 {
+      margin-top: 0;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Backend Sensor Recovery</h1>
+    <div class="warning">
+      <strong>UNPUBLISHED BACKEND RECOVERY/MAINTENANCE TOOL — NOT THE INITIAL CANARY PATH.</strong>
+      <p>Use tools/backend_canary.py for inventory, backup, MAC binding, initial migration, and restore.</p>
+      <p>This page cannot distinguish a Lite sensor board from a badge because both use XIAO ESP32-S3.</p>
+      <p>Do not connect or select a badge. Do not use this page until all three Lite boards already have verified backend identities.</p>
+    </div>
+    <div class="choices">
+      <section>
+        <h2>Backend Uplink</h2>
+        <p>Recovery or maintenance image for the backend Lite sensor uplink.</p>
+        <esp-web-install-button manifest="manifest-uplink-s3-backend.json"></esp-web-install-button>
+      </section>
+      <section>
+        <h2>Backend Scanner</h2>
+        <p>Recovery or maintenance image for a backend Lite sensor scanner.</p>
+        <esp-web-install-button manifest="manifest-scanner-s3-combo-backend.json"></esp-web-install-button>
+      </section>
+    </div>
+  </main>
+</body>
+</html>
