@@ -982,10 +982,12 @@ def test_backend_identity_mutation_matrix_fails_closed(mutation):
 
 
 @pytest.mark.parametrize(("asset_name", "expected"), [
+    ("scanner-s3-combo-fullsize-backend.bin", "scanner-s3-combo-fullsize-backend"),
     ("scanner-s3-combo-backend.bin", "scanner-s3-combo-backend"),
     ("scanner-s3-combo-fof_badge-v0.1.0-mixed.bin", "scanner-s3-combo-fof_badge"),
     ("scanner-s3-combo-seed.bin", "scanner-s3-combo-seed"),
     ("scanner-s3-combo-v0.1.0-mixed.bin", "scanner-s3-combo"),
+    ("uplink-s3-fullsize-backend-v0.1.0-mixed.bin", "uplink-s3-fullsize-backend"),
     ("uplink-s3-backend-v0.1.0-mixed.bin", "uplink-s3-backend"),
     ("uplink-s3-fof_badge.bin", "uplink-s3-fof_badge"),
     ("uplink-s3.bin", "uplink-s3"),

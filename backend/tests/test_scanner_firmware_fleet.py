@@ -1,4 +1,5 @@
 import asyncio
+import copy
 import subprocess
 import time
 
@@ -30,18 +31,14 @@ def test_release_catalog_versions_match_live_follow():
 
 def test_backend_versions_are_target_aware_without_repurposing_api_version():
     assert detections._EXPECTED_BACKEND_VERSION == app.version
-    assert detections._firmware_version_state(
-        "0.1.0-backend", "uplink-s3-backend",
-    ) == "current"
-    assert detections._firmware_version_state(
-        "0.1.1-backend", "uplink-s3-backend",
-    ) == "drift"
-    assert detections._firmware_version_state(
-        "0.1.0-backend", "uplink-s3-fullsize-backend",
-    ) == "current"
-    assert detections._firmware_version_state(
-        "0.1.0-backend", "scanner-s3-combo-fullsize-backend",
-    ) == "current"
+    for target in (
+        "uplink-s3-backend",
+        "scanner-s3-combo-backend",
+        "uplink-s3-fullsize-backend",
+        "scanner-s3-combo-fullsize-backend",
+    ):
+        assert detections._firmware_version_state("0.2.0-backend", target) == "current"
+        assert detections._firmware_version_state("0.1.0-backend", target) == "drift"
     assert detections._firmware_version_state(
         detections._EXPECTED_FIRMWARE_VERSION, "uplink-s3",
     ) == "current"
@@ -49,6 +46,42 @@ def test_backend_versions_are_target_aware_without_repurposing_api_version():
 
 def _completed(cmd, stdout: bytes):
     return subprocess.CompletedProcess(cmd, 0, stdout=stdout, stderr=b"")
+
+
+def _fullsize_fleet_heartbeat() -> dict:
+    return {
+        "device_id": "uplink_FULL",
+        "ip": "192.168.1.80",
+        "last_seen": time.time(),
+        "product_family": "s3_fullsize",
+        "firmware_line": "backend",
+        "component": "uplink",
+        "hardware_mac": "AA:BB:CC:DD:EE:80",
+        "boot_id": 80,
+        "firmware_target": "uplink-s3-fullsize-backend",
+        "app_project": "fof_backend_uplink_fullsize",
+        "hardware_type": "esp32s3_n16r8_fullsize",
+        "scanners": [
+            {
+                "uart": "ble", "slot": 0, "mac": "AA:BB:CC:DD:EE:81",
+                "boot_id": 81, "product_family": "s3_fullsize",
+                "firmware_line": "backend", "component": "scanner",
+                "firmware_target": "scanner-s3-combo-fullsize-backend",
+                "app_project": "fof_backend_scanner_fullsize",
+                "hardware_type": "esp32s3_n16r8_fullsize",
+                "firmware_version": "0.2.0-backend", "cmd_rx": 1,
+            },
+            {
+                "uart": "wifi", "slot": 1, "mac": "AA:BB:CC:DD:EE:82",
+                "boot_id": 82, "product_family": "s3_fullsize",
+                "firmware_line": "backend", "component": "scanner",
+                "firmware_target": "scanner-s3-combo-fullsize-backend",
+                "app_project": "fof_backend_scanner_fullsize",
+                "hardware_type": "esp32s3_n16r8_fullsize",
+                "firmware_version": "0.2.0-backend", "cmd_rx": 1,
+            },
+        ],
+    }
 
 
 @pytest.fixture(autouse=True)
@@ -133,12 +166,22 @@ def scanner_fleet_state(monkeypatch: pytest.MonkeyPatch):
         assert name == "scanner-s3-combo-backend"
         return "0.1.1-backend"
 
+    def fake_version_for_bytes(name: str, image: bytes) -> str:
+        assert name == "scanner-s3-combo-backend"
+        assert image == b"fake fleet firmware"
+        return "0.1.1-backend"
+
     def accept_fleet_fixture_image(device_id, firmware_name, image, uart=None, **kwargs):
         assert firmware_name == "scanner-s3-combo-backend"
         return kwargs.get("snapshot")
 
     monkeypatch.setattr(nodes._firmware_mgr, "get_firmware_binary", fake_binary)
     monkeypatch.setattr(nodes._firmware_mgr, "get_firmware_version", fake_version)
+    monkeypatch.setattr(
+        nodes._firmware_mgr,
+        "get_firmware_version_for_bytes",
+        fake_version_for_bytes,
+    )
     monkeypatch.setattr(nodes, "_require_ota_compatibility", accept_fleet_fixture_image)
 
 
@@ -289,6 +332,79 @@ async def test_fullsize_scanner_readiness_groups_exact_family_and_complete_trio(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/nodes/firmware/scanner/stage-fleet"
+        "?firmware_name=scanner-s3-combo-fullsize-backend",
+        "/nodes/firmware/scanner/stage-fleet",
+        "/nodes/firmware/scanner/rollout"
+        "?firmware_name=scanner-s3-combo-fullsize-backend&mode=canary",
+        "/nodes/firmware/scanner/rollout?mode=canary",
+    ],
+)
+async def test_fullsize_fleet_and_rollout_reject_before_catalog_fetch_or_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+    path: str,
+):
+    monkeypatch.setattr(
+        detections,
+        "_node_heartbeats",
+        {"uplink_FULL": _fullsize_fleet_heartbeat()},
+    )
+    fetched: list[str] = []
+    transfers: list[str] = []
+
+    async def must_not_fetch(name: str):
+        fetched.append(name)
+        raise AssertionError("Fullsize old fleet path must reject before fetch")
+
+    async def must_not_transfer(cmd, **kwargs):
+        transfers.append(str(cmd))
+        raise AssertionError("Fullsize old fleet path must reject before mutation")
+
+    monkeypatch.setattr(nodes._firmware_mgr, "get_firmware_binary", must_not_fetch)
+    monkeypatch.setattr(nodes._firmware_mgr, "get_firmware_version", must_not_fetch)
+    monkeypatch.setattr(nodes, "_run_subprocess", must_not_transfer)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(path)
+
+    assert response.status_code == 409, response.text
+    assert "backend-ota" in response.json()["detail"]
+    assert fetched == []
+    assert transfers == []
+
+
+@pytest.mark.asyncio
+async def test_fullsize_fleet_guard_fails_closed_on_canonical_scanner_target(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    heartbeat = copy.deepcopy(detections._node_heartbeats["uplink_A"])
+    heartbeat["scanners"] = [{
+        "uart": "ble",
+        "firmware_target": "scanner-s3-combo-fullsize-backend",
+        "app_project": "missing-authoritative-project",
+    }]
+    monkeypatch.setattr(detections, "_node_heartbeats", {"uplink_A": heartbeat})
+    fetches: list[str] = []
+
+    async def must_not_fetch(name: str):
+        fetches.append(name)
+        raise AssertionError("canonical Fullsize target must reject before fetch")
+
+    monkeypatch.setattr(nodes._firmware_mgr, "get_firmware_binary", must_not_fetch)
+    monkeypatch.setattr(nodes._firmware_mgr, "get_firmware_version", must_not_fetch)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post("/nodes/firmware/scanner/stage-fleet")
+
+    assert response.status_code == 409, response.text
+    assert "backend-ota" in response.json()["detail"]
+    assert fetches == []
+
+
+@pytest.mark.asyncio
 async def test_scanner_readiness_flags_missing_target_version(
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -347,6 +463,11 @@ async def test_default_readiness_and_stage_use_canonical_backend_scanner_identit
         assert name == "scanner-s3-combo-backend"
         return "0.1.0-backend"
 
+    def backend_version_for_bytes(name: str, image: bytes) -> str:
+        assert name == "scanner-s3-combo-backend"
+        assert image == b"canonical backend scanner image"
+        return "0.1.0-backend"
+
     async def capture_upload(cmd, **kwargs):
         uploads.append(next(part for part in cmd if isinstance(part, str) and part.startswith("http://")))
         return _completed(cmd, b'{"ok":true,"stored":true}')
@@ -357,6 +478,11 @@ async def test_default_readiness_and_stage_use_canonical_backend_scanner_identit
 
     monkeypatch.setattr(nodes._firmware_mgr, "get_firmware_binary", backend_binary)
     monkeypatch.setattr(nodes._firmware_mgr, "get_firmware_version", backend_version)
+    monkeypatch.setattr(
+        nodes._firmware_mgr,
+        "get_firmware_version_for_bytes",
+        backend_version_for_bytes,
+    )
     monkeypatch.setattr(nodes, "_require_ota_compatibility", accept_test_image)
     monkeypatch.setattr(nodes, "_run_subprocess", capture_upload)
 
@@ -545,6 +671,69 @@ async def test_stage_fleet_final_revalidation_blocks_later_target_changed_during
 
 
 @pytest.mark.asyncio
+async def test_stage_fleet_revalidates_after_each_unique_binary_fetch_a_b_a(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    lite = copy.deepcopy(detections._node_heartbeats["uplink_A"])
+    lite["scanners"] = [lite["scanners"][0]]
+    badge = {
+        "device_id": "uplink_BADGE",
+        "ip": "192.168.1.20",
+        "last_seen": time.time(),
+        "firmware_target": "uplink-s3-fof_badge",
+        "app_project": "fof_badge_uplink",
+        "hardware_type": "seeed_xiao_esp32s3",
+        "hardware_mac": "AA:BB:CC:DD:EE:20",
+        "scanners": [{
+            "uart": "ble", "slot": 0, "mac": "AA:BB:CC:DD:EE:21", "boot_id": 21,
+            "firmware_target": "scanner-s3-combo-fof_badge",
+            "app_project": "fof_badge_scanner",
+            "hardware_type": "seeed_xiao_esp32s3",
+            "board": "scanner-s3-combo-fof_badge", "cmd_rx": 1,
+        }],
+    }
+    monkeypatch.setattr(
+        detections,
+        "_node_heartbeats",
+        {"uplink_A": lite, "uplink_BADGE": badge},
+    )
+    binary_fetches: list[str] = []
+    transfers: list[str] = []
+
+    async def version(name: str) -> str:
+        return "0.2.0-backend" if name.endswith("-backend") else "0.67.2-badge-defcon34"
+
+    async def mutate_then_restore(name: str) -> bytes:
+        binary_fetches.append(name)
+        if len(binary_fetches) == 1:
+            lite["scanners"][0]["mac"] = "AA:BB:CC:DD:EE:99"
+        else:
+            lite["scanners"][0]["mac"] = "AA:BB:CC:DD:EE:01"
+        return f"valid fixture for {name}".encode()
+
+    async def must_not_transfer(cmd, **kwargs):
+        transfers.append(str(cmd))
+        raise AssertionError("fleet A -> B -> A change must reject before upload")
+
+    monkeypatch.setattr(nodes._firmware_mgr, "get_firmware_version", version)
+    monkeypatch.setattr(nodes._firmware_mgr, "get_firmware_binary", mutate_then_restore)
+    monkeypatch.setattr(
+        nodes,
+        "_require_ota_compatibility",
+        lambda *args, **kwargs: kwargs.get("snapshot"),
+    )
+    monkeypatch.setattr(nodes, "_run_subprocess", must_not_transfer)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post("/nodes/firmware/scanner/stage-fleet")
+
+    assert response.status_code == 200, response.text
+    assert response.json()["ok"] is False
+    assert binary_fetches == ["scanner-s3-combo-backend"]
+    assert transfers == []
+
+
+@pytest.mark.asyncio
 async def test_stage_fleet_rejects_legacy_and_seed_variants_before_upload(
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -608,7 +797,7 @@ async def test_stage_fleet_rejects_legacy_and_seed_variants_before_upload(
 
 
 @pytest.mark.asyncio
-async def test_trigger_check_calls_uplink_trigger_endpoint(monkeypatch: pytest.MonkeyPatch):
+async def test_trigger_check_mutates_only_complete_exact_node(monkeypatch: pytest.MonkeyPatch):
     calls: list[str] = []
 
     async def fake_run_subprocess(cmd, **kwargs):
@@ -625,9 +814,175 @@ async def test_trigger_check_calls_uplink_trigger_endpoint(monkeypatch: pytest.M
 
     assert resp.status_code == 200, resp.text
     payload = resp.json()
-    assert payload["ok"] is True
+    assert payload["ok"] is False
     assert payload["count"] == 2
-    assert len(calls) == 2
+    assert len(calls) == 1
+    assert next(row for row in payload["results"] if row["device_id"] == "uplink_B")[
+        "state"
+    ] == "blocked"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "mutation",
+    ["legacy", "seed", "generic", "mixed", "stale", "incomplete", "fullsize"],
+)
+async def test_trigger_check_rejects_non_authoritative_nodes_without_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: str,
+):
+    if mutation == "fullsize":
+        heartbeat = _fullsize_fleet_heartbeat()
+    else:
+        heartbeat = copy.deepcopy(detections._node_heartbeats["uplink_A"])
+        heartbeat["device_id"] = "uplink_BLOCKED"
+        heartbeat["ip"] = "192.168.1.90"
+        if mutation == "legacy":
+            heartbeat.update({
+                "firmware_target": "uplink-s3",
+                "app_project": "fof_uplink",
+                "hardware_type": "esp32-s3-devkitc-1",
+            })
+            heartbeat["scanners"][0].update({
+                "firmware_target": "scanner-s3-combo",
+                "app_project": "fof_scanner",
+                "hardware_type": "esp32-s3-devkitc-1",
+            })
+        elif mutation == "seed":
+            heartbeat["scanners"][0].update({
+                "firmware_target": "scanner-s3-combo-seed",
+                "app_project": "fof_scanner_seed",
+                "hardware_type": "esp32-s3-devkitc-1",
+            })
+        elif mutation == "generic":
+            for field in ("firmware_target", "app_project", "hardware_type"):
+                heartbeat.pop(field, None)
+                heartbeat["scanners"][0].pop(field, None)
+        elif mutation == "mixed":
+            heartbeat["scanners"][1].update({
+                "firmware_target": "scanner-s3-combo-fof_badge",
+                "app_project": "fof_badge_scanner",
+                "hardware_type": "seeed_xiao_esp32s3",
+            })
+        elif mutation == "stale":
+            heartbeat["last_seen"] = time.time() - 121
+        elif mutation == "incomplete":
+            heartbeat["scanners"][0].pop("mac")
+            heartbeat["scanners"][0].pop("boot_id")
+    monkeypatch.setattr(
+        detections,
+        "_node_heartbeats",
+        {heartbeat["device_id"]: heartbeat},
+    )
+    calls: list[str] = []
+
+    async def must_not_transfer(cmd, **kwargs):
+        calls.append(str(cmd))
+        raise AssertionError("blocked trigger-check node must not mutate")
+
+    monkeypatch.setattr(nodes, "_run_subprocess", must_not_transfer)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/nodes/firmware/scanner/trigger-check",
+            params={
+                "device_id": heartbeat["device_id"],
+                "uart": "both",
+                "include_offline": "true",
+            },
+        )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["ok"] is False
+    assert payload["count"] == 1
+    assert payload["results"][0]["state"] == "blocked"
+    assert calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stage_first", [True, False], ids=["stage", "trigger"])
+async def test_rollout_worker_revalidates_bound_identity_before_each_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+    stage_first: bool,
+):
+    heartbeat = detections._node_heartbeats["uplink_A"]
+    scanner = copy.deepcopy(heartbeat["scanners"][0])
+    firmware = "scanner-s3-combo-backend"
+    initial = nodes._require_named_family_preflight("uplink_A", firmware, "ble")
+    target = {
+        "device_id": "uplink_A",
+        "ip": heartbeat["ip"],
+        "uart": "ble",
+        "scanner": scanner,
+        "target_firmware": firmware,
+        "target_version": "0.2.0-backend",
+        "self_update_capable": True,
+        "identity_snapshot": initial,
+    }
+    rollout_id = f"identity-change-{stage_first}"
+    nodes._firmware_rollouts[rollout_id] = {
+        "rollout_id": rollout_id,
+        "status": "queued",
+        "stage_results": [],
+        "targets": {
+            "uplink_A/ble": {
+                "device_id": "uplink_A", "uart": "ble", "state": "pending",
+            },
+        },
+    }
+    heartbeat["scanners"][0]["mac"] = "AA:BB:CC:DD:EE:99"
+    fetches: list[str] = []
+    transfers: list[str] = []
+
+    async def must_not_fetch(name: str):
+        fetches.append(name)
+        raise AssertionError("changed rollout identity must reject before fetch")
+
+    async def must_not_transfer(cmd, **kwargs):
+        transfers.append(str(cmd))
+        raise AssertionError("changed rollout identity must reject before mutation")
+
+    monkeypatch.setattr(nodes._firmware_mgr, "get_firmware_binary", must_not_fetch)
+    monkeypatch.setattr(nodes, "_run_subprocess", must_not_transfer)
+
+    await nodes._run_scanner_rollout(rollout_id, [target], stage_first=stage_first)
+
+    item = nodes._firmware_rollouts[rollout_id]["targets"]["uplink_A/ble"]
+    assert item["state"] == "blocked"
+    assert fetches == []
+    assert transfers == []
+
+
+@pytest.mark.asyncio
+async def test_rollout_start_hands_worker_an_authoritative_identity_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    captured: list[dict] = []
+
+    async def capture_rollout(rollout_id: str, targets: list[dict], *, stage_first: bool):
+        captured.extend(targets)
+
+    monkeypatch.setattr(nodes, "_run_scanner_rollout", capture_rollout)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/nodes/firmware/scanner/rollout",
+            params={
+                "mode": "canary",
+                "firmware_name": "scanner-s3-combo-backend",
+                "canary_device_id": "uplink_A",
+                "canary_uart": "ble",
+            },
+        )
+        await asyncio.sleep(0)
+
+    assert response.status_code == 200, response.text
+    assert len(captured) == 1
+    assert captured[0]["identity_snapshot"]["device_id"] == "uplink_A"
+    assert captured[0]["identity_snapshot"]["scanners"][0]["mac"] == (
+        "AA:BB:CC:DD:EE:01"
+    )
 
 
 @pytest.mark.asyncio

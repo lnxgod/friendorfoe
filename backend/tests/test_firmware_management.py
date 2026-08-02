@@ -24,6 +24,10 @@ def resolve_attended_migration_candidate(*args, **kwargs):
     return _management().resolve_attended_migration_candidate(*args, **kwargs)
 
 
+def resolve_attended_migration_trio(*args, **kwargs):
+    return _management().resolve_attended_migration_trio(*args, **kwargs)
+
+
 NOW = 1_785_600_000.0
 
 FULLSIZE_UPLINK = {
@@ -333,6 +337,16 @@ LEGACY_UPLINK_PARTITIONS = [
     ("reserved", "data", "fat", 0xB20000, 0x4E0000),
 ]
 
+LEGACY_SCANNER_PARTITIONS = [
+    ("nvs", "data", "nvs", 0x9000, 0x6000),
+    ("otadata", "data", "ota", 0xF000, 0x2000),
+    ("phy_init", "data", "phy", 0x11000, 0x1000),
+    ("ota_0", "app", "ota_0", 0x20000, 0x300000),
+    ("ota_1", "app", "ota_1", 0x320000, 0x300000),
+    ("storage", "data", "spiffs", 0x620000, 0x100000),
+    ("reserved", "data", "fat", 0x720000, 0x8E0000),
+]
+
 
 def attended_uplink_receipt() -> dict:
     return {
@@ -353,6 +367,33 @@ def attended_uplink_receipt() -> dict:
     }
 
 
+def attended_scanner_receipt(role: str, mac: str) -> dict:
+    return {
+        "schema": 1,
+        "authority": "local_operator",
+        "rom_chip_model": "ESP32-S3",
+        "flash_size": 0x1000000,
+        "partitions": [list(row) for row in LEGACY_SCANNER_PARTITIONS],
+        "board_attestation": "production_gpio48",
+        "led_gpio": 48,
+        "mac": mac,
+        "physical_role": role,
+        "firmware_target": "scanner-s3-combo",
+        "app_project": "fof_scanner",
+        "hardware_type": "esp32-s3-devkitc-1",
+        "secure_boot": False,
+        "flash_encryption": False,
+    }
+
+
+def attended_trio_receipts() -> list[dict]:
+    return [
+        attended_uplink_receipt(),
+        attended_scanner_receipt("scanner0", "AA:BB:CC:DD:EE:11"),
+        attended_scanner_receipt("scanner1", "AA:BB:CC:DD:EE:12"),
+    ]
+
+
 def test_attended_exact_inventory_receipt_only_labels_a_migration_candidate():
     candidate = resolve_attended_migration_candidate(attended_uplink_receipt())
 
@@ -363,6 +404,43 @@ def test_attended_exact_inventory_receipt_only_labels_a_migration_candidate():
         "mac": "AA:BB:CC:DD:EE:10",
         "physical_role": "uplink",
     }
+
+
+def test_server_owned_attended_inventory_accepts_one_exact_distinct_legacy_trio():
+    candidate = resolve_attended_migration_trio(attended_trio_receipts())
+
+    assert candidate == {
+        "candidate_label": "s3_fullsize_migration_candidate",
+        "authorized_action": "attended_usb_migration",
+        "runtime_product_family": None,
+        "components": {
+            "uplink": "AA:BB:CC:DD:EE:10",
+            "scanner0": "AA:BB:CC:DD:EE:11",
+            "scanner1": "AA:BB:CC:DD:EE:12",
+        },
+    }
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["mixed_trio", "duplicate_mac", "duplicate_role", "missing_role"],
+)
+def test_attended_inventory_trio_rejects_mixed_or_ambiguous_membership(mutation: str):
+    receipts = attended_trio_receipts()
+    if mutation == "mixed_trio":
+        receipts[2].update({
+            "firmware_target": "scanner-s3-combo-backend",
+            "app_project": "fof_backend_scanner",
+            "hardware_type": "seeed_xiao_esp32s3",
+        })
+    elif mutation == "duplicate_mac":
+        receipts[2]["mac"] = receipts[1]["mac"]
+    elif mutation == "duplicate_role":
+        receipts[2]["physical_role"] = "scanner0"
+    elif mutation == "missing_role":
+        receipts.pop()
+
+    assert resolve_attended_migration_trio(receipts) is None
 
 
 @pytest.mark.parametrize(

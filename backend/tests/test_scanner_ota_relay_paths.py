@@ -240,44 +240,54 @@ async def test_backend_scanner_ota_rejects_same_family_scanner_replacement_durin
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("mutation", ["uplink_mac", "other_scanner_boot_id"])
-async def test_fullsize_scanner_ota_binds_the_complete_trio_across_awaited_fetch(
+async def test_scanner_ota_cannot_hide_identity_change_with_second_version_fetch(
     monkeypatch: pytest.MonkeyPatch,
-    mutation: str,
 ):
-    detections._node_heartbeats["uplink_TEST"] = _fullsize_heartbeat()
-    loaded: list[str] = []
+    heartbeat = {
+        "device_id": "uplink_TEST", "ip": "192.168.1.10", "last_seen": time.time(),
+        "firmware_target": "uplink-s3-backend",
+        "app_project": "fof_backend_uplink",
+        "hardware_type": "seeed_xiao_esp32s3",
+        "hardware_mac": "AA:BB:CC:DD:EE:10",
+        "scanners": [
+            {
+                "uart": "ble", "slot": 0, "mac": "AA:BB:CC:DD:EE:11", "boot_id": 11,
+                "firmware_target": "scanner-s3-combo-backend",
+                "app_project": "fof_backend_scanner",
+                "hardware_type": "seeed_xiao_esp32s3",
+            },
+        ],
+    }
+    detections._node_heartbeats["uplink_TEST"] = heartbeat
+    version_fetches: list[str] = []
     transfers: list[str] = []
 
-    async def mutate_during_fetch(name: str) -> bytes:
-        loaded.append(name)
-        heartbeat = detections._node_heartbeats["uplink_TEST"]
-        if mutation == "uplink_mac":
-            heartbeat["hardware_mac"] = "AA:BB:CC:DD:EE:99"
-        else:
-            heartbeat["scanners"][1]["boot_id"] = 99
-        return _backend_scanner_image("scanner-s3-combo-fullsize-backend")
+    async def mutate_a_to_b(name: str) -> bytes:
+        heartbeat["scanners"][0]["mac"] = "AA:BB:CC:DD:EE:99"
+        return _backend_scanner_image(name)
 
-    async def version(name: str) -> str:
-        return "0.1.0-backend"
+    async def restore_b_to_a(name: str) -> str:
+        version_fetches.append(name)
+        heartbeat["scanners"][0]["mac"] = "AA:BB:CC:DD:EE:11"
+        return "0.2.0-backend"
 
     async def must_not_transfer(cmd, **kwargs):
         transfers.append(str(cmd))
-        raise AssertionError("changed trio must reject before transfer")
+        raise AssertionError("A -> B -> A identity change must reject before transfer")
 
-    monkeypatch.setattr(nodes._firmware_mgr, "get_firmware_binary", mutate_during_fetch)
-    monkeypatch.setattr(nodes._firmware_mgr, "get_firmware_version", version)
+    monkeypatch.setattr(nodes._firmware_mgr, "get_firmware_binary", mutate_a_to_b)
+    monkeypatch.setattr(nodes._firmware_mgr, "get_firmware_version", restore_b_to_a)
     monkeypatch.setattr(nodes, "_run_subprocess", must_not_transfer)
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         response = await client.post(
-            "/nodes/uplink_TEST/ota/scanner/"
-            "scanner-s3-combo-fullsize-backend?uart=ble&relay_mode=staged"
+            "/nodes/uplink_TEST/ota/scanner/scanner-s3-combo-backend"
+            "?uart=ble&relay_mode=staged"
         )
 
     assert response.status_code == 409, response.text
     assert "identity changed" in response.json()["detail"]
-    assert loaded == ["scanner-s3-combo-fullsize-backend"]
+    assert version_fetches == []
     assert transfers == []
 
 
@@ -315,6 +325,97 @@ async def test_fullsize_scanner_ota_rejects_legacy_paths_before_load_or_transfer
     assert response.json()["detail"] == "legacy relay paths are not eligible for S3 Fullsize"
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/nodes/uplink_TEST/ota/scanner/scanner-s3-combo-fullsize-backend"
+        "?uart=ble&relay_mode=staged",
+        "/nodes/uplink_TEST/ota/scanner/scanner-s3-combo-fullsize-backend/stage",
+    ],
+)
+async def test_fullsize_scanner_old_routes_reject_before_firmware_fetch(
+    monkeypatch: pytest.MonkeyPatch,
+    path: str,
+):
+    detections._node_heartbeats["uplink_TEST"] = _fullsize_heartbeat()
+    loaded: list[str] = []
+    transfers: list[str] = []
+
+    async def must_not_load(name: str) -> bytes:
+        loaded.append(name)
+        raise AssertionError("Fullsize old scanner route must reject before fetch")
+
+    async def must_not_transfer(cmd, **kwargs):
+        transfers.append(str(cmd))
+        raise AssertionError("Fullsize old scanner route must reject before transfer")
+
+    monkeypatch.setattr(nodes._firmware_mgr, "get_firmware_binary", must_not_load)
+    monkeypatch.setattr(nodes, "_run_subprocess", must_not_transfer)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(path)
+
+    assert response.status_code == 409, response.text
+    assert "backend-ota" in response.json()["detail"]
+    assert loaded == []
+    assert transfers == []
+
+
+@pytest.mark.asyncio
+async def test_fullsize_staging_helper_rejects_provided_bytes_before_subprocess(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    detections._node_heartbeats["uplink_TEST"] = _fullsize_heartbeat()
+    target = "scanner-s3-combo-fullsize-backend"
+    snapshot = nodes._ota_target_snapshot("uplink_TEST", "both")
+    transfers: list[str] = []
+
+    async def must_not_transfer(cmd, **kwargs):
+        transfers.append(str(cmd))
+        raise AssertionError("Fullsize staging helper must not use /api/fw/upload")
+
+    monkeypatch.setattr(nodes, "_run_subprocess", must_not_transfer)
+
+    with pytest.raises(HTTPException) as error:
+        await nodes._stage_scanner_firmware_on_uplink(
+            "uplink_TEST",
+            target,
+            "both",
+            fw_data=_backend_scanner_image(target),
+            fw_version="0.2.0-backend",
+            snapshot=snapshot,
+        )
+
+    assert error.value.status_code == 409
+    assert "backend-ota" in str(error.value.detail)
+    assert transfers == []
+
+
+@pytest.mark.asyncio
+async def test_fullsize_direct_legacy_helper_rejects_bytes_before_subprocess(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    transfers: list[str] = []
+
+    async def must_not_transfer(cmd, **kwargs):
+        transfers.append(str(cmd))
+        raise AssertionError("Fullsize must not use direct legacy relay")
+
+    monkeypatch.setattr(nodes, "_run_subprocess", must_not_transfer)
+
+    with pytest.raises(HTTPException) as error:
+        await nodes._run_direct_legacy_scanner_relay(
+            "192.0.2.1",
+            "ble",
+            _backend_scanner_image("scanner-s3-combo-fullsize-backend"),
+        )
+
+    assert error.value.status_code == 409
+    assert "backend-ota" in str(error.value.detail)
+    assert transfers == []
+
+
 def test_fullsize_scanner_image_must_fit_both_scanner_slot_and_uplink_cache(
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -339,36 +440,36 @@ def test_fullsize_scanner_image_must_fit_both_scanner_slot_and_uplink_cache(
     assert "cache capacity" in str(getattr(error.value, "detail", ""))
 
 
-@pytest.mark.asyncio
-async def test_scanner_ota_both_rejects_duplicate_ble_identity(monkeypatch: pytest.MonkeyPatch):
+def test_fullsize_compatibility_rejects_ambiguous_scanner_identity(
+    monkeypatch: pytest.MonkeyPatch,
+):
     detections._node_heartbeats["uplink_TEST"] = _fullsize_heartbeat()
     detections._node_heartbeats["uplink_TEST"]["scanners"][1]["uart"] = "ble"
-    # The endpoint must fail in preflight, without loading or transferring bytes.
-    async def must_not_load(name: str) -> bytes:
-        raise AssertionError("must reject ambiguous uart=both before firmware load")
-
-    monkeypatch.setattr(nodes._firmware_mgr, "get_firmware_binary", must_not_load)
-
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
-        duplicate_uart = await client.post(
-            "/nodes/uplink_TEST/ota/scanner/scanner-s3-combo-fullsize-backend"
-            "?uart=both&relay_mode=staged"
-        )
-        detections._node_heartbeats["uplink_TEST"] = _fullsize_heartbeat()
-        detections._node_heartbeats["uplink_TEST"]["scanners"][1]["mac"] = (
-            detections._node_heartbeats["uplink_TEST"]["scanners"][0]["mac"]
-        )
-        detections._node_heartbeats["uplink_TEST"]["scanners"][1]["boot_id"] = 11
-        duplicate_identity = await client.post(
-            "/nodes/uplink_TEST/ota/scanner/scanner-s3-combo-fullsize-backend"
-            "?uart=both&relay_mode=staged"
+    with pytest.raises(HTTPException) as duplicate_uart:
+        nodes._require_ota_compatibility(
+            "uplink_TEST",
+            "scanner-s3-combo-fullsize-backend",
+            _backend_scanner_image("scanner-s3-combo-fullsize-backend"),
+            "both",
         )
 
-    assert duplicate_uart.status_code == 409
-    assert duplicate_identity.status_code == 409
-    assert "ambiguous" in duplicate_uart.json()["detail"]
-    assert "ambiguous" in duplicate_identity.json()["detail"]
+    detections._node_heartbeats["uplink_TEST"] = _fullsize_heartbeat()
+    detections._node_heartbeats["uplink_TEST"]["scanners"][1]["mac"] = (
+        detections._node_heartbeats["uplink_TEST"]["scanners"][0]["mac"]
+    )
+    detections._node_heartbeats["uplink_TEST"]["scanners"][1]["boot_id"] = 11
+    with pytest.raises(HTTPException) as duplicate_identity:
+        nodes._require_ota_compatibility(
+            "uplink_TEST",
+            "scanner-s3-combo-fullsize-backend",
+            _backend_scanner_image("scanner-s3-combo-fullsize-backend"),
+            "both",
+        )
+
+    assert duplicate_uart.value.status_code == 409
+    assert duplicate_identity.value.status_code == 409
+    assert "ambiguous" in str(duplicate_uart.value.detail)
+    assert "ambiguous" in str(duplicate_identity.value.detail)
 
 
 @pytest.mark.asyncio

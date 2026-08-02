@@ -196,6 +196,14 @@ def remote_update_blockers(
             blockers.append("missing_scanner")
         elif len(scanners) > 2:
             blockers.append("unexpected_scanner")
+        component_macs = [
+            str(
+                heartbeat.get("hardware_mac") or heartbeat.get("mac") or ""
+            ).strip().upper(),
+            *(_scanner_mac(scanner) for scanner in scanners),
+        ]
+        if _has_duplicate_nonempty(component_macs):
+            blockers.append("duplicate_component_mac")
 
     scanner_identities = [
         resolve_component_management_identity(scanner, "scanner")
@@ -339,4 +347,28 @@ def resolve_attended_migration_candidate(receipt: dict) -> dict | None:
         "runtime_product_family": None,
         "mac": mac,
         "physical_role": receipt["physical_role"],
+    }
+
+
+def resolve_attended_migration_trio(receipts: list[dict]) -> dict | None:
+    """Validate one server-owned, attended legacy Fullsize assembly inventory."""
+    if not isinstance(receipts, list) or len(receipts) != 3:
+        return None
+    candidates = [resolve_attended_migration_candidate(receipt) for receipt in receipts]
+    if any(candidate is None for candidate in candidates):
+        return None
+    by_role = {candidate["physical_role"]: candidate for candidate in candidates}
+    if set(by_role) != {"uplink", "scanner0", "scanner1"}:
+        return None
+    macs = [candidate["mac"] for candidate in candidates]
+    if len(set(macs)) != 3:
+        return None
+    return {
+        "candidate_label": "s3_fullsize_migration_candidate",
+        "authorized_action": "attended_usb_migration",
+        "runtime_product_family": None,
+        "components": {
+            role: by_role[role]["mac"]
+            for role in ("uplink", "scanner0", "scanner1")
+        },
     }

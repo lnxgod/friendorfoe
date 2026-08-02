@@ -131,8 +131,22 @@ REMOTE_ELIGIBLE_TARGETS = {
     "scanner-s3-combo-fullsize-backend",
 }
 
+UNKNOWN_FIRMWARE_TARGET = "uplink-s3-unknown"
+VALID_IMAGE_NEGATIVE_MATRIX = [
+    (requested_target, image_target)
+    for requested_target in (*sorted(NAMED_FIRMWARE_IDENTITIES), UNKNOWN_FIRMWARE_TARGET)
+    for image_target in (*sorted(NAMED_FIRMWARE_IDENTITIES), UNKNOWN_FIRMWARE_TARGET)
+    if requested_target != image_target
+]
+
 
 def _named_firmware_image(target: str) -> bytes:
+    if target == UNKNOWN_FIRMWARE_TARGET:
+        return esp32s3_app_image(
+            "0.1.0-unknown",
+            project="fof_unknown",
+            placements=((0x200, b"uplink-s3-unknown\0unknown_esp32s3\0"),),
+        )
     if target.endswith("-backend"):
         return _backend_image(target)
     project, hardware = NAMED_FIRMWARE_IDENTITIES[target]
@@ -362,12 +376,12 @@ async def test_diagnostics_use_canonical_scanner_target_and_version(client, monk
             "ip": "192.168.1.71",
             "last_seen": time.time(),
             "firmware_target": "uplink-s3-backend",
-            "firmware_version": "0.1.0-backend",
+            "firmware_version": "0.2.0-backend",
             "scanners": [{
                 "firmware_target": "scanner-s3-combo-backend",
                 "app_project": "fof_backend_scanner",
                 "hardware_type": "seeed_xiao_esp32s3",
-                "firmware_version": "0.1.0-backend",
+                "firmware_version": "0.2.0-backend",
                 "ver": "legacy-shadow-version",
                 "mac": "AA:BB:CC:DD:EE:71",
                 "boot_id": 71,
@@ -380,7 +394,7 @@ async def test_diagnostics_use_canonical_scanner_target_and_version(client, monk
 
     assert response.status_code == 200, response.text
     payload = response.json()
-    assert payload["firmware_readiness"]["scanner_versions_seen"] == {"0.1.0-backend": 1}
+    assert payload["firmware_readiness"]["scanner_versions_seen"] == {"0.2.0-backend": 1}
     assert [
         warning for warning in payload["system_warnings"]
         if warning.get("device_id") == device_id
@@ -506,6 +520,39 @@ async def test_backend_named_image_is_not_sent_to_badge_uplink(client, monkeypat
     assert response.json()["detail"] == "running firmware identity is incompatible with uplink-s3-backend"
 
 
+@pytest.mark.asyncio
+async def test_fullsize_named_uplink_rejects_legacy_ota_before_firmware_fetch(
+    client,
+    monkeypatch,
+):
+    heartbeat, _uart = _heartbeat_for_firmware("uplink-s3-fullsize-backend")
+    detections._node_heartbeats["uplink_FULL"] = heartbeat
+    fetch = AsyncMock(side_effect=AssertionError("Fullsize must not fetch for /api/ota"))
+    network = AsyncMock(side_effect=AssertionError("Fullsize must not use /api/ota"))
+    monkeypatch.setattr(nodes._firmware_mgr, "get_firmware_binary", fetch)
+    monkeypatch.setattr(nodes, "_run_subprocess", network)
+
+    response = await client.post(
+        "/nodes/uplink_FULL/ota/uplink-s3-fullsize-backend",
+    )
+
+    assert response.status_code == 409, response.text
+    assert "backend-ota" in response.json()["detail"]
+    fetch.assert_not_awaited()
+    network.assert_not_awaited()
+
+
+def test_fullsize_legacy_heartbeat_guard_fails_closed_on_canonical_target():
+    with pytest.raises(HTTPException) as error:
+        nodes._reject_fullsize_legacy_heartbeat({
+            "firmware_target": "uplink-s3-fullsize-backend",
+            "app_project": "missing-authoritative-project",
+        })
+
+    assert error.value.status_code == 409
+    assert "backend-ota" in str(error.value.detail)
+
+
 @pytest.mark.parametrize(
     ("running_target", "requested_target"),
     [
@@ -588,27 +635,21 @@ def test_named_ota_family_gates_accept_only_the_exact_running_identity(
 
 @pytest.mark.parametrize(
     ("requested_target", "image_target"),
-    [
-        ("uplink-s3-backend", "uplink-s3-fullsize-backend"),
-        ("scanner-s3-combo-backend", "scanner-s3-combo-fullsize-backend"),
-        ("scanner-s3-combo-fullsize-backend", "scanner-s3-combo-fof_badge"),
-    ],
+    VALID_IMAGE_NEGATIVE_MATRIX,
 )
-def test_named_ota_rejects_a_mislabeled_image_for_the_exact_running_target(
+def test_named_ota_rejects_every_other_valid_image_identity(
     monkeypatch,
     requested_target: str,
     image_target: str,
 ):
-    heartbeat, uart = _heartbeat_for_firmware(requested_target)
+    if requested_target in NAMED_FIRMWARE_IDENTITIES:
+        heartbeat, uart = _heartbeat_for_firmware(requested_target)
+    else:
+        heartbeat, uart = {}, None
     monkeypatch.setattr(
         detections,
         "_node_heartbeats",
         {"uplink_FAMILY": heartbeat},
-    )
-    snapshot = nodes._require_named_family_preflight(
-        "uplink_FAMILY",
-        requested_target,
-        uart,
     )
 
     with pytest.raises(HTTPException) as error:
@@ -617,7 +658,6 @@ def test_named_ota_rejects_a_mislabeled_image_for_the_exact_running_target(
             requested_target,
             _named_firmware_image(image_target),
             uart,
-            snapshot=snapshot,
         )
 
     assert error.value.status_code == 400
@@ -676,6 +716,82 @@ def test_raw_ota_accepts_only_the_exact_catalog_family(
     )
 
     assert snapshot["heartbeat"]["device_id"] == "uplink_FAMILY"
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["missing_uplink_mac", "missing_scanner_mac", "missing_scanner_boot_id"],
+)
+def test_fullsize_compatibility_requires_a_complete_bound_trio(
+    monkeypatch,
+    mutation: str,
+):
+    heartbeat, _uart = _heartbeat_for_firmware("uplink-s3-fullsize-backend")
+    if mutation == "missing_uplink_mac":
+        heartbeat.pop("hardware_mac")
+    elif mutation == "missing_scanner_mac":
+        heartbeat["scanners"][1].pop("mac")
+    elif mutation == "missing_scanner_boot_id":
+        heartbeat["scanners"][1].pop("boot_id")
+    monkeypatch.setattr(detections, "_node_heartbeats", {"uplink_FULL": heartbeat})
+
+    with pytest.raises(HTTPException) as error:
+        nodes._require_ota_compatibility(
+            "uplink_FULL",
+            "uplink-s3-fullsize-backend",
+            _backend_image("uplink-s3-fullsize-backend"),
+        )
+
+    assert error.value.status_code == 409
+    assert "identity is incomplete" in str(error.value.detail)
+
+
+def test_fullsize_compatibility_requires_three_distinct_component_macs(
+    monkeypatch,
+):
+    heartbeat, _uart = _heartbeat_for_firmware("uplink-s3-fullsize-backend")
+    heartbeat["scanners"][1]["mac"] = heartbeat["hardware_mac"]
+    monkeypatch.setattr(detections, "_node_heartbeats", {"uplink_FULL": heartbeat})
+
+    with pytest.raises(HTTPException) as error:
+        nodes._require_ota_compatibility(
+            "uplink_FULL",
+            "uplink-s3-fullsize-backend",
+            _backend_image("uplink-s3-fullsize-backend"),
+        )
+
+    assert error.value.status_code == 409
+    assert "duplicate_component_mac" in str(error.value.detail)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["uplink_mac", "scanner_mac", "scanner_boot_id"],
+)
+def test_fullsize_compatibility_rejects_trio_identity_change_after_snapshot(
+    monkeypatch,
+    mutation: str,
+):
+    heartbeat, _uart = _heartbeat_for_firmware("uplink-s3-fullsize-backend")
+    monkeypatch.setattr(detections, "_node_heartbeats", {"uplink_FULL": heartbeat})
+    initial = nodes._ota_target_snapshot("uplink_FULL", "both")
+    if mutation == "uplink_mac":
+        heartbeat["hardware_mac"] = "AA:BB:CC:DD:EE:90"
+    elif mutation == "scanner_mac":
+        heartbeat["scanners"][1]["mac"] = "AA:BB:CC:DD:EE:91"
+    elif mutation == "scanner_boot_id":
+        heartbeat["scanners"][1]["boot_id"] = 91
+
+    with pytest.raises(HTTPException) as error:
+        nodes._require_ota_compatibility(
+            "uplink_FULL",
+            "uplink-s3-fullsize-backend",
+            _backend_image("uplink-s3-fullsize-backend"),
+            snapshot=initial,
+        )
+
+    assert error.value.status_code == 409
+    assert "identity changed" in str(error.value.detail)
 
 
 @pytest.mark.parametrize(
@@ -982,6 +1098,58 @@ async def test_direct_ota_upload_rejects_cross_family_and_invalid_backend_identi
     assert badge.status_code == 409
     assert invalid.status_code == 400
     assert legacy.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_direct_ota_rejects_fullsize_before_legacy_network_mutation(client, monkeypatch):
+    heartbeat, _uart = _heartbeat_for_firmware("uplink-s3-fullsize-backend")
+    detections._node_heartbeats["uplink_FULL"] = heartbeat
+    network = AsyncMock(side_effect=AssertionError("Fullsize must not use /api/ota"))
+    monkeypatch.setattr(nodes, "_run_subprocess", network)
+
+    response = await client.post(
+        "/nodes/uplink_FULL/ota",
+        files={
+            "firmware": (
+                "fullsize.bin",
+                _backend_image("uplink-s3-fullsize-backend"),
+                "application/octet-stream",
+            ),
+        },
+    )
+
+    assert response.status_code == 409, response.text
+    assert "backend-ota" in response.json()["detail"]
+    network.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_direct_ota_uses_compatibility_returned_snapshot(client, monkeypatch):
+    heartbeat, _uart = _heartbeat_for_firmware("uplink-s3-backend")
+    detections._node_heartbeats["uplink_LITE"] = heartbeat
+    returned = nodes._ota_target_snapshot("uplink_LITE")
+    returned["ip"] = "10.0.0.99"
+    monkeypatch.setattr(nodes, "_require_ota_compatibility", lambda *args, **kwargs: returned)
+    calls: list[str] = []
+
+    async def upload(cmd, **kwargs):
+        calls.append(next(part for part in cmd if str(part).startswith("http://")))
+        return __import__("subprocess").CompletedProcess(cmd, 0, b'{"ok":true}', b"")
+
+    monkeypatch.setattr(nodes, "_run_subprocess", upload)
+    response = await client.post(
+        "/nodes/uplink_LITE/ota",
+        files={
+            "firmware": (
+                "lite.bin",
+                _backend_image("uplink-s3-backend"),
+                "application/octet-stream",
+            ),
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert calls == ["http://10.0.0.99/api/ota"]
 
 
 @pytest.mark.asyncio
