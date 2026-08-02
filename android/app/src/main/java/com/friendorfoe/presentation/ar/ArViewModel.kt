@@ -555,6 +555,15 @@ class ArViewModel @Inject constructor(
         resetZoom()
     }
 
+    /** Clear radio-position-derived UI without disturbing camera-only zoom or capture state. */
+    fun clearPositionalArInteractions() {
+        _selectedObjectId.value = null
+        _lockedObjectId.value = null
+        _objectPeek.value = null
+        _snapTarget.value = null
+        _showUnidentifiedSheet.value = false
+    }
+
     /** Capture one in-memory CameraX frame. This method never writes to Photos. */
     fun capturePhotoDraft(label: String, onResult: (CaptureDraft?) -> Unit) {
         val capture = imageCaptureRef

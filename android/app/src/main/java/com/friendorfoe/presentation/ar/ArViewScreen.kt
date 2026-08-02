@@ -151,18 +151,22 @@ fun ArViewScreen(
 
     // Collect state from ViewModel
     val screenPositions by viewModel.screenPositions.collectAsStateWithLifecycle()
-    val displayedScreenPositions = displayedRadioPositions(screenPositions, locationPermissionState)
+    val gpsStatus by viewModel.gpsStatus.collectAsStateWithLifecycle()
+    val radioPositioningAvailable = isRadioPositioningAvailable(
+        locationPermissionState,
+        gpsStatus,
+    )
+    val displayedScreenPositions = displayedRadioPositions(
+        screenPositions,
+        locationPermissionState,
+        gpsStatus,
+    )
     val aircraftCount by viewModel.aircraftCount.collectAsStateWithLifecycle()
     val droneCount by viewModel.droneCount.collectAsStateWithLifecycle()
     val militaryCount by viewModel.militaryCount.collectAsStateWithLifecycle()
     val emergencyCount by viewModel.emergencyCount.collectAsStateWithLifecycle()
-    val gpsStatus by viewModel.gpsStatus.collectAsStateWithLifecycle()
     val arCoreStatus by viewModel.arCoreStatus.collectAsStateWithLifecycle()
     val selectedObjectId by viewModel.selectedObjectId.collectAsStateWithLifecycle()
-    val displayedSelectedObjectId = usableRadioInteractionObjectId(
-        selectedObjectId,
-        locationPermissionState,
-    )
     val detailState by detailViewModel.detailState.collectAsStateWithLifecycle()
     val nearbyCandidates by detailViewModel.nearbyCandidates.collectAsStateWithLifecycle()
     val positionTrail by detailViewModel.positionTrail.collectAsStateWithLifecycle()
@@ -192,17 +196,30 @@ fun ArViewScreen(
     val minZoomRatio by viewModel.minZoomRatio.collectAsStateWithLifecycle()
     val lockedObjectId by viewModel.lockedObjectId.collectAsStateWithLifecycle()
     val lockedScreenPosition by viewModel.lockedScreenPosition.collectAsStateWithLifecycle()
-    val displayedLockedScreenPosition = displayedRadioPositions(
-        listOfNotNull(lockedScreenPosition),
-        locationPermissionState,
-    ).firstOrNull()
-    val displayedLockedObjectId = usableRadioInteractionObjectId(
-        lockedObjectId,
-        locationPermissionState,
-    )
     val snapTarget by viewModel.snapTarget.collectAsStateWithLifecycle()
     val proximityDrones by viewModel.proximityDrones.collectAsStateWithLifecycle()
     val objectPeek by viewModel.objectPeek.collectAsStateWithLifecycle()
+    val visibleRadioInteractions = displayedRadioInteractions(
+        RadioInteractionState(
+            selectedObjectId = selectedObjectId,
+            lockedObjectId = lockedObjectId,
+            objectPeek = objectPeek,
+            snapTarget = snapTarget,
+            showUnidentifiedSheet = showUnidentifiedSheet,
+        ),
+        locationPermissionState,
+        gpsStatus,
+    )
+    val displayedSelectedObjectId = visibleRadioInteractions.selectedObjectId
+    val displayedLockedObjectId = visibleRadioInteractions.lockedObjectId
+    val displayedObjectPeek = visibleRadioInteractions.objectPeek
+    val displayedSnapTarget = visibleRadioInteractions.snapTarget
+    val displayedUnidentifiedSheet = visibleRadioInteractions.showUnidentifiedSheet
+    val displayedLockedScreenPosition = displayedRadioPositions(
+        listOfNotNull(lockedScreenPosition),
+        locationPermissionState,
+        gpsStatus,
+    ).firstOrNull()
     val captureReviewState by captureReviewViewModel.state.collectAsStateWithLifecycle()
 
     var captureInProgress by remember { mutableStateOf(false) }
@@ -269,10 +286,9 @@ fun ArViewScreen(
         displayedSelectedObjectId?.let { detailViewModel.loadDetail(it) }
     }
 
-    LaunchedEffect(locationPermissionState) {
-        if (!locationPermissionState.isUsable()) {
-            viewModel.selectObject(null)
-            viewModel.unlockObject()
+    LaunchedEffect(radioPositioningAvailable) {
+        if (!radioPositioningAvailable) {
+            viewModel.clearPositionalArInteractions()
         }
     }
 
@@ -306,16 +322,20 @@ fun ArViewScreen(
             lockedScreenPosition = displayedLockedScreenPosition,
             orientation = orientation,
             onLabelTapped = { objectId ->
-                hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
-                captureInteractions.onLabelTapped(objectId)
+                if (radioPositioningAvailable) {
+                    hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
+                    captureInteractions.onLabelTapped(objectId)
+                }
             },
             onLabelLongPressed = { objectId ->
-                hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
-                viewModel.snapToObject(objectId)
+                if (radioPositioningAvailable) {
+                    hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
+                    viewModel.snapToObject(objectId)
+                }
             },
             onVisualTapped = { detection -> viewModel.showZoom(detection) },
             onEmptySpaceTapped = {
-                if (locationPermissionState.isUsable()) viewModel.showUnidentifiedSheet()
+                if (radioPositioningAvailable) viewModel.showUnidentifiedSheet()
             },
             onReticleTapped = { viewModel.unlockObject() },
             modifier = Modifier.fillMaxSize()
@@ -474,6 +494,7 @@ fun ArViewScreen(
                             usableRadioInteractionObjectId(
                                 topDrone.id,
                                 locationPermissionState,
+                                gpsStatus,
                             )?.let(viewModel::selectObject)
                         }
                         .padding(horizontal = 16.dp, vertical = 10.dp),
@@ -599,6 +620,7 @@ fun ArViewScreen(
                             usableRadioInteractionObjectId(
                                 state.aircraft.id,
                                 locationPermissionState,
+                                gpsStatus,
                             )?.let { objectId ->
                                 viewModel.selectObject(null)
                                 viewModel.lockOnObject(objectId)
@@ -633,6 +655,7 @@ fun ArViewScreen(
                             usableRadioInteractionObjectId(
                                 state.drone.id,
                                 locationPermissionState,
+                                gpsStatus,
                             )?.let { objectId ->
                                 viewModel.selectObject(null)
                                 viewModel.lockOnObject(objectId)
@@ -678,7 +701,7 @@ fun ArViewScreen(
         )
     }
 
-    objectPeek?.let { peek ->
+    displayedObjectPeek?.let { peek ->
         ObjectPeek(
             state = peek,
             onInspect = { captureInteractions.inspectObjectPeek(peek) },
@@ -689,7 +712,7 @@ fun ArViewScreen(
     }
 
     // Bottom sheet for snap-to photo capture (tapped AR label)
-    snapTarget?.let { target ->
+    displayedSnapTarget?.let { target ->
         SnapPhotoSheet(
             target = target,
             getFrame = { viewModel.captureZoomFrame() },
@@ -722,7 +745,7 @@ fun ArViewScreen(
     }
 
     // Bottom sheet for unidentified tap (empty space)
-    if (showUnidentifiedSheet && locationPermissionState.isUsable()) {
+    if (displayedUnidentifiedSheet) {
         val unidentifiedSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = false)
 
         ModalBottomSheet(
@@ -736,6 +759,7 @@ fun ArViewScreen(
                     usableRadioInteractionObjectId(
                         droneId,
                         locationPermissionState,
+                        gpsStatus,
                     )?.let(viewModel::selectObject)
                 }
             )
@@ -849,17 +873,47 @@ internal fun selectOffScreenRadioPositions(screenPositions: List<ScreenPosition>
             ArVisualRangePolicy.includes(it.skyObject, it.distanceMeters)
     }.sortedBy { it.distanceMeters }.take(8)
 
+internal fun isRadioPositioningAvailable(
+    locationState: PermissionUiState,
+    gpsStatus: GpsStatus,
+): Boolean = locationState.isUsable() && gpsStatus == GpsStatus.LOCKED
+
 internal fun displayedRadioPositions(
     screenPositions: List<ScreenPosition>,
     locationState: PermissionUiState,
+    gpsStatus: GpsStatus,
 ): List<ScreenPosition> =
-    if (locationState.isUsable()) screenPositions else emptyList()
+    if (isRadioPositioningAvailable(locationState, gpsStatus)) screenPositions else emptyList()
 
 internal fun usableRadioInteractionObjectId(
     objectId: String?,
     locationState: PermissionUiState,
+    gpsStatus: GpsStatus,
 ): String? =
-    objectId?.takeIf { locationState.isUsable() }
+    objectId?.takeIf { isRadioPositioningAvailable(locationState, gpsStatus) }
+
+internal data class RadioInteractionState(
+    val selectedObjectId: String? = null,
+    val lockedObjectId: String? = null,
+    val objectPeek: ObjectPeekState? = null,
+    val snapTarget: SnapTarget? = null,
+    val showUnidentifiedSheet: Boolean = false,
+) {
+    companion object {
+        val Empty = RadioInteractionState()
+    }
+}
+
+internal fun displayedRadioInteractions(
+    interactions: RadioInteractionState,
+    locationState: PermissionUiState,
+    gpsStatus: GpsStatus,
+): RadioInteractionState =
+    if (isRadioPositioningAvailable(locationState, gpsStatus)) {
+        interactions
+    } else {
+        RadioInteractionState.Empty
+    }
 
 /**
  * Transparent Canvas overlay that draws floating labels at screen positions.

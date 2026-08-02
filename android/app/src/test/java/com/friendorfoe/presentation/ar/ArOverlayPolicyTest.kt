@@ -14,30 +14,105 @@ import java.time.Instant
 class ArOverlayPolicyTest {
 
     @Test
-    fun `display policy keeps radio positions when location is granted or approximate`() {
+    fun `radio positioning requires usable permission and a locked location fix`() {
+        val cases = listOf(
+            Triple(PermissionUiState.Granted, GpsStatus.LOCKED, true),
+            Triple(PermissionUiState.Approximate, GpsStatus.LOCKED, true),
+            Triple(PermissionUiState.Granted, GpsStatus.SEARCHING, false),
+            Triple(PermissionUiState.Approximate, GpsStatus.DISABLED, false),
+            Triple(PermissionUiState.Granted, GpsStatus.NO_PERMISSION, false),
+            Triple(PermissionUiState.Denied, GpsStatus.LOCKED, false),
+        )
+
+        cases.forEach { (permissionState, gpsStatus, expected) ->
+            assertEquals(
+                "$permissionState with $gpsStatus",
+                expected,
+                isRadioPositioningAvailable(permissionState, gpsStatus),
+            )
+        }
+    }
+
+    @Test
+    fun `locked fix displays radio positions for granted and approximate location`() {
         val position = offScreenPosition(aircraft("POSITION"), 1_000.0)
 
         assertEquals(
             listOf(position),
-            displayedRadioPositions(listOf(position), PermissionUiState.Granted),
+            displayedRadioPositions(
+                listOf(position),
+                PermissionUiState.Granted,
+                GpsStatus.LOCKED,
+            ),
         )
         assertEquals(
             listOf(position),
-            displayedRadioPositions(listOf(position), PermissionUiState.Approximate),
-        )
-        assertEquals(
-            emptyList<ScreenPosition>(),
-            displayedRadioPositions(listOf(position), PermissionUiState.Denied),
+            displayedRadioPositions(
+                listOf(position),
+                PermissionUiState.Approximate,
+                GpsStatus.LOCKED,
+            ),
         )
     }
 
     @Test
-    fun `denied location rejects an interaction target created after initial cleanup`() {
-        val droneId = "DRONE"
+    fun `granted location without a usable fix hides radio positions and targets`() {
+        val position = offScreenPosition(aircraft("POSITION"), 1_000.0)
 
         assertEquals(
+            emptyList<ScreenPosition>(),
+            displayedRadioPositions(
+                listOf(position),
+                PermissionUiState.Granted,
+                GpsStatus.SEARCHING,
+            ),
+        )
+        assertEquals(
             null,
-            usableRadioInteractionObjectId(droneId, PermissionUiState.Denied),
+            usableRadioInteractionObjectId(
+                position.skyObject.id,
+                PermissionUiState.Granted,
+                GpsStatus.SEARCHING,
+            ),
+        )
+    }
+
+    @Test
+    fun `losing location permission hides every retained positional interaction`() {
+        val retained = RadioInteractionState(
+            selectedObjectId = "SELECTED",
+            lockedObjectId = "LOCKED",
+            objectPeek = ObjectPeekState(
+                objectId = "PEEK",
+                title = "Peek",
+                evidence = "ADS-B radio match",
+                canCapture = true,
+            ),
+            snapTarget = SnapTarget(
+                objectId = "SNAP",
+                label = "Snap",
+                typeDescription = "Aircraft",
+                distanceMeters = 1_000.0,
+            ),
+            showUnidentifiedSheet = true,
+        )
+
+        assertEquals(
+            retained,
+            displayedRadioInteractions(
+                retained,
+                PermissionUiState.Approximate,
+                GpsStatus.LOCKED,
+            ),
+        )
+
+        assertEquals(
+            RadioInteractionState.Empty,
+            displayedRadioInteractions(
+                retained,
+                PermissionUiState.Denied,
+                GpsStatus.LOCKED,
+            ),
         )
     }
 
