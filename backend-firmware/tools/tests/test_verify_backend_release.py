@@ -6,6 +6,7 @@ from pathlib import Path
 import shutil
 import struct
 import subprocess
+import zipfile
 import zlib
 
 import pytest
@@ -14,6 +15,7 @@ import yaml
 from tools.verify_backend_release import (
     PINNED_VENDOR_BASE,
     ReleaseVerificationError,
+    _porcelain_changed_paths,
     audit_protected,
     main,
     protected_changes,
@@ -61,6 +63,64 @@ PARTS = (
     ("ota-data-initial", 0xF000),
     ("firmware", 0x20000),
 )
+
+
+def _c_field(value: str, size: int) -> bytes:
+    encoded = value.encode("ascii")
+    assert len(encoded) < size
+    return encoded + bytes(size - len(encoded))
+
+
+def _backend_app_image(target: str, spec: dict) -> bytes:
+    image_kind = 1 if spec["kind"] == "scanner" else 0
+    identity_prefix = struct.pack(
+        "<IHH40s40s40s32s",
+        0x42464F46,
+        1,
+        image_kind,
+        _c_field(target, 40),
+        _c_field(spec["project"], 40),
+        _c_field(HARDWARE, 40),
+        _c_field(VERSION, 32),
+    )
+    identity_crc32 = zlib.crc32(identity_prefix) & 0xFFFFFFFF
+    assert identity_crc32 == spec["identity_crc32"]
+    identity = identity_prefix + struct.pack("<I", identity_crc32)
+
+    segment = bytearray(768)
+    segment[0:4] = (0xABCD5432).to_bytes(4, "little")
+    segment[16:48] = _c_field(VERSION, 32)
+    segment[48:80] = _c_field(spec["project"], 32)
+    segment[256 : 256 + len(identity)] = identity
+
+    common = struct.pack("<BBBBI", 0xE9, 1, 2, 0x3F, 0)
+    extended = struct.pack(
+        "<BBBBHBHHBBBBB",
+        0xEE,
+        0,
+        0,
+        0,
+        9,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+    )
+    image = bytearray(common + extended)
+    image += struct.pack("<II", 0x3FC88000, len(segment))
+    image += segment
+    checksum = 0xEF
+    for value in segment:
+        checksum ^= value
+    while len(image) % 16 != 15:
+        image.append(0)
+    image.append(checksum)
+    image += hashlib.sha256(image).digest()
+    return bytes(image)
 
 
 def _partition_entry(
@@ -120,7 +180,7 @@ def make_valid_release(tmp_path: Path) -> tuple[Path, Path]:
             "bootloader": (b"BACKEND-BOOT\x00" * 5),
             "partition-table": _partition_table(spec["kind"]),
             "ota-data-initial": b"\xff" * 0x2000,
-            "firmware": (f"{target}:{VERSION}".encode("ascii") * 5),
+            "firmware": _backend_app_image(target, spec),
         }
         parts: list[dict] = []
         manifest_parts: list[dict] = []
@@ -250,6 +310,58 @@ def test_release_index_and_flasher_are_identical(tmp_path: Path) -> None:
     )
     tampered.write_bytes(tampered.read_bytes() + b"x")
     with pytest.raises(ReleaseVerificationError, match="digest"):
+        verify_release(index=index, flasher=flasher)
+
+
+def test_release_audit_rejects_cross_target_app_after_index_rehash(
+    tmp_path: Path,
+) -> None:
+    index, flasher = make_valid_release(tmp_path)
+    scanner = flasher / (
+        "firmware/scanner-s3-combo-backend/"
+        "scanner-s3-combo-backend-firmware.bin"
+    )
+    uplink = flasher / (
+        "firmware/uplink-s3-backend/uplink-s3-backend-firmware.bin"
+    )
+    scanner.write_bytes(uplink.read_bytes())
+    _rehash_artifact(index, flasher, "scanner-s3-combo-backend", "firmware")
+
+    with pytest.raises(ReleaseVerificationError, match="identity"):
+        verify_release(index=index, flasher=flasher)
+
+
+def test_release_audit_rejects_native_badge_app_after_index_rehash(
+    tmp_path: Path,
+) -> None:
+    index, flasher = make_valid_release(tmp_path)
+    bundle = (
+        REPO_ROOT
+        / "tools/badge_flasher/resources/badge-factory-flasher-embedded.zip"
+    )
+    with zipfile.ZipFile(bundle) as archive:
+        badge_image = archive.read("uplink/firmware.bin")
+    artifact = flasher / (
+        "firmware/uplink-s3-backend/uplink-s3-backend-firmware.bin"
+    )
+    artifact.write_bytes(badge_image)
+    _rehash_artifact(index, flasher, "uplink-s3-backend", "firmware")
+
+    with pytest.raises(ReleaseVerificationError, match="identity"):
+        verify_release(index=index, flasher=flasher)
+
+
+def test_release_audit_rejects_arbitrary_app_after_index_rehash(
+    tmp_path: Path,
+) -> None:
+    index, flasher = make_valid_release(tmp_path)
+    artifact = flasher / (
+        "firmware/uplink-s3-backend/uplink-s3-backend-firmware.bin"
+    )
+    artifact.write_bytes(b"not an ESP32-S3 backend application")
+    _rehash_artifact(index, flasher, "uplink-s3-backend", "firmware")
+
+    with pytest.raises(ReleaseVerificationError, match="identity"):
         verify_release(index=index, flasher=flasher)
 
 
@@ -445,7 +557,9 @@ def test_git_audit_catches_protected_deletion_rename_and_type_change(
     )
 
 
-def test_git_audit_checks_both_paths_of_protected_copy(tmp_path: Path) -> None:
+def test_git_audit_allows_unchanged_protected_source_copied_to_backend(
+    tmp_path: Path,
+) -> None:
     repository, _ = _new_repository(tmp_path / "repository")
     protected = repository / "esp32/scanner/main/main.c"
     protected.parent.mkdir(parents=True)
@@ -456,11 +570,101 @@ def test_git_audit_checks_both_paths_of_protected_copy(tmp_path: Path) -> None:
 
     violations = audit_protected(repository=repository, base=base)
 
+    assert violations == []
+
+
+def test_git_audit_rejects_backend_source_copied_into_protected_path(
+    tmp_path: Path,
+) -> None:
+    repository, _ = _new_repository(tmp_path / "repository")
+    backend = repository / "backend-firmware/source.c"
+    backend.write_text("backend source\n", encoding="utf-8")
+    base = _commit_all(repository, "backend source")
+    protected = repository / "esp32/scanner/main/main.c"
+    protected.parent.mkdir(parents=True)
+    shutil.copyfile(backend, protected)
+    _commit_all(repository, "copy into protected path")
+
+    violations = audit_protected(repository=repository, base=base)
+
     assert any(
         violation.status.startswith("C")
         and violation.path == "esp32/scanner/main/main.c"
         for violation in violations
     )
+
+
+def test_git_audit_rejects_modified_protected_source_even_when_copied_out(
+    tmp_path: Path,
+) -> None:
+    repository, _ = _new_repository(tmp_path / "repository")
+    protected = repository / "esp32/scanner/main/main.c"
+    protected.parent.mkdir(parents=True)
+    protected.write_text("protected source\n", encoding="utf-8")
+    base = _commit_all(repository, "protected source")
+    protected.write_text("modified protected source\n", encoding="utf-8")
+    shutil.copyfile(protected, repository / "backend-firmware/copied.c")
+    _commit_all(repository, "modify protected and copy out")
+
+    violations = audit_protected(repository=repository, base=base)
+
+    assert any(
+        violation.path == "esp32/scanner/main/main.c"
+        for violation in violations
+    )
+
+
+def test_git_audit_allows_staged_copy_from_unchanged_protected_source(
+    tmp_path: Path,
+) -> None:
+    repository, _ = _new_repository(tmp_path / "repository")
+    protected = repository / "esp32/scanner/main/main.c"
+    protected.parent.mkdir(parents=True)
+    protected.write_text("protected source\n", encoding="utf-8")
+    base = _commit_all(repository, "protected source")
+    _git(repository, "config", "status.renames", "copies")
+    shutil.copyfile(protected, repository / "backend-firmware/copied.c")
+    _git(repository, "add", "backend-firmware/copied.c")
+
+    assert audit_protected(repository=repository, base=base) == []
+
+
+def test_git_audit_rejects_staged_copy_into_protected_destination(
+    tmp_path: Path,
+) -> None:
+    repository, _ = _new_repository(tmp_path / "repository")
+    backend = repository / "backend-firmware/source.c"
+    backend.write_text("backend source\n", encoding="utf-8")
+    base = _commit_all(repository, "backend source")
+    _git(repository, "config", "status.renames", "copies")
+    protected = repository / "esp32/scanner/main/main.c"
+    protected.parent.mkdir(parents=True)
+    shutil.copyfile(backend, protected)
+    _git(repository, "add", "esp32/scanner/main/main.c")
+
+    violations = audit_protected(repository=repository, base=base)
+
+    assert any(
+        violation.path == "esp32/scanner/main/main.c"
+        for violation in violations
+    )
+
+
+def test_porcelain_copy_semantics_select_destination_before_source() -> None:
+    assert _porcelain_changed_paths(
+        "C ",
+        (
+            "backend-firmware/copied.c",
+            "esp32/scanner/main/main.c",
+        ),
+    ) == ("backend-firmware/copied.c",)
+    assert _porcelain_changed_paths(
+        " C",
+        (
+            "esp32/scanner/main/main.c",
+            "backend-firmware/source.c",
+        ),
+    ) == ("esp32/scanner/main/main.c",)
 
 
 def test_git_audit_catches_untracked_protected_file(tmp_path: Path) -> None:

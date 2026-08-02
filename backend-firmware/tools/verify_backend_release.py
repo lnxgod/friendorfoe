@@ -15,6 +15,13 @@ import sys
 from typing import Iterable, Mapping, Sequence
 import zlib
 
+try:
+    from tools.firmware_identity import FirmwareIdentityError, verify_backend_image
+except ModuleNotFoundError as exc:  # Direct ``python tools/...`` invocation.
+    if exc.name != "tools":
+        raise
+    from firmware_identity import FirmwareIdentityError, verify_backend_image
+
 
 PROTECTED_PREFIXES = (
     "esp32/",
@@ -307,6 +314,14 @@ def _porcelain_entries(raw: bytes) -> list[tuple[str, tuple[str, ...]]]:
     return entries
 
 
+def _porcelain_changed_paths(
+    status: str, paths: tuple[str, ...]
+) -> tuple[str, ...]:
+    """Return paths changed by porcelain status, whose C order is dest/source."""
+
+    return paths[:1] if "C" in status else paths
+
+
 def audit_protected(*, repository: Path, base: str) -> list[ProtectedViolation]:
     """Audit committed and untracked paths without an empty-diff fallback."""
 
@@ -330,7 +345,13 @@ def audit_protected(*, repository: Path, base: str) -> list[ProtectedViolation]:
     assert isinstance(raw_diff, bytes)
     violations: set[ProtectedViolation] = set()
     for status, paths in _diff_entries(raw_diff):
-        for path in protected_changes(paths):
+        # A rename changes/removes its source, so both paths are relevant. A
+        # copy leaves its source byte-identical; auditing the source would turn
+        # intentional backend vendoring into a false protected-path mutation.
+        # The copy destination is still checked and therefore any copy *into*
+        # a protected path fails closed.
+        changed_paths = paths[1:] if status.startswith("C") else paths
+        for path in protected_changes(changed_paths):
             violations.add(ProtectedViolation(path=path, status=status))
 
     raw_status = _run_git(
@@ -340,7 +361,7 @@ def audit_protected(*, repository: Path, base: str) -> list[ProtectedViolation]:
     )
     assert isinstance(raw_status, bytes)
     for status, paths in _porcelain_entries(raw_status):
-        for path in protected_changes(paths):
+        for path in protected_changes(_porcelain_changed_paths(status, paths)):
             violations.add(ProtectedViolation(path=path, status=status))
     return sorted(violations)
 
@@ -595,6 +616,7 @@ def _verify_target(
 
     parts: list[dict] = []
     artifact_paths: set[Path] = set()
+    firmware_binding: tuple[Path, int, str, int] | None = None
     expected_names = [f"{target}-{logical}.bin" for logical, _ in EXPECTED_PARTS]
     for position, (raw_part, expected_name) in enumerate(
         zip(raw_parts, expected_names, strict=True)
@@ -633,6 +655,8 @@ def _verify_target(
             raise ReleaseVerificationError(
                 f"artifact digest/size mismatch: {expected_name}"
             )
+        if expected_name == f"{target}-firmware.bin":
+            firmware_binding = (artifact, size, sha256, crc32)
         artifact_paths.add(artifact.resolve())
         parts.append(raw_part)
 
@@ -640,6 +664,35 @@ def _verify_target(
     table_data = (flasher / "firmware" / target / table_name).read_bytes()
     partitions = _decode_partition_table(table_data, str(spec["kind"]))
     _validate_ranges(parts, partitions, target)
+    if firmware_binding is None:
+        raise ReleaseVerificationError(f"{target} firmware artifact is missing")
+    firmware_artifact, firmware_size, firmware_sha256, firmware_crc32 = (
+        firmware_binding
+    )
+    try:
+        verified_image = verify_backend_image(
+            firmware_artifact,
+            target=target,
+            project=str(spec["project"]),
+            hardware=BACKEND_HARDWARE,
+            version=version,
+            partition_capacity=APP_CAPACITY,
+        )
+    except FirmwareIdentityError as exc:
+        raise ReleaseVerificationError(
+            f"{target} firmware identity verification failed: {exc}"
+        ) from exc
+    expected_image_kind = 1 if spec["kind"] == "scanner" else 0
+    if (
+        verified_image.image_kind != expected_image_kind
+        or verified_image.identity_crc32 != identity_crc
+        or verified_image.size != firmware_size
+        or verified_image.sha256 != firmware_sha256
+        or verified_image.crc32 != firmware_crc32
+    ):
+        raise ReleaseVerificationError(
+            f"{target} firmware identity or digest disagrees with the index"
+        )
 
     manifest_path = flasher / str(spec["manifest"])
     manifest = _load_json(manifest_path, f"{target} manifest")
