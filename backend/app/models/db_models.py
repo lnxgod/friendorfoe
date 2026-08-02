@@ -3,7 +3,8 @@
 from datetime import datetime, timezone
 
 from sqlalchemy import (
-    BigInteger, Boolean, DateTime, Float, Index, Integer, String, Text, UniqueConstraint, func,
+    BigInteger, Boolean, DateTime, Float, ForeignKey, Index, Integer, String,
+    Text, UniqueConstraint, func,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -30,6 +31,60 @@ class SensorNode(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+
+
+class NodeCommand(Base):
+    """A durable command whose active key enforces one command per node."""
+
+    __tablename__ = "node_commands"
+
+    command_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    device_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    active_key: Mapped[str | None] = mapped_column(
+        String(64), unique=True, nullable=True,
+    )
+    command_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False)
+    state: Mapped[str] = mapped_column(String(24), nullable=False, default="pending")
+    next_sequence: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    result_state: Mapped[str | None] = mapped_column(String(24), nullable=True)
+    next_service_index: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    next_characteristic_index: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0,
+    )
+    next_read_index: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    first_delivered_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )
+    last_polled_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )
+
+
+class NodeCommandResultEvent(Base):
+    """One immutable, globally sequenced result chunk for a node command."""
+
+    __tablename__ = "node_command_result_events"
+    __table_args__ = (
+        UniqueConstraint(
+            "command_id", "sequence", name="uq_node_command_result_sequence",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    command_id: Mapped[str] = mapped_column(
+        ForeignKey("node_commands.command_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    event_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
 class DroneDetection(Base):

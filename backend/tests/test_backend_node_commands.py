@@ -1,0 +1,384 @@
+import asyncio
+
+import pytest
+from pydantic import TypeAdapter
+from sqlalchemy import select
+
+from app.models.db_models import NodeCommand, NodeCommandResultEvent
+from app.models.schemas import BleInvestigationCreateRequest, NodeCommandResultRequest
+from app.services.node_commands import (
+    NodeCommandConflict,
+    NodeCommandNotFound,
+    NodeCommandService,
+)
+
+
+RESULT = TypeAdapter(NodeCommandResultRequest)
+
+
+def investigate() -> BleInvestigationCreateRequest:
+    return BleInvestigationCreateRequest(
+        target_mac="AA:BB:CC:DD:EE:FF",
+        mode="gatt",
+        timeout_ms=12000,
+    )
+
+
+@pytest.mark.asyncio
+async def test_poll_repeats_same_command_until_terminal_result(db_session):
+    service = NodeCommandService()
+    command = await service.enqueue_ble_investigation(
+        db_session, "uplink_CB77A4", investigate(), now=10.0,
+    )
+    first = await service.next_for_device(db_session, "uplink_CB77A4", now=11.0)
+    second = await service.next_for_device(db_session, "uplink_CB77A4", now=12.0)
+    assert first == second
+    assert first.command_id == command.command_id
+    begin = RESULT.validate_python({
+        "sequence": 0, "type": "ble_inv_begin", "request_id": command.command_id,
+        "mode": "gatt", "target_mac": "AA:BB:CC:DD:EE:FF",
+    })
+    terminal = RESULT.validate_python({
+        "sequence": 1, "type": "ble_inv_end", "request_id": command.command_id,
+        "state": "complete", "summary": "done", "error": None,
+        "authentication_required": False, "truncated": False,
+    })
+    await service.record_result(
+        db_session, "uplink_CB77A4", command.command_id, begin, now=12.5,
+    )
+    resumed = await service.next_for_device(
+        db_session, "uplink_CB77A4", now=12.75,
+    )
+    assert resumed.next_sequence == 1
+    assert resumed.result_state == "queued"
+    ack = await service.record_result(
+        db_session, "uplink_CB77A4", command.command_id, terminal, now=13.0,
+    )
+    assert ack.duplicate is False
+    assert ack.model_dump() == {
+        "ok": True,
+        "command_id": command.command_id,
+        "accepted_sequence": 1,
+        "next_sequence": 2,
+        "result_state": "complete",
+        "terminal": True,
+        "duplicate": False,
+    }
+    assert await service.next_for_device(db_session, "uplink_CB77A4", now=14.0) is None
+
+
+@pytest.mark.asyncio
+async def test_repeated_identical_result_is_idempotent_and_conflict_fails(db_session):
+    service = NodeCommandService()
+    command = await service.enqueue_ble_investigation(
+        db_session, "uplink_CB77A4", investigate(), now=10.0,
+    )
+    begin = RESULT.validate_python({
+        "sequence": 0, "type": "ble_inv_begin", "request_id": command.command_id,
+        "mode": "gatt", "target_mac": "AA:BB:CC:DD:EE:FF",
+    })
+    terminal = RESULT.validate_python({
+        "sequence": 1, "type": "ble_inv_end", "request_id": command.command_id,
+        "state": "failed", "summary": "", "error": "authentication_required",
+        "authentication_required": True, "truncated": False,
+    })
+    await service.record_result(
+        db_session, "uplink_CB77A4", command.command_id, begin, now=10.5,
+    )
+    ack = await service.record_result(
+        db_session, "uplink_CB77A4", command.command_id, terminal, now=11.0,
+    )
+    assert ack.duplicate is False
+    duplicate_ack = await service.record_result(
+        db_session, "uplink_CB77A4", command.command_id, terminal, now=12.0,
+    )
+    assert duplicate_ack.duplicate is True
+    with pytest.raises(NodeCommandConflict):
+        await service.record_result(
+            db_session, "uplink_CB77A4", command.command_id,
+            RESULT.validate_python({
+                "sequence": 1, "type": "ble_inv_end",
+                "request_id": command.command_id, "state": "complete",
+                "summary": "different", "error": None,
+                "authentication_required": False, "truncated": False,
+            }),
+            now=13.0,
+        )
+
+
+def test_gatt_requires_target_and_passive_forbids_target():
+    assert BleInvestigationCreateRequest(
+        mode="passive_capture", target_mac=None,
+    ).target_mac is None
+    assert BleInvestigationCreateRequest(
+        mode="gatt", target_mac="aa:bb:cc:dd:ee:ff",
+    ).target_mac == "AA:BB:CC:DD:EE:FF"
+    with pytest.raises(ValueError):
+        BleInvestigationCreateRequest(mode="gatt", target_mac=None)
+    with pytest.raises(ValueError):
+        BleInvestigationCreateRequest(
+            mode="passive_capture", target_mac="AA:BB:CC:DD:EE:FF",
+        )
+    with pytest.raises(ValueError):
+        RESULT.validate_python({
+            "sequence": 0, "type": "ble_inv_begin", "request_id": "a" * 32,
+            "mode": "passive_capture", "target_mac": "AA:BB:CC:DD:EE:FF",
+        })
+    with pytest.raises(ValueError):
+        RESULT.validate_python({
+            "sequence": 1, "type": "ble_inv_char", "request_id": "a" * 32,
+            "index": 0, "service_uuid": "180f", "uuid": "2a19",
+            "properties": ["read", "read"],
+        })
+
+
+@pytest.mark.parametrize("payload", [
+    {"sequence": 0, "type": "ble_inv_begin", "request_id": "a" * 32,
+     "mode": "passive_capture", "target_mac": None},
+    {"sequence": 1, "type": "ble_inv_progress", "request_id": "a" * 32,
+     "state": "scanning"},
+    {"sequence": 2, "type": "ble_inv_service", "request_id": "a" * 32,
+     "index": 0, "uuid": "180f"},
+    {"sequence": 3, "type": "ble_inv_char", "request_id": "a" * 32,
+     "index": 0, "service_uuid": "180f", "uuid": "2a19",
+     "properties": ["read", "write_without_response"]},
+    {"sequence": 4, "type": "ble_inv_read", "request_id": "a" * 32,
+     "index": 0, "uuid": "2a19", "value_hex": "64"},
+    {"sequence": 5, "type": "ble_inv_end", "request_id": "a" * 32,
+     "state": "complete", "summary": "done", "error": None,
+     "authentication_required": False, "truncated": False},
+])
+def test_each_c_wire_chunk_shape_validates_without_field_translation(payload):
+    assert RESULT.validate_python(payload).type == payload["type"]
+
+
+@pytest.mark.asyncio
+async def test_transition_rejects_terminal_first_index_skip_and_state_regression(db_session):
+    service = NodeCommandService()
+    command = await service.enqueue_ble_investigation(
+        db_session, "uplink_CB77A4", investigate(), now=10.0,
+    )
+    with pytest.raises(NodeCommandConflict, match="begin"):
+        await service.record_result(
+            db_session, "uplink_CB77A4", command.command_id,
+            RESULT.validate_python({
+                "sequence": 0, "type": "ble_inv_end",
+                "request_id": command.command_id, "state": "failed",
+                "summary": "", "error": "no begin",
+                "authentication_required": False, "truncated": False,
+            }), now=11.0,
+        )
+    await service.record_result(
+        db_session, "uplink_CB77A4", command.command_id,
+        RESULT.validate_python({
+            "sequence": 0, "type": "ble_inv_begin",
+            "request_id": command.command_id, "mode": "gatt",
+            "target_mac": "AA:BB:CC:DD:EE:FF",
+        }), now=12.0,
+    )
+    with pytest.raises(NodeCommandConflict, match="service index"):
+        await service.record_result(
+            db_session, "uplink_CB77A4", command.command_id,
+            RESULT.validate_python({
+                "sequence": 1, "type": "ble_inv_service",
+                "request_id": command.command_id, "index": 1, "uuid": "180f",
+            }), now=13.0,
+        )
+    await service.record_result(
+        db_session, "uplink_CB77A4", command.command_id,
+        RESULT.validate_python({
+            "sequence": 1, "type": "ble_inv_progress",
+            "request_id": command.command_id, "state": "discovering",
+        }), now=14.0,
+    )
+    with pytest.raises(NodeCommandConflict, match="state regression"):
+        await service.record_result(
+            db_session, "uplink_CB77A4", command.command_id,
+            RESULT.validate_python({
+                "sequence": 2, "type": "ble_inv_progress",
+                "request_id": command.command_id, "state": "scanning",
+            }), now=15.0,
+        )
+
+
+@pytest.mark.asyncio
+async def test_cancel_history_and_single_active_command_survive_new_service_instance(db_session):
+    service = NodeCommandService()
+    command = await service.enqueue_ble_investigation(
+        db_session, "uplink_CB77A4", investigate(), now=10.0,
+    )
+    with pytest.raises(NodeCommandConflict, match="active command"):
+        await service.enqueue_ble_investigation(
+            db_session, "uplink_CB77A4", investigate(), now=10.5,
+        )
+
+    restarted = NodeCommandService()
+    cancel = await restarted.request_cancel(
+        db_session, "uplink_CB77A4", command.command_id, now=11.0,
+    )
+    assert cancel.model_dump() == {
+        "command_id": command.command_id,
+        "type": "ble_investigate_cancel",
+        "request_id": command.command_id,
+        "mode": "gatt",
+        "target": "AA:BB:CC:DD:EE:FF",
+        "timeout_ms": 12000,
+        "next_sequence": 0,
+        "result_state": None,
+    }
+    assert await restarted.next_for_device(
+        db_session, "uplink_CB77A4", now=11.5,
+    ) == cancel
+    pending_history = await restarted.history_for_device(
+        db_session, "uplink_CB77A4", command.command_id,
+    )
+    assert pending_history.state == "cancel_pending"
+    assert pending_history.events == []
+    with pytest.raises(NodeCommandNotFound):
+        await restarted.history_for_device(
+            db_session, "different-node", command.command_id,
+        )
+
+    await restarted.record_result(
+        db_session, "uplink_CB77A4", command.command_id,
+        RESULT.validate_python({
+            "sequence": 0, "type": "ble_inv_begin",
+            "request_id": command.command_id, "mode": "gatt",
+            "target_mac": "AA:BB:CC:DD:EE:FF",
+        }), now=12.0,
+    )
+    await restarted.record_result(
+        db_session, "uplink_CB77A4", command.command_id,
+        RESULT.validate_python({
+            "sequence": 1, "type": "ble_inv_end",
+            "request_id": command.command_id, "state": "cancelled",
+            "summary": "cancelled", "error": None,
+            "authentication_required": False, "truncated": False,
+        }), now=13.0,
+    )
+    history = await restarted.history_for_device(
+        db_session, "uplink_CB77A4", command.command_id,
+    )
+    assert history.state == "terminal"
+    assert history.terminal is True
+    assert [event.sequence for event in history.events] == [0, 1]
+    replacement = await restarted.enqueue_ble_investigation(
+        db_session, "uplink_CB77A4", investigate(), now=14.0,
+    )
+    assert replacement.command_id != command.command_id
+
+
+@pytest.mark.asyncio
+async def test_concurrent_identical_result_is_one_insert_plus_duplicate(
+    backend_sensor_session_factory,
+):
+    service = NodeCommandService()
+    async with backend_sensor_session_factory() as setup:
+        command = await service.enqueue_ble_investigation(
+            setup, "uplink_CB77A4", investigate(), now=10.0,
+        )
+    begin = RESULT.validate_python({
+        "sequence": 0, "type": "ble_inv_begin",
+        "request_id": command.command_id, "mode": "gatt",
+        "target_mac": "AA:BB:CC:DD:EE:FF",
+    })
+
+    ready = 0
+    ready_lock = asyncio.Lock()
+    both_ready = asyncio.Event()
+    release = asyncio.Event()
+
+    async def submit():
+        nonlocal ready
+        async with backend_sensor_session_factory() as session:
+            async with ready_lock:
+                ready += 1
+                if ready == 2:
+                    both_ready.set()
+            await release.wait()
+            return await service.record_result(
+                session, "uplink_CB77A4", command.command_id, begin, now=11.0,
+            )
+
+    first = asyncio.create_task(submit())
+    second = asyncio.create_task(submit())
+    await both_ready.wait()
+    release.set()
+    a, b = await asyncio.gather(first, second)
+    assert sorted([a.duplicate, b.duplicate]) == [False, True]
+    async with backend_sensor_session_factory() as verification:
+        events = list((await verification.scalars(
+            select(NodeCommandResultEvent).where(
+                NodeCommandResultEvent.command_id == command.command_id,
+            )
+        )).all())
+        stored = await verification.get(NodeCommand, command.command_id)
+    assert len(events) == 1
+    assert stored.next_sequence == 1
+
+
+@pytest.mark.asyncio
+async def test_concurrent_different_result_bodies_are_one_ack_one_conflict(
+    backend_sensor_session_factory,
+):
+    service = NodeCommandService()
+    async with backend_sensor_session_factory() as setup:
+        command = await service.enqueue_ble_investigation(
+            setup, "uplink_CB77A4", investigate(), now=20.0,
+        )
+        begin = RESULT.validate_python({
+            "sequence": 0, "type": "ble_inv_begin",
+            "request_id": command.command_id, "mode": "gatt",
+            "target_mac": "AA:BB:CC:DD:EE:FF",
+        })
+        await service.record_result(
+            setup, "uplink_CB77A4", command.command_id, begin, now=21.0,
+        )
+
+    progress = [
+        RESULT.validate_python({
+            "sequence": 1, "type": "ble_inv_progress",
+            "request_id": command.command_id, "state": state,
+        })
+        for state in ("scanning", "connecting")
+    ]
+    ready = 0
+    ready_lock = asyncio.Lock()
+    both_ready = asyncio.Event()
+    release = asyncio.Event()
+
+    async def submit(body):
+        nonlocal ready
+        async with backend_sensor_session_factory() as session:
+            async with ready_lock:
+                ready += 1
+                if ready == 2:
+                    both_ready.set()
+            await release.wait()
+            return await service.record_result(
+                session, "uplink_CB77A4", command.command_id, body, now=22.0,
+            )
+
+    tasks = [asyncio.create_task(submit(body)) for body in progress]
+    await both_ready.wait()
+    release.set()
+    outcomes = await asyncio.gather(*tasks, return_exceptions=True)
+    acks = [item for item in outcomes if not isinstance(item, BaseException)]
+    conflicts = [item for item in outcomes if isinstance(item, NodeCommandConflict)]
+    assert len(acks) == 1
+    assert acks[0].accepted_sequence == 1
+    assert acks[0].duplicate is False
+    assert len(conflicts) == 1
+    assert str(conflicts[0]) == "sequence body differs"
+
+    async with backend_sensor_session_factory() as verification:
+        sequence_one = list((await verification.scalars(
+            select(NodeCommandResultEvent).where(
+                NodeCommandResultEvent.command_id == command.command_id,
+                NodeCommandResultEvent.sequence == 1,
+            )
+        )).all())
+        stored = await verification.get(NodeCommand, command.command_id)
+    assert len(sequence_one) == 1
+    assert stored.next_sequence == 2
+    assert stored.result_state in {"scanning", "connecting"}

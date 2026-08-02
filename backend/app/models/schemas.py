@@ -4,7 +4,14 @@ import math
 import re
 from typing import Annotated, Any, Literal
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_validator,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -652,6 +659,170 @@ class SensorsResponse(BaseModel):
 
     count: int = Field(..., description="Number of active sensors")
     sensors: list[SensorItem] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# Persistent BLE investigation commands
+# ---------------------------------------------------------------------------
+
+class BleInvestigationCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    target_mac: str | None = Field(
+        None, pattern=r"^[0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5}$",
+    )
+    mode: Literal["gatt", "passive_capture"] = "gatt"
+    timeout_ms: int = Field(12000, ge=1, le=12000)
+
+    @model_validator(mode="after")
+    def target_matches_mode(self):
+        if self.mode == "gatt" and self.target_mac is None:
+            raise ValueError("gatt requires target_mac")
+        if self.mode == "passive_capture" and self.target_mac is not None:
+            raise ValueError("passive_capture forbids target_mac")
+        if self.target_mac is not None:
+            self.target_mac = self.target_mac.upper()
+        return self
+
+
+class BleInvEventBase(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    sequence: int = Field(ge=0)
+    request_id: str = Field(pattern=r"^[0-9a-f]{32}$")
+
+
+class BleInvBeginEvent(BleInvEventBase):
+    type: Literal["ble_inv_begin"]
+    mode: Literal["gatt", "passive_capture"]
+    target_mac: str | None = Field(
+        None, pattern=r"^[0-9A-F]{2}(?::[0-9A-F]{2}){5}$",
+    )
+
+    @model_validator(mode="after")
+    def target_matches_mode(self):
+        if self.mode == "gatt" and self.target_mac is None:
+            raise ValueError("gatt requires target_mac")
+        if self.mode == "passive_capture" and self.target_mac is not None:
+            raise ValueError("passive_capture forbids target_mac")
+        return self
+
+
+class BleInvProgressEvent(BleInvEventBase):
+    type: Literal["ble_inv_progress"]
+    state: Literal["queued", "scanning", "connecting", "discovering", "reading"]
+
+
+BLE_UUID_PATTERN = (
+    r"^(?i:[0-9a-f]{4}|[0-9a-f]{8}|"
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$"
+)
+
+
+class BleInvServiceEvent(BleInvEventBase):
+    type: Literal["ble_inv_service"]
+    index: int = Field(ge=0, lt=16)
+    uuid: str = Field(pattern=BLE_UUID_PATTERN, max_length=36)
+
+
+class BleInvCharacteristicEvent(BleInvEventBase):
+    type: Literal["ble_inv_char"]
+    index: int = Field(ge=0, lt=32)
+    service_uuid: str = Field(pattern=BLE_UUID_PATTERN, max_length=36)
+    uuid: str = Field(pattern=BLE_UUID_PATTERN, max_length=36)
+    properties: list[Literal[
+        "broadcast", "read", "write_without_response", "write", "notify",
+        "indicate", "authenticated_signed_writes", "extended_properties",
+    ]] = Field(default_factory=list, max_length=8)
+
+    @model_validator(mode="after")
+    def properties_are_unique(self):
+        if len(self.properties) != len(set(self.properties)):
+            raise ValueError("characteristic properties must be unique")
+        return self
+
+
+class BleInvReadEvent(BleInvEventBase):
+    type: Literal["ble_inv_read"]
+    index: int = Field(ge=0, lt=8)
+    uuid: str = Field(pattern=BLE_UUID_PATTERN, max_length=36)
+    value_hex: str = Field(max_length=128, pattern=r"^(?:[0-9A-Fa-f]{2})*$")
+
+
+class BleInvEndEvent(BleInvEventBase):
+    type: Literal["ble_inv_end"]
+    state: Literal["complete", "failed", "cancelled"]
+    summary: str = Field(max_length=127)
+    error: str | None = Field(None, max_length=63)
+    authentication_required: bool
+    truncated: bool
+
+
+NodeCommandResultRequest = Annotated[
+    BleInvBeginEvent | BleInvProgressEvent | BleInvServiceEvent |
+    BleInvCharacteristicEvent | BleInvReadEvent | BleInvEndEvent,
+    Field(discriminator="type"),
+]
+
+
+class BleInvestigateCommandEnvelope(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    command_id: str = Field(pattern=r"^[0-9a-f]{32}$")
+    type: Literal["ble_investigate"]
+    request_id: str = Field(pattern=r"^[0-9a-f]{32}$")
+    mode: Literal["gatt", "passive_capture"]
+    target: str | None
+    timeout_ms: int = Field(ge=1, le=12000)
+    next_sequence: int = Field(ge=0)
+    result_state: str | None
+
+
+class BleInvestigateCancelEnvelope(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    command_id: str = Field(pattern=r"^[0-9a-f]{32}$")
+    type: Literal["ble_investigate_cancel"]
+    request_id: str = Field(pattern=r"^[0-9a-f]{32}$")
+    mode: Literal["gatt", "passive_capture"]
+    target: str | None
+    timeout_ms: int = Field(ge=1, le=12000)
+    next_sequence: int = Field(ge=0)
+    result_state: str | None
+
+
+NodeCommandEnvelope = Annotated[
+    BleInvestigateCommandEnvelope | BleInvestigateCancelEnvelope,
+    Field(discriminator="type"),
+]
+
+
+class NodeCommandResultAck(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    ok: Literal[True] = True
+    command_id: str = Field(pattern=r"^[0-9a-f]{32}$")
+    accepted_sequence: int = Field(ge=0)
+    next_sequence: int = Field(ge=1)
+    result_state: Literal[
+        "queued", "scanning", "connecting", "discovering", "reading",
+        "complete", "failed", "cancelled",
+    ]
+    terminal: bool
+    duplicate: bool
+
+
+class NodeCommandHistoryResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    command_id: str = Field(pattern=r"^[0-9a-f]{32}$")
+    device_id: str
+    command_type: Literal["ble_investigate"]
+    state: Literal["pending", "delivered", "cancel_pending", "terminal"]
+    next_sequence: int = Field(ge=0)
+    result_state: str | None
+    terminal: bool
+    events: list[NodeCommandResultRequest]
 
 
 # ---------------------------------------------------------------------------
