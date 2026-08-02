@@ -118,6 +118,7 @@ internal suspend fun collectArBackend(
 }
 
 private const val MAX_AR_LAST_KNOWN_LOCATION_AGE_NANOS = 30_000_000_000L
+private val AR_POSITION_UNAVAILABLE = Position(0.0, 0.0, 0.0)
 
 internal data class ArLocationFix(
     val position: Position,
@@ -134,6 +135,9 @@ internal fun selectFreshestArLastKnownLocationFix(
         candidate.isUsableArLastKnownLocation(nowElapsedRealtimeNanos)
     }
     .maxByOrNull(ArLocationFix::elapsedRealtimeNanos)
+
+internal fun arPositionForLastKnownLocationSeed(lastKnown: ArLocationFix?): Position =
+    lastKnown?.position ?: AR_POSITION_UNAVAILABLE
 
 private fun ArLocationFix.isUsableArLastKnownLocation(
     nowElapsedRealtimeNanos: Long,
@@ -1123,9 +1127,9 @@ class ArViewModel @Inject constructor(
                     network = networkLastKnown?.toArLocationFix(),
                     nowElapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos(),
                 )
+                _userPosition.value = arPositionForLastKnownLocationSeed(lastKnown)
 
                 if (lastKnown != null) {
-                    _userPosition.value = lastKnown.position
                     _gpsStatus.value = GpsStatus.LOCKED
                     Log.d(
                         TAG,

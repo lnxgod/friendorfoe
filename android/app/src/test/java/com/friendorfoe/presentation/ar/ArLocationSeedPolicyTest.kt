@@ -7,6 +7,22 @@ import org.junit.Test
 class ArLocationSeedPolicyTest {
 
     @Test
+    fun `resume without a usable seed clears a prior valid AR position`() {
+        val firstStartPosition = arPositionForLastKnownLocationSeed(
+            ArLocationFix(
+                position = Position(36.1699, -115.1398, 620.0),
+                accuracyMeters = 35f,
+                elapsedRealtimeNanos = 115_000_000_000L,
+            ),
+        )
+
+        val resumedPosition = arPositionForLastKnownLocationSeed(null)
+
+        assertEquals(Position(36.1699, -115.1398, 620.0), firstStartPosition)
+        assertEquals(Position(0.0, 0.0, 0.0), resumedPosition)
+    }
+
+    @Test
     fun `stale GPS does not hide a fresh network location`() {
         val freshNetwork = Position(36.1699, -115.1398, 620.0)
 
