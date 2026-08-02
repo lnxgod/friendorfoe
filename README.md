@@ -23,8 +23,8 @@ part of a multi-node sensor platform.
 > `0.64.76-badge-defcon34`. A local provisional canary source identity,
 > `0.64.87-badge-defcon34`, is limited to the connected three-board canary;
 > it is not a production-readiness or public-release version. The published
-> release adds the themed four-lane instrument UI, custom USB palettes, DEF
-> CON 34 Easter egg, quiet/off mode, and automatic integrity-checked scanner
+> release adds the themed four-lane instrument UI, custom USB palettes,
+> quiet/off mode, and automatic integrity-checked scanner
 > updates from the USB-connected uplink. The local canary replaces that
 > physical quiet/off shortcut with a ten-second dual-button software reset.
 > The badge and production sensor fleet intentionally move on separate

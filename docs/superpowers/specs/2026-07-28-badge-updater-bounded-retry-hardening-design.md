@@ -21,8 +21,7 @@ has already converged.
 
 ## Non-goals
 
-- No CON CRUD game changes.
-- No badge UI, detector, theme, or Easter egg changes.
+- No badge UI, detector, or theme changes.
 - No Android app changes or Android-driven firmware mutation.
 - No scanner or uplink firmware state-machine changes.
 - No public push, tag, release, merge, or factory-bundle update.
@@ -203,7 +202,7 @@ Use the connected three-badge setup to prove:
 3. Only the failed lane is retried.
 4. The other scanner continues to retain its verified target.
 5. Uplink and scanner MAC/role continuity, rollback clearance, radio health,
-   USB controls, and persisted CON CRUD role all survive.
+   USB controls, and persisted configuration all survive.
 6. Final status is healthy on all nine boards.
 
 Only after those gates and the separate attended game/Android acceptance are

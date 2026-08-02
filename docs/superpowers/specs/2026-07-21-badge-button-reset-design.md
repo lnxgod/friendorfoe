@@ -27,7 +27,7 @@ seconds reboots the uplink badge.
 - Keep the quiet-mode runtime and USB command surface intact; Android/USB
   control remains compatible.
 - Do not change scanner firmware behavior, radio scanning, OTA/UART updating,
-  themes, Easter eggs, or factory bundles as part of this change.
+  themes, or factory bundles as part of this change.
 
 ## Validation
 
