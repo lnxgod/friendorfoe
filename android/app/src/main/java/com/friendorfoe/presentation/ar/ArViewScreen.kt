@@ -63,6 +63,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -998,6 +999,13 @@ internal fun ArOverlay(
     var labelRects by remember { mutableStateOf<List<LabelHitTarget>>(emptyList()) }
     // Keep detection references for visual tap targets
     var visualHitDetections by remember { mutableStateOf<Map<String, VisualDetection>>(emptyMap()) }
+    val currentLockedObjectId by rememberUpdatedState(lockedObjectId)
+    val currentLockedScreenPosition by rememberUpdatedState(lockedScreenPosition)
+    val currentOnLabelTapped by rememberUpdatedState(onLabelTapped)
+    val currentOnLabelLongPressed by rememberUpdatedState(onLabelLongPressed)
+    val currentOnVisualTapped by rememberUpdatedState(onVisualTapped)
+    val currentOnEmptySpaceTapped by rememberUpdatedState(onEmptySpaceTapped)
+    val currentOnReticleTapped by rememberUpdatedState(onReticleTapped)
 
     Canvas(
         modifier = modifier
@@ -1005,14 +1013,15 @@ internal fun ArOverlay(
                 detectTapGestures(
                     onTap = { offset ->
                         // Check if tap hit the reticle (locked object in view) → unlock
-                        if (lockedObjectId != null && lockedScreenPosition?.isInView == true) {
-                            val reticleX = lockedScreenPosition.screenX * size.width
-                            val reticleY = lockedScreenPosition.screenY * size.height
+                        val activeLockedPosition = currentLockedScreenPosition
+                        if (currentLockedObjectId != null && activeLockedPosition?.isInView == true) {
+                            val reticleX = activeLockedPosition.screenX * size.width
+                            val reticleY = activeLockedPosition.screenY * size.height
                             val reticleRadius = 60f
                             val dx = offset.x - reticleX
                             val dy = offset.y - reticleY
                             if (dx * dx + dy * dy <= reticleRadius * reticleRadius) {
-                                onReticleTapped()
+                                currentOnReticleTapped()
                                 return@detectTapGestures
                             }
                         }
@@ -1023,12 +1032,12 @@ internal fun ArOverlay(
                                 if (target.objectId.startsWith("visual_")) {
                                     val detection = visualHitDetections[target.objectId]
                                     if (detection != null) {
-                                        onVisualTapped(detection)
+                                        currentOnVisualTapped(detection)
                                     } else {
-                                        onEmptySpaceTapped()
+                                        currentOnEmptySpaceTapped()
                                     }
                                 } else {
-                                    onLabelTapped(target.objectId)
+                                    currentOnLabelTapped(target.objectId)
                                 }
                                 handled = true
                                 return@detectTapGestures
@@ -1052,23 +1061,23 @@ internal fun ArOverlay(
                                 if (dist < 120f) {
                                     if (nearest.objectId.startsWith("visual_")) {
                                         val detection = visualHitDetections[nearest.objectId]
-                                        if (detection != null) onVisualTapped(detection)
-                                        else onEmptySpaceTapped()
+                                        if (detection != null) currentOnVisualTapped(detection)
+                                        else currentOnEmptySpaceTapped()
                                     } else {
-                                        onLabelTapped(nearest.objectId)
+                                        currentOnLabelTapped(nearest.objectId)
                                     }
                                     return@detectTapGestures
                                 }
                             }
                         }
                         // Nothing nearby — user tapped empty space
-                        onEmptySpaceTapped()
+                        currentOnEmptySpaceTapped()
                     },
                     onLongPress = { offset ->
                         // Long-press on a label → lock-on
                         labelRects.forEach { target ->
                             if (target.rect.contains(offset) && !target.objectId.startsWith("visual_")) {
-                                onLabelLongPressed(target.objectId)
+                                currentOnLabelLongPressed(target.objectId)
                                 return@detectTapGestures
                             }
                         }
