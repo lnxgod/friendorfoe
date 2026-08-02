@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from base64 import b64decode, urlsafe_b64encode
 from collections.abc import Iterator, Mapping
 import csv
 from html import escape
@@ -12,9 +13,10 @@ import json
 from math import isfinite
 from pathlib import Path
 import secrets
+import sys
 import threading
 from typing import Protocol
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import SplitResult, parse_qs, urlsplit
 
 from .controls import ControlValidationError
 from .models import ControlReply
@@ -139,7 +141,9 @@ class NewDashHTTPServer(ThreadingHTTPServer):
     def handle_error(
         self, request: object, client_address: tuple[str, int]
     ) -> None:
-        """Close failed requests without printing tracebacks or request data."""
+        """Report escaped failures without traceback, request, or payload data."""
+
+        print("New Dash HTTP request failed unexpectedly.", file=sys.stderr)
 
 
 def create_http_server(
@@ -178,7 +182,9 @@ class _NewDashRequestHandler(BaseHTTPRequestHandler):
         if not self._valid_host():
             self._send_error(400, "invalid_host", "Invalid Host header.")
             return
-        split = urlsplit(self.path)
+        split = self._split_request_target()
+        if split is None:
+            return
         path = split.path
         if path == "/api/state":
             try:
@@ -208,7 +214,9 @@ class _NewDashRequestHandler(BaseHTTPRequestHandler):
         if not self._valid_host():
             self._send_error(400, "invalid_host", "Invalid Host header.")
             return
-        split = urlsplit(self.path)
+        split = self._split_request_target()
+        if split is None:
+            return
         path = split.path
         if path not in _POST_ROUTES:
             self._send_error(404, "not_found", "Route not found.")
@@ -235,6 +243,9 @@ class _NewDashRequestHandler(BaseHTTPRequestHandler):
     def do_OPTIONS(self) -> None:
         self._reject_method()
 
+    def do_HEAD(self) -> None:
+        self._reject_method()
+
     def do_PUT(self) -> None:
         self._reject_method()
 
@@ -256,6 +267,34 @@ class _NewDashRequestHandler(BaseHTTPRequestHandler):
             self._send_error(400, "invalid_host", "Invalid Host header.")
             return
         self._send_error(405, "method_not_allowed", "Method not allowed.")
+
+    def send_error(
+        self,
+        code: int,
+        message: str | None = None,
+        explain: str | None = None,
+    ) -> None:
+        """Replace inherited HTML parser/method errors with safe JSON."""
+
+        self.close_connection = True
+        if code == 501:
+            if not self._valid_host():
+                self._send_error(400, "invalid_host", "Invalid Host header.")
+                return
+            self._send_error(405, "method_not_allowed", "Method not allowed.")
+            return
+        if 400 <= code < 500:
+            self._send_error(code, "invalid_request", "Invalid HTTP request.")
+            return
+        self._send_error(500, "internal_error", "The request could not be completed.")
+
+    def _split_request_target(self) -> SplitResult | None:
+        try:
+            return urlsplit(self.path)
+        except ValueError:
+            self.close_connection = True
+            self._send_error(400, "invalid_request", "Invalid request target.")
+            return None
 
     def _valid_host(self) -> bool:
         return self.headers.get_all("Host", []) == [
@@ -372,7 +411,7 @@ class _NewDashRequestHandler(BaseHTTPRequestHandler):
                 "items": [_json_item(item) for item in page.items],
                 "next_cursor": page.next_cursor,
             }
-        except ValueError:
+        except _QueryValidationError:
             self._send_error(400, "invalid_request", "Invalid history query.")
             return
         except Exception:
@@ -385,38 +424,35 @@ class _NewDashRequestHandler(BaseHTTPRequestHandler):
             query = _parse_history_query(query_string, export=True)
             iterator = iter(self.server.application.export_history(query))
             first = next(iterator, _MISSING)
-            if first is not _MISSING:
-                _json_item(first)
-        except ValueError:
+            if first is _MISSING:
+                prepared_first = _MISSING
+            elif format == "csv":
+                prepared_first = _encode_csv_item(first)
+            else:
+                prepared_first = _encode_json_item(first)
+        except _QueryValidationError:
             self._send_error(400, "invalid_request", "Invalid history query.")
             return
         except Exception:
             self._send_error(500, "internal_error", "The request could not be completed.")
             return
         if format == "csv":
-            self._stream_csv(iterator, first)
+            self._stream_csv(iterator, prepared_first)
         else:
-            self._stream_json(iterator, first)
+            self._stream_json(iterator, prepared_first)
 
     def _stream_csv(self, iterator: Iterator[object], first: object) -> None:
         self._start_stream(
             "text/csv; charset=utf-8", 'attachment; filename="new-dash-history.csv"'
         )
-        stream = io.StringIO(newline="")
-        writer = csv.DictWriter(stream, fieldnames=_CSV_FIELDS, extrasaction="ignore")
         try:
-            writer.writeheader()
-            self._write_stream_text(stream)
-            for item in _include_first(iterator, first):
-                row = dict(_json_item(item))
-                row["extras"] = json.dumps(
-                    row.get("extras", {}),
-                    separators=(",", ":"),
-                    ensure_ascii=False,
-                    allow_nan=False,
-                )
-                writer.writerow(row)
-                self._write_stream_text(stream)
+            self.wfile.write(_encode_csv_header())
+            if first is not _MISSING:
+                self.wfile.write(first)
+            self.wfile.flush()
+            for item in iterator:
+                self.wfile.write(_encode_csv_item(item))
+                self.wfile.flush()
         except Exception:
             self.close_connection = True
 
@@ -428,14 +464,12 @@ class _NewDashRequestHandler(BaseHTTPRequestHandler):
         try:
             self.wfile.write(b"[")
             separator = b""
-            for item in _include_first(iterator, first):
-                encoded = json.dumps(
-                    _json_item(item),
-                    separators=(",", ":"),
-                    ensure_ascii=False,
-                    allow_nan=False,
-                ).encode("utf-8")
-                self.wfile.write(separator + encoded)
+            if first is not _MISSING:
+                self.wfile.write(first)
+                separator = b","
+            self.wfile.flush()
+            for item in iterator:
+                self.wfile.write(separator + _encode_json_item(item))
                 self.wfile.flush()
                 separator = b","
             self.wfile.write(b"]")
@@ -451,12 +485,6 @@ class _NewDashRequestHandler(BaseHTTPRequestHandler):
         self._send_common_headers()
         self.end_headers()
         self.close_connection = True
-
-    def _write_stream_text(self, stream: io.StringIO) -> None:
-        self.wfile.write(stream.getvalue().encode("utf-8"))
-        self.wfile.flush()
-        stream.seek(0)
-        stream.truncate(0)
 
     def _send_static(self, filename: str, content_type: str) -> None:
         path = (_STATIC_ROOT / filename).resolve()
@@ -502,7 +530,8 @@ class _NewDashRequestHandler(BaseHTTPRequestHandler):
         self._send_common_headers()
         self.end_headers()
         try:
-            self.wfile.write(body)
+            if self.command != "HEAD":
+                self.wfile.write(body)
         except (BrokenPipeError, ConnectionResetError):
             pass
 
@@ -514,6 +543,15 @@ class _NewDashRequestHandler(BaseHTTPRequestHandler):
 
 
 def _parse_history_query(query_string: str, *, export: bool) -> HistoryQuery:
+    try:
+        return _build_history_query(query_string, export=export)
+    except _QueryValidationError:
+        raise
+    except (OverflowError, UnicodeError, ValueError) as error:
+        raise _QueryValidationError("invalid history query") from error
+
+
+def _build_history_query(query_string: str, *, export: bool) -> HistoryQuery:
     if len(query_string.encode("utf-8")) > _MAX_QUERY_STRING_BYTES:
         raise ValueError("history query is too long")
     _validate_percent_encoding(query_string)
@@ -557,6 +595,7 @@ def _parse_history_query(query_string: str, *, export: bool) -> HistoryQuery:
     if cursor is not None:
         if not cursor or len(cursor) > _MAX_CURSOR or not cursor.isascii():
             raise ValueError("invalid history cursor")
+        _validate_cursor(cursor)
 
     limit_value = value("limit")
     if limit_value is None:
@@ -607,6 +646,31 @@ def _validate_percent_encoding(query_string: str) -> None:
         index += 3
 
 
+def _validate_cursor(cursor: str) -> None:
+    if len(cursor) % 4:
+        raise ValueError("invalid history cursor")
+    try:
+        decoded = b64decode(cursor.encode("ascii"), altchars=b"-_", validate=True)
+        if urlsafe_b64encode(decoded).decode("ascii") != cursor:
+            raise ValueError("invalid history cursor")
+        payload = json.loads(decoded.decode("utf-8"), parse_constant=_reject_json_constant)
+    except (UnicodeError, ValueError, json.JSONDecodeError) as error:
+        raise ValueError("invalid history cursor") from error
+    if not isinstance(payload, dict) or set(payload) != {"received_at", "id"}:
+        raise ValueError("invalid history cursor")
+    received_at = payload["received_at"]
+    row_id = payload["id"]
+    if (
+        isinstance(received_at, bool)
+        or not isinstance(received_at, (int, float))
+        or not isfinite(float(received_at))
+        or isinstance(row_id, bool)
+        or not isinstance(row_id, int)
+        or row_id < 1
+    ):
+        raise ValueError("invalid history cursor")
+
+
 def _bounded_scalar(value: str | None, name: str) -> str | None:
     if value is not None and (not value or len(value) > _MAX_FILTER_SCALAR):
         raise ValueError(f"invalid {name}")
@@ -616,21 +680,58 @@ def _bounded_scalar(value: str | None, name: str) -> str | None:
 def _json_item(item: object) -> Mapping[str, object]:
     to_dict = getattr(item, "to_dict", None)
     if not callable(to_dict):
-        raise ValueError("history item is not serializable")
+        raise TypeError("history item is not serializable")
     result = to_dict()
     if not isinstance(result, Mapping):
-        raise ValueError("history item is not serializable")
+        raise TypeError("history item is not serializable")
     return result
 
 
-def _include_first(iterator: Iterator[object], first: object) -> Iterator[object]:
-    if first is not _MISSING:
-        yield first
-    yield from iterator
+def _encode_json_item(item: object) -> bytes:
+    return json.dumps(
+        _json_item(item),
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    ).encode("utf-8")
+
+
+def _encode_csv_header() -> bytes:
+    stream = io.StringIO(newline="")
+    csv.DictWriter(stream, fieldnames=_CSV_FIELDS).writeheader()
+    return stream.getvalue().encode("utf-8")
+
+
+def _encode_csv_item(item: object) -> bytes:
+    row = dict(_json_item(item))
+    row["extras"] = json.dumps(
+        row.get("extras", {}),
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    )
+    row = {key: _csv_safe_cell(value) for key, value in row.items()}
+    stream = io.StringIO(newline="")
+    csv.DictWriter(
+        stream,
+        fieldnames=_CSV_FIELDS,
+        extrasaction="ignore",
+    ).writerow(row)
+    return stream.getvalue().encode("utf-8")
+
+
+def _csv_safe_cell(value: object) -> object:
+    if isinstance(value, str) and value.startswith(("=", "+", "-", "@", "\t", "\r")):
+        return "'" + value
+    return value
 
 
 class _BodyTooLarge(ValueError):
     """The declared JSON body exceeds the fixed adapter limit."""
+
+
+class _QueryValidationError(ValueError):
+    """A client-supplied history query fails the fixed HTTP contract."""
 
 
 def _object_without_duplicate_keys(

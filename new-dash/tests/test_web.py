@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from base64 import urlsafe_b64encode
 from contextlib import redirect_stderr
+import csv
+from dataclasses import replace
 import http.client
 import io
 import json
@@ -67,6 +70,8 @@ class FakeApplication:
     def __init__(self) -> None:
         self.history_query: HistoryQuery | None = None
         self.export_query: HistoryQuery | None = None
+        self.history_failure: Exception | None = None
+        self.export_failure: Exception | None = None
         self.control_calls: list[tuple[str, object | None]] = []
         self.control_failure: Exception | None = None
         self.control_reply = ControlReply.from_payload({"message": "accepted"}, ok=True)
@@ -76,12 +81,16 @@ class FakeApplication:
 
     def query_history(self, query: HistoryQuery) -> HistoryPage:
         self.history_query = query
+        if self.history_failure is not None:
+            raise self.history_failure
         if query.cursor == "bad":
             raise ValueError("invalid history cursor")
         return HistoryPage(items=(observation(),), next_cursor="next-page")
 
     def export_history(self, query: HistoryQuery):
         self.export_query = query
+        if self.export_failure is not None:
+            raise self.export_failure
         yield observation()
 
     def clear_history(self) -> int:
@@ -349,15 +358,58 @@ class StaticAndStateRouteTest(WebServerTestCase):
         self.assertEqual(json.loads(body)["error"]["code"], "method_not_allowed")
         self.assertIsNone(response.getheader("Access-Control-Allow-Origin"))
 
-    def test_server_error_hook_never_prints_tracebacks_or_exception_text(self) -> None:
+    def test_head_and_arbitrary_methods_use_secured_structured_405(self) -> None:
+        for method in ("HEAD", "PROPFIND"):
+            with self.subTest(method=method):
+                response, body = self.request(method, "/api/state")
+                self.assertEqual(response.status, 405)
+                self.assertEqual(
+                    response.getheader("Content-Type"),
+                    "application/json; charset=utf-8",
+                )
+                self.assert_security_headers(response)
+                if method == "HEAD":
+                    self.assertEqual(body, b"")
+                else:
+                    self.assertEqual(
+                        json.loads(body)["error"]["code"], "method_not_allowed"
+                    )
+
+    def test_malformed_absolute_request_target_returns_structured_400(self) -> None:
+        connection = socket.create_connection(
+            ("127.0.0.1", self.server.server_port), timeout=2.0
+        )
+        connection.sendall(
+            b"GET http://[bad/ HTTP/1.1\r\n"
+            + f"Host: 127.0.0.1:{self.server.server_port}\r\n".encode("ascii")
+            + b"Connection: close\r\n\r\n"
+        )
+        response = http.client.HTTPResponse(connection)
+        response.begin()
+        body = response.read()
+        connection.close()
+
+        self.assertEqual(response.status, 400)
+        self.assertEqual(json.loads(body)["error"]["code"], "invalid_request")
+        self.assert_security_headers(response)
+
+    def test_server_error_hook_logs_only_bounded_nonsensitive_notice(self) -> None:
         output = io.StringIO()
         try:
-            raise RuntimeError("secret exception detail")
+            raise RuntimeError(
+                "secret exception detail token=test-control-token path=/api/raw"
+            )
         except RuntimeError:
             with redirect_stderr(output):
                 self.server.handle_error(None, ("127.0.0.1", 1))
 
-        self.assertEqual(output.getvalue(), "")
+        notice = output.getvalue()
+        self.assertTrue(notice.strip())
+        self.assertLessEqual(len(notice), 160)
+        self.assertNotIn("secret exception detail", notice)
+        self.assertNotIn("test-control-token", notice)
+        self.assertNotIn("/api/raw", notice)
+        self.assertNotIn("Traceback", notice)
 
 
 class HistoryRouteTest(WebServerTestCase):
@@ -406,6 +458,9 @@ class HistoryRouteTest(WebServerTestCase):
         self.assertEqual(self.application.history_query, HistoryQuery(limit=1))
 
     def test_history_rejects_invalid_or_unbounded_queries(self) -> None:
+        overflowing_cursor = urlsafe_b64encode(
+            json.dumps({"received_at": 10**1000, "id": 1}).encode("utf-8")
+        ).decode("ascii")
         cases = (
             "unknown=value",
             "limit=1&limit=2",
@@ -424,12 +479,24 @@ class HistoryRouteTest(WebServerTestCase):
             "cursor=bad",
             "text=%ZZ",
             "text=%FF",
+            "cursor=" + quote(overflowing_cursor),
         )
         for query in cases:
             with self.subTest(query=query):
                 response, body = self.request("GET", "/api/history?" + query)
                 self.assertEqual(response.status, 400)
                 self.assertEqual(json.loads(body)["error"]["code"], "invalid_request")
+
+    def test_application_value_error_is_an_internal_failure_not_bad_query(self) -> None:
+        self.application.history_failure = ValueError(
+            "database value failure secret detail"
+        )
+
+        response, body = self.request("GET", "/api/history")
+
+        self.assertEqual(response.status, 500)
+        self.assertEqual(json.loads(body)["error"]["code"], "internal_error")
+        self.assertNotIn(b"secret detail", body)
 
 
 APPROVED_POSTS = (
@@ -666,6 +733,79 @@ class HistoryExportRouteTest(WebServerTestCase):
                 response, body = self.request("GET", "/api/history/export.json" + suffix)
                 self.assertEqual(response.status, 400)
                 self.assertEqual(json.loads(body)["error"]["code"], "invalid_request")
+
+    def test_application_value_error_before_export_is_structured_500(self) -> None:
+        self.application.export_failure = ValueError(
+            "storage export value failure secret detail"
+        )
+
+        response, body = self.request("GET", "/api/history/export.json")
+
+        self.assertEqual(response.status, 500)
+        self.assertEqual(json.loads(body)["error"]["code"], "internal_error")
+        self.assertNotIn(b"secret detail", body)
+
+    def test_unserializable_first_export_row_fails_before_200(self) -> None:
+        class UnserializableObservation:
+            def to_dict(self) -> dict[str, object]:
+                result = observation().to_dict()
+                result["extras"] = {"bad": object()}
+                return result
+
+        self.application.export_history = lambda query: iter(
+            (UnserializableObservation(),)
+        )
+        for suffix in ("json", "csv"):
+            with self.subTest(suffix=suffix):
+                response, body = self.request(
+                    "GET", f"/api/history/export.{suffix}"
+                )
+                self.assertEqual(response.status, 500)
+                self.assertEqual(
+                    response.getheader("Content-Type"),
+                    "application/json; charset=utf-8",
+                )
+                self.assertIsNone(response.getheader("Content-Disposition"))
+                self.assertEqual(
+                    json.loads(body)["error"]["code"], "internal_error"
+                )
+
+    def test_csv_neutralizes_formula_strings_but_json_and_numbers_stay_truthful(self) -> None:
+        dangerous = replace(
+            observation(),
+            stable_key="+cmd",
+            category="\rformula",
+            label='=HYPERLINK("https://attacker.invalid")',
+            display_id="\tformula",
+            manufacturer="-formula",
+            operator_id="@SUM(A1:A2)",
+            rssi=-48,
+        )
+        self.application.export_history = lambda query: iter((dangerous,))
+
+        csv_response, csv_body = self.request("GET", "/api/history/export.csv")
+        json_response, json_body = self.request("GET", "/api/history/export.json")
+
+        self.assertEqual(csv_response.status, 200)
+        row = next(csv.DictReader(io.StringIO(csv_body.decode("utf-8"))))
+        for field in (
+            "stable_key",
+            "category",
+            "label",
+            "display_id",
+            "manufacturer",
+            "operator_id",
+        ):
+            with self.subTest(field=field):
+                self.assertTrue(row[field].startswith("'"))
+                self.assertEqual(row[field][1:], dangerous.to_dict()[field])
+        self.assertEqual(row["rssi"], "-48")
+
+        self.assertEqual(json_response.status, 200)
+        json_row = json.loads(json_body)[0]
+        self.assertEqual(json_row["label"], dangerous.label)
+        self.assertEqual(json_row["operator_id"], dangerous.operator_id)
+        self.assertEqual(json_row["rssi"], -48)
 
 
 if __name__ == "__main__":
