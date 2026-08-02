@@ -6,9 +6,9 @@ import re
 import secrets as _secrets
 import time
 from collections import defaultdict, deque
-from copy import deepcopy
+from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import func, select
@@ -496,12 +496,18 @@ def _device_id_mac_suffix(device_id: str | None) -> str | None:
     return suffix
 
 
-def _wifi_assoc_mentions_known_node(drone_id: str | None) -> bool:
+def _wifi_assoc_mentions_known_node(
+    drone_id: str | None,
+    additional_device_ids: tuple[str, ...] = (),
+) -> bool:
     if not drone_id:
         return False
     known_suffixes = {
         suffix
-        for suffix in (_device_id_mac_suffix(device_id) for device_id in _node_heartbeats)
+        for suffix in (
+            _device_id_mac_suffix(device_id)
+            for device_id in (*_node_heartbeats, *additional_device_ids)
+        )
         if suffix
     }
     if not known_suffixes:
@@ -691,61 +697,23 @@ _identity_correlator = IdentityCorrelator()
 _entity_tracker.set_identity_correlator(_identity_correlator)
 
 
-class _IngestRuntimeUndo:
-    """Bounded rollback record for one batch's ring, geometry, and positions."""
-
-    def __init__(self, tracker: SensorTracker):
-        self.recent_size = len(_recent_detections)
-        self.tracker = tracker
-        self.sensor_states: dict[str, object] = {}
-        self.observation_states: dict[str, object] = {}
-        self.position_states: dict[str, tuple[bool, tuple[float, float] | None]] = {}
-
-    def capture_tracker(self, tracking_id: str, device_id: str) -> None:
-        if device_id not in self.sensor_states:
-            self.sensor_states[device_id] = self.tracker.sensors.get(device_id)
-        if tracking_id not in self.observation_states:
-            observations = self.tracker.observations.get(tracking_id)
-            self.observation_states[tracking_id] = (
-                dict(observations) if observations is not None else None
-            )
-
-    def capture_position(self, key: str) -> None:
-        if key not in self.position_states:
-            self.position_states[key] = (key in _position_dedup, _position_dedup.get(key))
-
-    def rollback(self) -> None:
-        while len(_recent_detections) > self.recent_size:
-            _recent_detections.pop()
-        for device_id, previous in self.sensor_states.items():
-            if previous is None:
-                self.tracker.sensors.pop(device_id, None)
-            else:
-                self.tracker.sensors[device_id] = previous
-        for tracking_id, previous in self.observation_states.items():
-            if previous is None:
-                self.tracker.observations.pop(tracking_id, None)
-            else:
-                self.tracker.observations[tracking_id] = previous
-        for key, (existed, previous) in self.position_states.items():
-            if existed:
-                _position_dedup[key] = previous
-            else:
-                _position_dedup.pop(key, None)
+@dataclass
+class _PreparedDetection:
+    det: Any
+    classification: str
+    adjusted_confidence: float
+    stored: StoredDetection
+    grouping_model: str
+    apple_info: int
+    device_type_hint: str
+    detection_ts: float
 
 
-def _sensor_tracking_id(det, grouping_model: str) -> str:
-    if grouping_model.startswith("FP:"):
-        return grouping_model
-    if det.source == "wifi_probe_request":
-        return normalize_probe_identity(
-            ie_hash=getattr(det, "ie_hash", None),
-            drone_id=det.drone_id,
-            bssid=det.bssid,
-        ).identity
-    if det.source in ("wifi_ssid", "wifi_oui", "wifi_ap_inventory", "wifi_beacon_rid", "wifi_dji_ie") and det.bssid:
-        return f"AP:{det.bssid}"
-    return det.drone_id
+@dataclass
+class _PreparedCalibrationDetection:
+    det: Any
+    session: Any
+    detection_ts: float
 
 # v0.63: phone-driven walk calibration. The Android app advertises BLE
 # from known GPS positions; backend joins the trace × sensor sightings
@@ -803,11 +771,22 @@ async def _resolve_sensor_position(
     device_lon: float | None,
     device_alt: float | None,
     db: AsyncSession | None,
-) -> tuple[float | None, float | None, float | None, str, str, bool]:
+) -> tuple[
+    float | None,
+    float | None,
+    float | None,
+    str,
+    str,
+    bool,
+    bool,
+    bool,
+]:
     """
-    Look up sensor node in DB. If it's a registered fixed node, use the
-    registered position (ignoring GPS from payload). Otherwise use GPS.
-    Returns (lat, lon, alt, sensor_type, position_mode, geometry_enabled).
+    Resolve the sensor position and stage node registration/last-seen updates.
+
+    This helper deliberately does not commit. The ingest route commits these
+    staged node changes with primary detection rows, so a failed primary write
+    cannot leak a separately durable node update.
     """
     if db:
         try:
@@ -815,22 +794,49 @@ async def _resolve_sensor_position(
                 select(SensorNode).where(SensorNode.device_id == device_id)
             )
             node = result.scalar_one_or_none()
+            if node is None and device_lat is not None and device_lon is not None and \
+               abs(device_lat) > 0.1 and abs(device_lon) > 0.1:
+                node = SensorNode(
+                    device_id=device_id,
+                    name=device_id,
+                    lat=device_lat,
+                    lon=device_lon,
+                    alt=device_alt or 0,
+                    is_fixed=False,
+                    sensor_type="outdoor",
+                    position_mode="active",
+                )
+                db.add(node)
+                return (
+                    device_lat, device_lon, device_alt, "outdoor",
+                    _position_mode(node), True, True, True,
+                )
             if node and not _geometry_enabled_for_node(node):
                 node.last_seen = datetime.now(timezone.utc)
-                await db.commit()
-                return None, None, node.alt, node.sensor_type, _position_mode(node), False
+                return (
+                    None, None, node.alt, node.sensor_type,
+                    _position_mode(node), False, True, False,
+                )
             if node and node.is_fixed:
                 node.last_seen = datetime.now(timezone.utc)
-                await db.commit()
-                return node.lat, node.lon, node.alt, node.sensor_type, _position_mode(node), True
+                return (
+                    node.lat, node.lon, node.alt, node.sensor_type,
+                    _position_mode(node), True, True, False,
+                )
             elif node and not node.is_fixed:
                 if device_lat is not None and device_lon is not None:
                     node.lat = device_lat
                     node.lon = device_lon
                     node.alt = device_alt
                     node.last_seen = datetime.now(timezone.utc)
-                    await db.commit()
-                return device_lat, device_lon, device_alt, node.sensor_type, _position_mode(node), True
+                    return (
+                        device_lat, device_lon, device_alt, node.sensor_type,
+                        _position_mode(node), True, True, False,
+                    )
+                return (
+                    device_lat, device_lon, device_alt, node.sensor_type,
+                    _position_mode(node), True, False, False,
+                )
         except Exception as e:
             try:
                 await db.rollback()
@@ -838,7 +844,10 @@ async def _resolve_sensor_position(
                 pass
             logger.warning("DB lookup failed for %s: %s", device_id, e)
 
-    return device_lat, device_lon, device_alt, "outdoor", "active", True
+    return (
+        device_lat, device_lon, device_alt, "outdoor", "active", True,
+        False, False,
+    )
 
 
 def _heartbeat_is_online_recent(hb: dict, now: float, max_age_s: float = 120.0) -> bool:
@@ -924,10 +933,11 @@ async def ingest_drone_detections(
     # This groups detections from the same scan cycle correctly.
     received_at = batch.timestamp if batch.timestamp and batch.timestamp > 1700000000 else time.time()
 
-    # Track heartbeat (works without DB)
+    # Build the heartbeat locally. Nonempty batches publish it only after the
+    # primary detection transaction is durable.
     source_ip = request.client.host if request.client else None
     prev_hb = _node_heartbeats.get(batch.device_id, {})
-    _node_heartbeats[batch.device_id] = {
+    heartbeat = {
         "device_id": batch.device_id,
         "last_seen": received_at,
         "detection_count": len(batch.detections),
@@ -960,75 +970,33 @@ async def ingest_drone_detections(
         "last_source_fixup_at": prev_hb.get("last_source_fixup_at"),
     }
 
-    # WiFi attack detection (v0.60+) — scanner forwards deauth/disassoc counts
-    # + flood/beacon-spam flags per status report. Emit anomaly alerts when
-    # patterns appear so operators see "deauth attack from MAC X near node Y"
-    # not just a counter rising in /api/status.
-    for sc in (batch.scanners or []):
-        if not isinstance(sc, dict): continue
-        deauth_n = int(sc.get("deauth", 0) or 0)
-        disassoc_n = int(sc.get("disassoc", 0) or 0)
-        flood = bool(sc.get("flood", False))
-        bcn_spam = bool(sc.get("bcn_spam", False))
-        if flood or bcn_spam or deauth_n > 20 or disassoc_n > 20:
-            slot = sc.get("uart", "?")
-            try:
-                _anomaly_detector.record_wifi_attack(
-                    device_id=batch.device_id,
-                    scanner_slot=slot,
-                    deauth_count=deauth_n,
-                    disassoc_count=disassoc_n,
-                    deauth_flood=flood,
-                    beacon_spam=bcn_spam,
-                    timestamp=received_at,
-                )
-            except AttributeError:
-                pass  # method not yet present on older AnomalyDetector
-
-    # Auto-register new nodes in DB if they have GPS and aren't registered yet
-    try:
-        result = await db.execute(select(SensorNode).where(SensorNode.device_id == batch.device_id))
-        existing_node = result.scalar_one_or_none()
-        if not existing_node and batch.device_lat and batch.device_lon and \
-           abs(batch.device_lat) > 0.1 and abs(batch.device_lon) > 0.1:
-            new_node = SensorNode(
-                device_id=batch.device_id,
-                name=batch.device_id,
-                lat=batch.device_lat,
-                lon=batch.device_lon,
-                alt=batch.device_alt or 0,
-                is_fixed=False,
-            )
-            db.add(new_node)
-            await db.commit()
-            logger.info("Auto-registered new node: %s at (%.6f, %.6f)",
-                        batch.device_id, batch.device_lat, batch.device_lon)
-    except Exception:
-        try:
-            await db.rollback()
-        except Exception:
-            pass
-        pass  # Don't break ingestion if auto-register fails
-
-    # Resolve sensor position (fixed node overrides GPS)
-    sensor_lat, sensor_lon, sensor_alt, sensor_type, position_mode, geometry_enabled = await _resolve_sensor_position(
-        batch.device_id, batch.device_lat, batch.device_lon, batch.device_alt, db
+    # Resolve sensor position (fixed node overrides GPS) and stage any node
+    # registration/last-seen write in the same unit of work as detections.
+    (
+        sensor_lat,
+        sensor_lon,
+        sensor_alt,
+        sensor_type,
+        position_mode,
+        geometry_enabled,
+        node_update_pending,
+        node_auto_registered,
+    ) = await _resolve_sensor_position(
+        batch.device_id, batch.device_lat, batch.device_lon, batch.device_alt, db,
     )
-    if not geometry_enabled:
-        _sensor_tracker.remove_sensor(batch.device_id)
 
     logger.info(
         "Drone batch from device=%s count=%d sensor_pos=(%s, %s) position_mode=%s geometry_enabled=%s",
         batch.device_id, len(batch.detections), sensor_lat, sensor_lon, position_mode, geometry_enabled,
     )
 
-    ingest_undo = _IngestRuntimeUndo(_sensor_tracker)
     processed = 0
-    db_detections = []
+    db_detections: list[DroneDetection] = []
+    prepared_runtime: list[_PreparedDetection | _PreparedCalibrationDetection] = []
+    staged_source_fixups: list[tuple[str, str]] = []
 
     dedup_skipped = 0
     staged_dedup: dict[IngestDedupKey, float] = {}
-    newly_emitted_events: list[tuple[str, str]] = []
     for det in batch.detections:
         # Skip our own infrastructure SSIDs — never store or process FoF-* detections
         if det.ssid and det.ssid.upper().startswith("FOF-") and not det.ssid.upper().startswith("FOF-DRONE-"):
@@ -1047,12 +1015,14 @@ async def ingest_drone_detections(
             self_id_text=det.self_id_text,
         )
         if det.source != raw_source:
-            _record_source_fixup(batch.device_id, raw_source, det.source, received_at)
+            staged_source_fixups.append((raw_source, det.source))
 
         # Drop our own node association chatter. This is useful RF context for
         # debugging WiFi, but it is not a drone signal and it pollutes the
         # operator feed when nearby FoF uplinks are visible over the air.
-        if det.source == "wifi_assoc" and _wifi_assoc_mentions_known_node(det.drone_id):
+        if det.source == "wifi_assoc" and _wifi_assoc_mentions_known_node(
+            det.drone_id, (batch.device_id,),
+        ):
             continue
 
         is_calibration_beacon = (
@@ -1084,10 +1054,6 @@ async def ingest_drone_detections(
                     det.manufacturer = hit[0]  # short name (e.g. "Espressif")
             except Exception:
                 pass
-
-        # Stash beacon/AP-inventory observations so wifi_assoc rows can later
-        # be enriched with "connected to <SSID>".
-        _record_ap_observation(det)
 
         # Data-flags byte: current scanners emit ble_apple_flags even when 0,
         # so the backend can distinguish "all flags false" from "absent".
@@ -1123,49 +1089,14 @@ async def ingest_drone_detections(
                det.rssi is not None and \
                sensor_lat is not None and \
                sensor_lon is not None:
-                _phone_cal_mgr.add_sensor_sample(
-                    session_id=cal_session.session_id,
-                    sensor_id=batch.device_id,
-                    sensor_lat=sensor_lat,
-                    sensor_lon=sensor_lon,
-                    rssi=det.rssi,
-                    ts_s=(det.timestamp / 1000.0)
-                          if det.timestamp and det.timestamp > 1e12
-                          else received_at,
-                    scanner_slots_seen=getattr(det, "scanner_slots_seen", None),
-                )
-
                 det_ts = (det.timestamp / 1000.0
                           if det.timestamp and det.timestamp > 1_700_000_000_000
                           else received_at)
-                _sensor_tracker.ingest(
-                    device_id=batch.device_id,
-                    device_lat=sensor_lat,
-                    device_lon=sensor_lon,
-                    device_alt=sensor_alt,
-                    drone_id=det.drone_id,
-                    rssi=det.rssi,
-                    estimated_distance_m=None,
-                    drone_lat=det.latitude,
-                    drone_lon=det.longitude,
-                    drone_alt=det.altitude_m,
-                    heading_deg=det.heading_deg,
-                    speed_mps=det.speed_mps,
-                    confidence=max(det.confidence, 0.85),
-                    source=det.source,
-                    manufacturer=det.manufacturer,
-                    model=f"FP:CAL-{cal_session.session_id}",
-                    classification="unknown_device",
-                    ssid=det.ssid,
-                    bssid=det.bssid,
-                    ie_hash=getattr(det, "ie_hash", None),
-                    operator_lat=det.operator_lat,
-                    operator_lon=det.operator_lon,
-                    operator_id=det.operator_id,
-                    sensor_type=sensor_type,
-                    timestamp=det_ts,
-                    range_authority="backend_rssi",
-                )
+                prepared_runtime.append(_PreparedCalibrationDetection(
+                    det=det,
+                    session=cal_session,
+                    detection_ts=det_ts,
+                ))
                 processed += 1
                 continue
 
@@ -1229,37 +1160,6 @@ async def ingest_drone_detections(
             classification=classification,
             **stored_payload,
         )
-        _recent_detections.append(stored)
-
-        # ── Drone-specific alert ─────────────────────────────────────
-        if classification in ("confirmed_drone", "likely_drone", "test_drone"):
-            last_seen = _known_drones.get(det.drone_id, 0)
-            is_new = last_seen == 0 or (received_at - last_seen) > _DRONE_REAPPEAR_SEC
-            _known_drones[det.drone_id] = received_at
-            if is_new:
-                sev_map = {"confirmed_drone": "critical", "likely_drone": "warning", "test_drone": "info"}
-                severity = sev_map.get(classification, "info")
-                alert = {
-                    "alert_type": "drone_detected",
-                    "severity": severity,
-                    "drone_id": det.drone_id,
-                    "classification": classification,
-                    "source": det.source,
-                    "ssid": det.ssid,
-                    "bssid": det.bssid,
-                    "rssi": det.rssi,
-                    "manufacturer": det.manufacturer,
-                    "device_id": batch.device_id,
-                    "latitude": det.latitude,
-                    "longitude": det.longitude,
-                    "timestamp": received_at,
-                    "message": f"DRONE DETECTED: {det.drone_id} ({classification.replace('_',' ')}) via {det.source} on {batch.device_id} RSSI={det.rssi}",
-                }
-                _drone_alerts.append(alert)
-                if len(_drone_alerts) > 200:
-                    _drone_alerts.pop(0)
-                logger.warning("DRONE ALERT [%s]: %s via %s on %s rssi=%s",
-                               severity.upper(), det.drone_id, det.source, batch.device_id, det.rssi)
 
         # Promote JA3 to a stable FP: grouping key for MAC-rotating high-risk
         # classes (Meta/Ray-Ban/Oakley/Luxottica/Quest). All downstream
@@ -1267,147 +1167,11 @@ async def ingest_drone_detections(
         # rotating RPAs now collapse into one logical device/entity/threat
         # instead of producing a fresh identity every ~15 min.
         grouping_model = _grouping_model(det)
-
-        # Anomaly detection (fingerprint-aware, whitelisted, mesh-aware)
-        _anomaly_detector.ingest(
-            drone_id=det.drone_id, source=det.source,
-            confidence=det.confidence, rssi=det.rssi or 0,
-            ssid=det.ssid or "", bssid=det.bssid or "",
-            manufacturer=det.manufacturer or "", model=grouping_model,
-            device_id=batch.device_id, received_at=received_at,
-        )
-
-        # BLE enrichment
-        _ble_enricher.ingest(
-            drone_id=det.drone_id, source=det.source,
-            confidence=det.confidence, rssi=det.rssi or 0,
-            bssid=det.bssid or "", manufacturer=det.manufacturer or "",
-            model=grouping_model, device_id=batch.device_id,
-            received_at=received_at,
-            ble_company_id=det.ble_company_id,
-            ble_apple_type=det.ble_apple_type,
-            ble_ad_type_count=det.ble_ad_type_count,
-            ble_payload_len=det.ble_payload_len,
-            ble_addr_type=det.ble_addr_type,
-            ble_ja3=det.ble_ja3,
-            ble_apple_auth=det.ble_apple_auth,
-            ble_adv_interval=det.ble_adv_interval,
-            ble_svc_uuids=det.ble_svc_uuids,
-            ble_apple_flags=ainfo,
-            ble_activity=det.ble_activity,
-        )
-
-        alerts = _rf_anomaly_detector.process_event(
-            RFDetectionEvent(
-                drone_id=det.drone_id,
-                source=det.source,
-                confidence=det.confidence,
-                rssi=det.rssi,
-                ssid=det.ssid,
-                bssid=det.bssid,
-                manufacturer=det.manufacturer,
-                device_id=batch.device_id,
-                received_at=received_at,
-                channel=det.channel,
-            )
-        )
-        _signal_tracker.ingest(
-            SignalEvent(
-                drone_id=det.drone_id,
-                source=det.source,
-                confidence=det.confidence,
-                rssi=det.rssi,
-                ssid=det.ssid,
-                bssid=det.bssid,
-                manufacturer=det.manufacturer,
-                device_id=batch.device_id,
-                received_at=received_at,
-                channel=det.channel,
-            )
-        )
-
-        # Entity correlation — group signals into logical entities.
-        # Extract a device-type hint from drone_id (BLE:HASH:TypeName format);
-        # the prior `dir()` check always evaluated to False because
-        # `device_type_str` was never assigned, silently defeating labeling.
-        _device_type_hint = ""
+        device_type_hint = ""
         if det.drone_id:
-            _parts = det.drone_id.split(":")
-            if len(_parts) >= 3:
-                _device_type_hint = ":".join(_parts[2:]).strip()
-        _entity_tracker.ingest(
-            drone_id=det.drone_id, source=det.source,
-            confidence=det.confidence, rssi=det.rssi or 0,
-            ssid=det.ssid or "", bssid=det.bssid or "",
-            manufacturer=det.manufacturer or "",
-            device_id=batch.device_id, received_at=received_at,
-            model=grouping_model,
-            probed_ssids=det.probed_ssids,
-            device_type=_device_type_hint,
-            ie_hash=getattr(det, "ie_hash", None),
-        )
-
-        # Cross-layer identity correlator — records BLE↔WiFi co-location
-        # and surfaces probe-IE identity hints.
-        try:
-            _identity_correlator.ingest(
-                source=det.source,
-                drone_id=det.drone_id,
-                bssid=det.bssid,
-                model=grouping_model,
-                ie_hash=getattr(det, "ie_hash", None),
-                sensor_id=batch.device_id,
-                rssi=det.rssi,
-                ts=received_at,
-            )
-        except Exception:
-            pass
-
-        # First-seen event detection (noteworthy first sightings only)
-        try:
-            newly_emitted_events.extend(_event_detector.ingest(
-                source=det.source,
-                classification=classification,
-                drone_id=det.drone_id,
-                bssid=det.bssid,
-                ssid=det.ssid,
-                manufacturer=det.manufacturer,
-                model=grouping_model,
-                probed_ssids=det.probed_ssids,
-                ie_hash=getattr(det, "ie_hash", None),
-                rssi=det.rssi,
-                confidence=det.confidence,
-                sensor_id=batch.device_id,
-                ts=received_at,
-                latitude=det.latitude,
-                longitude=det.longitude,
-                operator_id=det.operator_id,
-            ))
-        except Exception as e:
-            logger.debug("event_detector.ingest skipped: %s", e)
-
-        # Automated drone tracking — assigns one node to lock on to confirmed drones
-        _drone_tracker.on_detection(
-            drone_id=det.drone_id, source=det.source,
-            confidence=det.confidence, rssi=det.rssi or 0,
-            device_id=batch.device_id, classification=classification,
-            ssid=det.ssid or "", bssid=det.bssid or "",
-            channel=det.channel or 0,
-            drone_lat=det.latitude or 0, drone_lon=det.longitude or 0,
-            drone_alt=det.altitude_m or 0,
-        )
-        for alert in alerts:
-            logger.info(
-                "RF anomaly type=%s severity=%s entity=%s device=%s",
-                alert.anomaly_type,
-                alert.severity,
-                alert.entity_key,
-                alert.device_id,
-            )
-
-        # NOTE: _anomaly_detector.ingest() is called once above (~line 270). Do
-        # not add a second call here — it doubles RSSI samples and inflates
-        # velocity/spike deltas.
+            parts = det.drone_id.split(":")
+            if len(parts) >= 3:
+                device_type_hint = ":".join(parts[2:]).strip()
 
         # PostgreSQL
         db_det = DroneDetection(
@@ -1453,151 +1217,454 @@ async def ingest_drone_detections(
         det_ts = (det.timestamp / 1000.0
                   if det.timestamp and det.timestamp > 1_700_000_000_000
                   else received_at)
-        ingest_undo.capture_tracker(
-            _sensor_tracking_id(det, grouping_model), batch.device_id,
-        )
-        _sensor_tracker.ingest(
-            device_id=batch.device_id,
-            device_lat=sensor_lat,
-            device_lon=sensor_lon,
-            device_alt=sensor_alt,
-            drone_id=det.drone_id,
-            rssi=det.rssi,
-            estimated_distance_m=det.estimated_distance_m,
-            drone_lat=det.latitude,
-            drone_lon=det.longitude,
-            drone_alt=det.altitude_m,
-            heading_deg=det.heading_deg,
-            speed_mps=det.speed_mps,
-            confidence=adj_confidence,
-            source=det.source,
-            manufacturer=det.manufacturer,
-            # Passing the JA3-promoted model here too lets the
-            # triangulator key all of a rotating Meta pair's RPAs under
-            # one tracking_id — otherwise the EKF/particle filter would
-            # start over every rotation and never accumulate enough
-            # observations to produce a tight fix.
-            model=grouping_model,
+        prepared_runtime.append(_PreparedDetection(
+            det=det,
             classification=classification,
-            ssid=det.ssid,
-            bssid=det.bssid,
-            ie_hash=getattr(det, "ie_hash", None),
-            operator_lat=det.operator_lat,
-            operator_lon=det.operator_lon,
-            operator_id=det.operator_id,
-            sensor_type=sensor_type,
-            timestamp=det_ts,
-        )
-
-        # ── GPS-RSSI spoof detection ────────────────────────────────
-        # Track per-sensor RSSI stability vs GPS movement over time
-        if det.latitude and det.longitude and det.latitude != 0 and det.rssi:
-            spoof_key = f"{det.drone_id}_{batch.device_id}"
-            st = _spoof_tracker.get(spoof_key)
-            if st is None:
-                st = {"gps": [], "rssi": [], "flagged": False}
-                _spoof_tracker[spoof_key] = st
-            st["gps"].append((det.latitude, det.longitude, received_at))
-            st["rssi"].append((det.rssi, received_at))
-            # Keep last 30 from THIS sensor
-            if len(st["gps"]) > 30:
-                st["gps"] = st["gps"][-30:]
-                st["rssi"] = st["rssi"][-30:]
-            # Check: GPS moved >50m but THIS sensor's RSSI range <6dB = spoof
-            if len(st["gps"]) >= 8 and not st["flagged"]:
-                lats = [g[0] for g in st["gps"]]
-                lons = [g[1] for g in st["gps"]]
-                rssis = [r[0] for r in st["rssi"]]
-                gps_spread_m = (((max(lats)-min(lats))*111320)**2 + ((max(lons)-min(lons))*111320*0.78)**2)**0.5
-                rssi_range = max(rssis) - min(rssis)
-                if gps_spread_m > 50 and rssi_range < 6:
-                    st["flagged"] = True
-                    logger.warning(
-                        "SPOOF: %s on %s — GPS moved %.0fm but RSSI range %ddB (stationary transmitter spoofing GPS)",
-                        det.drone_id, batch.device_id, gps_spread_m, rssi_range
-                    )
+            adjusted_confidence=adj_confidence,
+            stored=stored,
+            grouping_model=grouping_model,
+            apple_info=ainfo,
+            device_type_hint=device_type_hint,
+            detection_ts=det_ts,
+        ))
 
         processed += 1
 
-    # Bulk insert to PostgreSQL
+    # The primary transaction contains only durable transport records and the
+    # sensor-node metadata staged above. No process-global ingest state has
+    # been published yet, so failure needs no snapshot or undo graph.
+    node_write_succeeded = not node_update_pending
     if db_detections:
         try:
             db.add_all(db_detections)
-
-            # Store triangulated positions — skip range_only, deduplicate
-            located = _sensor_tracker.get_located_drones()
-            for d in located:
-                if _is_calibration_tracking_id(d.drone_id):
-                    continue
-                # Skip single-sensor range_only (just sensor position, no real data)
-                if d.position_source == "range_only":
-                    continue
-                # Skip if position hasn't moved >1m from last logged position
-                last_key = f"_last_pos_{d.drone_id}"
-                last_pos = _position_dedup.get(last_key)
-                if last_pos:
-                    dlat = (d.lat - last_pos[0]) * 111320
-                    dlon = (d.lon - last_pos[1]) * 111320 * 0.78  # cos(37°)
-                    moved = (dlat**2 + dlon**2) ** 0.5
-                    if moved < 1.0:
-                        continue
-                ingest_undo.capture_position(last_key)
-                _position_dedup[last_key] = (d.lat, d.lon)
-
-                # Get best observation's SSID
-                best_obs = max(d.observations, key=lambda o: o.confidence) if d.observations else None
-                tri = TriangulatedPosition(
-                    drone_id=d.drone_id,
-                    lat=d.lat,
-                    lon=d.lon,
-                    alt=d.alt,
-                    accuracy_m=d.accuracy_m,
-                    position_source=d.position_source,
-                    sensor_count=d.sensor_count,
-                    confidence=d.confidence,
-                    manufacturer=d.manufacturer,
-                    model=d.model,
-                    ssid=best_obs.ssid if best_obs else None,
-                    classification=classify_detection(
-                        source=best_obs.source if best_obs else "",
-                        confidence=d.confidence,
-                        ssid=best_obs.ssid if best_obs else None,
-                        manufacturer=d.manufacturer,
-                        drone_id=d.drone_id,
-                        model=d.model,
-                        bssid=best_obs.bssid if best_obs and hasattr(best_obs, 'bssid') else None,
-                        latitude=d.lat,
-                        longitude=d.lon,
-                    )[0] if best_obs else None,
-                    observations_json=json.dumps([
-                        {
-                            "device_id": o.device_id,
-                            "rssi": o.rssi,
-                            "distance_m": o.estimated_distance_m,
-                            "scanner_distance_m": o.scanner_estimated_distance_m,
-                            "backend_distance_m": o.backend_estimated_distance_m,
-                            "distance_source": o.distance_source,
-                            "range_model": o.range_model,
-                            "sensor_lat": o.sensor_lat,
-                            "sensor_lon": o.sensor_lon,
-                            "ssid": o.ssid,
-                        }
-                        for o in d.observations
-                    ]),
-                )
-                db.add(tri)
-
             await db.commit()
         except Exception as exc:
-            ingest_undo.rollback()
             await db.rollback()
             logger.warning("Primary detection persistence failed: %s", exc)
             raise HTTPException(
                 status_code=503,
                 detail="detection persistence unavailable",
             ) from exc
+        node_write_succeeded = True
+        _publish_ingest_dedup(staged_dedup, received_at)
+    elif node_update_pending:
+        # Empty, fully filtered, and fully deduplicated batches retain their
+        # historical heartbeat semantics. Node metadata is useful but not a
+        # transport-acceptance prerequisite when there is no detection row.
+        try:
+            await db.commit()
+            node_write_succeeded = True
+        except Exception as exc:
+            await db.rollback()
+            logger.debug("Sensor node metadata persistence skipped: %s", exc)
+
+    if node_auto_registered and node_write_succeeded:
+        logger.info(
+            "Auto-registered new node: %s at (%.6f, %.6f)",
+            batch.device_id, batch.device_lat, batch.device_lon,
+        )
+
+    # Publish runtime state only after primary durability (or immediately for
+    # a batch with no primary records). This makes failed retries clean even
+    # when rings and tracker histories are already at capacity.
+    _node_heartbeats[batch.device_id] = heartbeat
+    for raw_source, normalized_source in staged_source_fixups:
+        _record_source_fixup(
+            batch.device_id, raw_source, normalized_source, received_at,
+        )
+
+    # WiFi attack detection (v0.60+) — scanner forwards deauth/disassoc counts
+    # and flood/beacon-spam flags in scanner status reports.
+    for sc in (batch.scanners or []):
+        if not isinstance(sc, dict):
+            continue
+        deauth_n = int(sc.get("deauth", 0) or 0)
+        disassoc_n = int(sc.get("disassoc", 0) or 0)
+        flood = bool(sc.get("flood", False))
+        bcn_spam = bool(sc.get("bcn_spam", False))
+        if flood or bcn_spam or deauth_n > 20 or disassoc_n > 20:
+            try:
+                _anomaly_detector.record_wifi_attack(
+                    device_id=batch.device_id,
+                    scanner_slot=sc.get("uart", "?"),
+                    deauth_count=deauth_n,
+                    disassoc_count=disassoc_n,
+                    deauth_flood=flood,
+                    beacon_spam=bcn_spam,
+                    timestamp=received_at,
+                )
+            except Exception as exc:
+                logger.debug("Post-commit WiFi attack ingest skipped: %s", exc)
+
+    if not geometry_enabled:
+        try:
+            _sensor_tracker.remove_sensor(batch.device_id)
+        except Exception as exc:
+            logger.debug("Post-commit sensor removal skipped: %s", exc)
+
+    newly_emitted_events: list[tuple[str, str]] = []
+    for prepared in prepared_runtime:
+        det = prepared.det
+        if isinstance(prepared, _PreparedCalibrationDetection):
+            try:
+                _phone_cal_mgr.add_sensor_sample(
+                    session_id=prepared.session.session_id,
+                    sensor_id=batch.device_id,
+                    sensor_lat=sensor_lat,
+                    sensor_lon=sensor_lon,
+                    rssi=det.rssi,
+                    ts_s=prepared.detection_ts,
+                    scanner_slots_seen=getattr(det, "scanner_slots_seen", None),
+                )
+            except Exception as exc:
+                logger.debug("Post-commit calibration sample skipped: %s", exc)
+            try:
+                _sensor_tracker.ingest(
+                    device_id=batch.device_id,
+                    device_lat=sensor_lat,
+                    device_lon=sensor_lon,
+                    device_alt=sensor_alt,
+                    drone_id=det.drone_id,
+                    rssi=det.rssi,
+                    estimated_distance_m=None,
+                    drone_lat=det.latitude,
+                    drone_lon=det.longitude,
+                    drone_alt=det.altitude_m,
+                    heading_deg=det.heading_deg,
+                    speed_mps=det.speed_mps,
+                    confidence=max(det.confidence, 0.85),
+                    source=det.source,
+                    manufacturer=det.manufacturer,
+                    model=f"FP:CAL-{prepared.session.session_id}",
+                    classification="unknown_device",
+                    ssid=det.ssid,
+                    bssid=det.bssid,
+                    ie_hash=getattr(det, "ie_hash", None),
+                    operator_lat=det.operator_lat,
+                    operator_lon=det.operator_lon,
+                    operator_id=det.operator_id,
+                    sensor_type=sensor_type,
+                    timestamp=prepared.detection_ts,
+                    range_authority="backend_rssi",
+                )
+            except Exception as exc:
+                logger.debug("Post-commit calibration tracking skipped: %s", exc)
+            continue
+
+        classification = prepared.classification
+        grouping_model = prepared.grouping_model
+        _record_ap_observation(det)
+        _recent_detections.append(prepared.stored)
+
+        if classification in ("confirmed_drone", "likely_drone", "test_drone"):
+            last_seen = _known_drones.get(det.drone_id, 0)
+            is_new = last_seen == 0 or (received_at - last_seen) > _DRONE_REAPPEAR_SEC
+            _known_drones[det.drone_id] = received_at
+            if is_new:
+                severity = {
+                    "confirmed_drone": "critical",
+                    "likely_drone": "warning",
+                    "test_drone": "info",
+                }.get(classification, "info")
+                _drone_alerts.append({
+                    "alert_type": "drone_detected",
+                    "severity": severity,
+                    "drone_id": det.drone_id,
+                    "classification": classification,
+                    "source": det.source,
+                    "ssid": det.ssid,
+                    "bssid": det.bssid,
+                    "rssi": det.rssi,
+                    "manufacturer": det.manufacturer,
+                    "device_id": batch.device_id,
+                    "latitude": det.latitude,
+                    "longitude": det.longitude,
+                    "timestamp": received_at,
+                    "message": f"DRONE DETECTED: {det.drone_id} ({classification.replace('_',' ')}) via {det.source} on {batch.device_id} RSSI={det.rssi}",
+                })
+                if len(_drone_alerts) > 200:
+                    _drone_alerts.pop(0)
+                logger.warning(
+                    "DRONE ALERT [%s]: %s via %s on %s rssi=%s",
+                    severity.upper(), det.drone_id, det.source,
+                    batch.device_id, det.rssi,
+                )
+
+        try:
+            _anomaly_detector.ingest(
+                drone_id=det.drone_id, source=det.source,
+                confidence=det.confidence, rssi=det.rssi or 0,
+                ssid=det.ssid or "", bssid=det.bssid or "",
+                manufacturer=det.manufacturer or "", model=grouping_model,
+                device_id=batch.device_id, received_at=received_at,
+            )
+        except Exception as exc:
+            logger.debug("Post-commit anomaly ingest skipped: %s", exc)
+
+        try:
+            _ble_enricher.ingest(
+                drone_id=det.drone_id, source=det.source,
+                confidence=det.confidence, rssi=det.rssi or 0,
+                bssid=det.bssid or "", manufacturer=det.manufacturer or "",
+                model=grouping_model, device_id=batch.device_id,
+                received_at=received_at,
+                ble_company_id=det.ble_company_id,
+                ble_apple_type=det.ble_apple_type,
+                ble_ad_type_count=det.ble_ad_type_count,
+                ble_payload_len=det.ble_payload_len,
+                ble_addr_type=det.ble_addr_type,
+                ble_ja3=det.ble_ja3,
+                ble_apple_auth=det.ble_apple_auth,
+                ble_adv_interval=det.ble_adv_interval,
+                ble_svc_uuids=det.ble_svc_uuids,
+                ble_apple_flags=prepared.apple_info,
+                ble_activity=det.ble_activity,
+            )
+        except Exception as exc:
+            logger.debug("Post-commit BLE enrichment skipped: %s", exc)
+
+        alerts = []
+        try:
+            alerts = _rf_anomaly_detector.process_event(RFDetectionEvent(
+                drone_id=det.drone_id,
+                source=det.source,
+                confidence=det.confidence,
+                rssi=det.rssi,
+                ssid=det.ssid,
+                bssid=det.bssid,
+                manufacturer=det.manufacturer,
+                device_id=batch.device_id,
+                received_at=received_at,
+                channel=det.channel,
+            ))
+        except Exception as exc:
+            logger.debug("Post-commit RF anomaly ingest skipped: %s", exc)
+
+        try:
+            _signal_tracker.ingest(SignalEvent(
+                drone_id=det.drone_id,
+                source=det.source,
+                confidence=det.confidence,
+                rssi=det.rssi,
+                ssid=det.ssid,
+                bssid=det.bssid,
+                manufacturer=det.manufacturer,
+                device_id=batch.device_id,
+                received_at=received_at,
+                channel=det.channel,
+            ))
+        except Exception as exc:
+            logger.debug("Post-commit signal tracking skipped: %s", exc)
+
+        try:
+            _entity_tracker.ingest(
+                drone_id=det.drone_id, source=det.source,
+                confidence=det.confidence, rssi=det.rssi or 0,
+                ssid=det.ssid or "", bssid=det.bssid or "",
+                manufacturer=det.manufacturer or "",
+                device_id=batch.device_id, received_at=received_at,
+                model=grouping_model,
+                probed_ssids=det.probed_ssids,
+                device_type=prepared.device_type_hint,
+                ie_hash=getattr(det, "ie_hash", None),
+            )
+        except Exception as exc:
+            logger.debug("Post-commit entity tracking skipped: %s", exc)
+
+        try:
+            _identity_correlator.ingest(
+                source=det.source,
+                drone_id=det.drone_id,
+                bssid=det.bssid,
+                model=grouping_model,
+                ie_hash=getattr(det, "ie_hash", None),
+                sensor_id=batch.device_id,
+                rssi=det.rssi,
+                ts=received_at,
+            )
+        except Exception as exc:
+            logger.debug("Post-commit identity correlation skipped: %s", exc)
+
+        try:
+            newly_emitted_events.extend(_event_detector.ingest(
+                source=det.source,
+                classification=classification,
+                drone_id=det.drone_id,
+                bssid=det.bssid,
+                ssid=det.ssid,
+                manufacturer=det.manufacturer,
+                model=grouping_model,
+                probed_ssids=det.probed_ssids,
+                ie_hash=getattr(det, "ie_hash", None),
+                rssi=det.rssi,
+                confidence=det.confidence,
+                sensor_id=batch.device_id,
+                ts=received_at,
+                latitude=det.latitude,
+                longitude=det.longitude,
+                operator_id=det.operator_id,
+            ))
+        except Exception as exc:
+            logger.debug("Post-commit event detection skipped: %s", exc)
+
+        try:
+            _drone_tracker.on_detection(
+                drone_id=det.drone_id, source=det.source,
+                confidence=det.confidence, rssi=det.rssi or 0,
+                device_id=batch.device_id, classification=classification,
+                ssid=det.ssid or "", bssid=det.bssid or "",
+                channel=det.channel or 0,
+                drone_lat=det.latitude or 0, drone_lon=det.longitude or 0,
+                drone_alt=det.altitude_m or 0,
+            )
+        except Exception as exc:
+            logger.debug("Post-commit drone tracking skipped: %s", exc)
+
+        for alert in alerts:
+            logger.info(
+                "RF anomaly type=%s severity=%s entity=%s device=%s",
+                alert.anomaly_type, alert.severity, alert.entity_key,
+                alert.device_id,
+            )
+
+        try:
+            _sensor_tracker.ingest(
+                device_id=batch.device_id,
+                device_lat=sensor_lat,
+                device_lon=sensor_lon,
+                device_alt=sensor_alt,
+                drone_id=det.drone_id,
+                rssi=det.rssi,
+                estimated_distance_m=det.estimated_distance_m,
+                drone_lat=det.latitude,
+                drone_lon=det.longitude,
+                drone_alt=det.altitude_m,
+                heading_deg=det.heading_deg,
+                speed_mps=det.speed_mps,
+                confidence=prepared.adjusted_confidence,
+                source=det.source,
+                manufacturer=det.manufacturer,
+                model=grouping_model,
+                classification=classification,
+                ssid=det.ssid,
+                bssid=det.bssid,
+                ie_hash=getattr(det, "ie_hash", None),
+                operator_lat=det.operator_lat,
+                operator_lon=det.operator_lon,
+                operator_id=det.operator_id,
+                sensor_type=sensor_type,
+                timestamp=prepared.detection_ts,
+            )
+        except Exception as exc:
+            logger.debug("Post-commit sensor tracking skipped: %s", exc)
+
+        # Track per-sensor RSSI stability vs GPS movement over time.
+        if det.latitude and det.longitude and det.latitude != 0 and det.rssi:
+            spoof_key = f"{det.drone_id}_{batch.device_id}"
+            state = _spoof_tracker.setdefault(
+                spoof_key, {"gps": [], "rssi": [], "flagged": False},
+            )
+            state["gps"].append((det.latitude, det.longitude, received_at))
+            state["rssi"].append((det.rssi, received_at))
+            if len(state["gps"]) > 30:
+                state["gps"] = state["gps"][-30:]
+                state["rssi"] = state["rssi"][-30:]
+            if len(state["gps"]) >= 8 and not state["flagged"]:
+                lats = [g[0] for g in state["gps"]]
+                lons = [g[1] for g in state["gps"]]
+                rssis = [r[0] for r in state["rssi"]]
+                gps_spread_m = (
+                    ((max(lats) - min(lats)) * 111320) ** 2
+                    + ((max(lons) - min(lons)) * 111320 * 0.78) ** 2
+                ) ** 0.5
+                rssi_range = max(rssis) - min(rssis)
+                if gps_spread_m > 50 and rssi_range < 6:
+                    state["flagged"] = True
+                    logger.warning(
+                        "SPOOF: %s on %s — GPS moved %.0fm but RSSI range %ddB (stationary transmitter spoofing GPS)",
+                        det.drone_id, batch.device_id, gps_spread_m, rssi_range,
+                    )
+
+    # Triangulated positions are derived from post-commit runtime state. They
+    # use a secondary best-effort transaction: if it fails, primary detections
+    # remain acknowledged and position de-duplication is not consumed.
+    triangulated_rows: list[TriangulatedPosition] = []
+    staged_positions: dict[str, tuple[float, float]] = {}
+    located = []
+    if db_detections:
+        try:
+            located = _sensor_tracker.get_located_drones()
+        except Exception as exc:
+            logger.debug("Post-commit position calculation skipped: %s", exc)
+    for located_drone in located:
+        if _is_calibration_tracking_id(located_drone.drone_id):
+            continue
+        if located_drone.position_source == "range_only":
+            continue
+        last_key = f"_last_pos_{located_drone.drone_id}"
+        last_pos = staged_positions.get(last_key, _position_dedup.get(last_key))
+        if last_pos:
+            dlat = (located_drone.lat - last_pos[0]) * 111320
+            dlon = (located_drone.lon - last_pos[1]) * 111320 * 0.78
+            if (dlat**2 + dlon**2) ** 0.5 < 1.0:
+                continue
+        staged_positions[last_key] = (located_drone.lat, located_drone.lon)
+        best_obs = (
+            max(located_drone.observations, key=lambda obs: obs.confidence)
+            if located_drone.observations else None
+        )
+        triangulated_rows.append(TriangulatedPosition(
+            drone_id=located_drone.drone_id,
+            lat=located_drone.lat,
+            lon=located_drone.lon,
+            alt=located_drone.alt,
+            accuracy_m=located_drone.accuracy_m,
+            position_source=located_drone.position_source,
+            sensor_count=located_drone.sensor_count,
+            confidence=located_drone.confidence,
+            manufacturer=located_drone.manufacturer,
+            model=located_drone.model,
+            ssid=best_obs.ssid if best_obs else None,
+            classification=classify_detection(
+                source=best_obs.source if best_obs else "",
+                confidence=located_drone.confidence,
+                ssid=best_obs.ssid if best_obs else None,
+                manufacturer=located_drone.manufacturer,
+                drone_id=located_drone.drone_id,
+                model=located_drone.model,
+                bssid=(
+                    best_obs.bssid
+                    if best_obs and hasattr(best_obs, "bssid") else None
+                ),
+                latitude=located_drone.lat,
+                longitude=located_drone.lon,
+            )[0] if best_obs else None,
+            observations_json=json.dumps([{
+                "device_id": obs.device_id,
+                "rssi": obs.rssi,
+                "distance_m": obs.estimated_distance_m,
+                "scanner_distance_m": obs.scanner_estimated_distance_m,
+                "backend_distance_m": obs.backend_estimated_distance_m,
+                "distance_source": obs.distance_source,
+                "range_model": obs.range_model,
+                "sensor_lat": obs.sensor_lat,
+                "sensor_lon": obs.sensor_lon,
+                "ssid": obs.ssid,
+            } for obs in located_drone.observations]),
+        ))
+
+    if triangulated_rows:
+        try:
+            db.add_all(triangulated_rows)
+            await db.commit()
+        except Exception as exc:
+            await db.rollback()
+            logger.warning(
+                "Secondary triangulated-position persistence failed after primary durability: %s",
+                exc,
+            )
         else:
-            _publish_ingest_dedup(staged_dedup, received_at)
+            _position_dedup.update(staged_positions)
 
     # Debounced entity checkpoint — persists dirty entities roughly every 30 s
     # so the dashboard entity count survives a backend restart. Runs on its

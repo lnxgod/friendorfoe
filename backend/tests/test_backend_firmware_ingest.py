@@ -6,10 +6,11 @@ import pytest
 from sqlalchemy import func, select
 
 from app.main import app
-from app.models.db_models import DroneDetection, TriangulatedPosition
+from app.models.db_models import DroneDetection, SensorNode, TriangulatedPosition
 from app.models.schemas import DroneDetectionBatch, DroneDetectionItem
 from app.routers import detections
 from app.services.database import get_db
+from app.services.signal_tracker import SignalTracker
 from app.services.triangulation import SensorTracker
 
 
@@ -56,6 +57,26 @@ PORTABLE_EVIDENCE = {
     "scanner_slot": 1,
     "scanner_slots_seen": 3,
 }
+
+
+async def _post_with_failed_primary_commit(
+    client, backend_sensor_session_factory, monkeypatch, body,
+):
+    normal_override = app.dependency_overrides[get_db]
+    async with backend_sensor_session_factory() as failing_session:
+        async def fail_commit():
+            raise RuntimeError("forced primary commit failure")
+
+        monkeypatch.setattr(failing_session, "commit", fail_commit)
+
+        async def failing_get_db():
+            yield failing_session
+
+        app.dependency_overrides[get_db] = failing_get_db
+        try:
+            return await client.post("/detections/drones", json=body)
+        finally:
+            app.dependency_overrides[get_db] = normal_override
 
 
 def test_backend_detection_preserves_every_ported_evidence_field():
@@ -115,6 +136,144 @@ def test_backend_batch_preserves_identity_health_and_queue_metadata():
 
 
 @pytest.mark.asyncio
+async def test_primary_db_outage_preserves_full_recent_detection_ring(
+    client, backend_sensor_session_factory, monkeypatch,
+):
+    existing = [object() for _ in range(50000)]
+    full_ring = deque(existing, maxlen=50000)
+    monkeypatch.setattr(detections, "_recent_detections", full_ring)
+    body = {
+        "device_id": "uplink_CB77A4",
+        "timestamp": int(time.time()),
+        "detections": [{
+            "drone_id": f"BLE:{uuid.uuid4().hex}",
+            "source": "ble_fingerprint",
+            "confidence": 0.8,
+            "bssid": "AA:BB:CC:DD:EE:FF",
+            "rssi": -48,
+        }],
+    }
+
+    response = await _post_with_failed_primary_commit(
+        client, backend_sensor_session_factory, monkeypatch, body,
+    )
+
+    assert response.status_code == 503
+    assert len(full_ring) == 50000
+    assert full_ring[0] is existing[0]
+    assert full_ring[-1] is existing[-1]
+
+
+@pytest.mark.asyncio
+async def test_primary_db_outage_does_not_advance_signal_tracker(
+    client, backend_sensor_session_factory, monkeypatch,
+):
+    drone_id = f"BLE:{uuid.uuid4().hex}"
+    signal_tracker = SignalTracker()
+    monkeypatch.setattr(detections, "_signal_tracker", signal_tracker)
+    body = {
+        "device_id": "uplink_CB77A4",
+        "timestamp": int(time.time()),
+        "detections": [{
+            "drone_id": drone_id,
+            "source": "ble_fingerprint",
+            "confidence": 0.8,
+            "bssid": "AA:BB:CC:DD:EE:FF",
+            "rssi": -48,
+        }],
+    }
+
+    first = await _post_with_failed_primary_commit(
+        client, backend_sensor_session_factory, monkeypatch, body,
+    )
+
+    assert first.status_code == 503
+    assert signal_tracker.tracks == {}
+    assert signal_tracker.alias_to_track == {}
+
+    retry = await client.post("/detections/drones", json=body)
+    assert retry.status_code == 200
+    assert retry.json()["processed"] == 1
+    live = signal_tracker.get_live_tracks(now=body["timestamp"])
+    assert live["count"] == 1
+    assert live["tracks"][0]["sample_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_secondary_position_commit_failure_keeps_primary_acknowledged(
+    client, backend_sensor_session_factory, monkeypatch,
+):
+    drone_id = f"BLE:{uuid.uuid4().hex}"
+    device_id = f"fixed-{uuid.uuid4().hex}"
+    monkeypatch.setattr(detections, "_sensor_tracker", SensorTracker())
+    async with backend_sensor_session_factory() as setup_session:
+        setup_session.add(SensorNode(
+            device_id=device_id,
+            name=device_id,
+            lat=37.3340,
+            lon=-122.4450,
+            alt=12.0,
+            is_fixed=True,
+        ))
+        await setup_session.commit()
+
+    body = {
+        "device_id": device_id,
+        "timestamp": int(time.time()),
+        "detections": [{
+            "drone_id": drone_id,
+            "source": "ble_fingerprint",
+            "confidence": 0.8,
+            "bssid": "AA:BB:CC:DD:EE:FF",
+            "rssi": -48,
+            "latitude": 37.3345,
+            "longitude": -122.4455,
+            "altitude_m": 42.0,
+        }],
+    }
+    normal_override = app.dependency_overrides[get_db]
+    async with backend_sensor_session_factory() as failing_session:
+        real_commit = failing_session.commit
+        commit_count = 0
+
+        async def fail_second_commit():
+            nonlocal commit_count
+            commit_count += 1
+            if commit_count == 2:
+                raise RuntimeError("forced secondary commit failure")
+            await real_commit()
+
+        monkeypatch.setattr(failing_session, "commit", fail_second_commit)
+
+        async def failing_get_db():
+            yield failing_session
+
+        app.dependency_overrides[get_db] = failing_get_db
+        try:
+            response = await client.post("/detections/drones", json=body)
+        finally:
+            app.dependency_overrides[get_db] = normal_override
+
+    assert response.status_code == 200
+    assert response.json()["processed"] == 1
+    assert commit_count == 2
+    assert f"_last_pos_{drone_id}" not in detections._position_dedup
+    async with backend_sensor_session_factory() as verification_session:
+        detection_count = await verification_session.scalar(
+            select(func.count(DroneDetection.id)).where(
+                DroneDetection.drone_id == drone_id,
+            )
+        )
+        position_count = await verification_session.scalar(
+            select(func.count(TriangulatedPosition.id)).where(
+                TriangulatedPosition.drone_id == drone_id,
+            )
+        )
+    assert detection_count == 1
+    assert position_count == 0
+
+
+@pytest.mark.asyncio
 async def test_primary_db_outage_returns_503_without_consuming_retry(
     client, backend_sensor_session_factory, monkeypatch,
 ):
@@ -129,7 +288,9 @@ async def test_primary_db_outage_returns_503_without_consuming_retry(
     def fail_if_full_state_is_copied(_value):
         raise AssertionError("ingest must not copy accumulated runtime state")
 
-    monkeypatch.setattr(detections, "deepcopy", fail_if_full_state_is_copied)
+    monkeypatch.setattr(
+        detections, "deepcopy", fail_if_full_state_is_copied, raising=False,
+    )
     body = {
         "device_id": "uplink_CB77A4",
         "device_lat": 37.3340,
@@ -174,6 +335,7 @@ async def test_primary_db_outage_returns_503_without_consuming_retry(
     assert retry.json()["processed"] == 1
     assert len(detections._recent_detections) == 1
     assert len(detections._sensor_tracker.observations[drone_id]) == 1
+    assert detections._sensor_tracker.sensors[body["device_id"]].sensor_type == "outdoor"
     assert detections._position_dedup[f"_last_pos_{drone_id}"] == (
         37.3345, -122.4455,
     )
