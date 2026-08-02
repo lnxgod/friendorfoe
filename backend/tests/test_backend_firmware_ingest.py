@@ -125,6 +125,11 @@ async def test_primary_db_outage_returns_503_without_consuming_retry(
     monkeypatch.setattr(detections, "_known_drones", {})
     monkeypatch.setattr(detections, "_drone_alerts", [])
     drone_tracker_sensor_before = detections._drone_tracker._sensor_tracker
+
+    def fail_if_full_state_is_copied(_value):
+        raise AssertionError("ingest must not copy accumulated runtime state")
+
+    monkeypatch.setattr(detections, "deepcopy", fail_if_full_state_is_copied)
     body = {
         "device_id": "uplink_CB77A4",
         "device_lat": 37.3340,

@@ -691,53 +691,61 @@ _identity_correlator = IdentityCorrelator()
 _entity_tracker.set_identity_correlator(_identity_correlator)
 
 
-_INGEST_RUNTIME_STATE = (
-    "_recent_detections",
-    "_known_drones",
-    "_drone_alerts",
-    "_anomaly_detector",
-    "_ble_enricher",
-    "_rf_anomaly_detector",
-    "_signal_tracker",
-    "_entity_tracker",
-    "_identity_correlator",
-    "_event_detector",
-    "_drone_tracker",
-    "_sensor_tracker",
-    "_spoof_tracker",
-    "_position_dedup",
-    "_bssid_to_ap",
-    "_node_source_fixup_events",
-)
+class _IngestRuntimeUndo:
+    """Bounded rollback record for one batch's ring, geometry, and positions."""
+
+    def __init__(self, tracker: SensorTracker):
+        self.recent_size = len(_recent_detections)
+        self.tracker = tracker
+        self.sensor_states: dict[str, object] = {}
+        self.observation_states: dict[str, object] = {}
+        self.position_states: dict[str, tuple[bool, tuple[float, float] | None]] = {}
+
+    def capture_tracker(self, tracking_id: str, device_id: str) -> None:
+        if device_id not in self.sensor_states:
+            self.sensor_states[device_id] = self.tracker.sensors.get(device_id)
+        if tracking_id not in self.observation_states:
+            observations = self.tracker.observations.get(tracking_id)
+            self.observation_states[tracking_id] = (
+                dict(observations) if observations is not None else None
+            )
+
+    def capture_position(self, key: str) -> None:
+        if key not in self.position_states:
+            self.position_states[key] = (key in _position_dedup, _position_dedup.get(key))
+
+    def rollback(self) -> None:
+        while len(_recent_detections) > self.recent_size:
+            _recent_detections.pop()
+        for device_id, previous in self.sensor_states.items():
+            if previous is None:
+                self.tracker.sensors.pop(device_id, None)
+            else:
+                self.tracker.sensors[device_id] = previous
+        for tracking_id, previous in self.observation_states.items():
+            if previous is None:
+                self.tracker.observations.pop(tracking_id, None)
+            else:
+                self.tracker.observations[tracking_id] = previous
+        for key, (existed, previous) in self.position_states.items():
+            if existed:
+                _position_dedup[key] = previous
+            else:
+                _position_dedup.pop(key, None)
 
 
-def _snapshot_ingest_runtime_state() -> dict[str, object]:
-    """Capture mutable in-memory ingest state for primary-commit rollback."""
-    snapshot = {name: deepcopy(globals()[name]) for name in _INGEST_RUNTIME_STATE}
-    snapshot["_drone_tracker_sensor_ref"] = _drone_tracker._sensor_tracker
-    snapshot["_entity_tracker_ble_ref"] = _entity_tracker._ble_enricher
-    snapshot["_entity_tracker_identity_ref"] = _entity_tracker._identity_correlator
-    return snapshot
-
-
-def _restore_ingest_runtime_state(snapshot: dict[str, object]) -> None:
-    """Restore a failed ingest without replacing singleton object identities."""
-    for name in _INGEST_RUNTIME_STATE:
-        saved = snapshot[name]
-        current = globals()[name]
-        if isinstance(current, dict):
-            current.clear()
-            current.update(saved)
-        elif isinstance(current, (list, deque)):
-            current.clear()
-            current.extend(saved)
-        else:
-            current.__dict__.clear()
-            current.__dict__.update(saved.__dict__)
-
-    _drone_tracker._sensor_tracker = snapshot["_drone_tracker_sensor_ref"]
-    _entity_tracker.set_ble_enricher(snapshot["_entity_tracker_ble_ref"])
-    _entity_tracker.set_identity_correlator(snapshot["_entity_tracker_identity_ref"])
+def _sensor_tracking_id(det, grouping_model: str) -> str:
+    if grouping_model.startswith("FP:"):
+        return grouping_model
+    if det.source == "wifi_probe_request":
+        return normalize_probe_identity(
+            ie_hash=getattr(det, "ie_hash", None),
+            drone_id=det.drone_id,
+            bssid=det.bssid,
+        ).identity
+    if det.source in ("wifi_ssid", "wifi_oui", "wifi_ap_inventory", "wifi_beacon_rid", "wifi_dji_ie") and det.bssid:
+        return f"AP:{det.bssid}"
+    return det.drone_id
 
 # v0.63: phone-driven walk calibration. The Android app advertises BLE
 # from known GPS positions; backend joins the trace × sensor sightings
@@ -1014,9 +1022,7 @@ async def ingest_drone_detections(
         batch.device_id, len(batch.detections), sensor_lat, sensor_lon, position_mode, geometry_enabled,
     )
 
-    ingest_runtime_state = (
-        _snapshot_ingest_runtime_state() if batch.detections else None
-    )
+    ingest_undo = _IngestRuntimeUndo(_sensor_tracker)
     processed = 0
     db_detections = []
 
@@ -1447,6 +1453,9 @@ async def ingest_drone_detections(
         det_ts = (det.timestamp / 1000.0
                   if det.timestamp and det.timestamp > 1_700_000_000_000
                   else received_at)
+        ingest_undo.capture_tracker(
+            _sensor_tracking_id(det, grouping_model), batch.device_id,
+        )
         _sensor_tracker.ingest(
             device_id=batch.device_id,
             device_lat=sensor_lat,
@@ -1532,6 +1541,7 @@ async def ingest_drone_detections(
                     moved = (dlat**2 + dlon**2) ** 0.5
                     if moved < 1.0:
                         continue
+                ingest_undo.capture_position(last_key)
                 _position_dedup[last_key] = (d.lat, d.lon)
 
                 # Get best observation's SSID
@@ -1579,8 +1589,7 @@ async def ingest_drone_detections(
 
             await db.commit()
         except Exception as exc:
-            if ingest_runtime_state is not None:
-                _restore_ingest_runtime_state(ingest_runtime_state)
+            ingest_undo.rollback()
             await db.rollback()
             logger.warning("Primary detection persistence failed: %s", exc)
             raise HTTPException(
