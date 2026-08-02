@@ -171,6 +171,26 @@ internal fun MapLocatingOverlay(modifier: Modifier = Modifier) {
 internal fun rememberMapCameraOwnership(mapInstance: Any): MutableState<Boolean> =
     remember(mapInstance) { mutableStateOf(false) }
 
+@Composable
+internal fun rememberAcceptedMapPosition(
+    mapInstance: Any,
+    locationPermissionUsable: Boolean,
+    candidate: MapLocationFix?,
+    nowElapsedRealtimeNanos: () -> Long = SystemClock::elapsedRealtimeNanos,
+): Position? {
+    var acceptedPosition by remember(mapInstance, locationPermissionUsable) {
+        mutableStateOf<Position?>(null)
+    }
+    LaunchedEffect(mapInstance, candidate, locationPermissionUsable) {
+        acceptedPosition = updateMapPositionForInstance(
+            acceptedPosition = acceptedPosition,
+            candidate = candidate,
+            nowElapsedRealtimeNanos = nowElapsedRealtimeNanos(),
+        )
+    }
+    return acceptedPosition
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MapViewScreen(
@@ -265,17 +285,11 @@ fun MapViewScreen(
             },
         )
     }
-    var acceptedUserPosition by remember(mapView, locationPermissionState.isUsable()) {
-        mutableStateOf<Position?>(null)
-    }
-    LaunchedEffect(mapView, userLocationFix) {
-        acceptedUserPosition = updateMapPositionForInstance(
-            acceptedPosition = acceptedUserPosition,
-            candidate = userLocationFix,
-            nowElapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos(),
-        )
-    }
-    val userPosition = acceptedUserPosition
+    val userPosition = rememberAcceptedMapPosition(
+        mapInstance = mapView,
+        locationPermissionUsable = locationPermissionState.isUsable(),
+        candidate = userLocationFix,
+    )
         ?: Position(latitude = 0.0, longitude = 0.0, altitudeMeters = 0.0)
     val overlayPlan = mapOverlayPlan(
         locationPermissionState = locationPermissionState,

@@ -13,6 +13,7 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.junit4.StateRestorationTester
+import com.friendorfoe.domain.model.Position
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotSame
@@ -132,6 +133,33 @@ class StableAndroidViewHostTest {
         assertFalse(view.dispatchTouchEvent(down))
         assertEquals(1, ownershipClaims)
         down.recycle()
+    }
+
+    @Test
+    fun unchangedFreshFixIsAcceptedWhenPermissionBecomesUsable() {
+        val permissionUsable = mutableStateOf(false)
+        val mapInstance = Any()
+        val position = Position(36.1699, -115.1398, 620.0)
+        val fix = MapLocationFix(
+            position = position,
+            elapsedRealtimeNanos = 110_000_000_000L,
+        )
+        var acceptedPosition: Position? = null
+
+        compose.setContent {
+            acceptedPosition = rememberAcceptedMapPosition(
+                mapInstance = mapInstance,
+                locationPermissionUsable = permissionUsable.value,
+                candidate = fix,
+                nowElapsedRealtimeNanos = { 120_000_000_000L },
+            )
+        }
+        compose.waitForIdle()
+
+        compose.runOnUiThread { permissionUsable.value = true }
+        compose.waitForIdle()
+
+        compose.runOnIdle { assertEquals(position, acceptedPosition) }
     }
 }
 
