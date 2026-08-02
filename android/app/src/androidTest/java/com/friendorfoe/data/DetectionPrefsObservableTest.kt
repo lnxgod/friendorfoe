@@ -70,6 +70,14 @@ class DetectionPrefsObservableTest {
                 }.sensorBackendEnabled,
             )
 
+            prefs.backendOnlyMode = true
+            assertTrue(sharedPreferences.getBoolean("sensor_backend_only_mode", false))
+            assertTrue(
+                withTimeout(2_000) {
+                    prefs.settings.first { it.backendOnlyMode }
+                }.backendOnlyMode,
+            )
+
             prefs.sensorBackendEnabled = false
             withTimeout(2_000) {
                 prefs.settings.first {
@@ -79,6 +87,7 @@ class DetectionPrefsObservableTest {
                 assertFalse(snapshot.sensorBackendEnabled)
                 assertFalse(snapshot.backendOnlyMode)
             }
+            assertFalse(sharedPreferences.getBoolean("sensor_backend_only_mode", true))
         } finally {
             val editor = sharedPreferences.edit()
             keys.forEach { key ->

@@ -150,6 +150,17 @@ class AboutViewModelTest {
     }
 
     @Test
+    fun freshSettingsProjectBackendTestingAsDisabled() {
+        val viewModel = viewModel(
+            settings = FakeInfoSettingsStore(DetectionSettings.defaults()),
+            session = sessionRepository(),
+        )
+
+        assertFalse(viewModel.uiState.value.settings.sensorBackendEnabled)
+        assertFalse(viewModel.uiState.value.backendUrlCanTest)
+    }
+
+    @Test
     fun sourceStatusCallsOutMissingRuntimeAndNotificationDelivery() {
         val statuses = sourceStatus(
             settings = DetectionSettings.defaults().copy(
