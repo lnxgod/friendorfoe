@@ -1,7 +1,7 @@
 # Backend Sensor Firmware Design
 
 **Date:** 2026-08-01
-**Status:** Approved for implementation planning
+**Status:** Approved for implementation
 **Branch:** `codex/backend-firmware`
 
 ## Goal
@@ -15,7 +15,12 @@ threat indication.
 
 ## Approved Product Boundary
 
-One physical backend sensor is one three-board assembly:
+One physical backend sensor is the existing no-screen three-board assembly,
+referred to operationally as the **Lite** sensor. `Lite` identifies the
+hardware unit only; every new binary, firmware target, manifest, and release
+name remains explicitly `backend`.
+
+One assembly contains:
 
 - one XIAO ESP32-S3R8 uplink/coordinator;
 - one XIAO ESP32-S3R8 BLE-primary scanner;
@@ -57,10 +62,14 @@ It retains the sensing product:
 ## Hard Isolation From Badge Firmware
 
 The backend firmware is a vendored source snapshot, not another build flag in
-the badge projects. Its complete source and build graph lives under:
+the badge projects. Its complete source and build graph lives in the
+top-level `backend-firmware/` subtree, intentionally outside `esp32/**`. The
+existing badge web-flasher workflow watches `esp32/**` and deploys from main;
+this location prevents a backend-only change from triggering a badge rebuild
+or Pages deployment without modifying that protected workflow. The tree is:
 
 ```text
-esp32/backend-firmware/
+backend-firmware/
   README.md
   shared/
   scanner/
@@ -110,6 +119,24 @@ Every artifact filename, image descriptor, runtime identification line,
 scanner heartbeat, catalog record, manifest, and OTA compatibility check uses
 these backend identities. Badge and production targets are never aliases or
 accepted substitutes.
+
+Published backend artifacts use target-prefixed names such as
+`scanner-s3-combo-backend-firmware.bin`; generic PlatformIO filenames exist
+only inside a local build directory. Backend tags use the reserved
+`backend-fw-<version>` namespace and never begin with `v`. While the existing
+badge workflow reacts to every published GitHub Release, backend firmware is
+distributed only as a private Actions artifact; publishing a GitHub Release is
+prohibited.
+
+Each application image also contains exactly one fixed-layout backend identity
+record. The record is exactly 164 bytes: little-endian `uint32_t magic =
+0x42464F46`, `uint16_t schema = 1`, `uint16_t image_kind` (`0` uplink or `1`
+scanner), `target[40]`, `project[40]`, `hardware[40]`, `version[32]`, then a
+little-endian CRC32 over bytes 0 through 159. Every string is ASCII,
+NUL-terminated, and zero-filled after its first NUL. Release tooling, the
+backend catalog, and both OTA consumers parse exactly one such record and
+require it to agree with the ESP application descriptor. They do not infer
+compatibility from arbitrary strings found elsewhere in a binary.
 
 The node's operational `device_id` remains its existing NVS value or legacy
 `uplink_XXXXXX` MAC-suffix identity. This preserves registered names,
@@ -202,10 +229,17 @@ keys (`wifi_ssid`, `wifi_password`, `backend_url`, `device_id`, and `ap_pass`)
 are imported when the new ordered-network record is absent. Passwords and
 credentials are never returned by HTTP or status JSON.
 
-After a successful backend upload, the AP allows a 30-second client grace
-period and then shuts down. Scanner operation continues while the AP is active.
-The portal can change configuration and view health but cannot stage or flash
-firmware.
+The AP policy records a new generation whenever the AP starts or configuration
+is committed. Only a successful backend upload after that generation begins the
+30-second client grace period, after which the AP shuts down. A success from
+before a USB/manual AP request cannot immediately close the portal. Scanner
+operation continues while the AP is active. The portal can change configuration
+and view health but cannot stage or flash firmware.
+
+Automatic update polling is read-only by default. A migrated or newly created
+configuration has `auto_update_enabled=false`; enabling image writes requires
+an explicit, confirmed portal action. USB maintenance remains the only update
+write path while that value is false.
 
 ## Runtime Data Flow
 
@@ -242,9 +276,10 @@ upload.
 
 ## Yellow LED Contract
 
-Official XIAO hardware provides one active-low yellow/orange user LED on
-GPIO21. There is no onboard RGB LED. All three board LEDs mirror the uplink's
-selected logical state.
+[Seeed's XIAO ESP32-S3 hardware documentation](https://wiki.seeedstudio.com/xiao_esp32s3_getting_started/)
+identifies the user LED as GPIO21 and active-low. It is a single yellow/orange
+LED, not an onboard RGB LED. All three board LEDs mirror the uplink's selected
+logical state.
 
 The uplink sends this newline-delimited command to each scanner every two
 seconds and whenever state changes:
@@ -253,18 +288,20 @@ seconds and whenever state changes:
 {"type":"led_state","state":"drone","generation":42,"ttl_ms":6000}
 ```
 
-Scanners accept only known state names and monotonic generations. If a command
-expires, a scanner enters `uart_lost` locally. LED driving uses no heap
-allocation and no second timer/RMT peripheral.
+Scanners accept only known state names and increasing generations. An
+equal-generation, byte-identical resend refreshes the TTL without restarting
+the pattern; an equal-generation command with changed content is rejected. If
+a command expires, a scanner enters `uart_lost` locally. LED driving uses no
+heap allocation and no second timer/RMT peripheral.
 
 | State | Active-low GPIO21 pattern |
 | --- | --- |
 | `healthy` | 80 ms on, 2920 ms off |
-| `network_degraded` | 300 ms on/off twice, then 1800 ms off |
+| `network_degraded` | two 300 ms on pulses separated by 300 ms off, then 1800 ms off |
 | `drone` | 400 ms on, 120 ms off, 120 ms on, then 1360 ms off |
-| `meta` | four 100 ms on / 100 ms off pulses, then 1000 ms off |
+| `meta` | four 100 ms on pulses separated by 100 ms off, then 1000 ms off |
 | `drone_meta` | one complete `drone` cycle followed by one complete `meta` cycle |
-| `fatal` | three 120 ms on / 120 ms off pulses, then 800 ms off |
+| `fatal` | three 120 ms on pulses separated by 120 ms off, then 800 ms off |
 | `uart_lost` | 1000 ms on, 1000 ms off |
 
 State priority is:
@@ -325,7 +362,28 @@ ESP-IDF pending-verify rollback remains enabled.
 No backend artifact accepts badge or production images. No badge manifest
 lists backend images. AP configuration never mutates firmware. USB remains the
 physical recovery path for the uplink; scanner recovery normally uses the
-uplink's serialized UART relay.
+uplink's serialized UART relay after the scanner already runs a backend target.
+
+The first cross-family scanner migration is not assumed to work over UART.
+Accepted badge and production scanners fail closed when the offered target,
+ESP app project, or hardware identity differs from their running image. The
+canary therefore inventories the installed scanner updater first and uses
+direct USB for each scanner's initial backend flash. No migration bridge may
+impersonate a badge or production target, and no permissive legacy path is
+assumed for the canary. If either scanner cannot be reached over USB, rollout
+pauses until physical access is available.
+
+Initial USB migration accepts only a source-audited, exact legacy partition
+table associated with the captured running identity. It separately proves that
+the candidate artifact uses the exact backend partition table and that every
+write range stays outside preserved NVS. After migration, the live table must
+match the backend table exactly. Unknown legacy layouts are never inferred or
+accepted.
+
+ESP-IDF boots an initial direct-USB application from erased OTA data as valid;
+the canary therefore requires `VALID` for the new scanner images and never
+describes the initial migration as pending verification. Pending-verify states
+apply only to later in-family OTA operations.
 
 ## Testing Strategy
 
@@ -367,14 +425,36 @@ canary proceeds as follows:
    identities, partitions, scanner roles, and current configuration.
 2. Back up recoverable flash/NVS data and retain the original binaries and
    recovery commands.
-3. Flash the backend uplink over USB, then stage the single backend scanner
-   image through its UART relay to both scanner slots.
-4. Verify first-boot AP configuration, Wi-Fi connection, time sync, scanner
+3. Before any write, inventory each scanner's running target, project,
+   hardware, version, and OTA admission behavior while the original uplink is
+   still available. Verify two independent full-flash reads and two independent
+   NVS reads for every board, then obtain operator approval.
+4. Keep the UART wiring fixed, place the original uplink in a reset/ROM-loader
+   quiescent state, and prove it is no longer driving either scanner link. Flash
+   scanner slot 0 and then scanner slot 1 by direct USB. Do not run the original
+   uplink again after the first write. Require the exact backend target,
+   project, hardware, version, MAC, valid initial OTA state, and preserved NVS
+   evidence from each scanner; their radios may remain quiescent until the
+   backend uplink exists.
+5. Flash the backend uplink over USB while preserving its NVS/device identity.
+   After it assigns current-boot roles, require both scanners to acknowledge
+   their roles, report the required radio health and command ingress, clear
+   rollback pending, and identify as backend firmware. Only then verify that
+   subsequent scanner backend-to-backend updates succeed through the serialized
+   UART relay. Capture a second, independently verified full-flash backup of all
+   three now-healthy backend boards; later OTA recovery uses this backend
+   baseline, not the original-family images.
+6. Verify first-boot AP configuration, Wi-Fi connection, time sync, scanner
    role acknowledgements, heartbeat, detection upload, all LED states, BLE
    investigation, outage buffering, OTA refusal cases, reboot recovery, and
    backend location continuity.
-5. Soak the canary before changing another physical unit.
-6. Roll out one unit at a time, retaining a working rollback route throughout.
+7. Soak the canary before changing another physical unit.
+8. Roll out one unit at a time, retaining a working rollback route throughout.
+
+Restoring the original firmware is an explicit whole-assembly rollback, never
+an automatic response to a later OTA failure. It quiesces the current uplink,
+restores both scanners first and the original uplink last, and requires a new
+operator approval bound to the three captured MACs and original backup hashes.
 
 ## Acceptance Criteria
 
