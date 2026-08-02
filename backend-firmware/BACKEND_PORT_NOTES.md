@@ -25,11 +25,11 @@ copy. It never retains a caller pointer. The UART consumer registered by a later
 task owns bounded queueing and cross-task lifetime.
 
 Native-linked portable sources are Task-1 identity, detection policy, privacy
-signatures, both sinks, the pure glasses classifier, Bayesian fusion, BLE
-fingerprinting and behavioral threat detection, DJI/French/OpenDroneID/Wi-Fi
-Beacon RID/OUI/SSID parsers, and the test clock. Native parser logging resolves
-to no-op stubs; timing resolves to the explicitly settable test clock. The
-native link includes `-lm`.
+signatures, both sinks, the pure glasses classifier, the typed BLE/Wi-Fi feature
+adapter, Bayesian fusion, BLE fingerprinting and behavioral threat detection,
+DJI/French/OpenDroneID/Wi-Fi Beacon RID/OUI/SSID parsers, and the test clock.
+Native parser logging resolves to no-op stubs; timing resolves to the explicitly
+settable test clock. The native link includes `-lm`.
 
 `ble_remote_id.c`, `wifi_scanner.c`, the runtime half of
 `ble_investigator.c`, and `ble_ja3.c` remain device-only. Their local copies
@@ -45,9 +45,11 @@ are not native-linked.
 fixture helpers from the six Task-2 donor test blobs. It intentionally omits
 the textual `ble_remote_id.c` inclusion and all badge Easter/display cases.
 Additional fixtures cover French DRI and Wi-Fi Beacon RID identity, position,
-altitude, source, and RSSI. The backend matrix covers BLE fingerprints, Meta,
-trackers, venue/privacy beacons, pairing spam, serial skimmers, Wi-Fi APs,
-probes, associations, anomalies, and lock-on snapshots through the sink.
+altitude, source, and RSSI. The backend matrix starts with raw BLE
+advertisements, real behavioral-detector signals, and source-specific Wi-Fi
+observation structs. The production feature adapter constructs and emits the
+BLE fingerprint/privacy, Meta, tracker, venue, pairing-spam, serial-skimmer,
+Wi-Fi AP, probe, association, anomaly, and lock-on snapshots through the sink.
 
 ## Donor ledger
 

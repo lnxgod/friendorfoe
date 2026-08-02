@@ -6,17 +6,18 @@ is provenance evidence only and is never compiled.
 
 The Task-2 scanner baseline provides portable BLE/Wi-Fi parsers, privacy and
 detection policy, Bayesian fusion, a pure smart-glasses classifier, and two
-synchronous sink boundaries. A later scanner UART task registers the sink
-consumers and owns any cross-task queueing. Producers pass stack-safe snapshots;
-the sinks copy before calling the registered consumer and retain no caller
-pointers.
+synchronous sink boundaries. Its pure feature adapter turns typed BLE and Wi-Fi
+observations into complete detection snapshots before emission. A later scanner
+UART task registers the sink consumers and owns any cross-task queueing.
+Producers pass stack-safe snapshots; the sinks copy before calling the
+registered consumer and retain no caller pointers.
 
 ## Verify the portable detector baseline
 
 ```sh
-/Users/billh/.platformio/penv/bin/pio test -e backend-native -f test_ported_detectors
-/Users/billh/gai/friendorfoe/.worktrees/backend-firmware/backend/.venv312/bin/python tools/check_source_isolation.py --root .
-/Users/billh/gai/friendorfoe/.worktrees/backend-firmware/backend/.venv312/bin/python tools/vendor_snapshot.py --repo-root .. --manifest VENDOR_MANIFEST.json --check
+pio test -e backend-native -f test_ported_detectors
+python3 tools/check_source_isolation.py --root .
+python3 tools/vendor_snapshot.py --repo-root .. --manifest VENDOR_MANIFEST.json --check
 ```
 
 To materialize a missing snapshot from the pinned donor commit, omit

@@ -40,7 +40,7 @@
 #include <stdint.h>
 #include <stdatomic.h>
 
-#if CONFIG_FOF_GLASSES_DETECTION
+#if CONFIG_FOF_BACKEND_GLASSES_DETECTION
 #include "backend_glasses_classifier.h"
 #include "backend_glasses_settings.h"
 #endif
@@ -312,7 +312,7 @@ static void backend_ble_diag_reset(void)
     memset(&s_ble_dbg_priv, 0, sizeof(s_ble_dbg_priv));
 }
 
-#if CONFIG_FOF_GLASSES_DETECTION
+#if CONFIG_FOF_BACKEND_GLASSES_DETECTION
 
 static int collect_uuid16s_from_adv(const uint8_t *data, int length,
                                     uint16_t *out, int out_max)
@@ -607,7 +607,7 @@ static bool backend_ble_should_emit_detection(const ble_fingerprint_t *fp,
     return fp->is_tracker && rssi >= -55;
 }
 
-#if CONFIG_FOF_GLASSES_DETECTION
+#if CONFIG_FOF_BACKEND_GLASSES_DETECTION
 static uint32_t backend_glasses_hash(const uint8_t mac[6])
 {
     uint32_t h = 0x811c9dc5u;
@@ -1286,7 +1286,7 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg)
             }
         }
 
-#if CONFIG_FOF_GLASSES_DETECTION
+#if CONFIG_FOF_BACKEND_GLASSES_DETECTION
         if (backend_glasses_settings_is_enabled()) {
             struct ble_hs_adv_fields fields;
             int parse_rc = ble_hs_adv_parse_fields(&fields, disc->data, disc->length_data);
@@ -1648,7 +1648,7 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg)
             }
         }
 
-#if CONFIG_FOF_GLASSES_DETECTION
+#if CONFIG_FOF_BACKEND_GLASSES_DETECTION
         if (backend_glasses_settings_is_enabled()) {
             struct ble_hs_adv_fields fields;
             int parse_rc = ble_hs_adv_parse_fields(&fields, ext->data, ext->length_data);

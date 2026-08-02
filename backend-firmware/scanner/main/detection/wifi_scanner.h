@@ -25,7 +25,7 @@ extern "C" {
 /**
  * Initialize the WiFi subsystem in promiscuous mode.
  *
- * @param detection_queue FreeRTOS queue for drone_detection_t results
+ * Detections are emitted through the registered backend_detection_sink.
  */
 void wifi_scanner_init(void);
 

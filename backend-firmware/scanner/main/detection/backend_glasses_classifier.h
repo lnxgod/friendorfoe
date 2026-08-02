@@ -6,7 +6,7 @@
  * devices by matching BLE advertisement data against a database of known
  * manufacturer Company IDs, service UUIDs, and device name prefixes.
  *
- * Gated by CONFIG_FOF_GLASSES_DETECTION (KConfig, default y).
+ * Device integration is gated by CONFIG_FOF_BACKEND_GLASSES_DETECTION.
  */
 
 #pragma once
