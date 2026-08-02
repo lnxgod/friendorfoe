@@ -13,6 +13,8 @@
  *   - 27+ bytes: app_code(1) + counter(1) + ODID message(25)
  */
 
+#include "sdkconfig.h"
+
 #include "backend_ble_rssi_policy.h"
 
 #if defined(BLE_REMOTE_ID_HANDOFF_TEST)

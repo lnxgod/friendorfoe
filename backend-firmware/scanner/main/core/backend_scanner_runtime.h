@@ -114,6 +114,8 @@ uint8_t backend_scanner_runtime_required_restart_mask(
 bool backend_scanner_runtime_worker_iteration(
     backend_scanner_runtime_t *runtime,
     uint32_t worker);
+uint32_t backend_scanner_runtime_required_watchdog_mask(
+    backend_scan_profile_t profile);
 bool backend_scanner_runtime_rollback_ready(
     const backend_scanner_runtime_t *runtime);
 

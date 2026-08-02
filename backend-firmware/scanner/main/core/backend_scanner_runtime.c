@@ -273,10 +273,34 @@ bool backend_scanner_runtime_worker_iteration(
     return true;
 }
 
+uint32_t backend_scanner_runtime_required_watchdog_mask(
+    backend_scan_profile_t profile)
+{
+    const uint32_t base = BACKEND_WORKER_UART_RX_CONTROL |
+        BACKEND_WORKER_OTA;
+    switch (profile) {
+    case BACKEND_SCAN_PROFILE_BLE_PRIMARY:
+        return base | BACKEND_WORKER_BLE_RADIO;
+    case BACKEND_SCAN_PROFILE_WIFI_PRIMARY:
+        return base | BACKEND_WORKER_WIFI_RADIO;
+    case BACKEND_SCAN_PROFILE_HYBRID_FAILOVER:
+        return base | BACKEND_WORKER_BLE_RADIO |
+            BACKEND_WORKER_WIFI_RADIO;
+    case BACKEND_SCAN_PROFILE_QUIESCENT:
+    default:
+        return 0U;
+    }
+}
+
 bool backend_scanner_runtime_rollback_ready(
     const backend_scanner_runtime_t *runtime)
 {
-    return runtime && backend_watchdog_ready(
-        BACKEND_WATCHDOG_SCANNER_REQUIRED_MASK,
-        runtime->watchdog_completed_mask);
+    if (!runtime) {
+        return false;
+    }
+    const uint32_t required =
+        backend_scanner_runtime_required_watchdog_mask(
+            backend_scanner_runtime_profile(runtime));
+    return required != 0U && backend_watchdog_ready(
+        required, runtime->watchdog_completed_mask);
 }

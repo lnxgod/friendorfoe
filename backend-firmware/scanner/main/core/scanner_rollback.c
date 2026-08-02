@@ -3,6 +3,7 @@
 #include <string.h>
 
 #include "backend_recovery_policy.h"
+#include "backend_scanner_runtime.h"
 
 static bool valid_operational_profile(backend_scan_profile_t profile)
 {
@@ -14,6 +15,10 @@ static bool current_boot_is_ready(
     const scanner_rollback_policy_t *policy,
     const scanner_rollback_readiness_t *readiness)
 {
+    const uint32_t required_watchdog = readiness == NULL
+        ? 0U
+        : backend_scanner_runtime_required_watchdog_mask(
+            readiness->expected_profile);
     return policy != NULL && readiness != NULL &&
            readiness->boot_id == policy->boot_id &&
            readiness->command_ingress_boot_id == policy->boot_id &&
@@ -24,9 +29,9 @@ static bool current_boot_is_ready(
            valid_operational_profile(readiness->expected_profile) &&
            readiness->reported_profile == readiness->expected_profile &&
            readiness->required_radio_healthy &&
+           required_watchdog != 0U &&
            (readiness->watchdog_ready_mask &
-            BACKEND_WATCHDOG_SCANNER_REQUIRED_MASK) ==
-               BACKEND_WATCHDOG_SCANNER_REQUIRED_MASK;
+            required_watchdog) == required_watchdog;
 }
 
 bool scanner_rollback_policy_init(

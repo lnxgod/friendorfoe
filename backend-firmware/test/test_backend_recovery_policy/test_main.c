@@ -414,7 +414,7 @@ void test_scanner_runtime_time_is_monotonic_and_restart_mask_tracks_role(void)
         backend_scanner_runtime_required_restart_mask(&runtime));
 }
 
-void test_scanner_runtime_watchdog_rejects_invalid_worker_before_readiness(void)
+void test_scanner_runtime_watchdog_readiness_tracks_assigned_profile(void)
 {
     backend_scanner_runtime_t runtime;
     backend_scanner_runtime_init(&runtime, 77U);
@@ -427,12 +427,43 @@ void test_scanner_runtime_watchdog_rejects_invalid_worker_before_readiness(void)
     TEST_ASSERT_TRUE(backend_scanner_runtime_worker_iteration(
         &runtime, BACKEND_WORKER_UART_RX_CONTROL));
     TEST_ASSERT_TRUE(backend_scanner_runtime_worker_iteration(
-        &runtime, BACKEND_WORKER_BLE_RADIO));
-    TEST_ASSERT_TRUE(backend_scanner_runtime_worker_iteration(
-        &runtime, BACKEND_WORKER_WIFI_RADIO));
+        &runtime, BACKEND_WORKER_OTA));
+    TEST_ASSERT_FALSE(backend_scanner_runtime_rollback_ready(&runtime));
+
+    TEST_ASSERT_EQUAL(BACKEND_ROLE_APPLIED,
+        backend_scanner_runtime_apply_role(
+            &runtime, 77U, 1U, BACKEND_SCAN_PROFILE_BLE_PRIMARY));
     TEST_ASSERT_FALSE(backend_scanner_runtime_rollback_ready(&runtime));
     TEST_ASSERT_TRUE(backend_scanner_runtime_worker_iteration(
+        &runtime, BACKEND_WORKER_BLE_RADIO));
+    TEST_ASSERT_TRUE(backend_scanner_runtime_rollback_ready(&runtime));
+
+    backend_scanner_runtime_init(&runtime, 88U);
+    TEST_ASSERT_EQUAL(BACKEND_ROLE_APPLIED,
+        backend_scanner_runtime_apply_role(
+            &runtime, 88U, 1U, BACKEND_SCAN_PROFILE_WIFI_PRIMARY));
+    TEST_ASSERT_TRUE(backend_scanner_runtime_worker_iteration(
+        &runtime, BACKEND_WORKER_UART_RX_CONTROL));
+    TEST_ASSERT_TRUE(backend_scanner_runtime_worker_iteration(
         &runtime, BACKEND_WORKER_OTA));
+    TEST_ASSERT_FALSE(backend_scanner_runtime_rollback_ready(&runtime));
+    TEST_ASSERT_TRUE(backend_scanner_runtime_worker_iteration(
+        &runtime, BACKEND_WORKER_WIFI_RADIO));
+    TEST_ASSERT_TRUE(backend_scanner_runtime_rollback_ready(&runtime));
+
+    backend_scanner_runtime_init(&runtime, 99U);
+    TEST_ASSERT_EQUAL(BACKEND_ROLE_APPLIED,
+        backend_scanner_runtime_apply_role(
+            &runtime, 99U, 1U, BACKEND_SCAN_PROFILE_HYBRID_FAILOVER));
+    TEST_ASSERT_TRUE(backend_scanner_runtime_worker_iteration(
+        &runtime, BACKEND_WORKER_UART_RX_CONTROL));
+    TEST_ASSERT_TRUE(backend_scanner_runtime_worker_iteration(
+        &runtime, BACKEND_WORKER_OTA));
+    TEST_ASSERT_TRUE(backend_scanner_runtime_worker_iteration(
+        &runtime, BACKEND_WORKER_BLE_RADIO));
+    TEST_ASSERT_FALSE(backend_scanner_runtime_rollback_ready(&runtime));
+    TEST_ASSERT_TRUE(backend_scanner_runtime_worker_iteration(
+        &runtime, BACKEND_WORKER_WIFI_RADIO));
     TEST_ASSERT_TRUE(backend_scanner_runtime_rollback_ready(&runtime));
 }
 
@@ -486,7 +517,7 @@ int main(void)
     BACKEND_RUN_TEST(
         test_scanner_runtime_time_is_monotonic_and_restart_mask_tracks_role);
     BACKEND_RUN_TEST(
-        test_scanner_runtime_watchdog_rejects_invalid_worker_before_readiness);
+        test_scanner_runtime_watchdog_readiness_tracks_assigned_profile);
     BACKEND_RUN_TEST(
         test_recovery_helpers_fail_closed_on_invalid_time_or_arguments);
     return UNITY_END();

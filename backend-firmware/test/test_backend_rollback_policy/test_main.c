@@ -16,12 +16,44 @@ static scanner_rollback_readiness_t ready_input(uint32_t boot_id)
         .uptime_ms = SCANNER_ROLLBACK_MIN_UPTIME_MS,
         .expected_profile = BACKEND_SCAN_PROFILE_BLE_PRIMARY,
         .reported_profile = BACKEND_SCAN_PROFILE_BLE_PRIMARY,
-        .watchdog_ready_mask = BACKEND_WATCHDOG_SCANNER_REQUIRED_MASK,
+        .watchdog_ready_mask = BACKEND_WORKER_UART_RX_CONTROL |
+            BACKEND_WORKER_BLE_RADIO | BACKEND_WORKER_OTA,
         .command_ingress_healthy = true,
         .current_boot_role_acked = true,
         .required_radio_healthy = true,
     };
     return readiness;
+}
+
+void test_watchdog_readiness_tracks_the_assigned_radio_profile(void)
+{
+    scanner_rollback_policy_t policy;
+    scanner_rollback_readiness_t readiness = ready_input(77U);
+    TEST_ASSERT_TRUE(scanner_rollback_policy_init(&policy, 77U, true));
+
+    TEST_ASSERT_EQUAL(SCANNER_ROLLBACK_MARK_VALID,
+        scanner_rollback_policy_evaluate(&policy, &readiness, false));
+    readiness.watchdog_ready_mask = BACKEND_WORKER_UART_RX_CONTROL |
+        BACKEND_WORKER_WIFI_RADIO | BACKEND_WORKER_OTA;
+    TEST_ASSERT_EQUAL(SCANNER_ROLLBACK_WAIT,
+        scanner_rollback_policy_evaluate(&policy, &readiness, false));
+
+    readiness.expected_profile = BACKEND_SCAN_PROFILE_WIFI_PRIMARY;
+    readiness.reported_profile = BACKEND_SCAN_PROFILE_WIFI_PRIMARY;
+    TEST_ASSERT_EQUAL(SCANNER_ROLLBACK_MARK_VALID,
+        scanner_rollback_policy_evaluate(&policy, &readiness, false));
+    readiness.watchdog_ready_mask = BACKEND_WORKER_UART_RX_CONTROL |
+        BACKEND_WORKER_BLE_RADIO | BACKEND_WORKER_OTA;
+    TEST_ASSERT_EQUAL(SCANNER_ROLLBACK_WAIT,
+        scanner_rollback_policy_evaluate(&policy, &readiness, false));
+
+    readiness.expected_profile = BACKEND_SCAN_PROFILE_HYBRID_FAILOVER;
+    readiness.reported_profile = BACKEND_SCAN_PROFILE_HYBRID_FAILOVER;
+    TEST_ASSERT_EQUAL(SCANNER_ROLLBACK_WAIT,
+        scanner_rollback_policy_evaluate(&policy, &readiness, false));
+    readiness.watchdog_ready_mask |= BACKEND_WORKER_WIFI_RADIO;
+    TEST_ASSERT_EQUAL(SCANNER_ROLLBACK_MARK_VALID,
+        scanner_rollback_policy_evaluate(&policy, &readiness, false));
 }
 
 void test_sixty_seconds_alone_cannot_clear_pending_verify(void)
@@ -166,6 +198,8 @@ void test_invalid_arguments_profiles_and_time_fail_closed(void)
 int main(void)
 {
     UNITY_BEGIN();
+    BACKEND_RUN_TEST(
+        test_watchdog_readiness_tracks_the_assigned_radio_profile);
     BACKEND_RUN_TEST(
         test_sixty_seconds_alone_cannot_clear_pending_verify);
     BACKEND_RUN_TEST(test_every_current_boot_health_gate_is_required);
