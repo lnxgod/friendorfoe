@@ -686,6 +686,8 @@ def _validate_serial_status_pair(
     expected_mac: str,
     expected_boot_id: int,
     value: Any,
+    *,
+    expected_device_id: str | None = None,
 ) -> dict[str, dict[str, Any]]:
     pair = _required_mapping(value, "serial status pair")
     if set(pair) != {"boot", "health"}:
@@ -697,8 +699,16 @@ def _validate_serial_status_pair(
         or boot["boot_id"] != expected_boot_id
     ):
         raise EvidenceError("serial boot_id changed from the bound canary state")
-    if role == "uplink" and boot["device_id"] != health["device_id"]:
-        raise EvidenceError("serial uplink device identity changed within status")
+    if role == "uplink":
+        if not isinstance(expected_device_id, str) or not expected_device_id:
+            raise EvidenceError("state-bound serial uplink device ID is unavailable")
+        if (
+            boot["device_id"] != health["device_id"]
+            or boot["device_id"] != expected_device_id
+        ):
+            raise EvidenceError("serial uplink device identity changed from canary state")
+    elif expected_device_id is not None:
+        raise EvidenceError("scanner serial binding must not contain a device ID")
     return {"boot": boot, "health": health}
 
 
@@ -892,6 +902,7 @@ def _read_serial_status_response(
     timeout_s: float,
     buffer: bytearray,
     line_sink: Callable[[bytes, str], None],
+    expected_device_id: str | None = None,
     monotonic: Callable[[], float] = time.monotonic,
     selector: Callable[..., Any] = select.select,
     reader: Callable[[int, int], bytes] = os.read,
@@ -972,6 +983,7 @@ def _read_serial_status_response(
         expected_mac,
         expected_boot_id,
         {"boot": boot, "health": health},
+        expected_device_id=expected_device_id,
     )
 
 
@@ -1016,6 +1028,7 @@ def capture_serial_status(
     )
     expected_mac = binding["mac"]
     expected_boot_id = binding["boot_id"]
+    expected_device_id = binding["device_id"]
 
     root = _secure_directory(
         _require_canary_storage(output_dir, "serial log directory"),
@@ -1098,8 +1111,10 @@ def capture_serial_status(
                     timeout_s=response_timeout_s,
                     buffer=serial_buffer,
                     line_sink=record_received_line,
+                    expected_device_id=expected_device_id,
                     monotonic=monotonic,
                 ),
+                expected_device_id=expected_device_id,
             )
             if serial_buffer:
                 raise EvidenceError("serial status ended with an incomplete line")

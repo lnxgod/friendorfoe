@@ -627,6 +627,21 @@ def test_serial_status_pair_rejects_wrong_binding_or_secret(mutation, match):
         )
 
 
+def test_uplink_serial_pair_rejects_boot_and_health_device_drift_from_state():
+    pair = serial_status_pair("uplink")
+    pair["boot"]["device_id"] = "uplink_DRIFTED"
+    pair["health"]["device_id"] = "uplink_DRIFTED"
+
+    with pytest.raises(EvidenceError, match="canary state"):
+        evidence_tool._validate_serial_status_pair(
+            "uplink",
+            "A4:CF:12:CB:77:A4",
+            9001,
+            pair,
+            expected_device_id=DEVICE_ID,
+        )
+
+
 def test_serial_log_rejects_secret_before_write_and_preserves_panic(tmp_path):
     path = tmp_path / "serial.log"
     descriptor = os.open(path, os.O_WRONLY | os.O_CREAT, 0o600)
