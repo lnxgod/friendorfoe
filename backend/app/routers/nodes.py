@@ -37,6 +37,7 @@ from app.services.node_commands import (
     NodeCommandConflict,
     NodeCommandNotFound,
     NodeCommandService,
+    NodeCommandUnavailable,
 )
 
 logger = logging.getLogger(__name__)
@@ -45,10 +46,19 @@ router = APIRouter(prefix="/nodes", tags=["nodes"])
 
 _firmware_mgr = FirmwareManager()
 _node_command_service = NodeCommandService()
+_COMMAND_STORE_RETRY_AFTER_SECONDS = "1"
 
 _firmware_rollouts: dict[str, dict] = {}
 _firmware_rollout_log: list[str] = []
 _firmware_rollout_tasks: dict[str, asyncio.Task] = {}
+
+
+def _command_store_unavailable(exc: NodeCommandUnavailable) -> HTTPException:
+    return HTTPException(
+        status_code=503,
+        detail=str(exc),
+        headers={"Retry-After": _COMMAND_STORE_RETRY_AFTER_SECONDS},
+    )
 
 
 async def _run_subprocess(*args, **kwargs):
@@ -511,6 +521,8 @@ async def enqueue_ble_investigation(
         )
     except NodeCommandConflict as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except NodeCommandUnavailable as exc:
+        raise _command_store_unavailable(exc) from exc
 
 
 @router.post(
@@ -528,6 +540,8 @@ async def cancel_ble_investigation(
         )
     except NodeCommandNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except NodeCommandUnavailable as exc:
+        raise _command_store_unavailable(exc) from exc
 
 
 @router.get(
@@ -539,9 +553,12 @@ async def get_next_node_command(
     device_id: str,
     db: AsyncSession = Depends(get_db),
 ):
-    command = await _node_command_service.next_for_device(
-        db, device_id, now=time.time(),
-    )
+    try:
+        command = await _node_command_service.next_for_device(
+            db, device_id, now=time.time(),
+        )
+    except NodeCommandUnavailable as exc:
+        raise _command_store_unavailable(exc) from exc
     if command is None:
         return Response(status_code=204)
     return command
@@ -565,6 +582,8 @@ async def record_node_command_result(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except NodeCommandConflict as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except NodeCommandUnavailable as exc:
+        raise _command_store_unavailable(exc) from exc
 
 
 @router.get(
@@ -582,6 +601,8 @@ async def get_node_command_history(
         )
     except NodeCommandNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except NodeCommandUnavailable as exc:
+        raise _command_store_unavailable(exc) from exc
 
 
 @router.post("", response_model=NodeResponse, status_code=201)

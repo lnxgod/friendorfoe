@@ -3,18 +3,104 @@ import asyncio
 import pytest
 from pydantic import TypeAdapter
 from sqlalchemy import select
+from sqlalchemy.exc import OperationalError
 
 import app.services.node_commands as node_commands
+from app.routers import nodes
 from app.models.db_models import NodeCommand, NodeCommandResultEvent
 from app.models.schemas import BleInvestigationCreateRequest, NodeCommandResultRequest
 from app.services.node_commands import (
     NodeCommandConflict,
     NodeCommandNotFound,
     NodeCommandService,
+    NodeCommandUnavailable,
 )
 
 
 RESULT = TypeAdapter(NodeCommandResultRequest)
+COMMAND_STORE_RETRY_AFTER = "1"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("operation", "method", "url", "payload"),
+    [
+        (
+            "enqueue_ble_investigation",
+            "POST",
+            "/nodes/uplink_CB77A4/commands/ble-investigate",
+            {"target_mac": None, "mode": "passive_capture"},
+        ),
+        (
+            "request_cancel",
+            "POST",
+            "/nodes/uplink_CB77A4/commands/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/cancel",
+            None,
+        ),
+        (
+            "next_for_device",
+            "GET",
+            "/nodes/uplink_CB77A4/commands/next",
+            None,
+        ),
+        (
+            "record_result",
+            "POST",
+            "/nodes/uplink_CB77A4/commands/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/result",
+            {
+                "sequence": 0,
+                "type": "ble_inv_begin",
+                "request_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "mode": "passive_capture",
+                "target_mac": None,
+            },
+        ),
+        (
+            "history_for_device",
+            "GET",
+            "/nodes/uplink_CB77A4/commands/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            None,
+        ),
+    ],
+)
+async def test_command_store_outage_returns_retryable_503_for_every_handler(
+    client, monkeypatch, operation, method, url, payload,
+):
+    async def unavailable(*args, **kwargs):
+        raise NodeCommandUnavailable("node command store unavailable")
+
+    monkeypatch.setattr(nodes._node_command_service, operation, unavailable)
+    response = await client.request(method, url, json=payload)
+
+    assert response.status_code == 503
+    assert response.headers["retry-after"] == COMMAND_STORE_RETRY_AFTER
+
+
+@pytest.mark.asyncio
+async def test_enqueue_operational_error_rolls_back_and_becomes_unavailable(
+    db_session, monkeypatch,
+):
+    service = NodeCommandService()
+    rollback_called = False
+    original_rollback = db_session.rollback
+
+    async def failing_commit():
+        raise OperationalError("COMMIT", {}, Exception("database locked"))
+
+    async def tracked_rollback():
+        nonlocal rollback_called
+        rollback_called = True
+        await original_rollback()
+
+    monkeypatch.setattr(db_session, "commit", failing_commit)
+    monkeypatch.setattr(db_session, "rollback", tracked_rollback)
+
+    with pytest.raises(NodeCommandUnavailable, match="node command store unavailable"):
+        await service.enqueue_ble_investigation(
+            db_session, "uplink_CB77A4", investigate(), now=10.0,
+        )
+
+    assert rollback_called is True
 
 
 @pytest.mark.asyncio

@@ -86,6 +86,9 @@ class NodeCommandService:
         except IntegrityError as exc:
             await db.rollback()
             raise NodeCommandConflict("node already has an active command") from exc
+        except OperationalError as exc:
+            await db.rollback()
+            raise NodeCommandUnavailable("node command store unavailable") from exc
         return _command_envelope(row)
 
     async def next_for_device(
@@ -200,28 +203,32 @@ class NodeCommandService:
         device_id: str,
         command_id: str,
     ) -> NodeCommandHistoryResponse:
-        row = await _command_for_update(db, device_id, command_id)
-        if row is None:
+        try:
+            row = await _command_for_update(db, device_id, command_id)
+            if row is None:
+                await db.rollback()
+                raise NodeCommandNotFound(command_id)
+            events = list((await db.scalars(
+                select(NodeCommandResultEvent)
+                .where(NodeCommandResultEvent.command_id == command_id)
+                .order_by(NodeCommandResultEvent.sequence)
+            )).all())
+            return NodeCommandHistoryResponse(
+                command_id=row.command_id,
+                device_id=row.device_id,
+                command_type=row.command_type,
+                state=row.state,
+                next_sequence=row.next_sequence,
+                result_state=row.result_state,
+                terminal=row.active_key is None,
+                events=[
+                    _RESULT_ADAPTER.validate_json(event.payload_json)
+                    for event in events
+                ],
+            )
+        except OperationalError as exc:
             await db.rollback()
-            raise NodeCommandNotFound(command_id)
-        events = list((await db.scalars(
-            select(NodeCommandResultEvent)
-            .where(NodeCommandResultEvent.command_id == command_id)
-            .order_by(NodeCommandResultEvent.sequence)
-        )).all())
-        return NodeCommandHistoryResponse(
-            command_id=row.command_id,
-            device_id=row.device_id,
-            command_type=row.command_type,
-            state=row.state,
-            next_sequence=row.next_sequence,
-            result_state=row.result_state,
-            terminal=row.active_key is None,
-            events=[
-                _RESULT_ADAPTER.validate_json(event.payload_json)
-                for event in events
-            ],
-        )
+            raise NodeCommandUnavailable("node command store unavailable") from exc
 
 
 def _canonical_json(value: object) -> str:
