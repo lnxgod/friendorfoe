@@ -15,6 +15,7 @@ from app.main import app
 from app.routers import nodes
 from app.services import firmware_manager
 from app.services.firmware_manager import FIRMWARE_TYPES, FirmwareAsset, FirmwareManager
+from tests.firmware_images import esp32s3_app_image
 
 
 PRODUCTION_VERSION = "0.64.68-live-follow"
@@ -40,26 +41,28 @@ def _esp_firmware_image(
     identity_records: tuple[bytes, ...] = (),
     payload_fill: bytes = b"A",
 ) -> bytes:
-    encoded_version = version.encode("ascii")
-    image = bytearray(0x20 + 256)
-    image[0] = 0xE9
-    struct.pack_into("<I", image, 0x20, 0xABCD5432)
-    image[0x30:0x50] = encoded_version.ljust(32, b"\x00")
-    image[0x50:0x70] = project.encode("ascii").ljust(32, b"\x00")
-    image[0x70:0x80] = b"12:34:56".ljust(16, b"\x00")
-    image[0x80:0x90] = b"Jul 16 2026".ljust(16, b"\x00")
-    for record in identity_records:
-        image.extend(record)
-    image.extend(payload_fill * 4096)
-    return bytes(image)
+    placements = tuple(
+        (0x120 + index * len(record), record)
+        for index, record in enumerate(identity_records)
+    )
+    return esp32s3_app_image(
+        version,
+        project=project,
+        placements=placements,
+        payload_size=64 * 1024,
+        payload_fill=payload_fill,
+    )
 
 
 def _named_firmware_image(name: str, version: str) -> bytes:
     project, hardware = NAMED_IDENTITIES[name]
-    return _esp_firmware_image(
+    return esp32s3_app_image(
         version,
         project=project,
-    ) + f"{name}\0{hardware}\0".encode("ascii")
+        placements=((0x200, f"{name}\0{hardware}\0".encode("ascii")),),
+        payload_size=64 * 1024,
+        payload_fill=b"A",
+    )
 
 
 def _badge_firmware_image(name: str, version: str = BADGE_VERSION) -> bytes:

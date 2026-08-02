@@ -29,6 +29,7 @@ from app.services.database import get_db
 from app.services.signal_tracker import SignalTracker
 from app.services import triangulation
 from app.services.triangulation import SensorTracker
+from tests.firmware_images import esp32s3_app_image
 
 
 PORTABLE_EVIDENCE = {
@@ -79,12 +80,6 @@ PORTABLE_EVIDENCE = {
 def _backend_image(target: str, *, valid_crc: bool = True) -> bytes:
     info = firmware_manager.FIRMWARE_TYPES[target]
     version = "0.1.0-backend"
-    app_desc = bytearray(112)
-    struct.pack_into("<I", app_desc, 0, 0xABCD5432)
-    app_desc[16:48] = version.encode().ljust(32, b"\0")
-    app_desc[48:80] = info["project"].encode().ljust(32, b"\0")
-    app_desc[80:96] = b"12:00:00".ljust(16, b"\0")
-    app_desc[96:112] = b"2026-08-01".ljust(16, b"\0")
     record = bytearray(firmware_manager._BACKEND_IDENTITY_STRUCT.size)
     firmware_manager._BACKEND_IDENTITY_STRUCT.pack_into(
         record, 0, 0x42464F46, 1, info["image_kind"],
@@ -95,11 +90,11 @@ def _backend_image(target: str, *, valid_crc: bool = True) -> bytes:
     )
     crc = zlib.crc32(record[:160]) & 0xFFFFFFFF
     struct.pack_into("<I", record, 160, crc if valid_crc else crc ^ 1)
-    image = bytearray(1200)
-    image[0] = 0xE9
-    image[0x20:0x20 + len(app_desc)] = app_desc
-    image[256:256 + len(record)] = record
-    return bytes(image)
+    return esp32s3_app_image(
+        version,
+        project=info["project"],
+        placements=((0x120, bytes(record)),),
+    )
 
 
 NAMED_FIRMWARE_IDENTITIES = {
@@ -125,18 +120,12 @@ def _named_firmware_image(target: str) -> bytes:
     project, hardware = NAMED_FIRMWARE_IDENTITIES[target]
     version = "0.67.2-badge-defcon34" if target.endswith("-fof_badge") \
         else "0.64.68-live-follow"
-    app_desc = bytearray(112)
-    struct.pack_into("<I", app_desc, 0, 0xABCD5432)
-    app_desc[16:48] = version.encode().ljust(32, b"\0")
-    app_desc[48:80] = project.encode().ljust(32, b"\0")
-    app_desc[80:96] = b"12:00:00".ljust(16, b"\0")
-    app_desc[96:112] = b"2026-08-01".ljust(16, b"\0")
-    image = bytearray(1200)
-    image[0] = 0xE9
-    image[0x20:0x20 + len(app_desc)] = app_desc
     markers = f"{target}\0{hardware}\0".encode("ascii")
-    image[256:256 + len(markers)] = markers
-    return bytes(image)
+    return esp32s3_app_image(
+        version,
+        project=project,
+        placements=((0x200, markers),),
+    )
 
 
 def _heartbeat_for_firmware(target: str) -> tuple[dict, str | None]:
@@ -149,6 +138,8 @@ def _heartbeat_for_firmware(target: str) -> tuple[dict, str | None]:
     heartbeat = {
         "device_id": "uplink_FAMILY",
         "ip": "10.0.0.42",
+        "hardware_mac": "AA:BB:CC:DD:EE:41",
+        "boot_id": 41,
         "last_seen": time.time(),
     }
     if target.startswith("uplink-"):
@@ -156,6 +147,7 @@ def _heartbeat_for_firmware(target: str) -> tuple[dict, str | None]:
         return heartbeat, None
     heartbeat["scanners"] = [{
         "uart": "ble",
+        "slot": 0,
         "mac": "AA:BB:CC:DD:EE:42",
         "boot_id": 1,
         **identity,
@@ -560,6 +552,172 @@ def test_named_ota_rejects_a_mislabeled_image_for_the_exact_running_target(
     assert error.value.status_code == 400
 
 
+@pytest.mark.parametrize(
+    ("running_target", "image_target"),
+    [
+        ("uplink-s3", "uplink-s3-fof_badge"),
+        ("uplink-s3", "uplink-s3-backend"),
+        ("uplink-s3-fof_badge", "uplink-s3"),
+        ("uplink-s3-fof_badge", "uplink-s3-backend"),
+        ("uplink-s3-backend", "uplink-s3"),
+        ("uplink-s3-backend", "uplink-s3-fof_badge"),
+    ],
+)
+def test_raw_ota_rejects_every_cross_family_uplink_image(
+    monkeypatch,
+    running_target: str,
+    image_target: str,
+):
+    heartbeat, _uart = _heartbeat_for_firmware(running_target)
+    monkeypatch.setattr(
+        detections,
+        "_node_heartbeats",
+        {"uplink_FAMILY": heartbeat},
+    )
+
+    with pytest.raises(HTTPException) as error:
+        nodes._require_ota_compatibility(
+            "uplink_FAMILY",
+            None,
+            _named_firmware_image(image_target),
+        )
+
+    assert error.value.status_code == 409
+
+
+@pytest.mark.parametrize("target", sorted(NAMED_FIRMWARE_IDENTITIES))
+def test_raw_ota_accepts_only_the_exact_catalog_family(
+    monkeypatch,
+    target: str,
+):
+    heartbeat, uart = _heartbeat_for_firmware(target)
+    monkeypatch.setattr(
+        detections,
+        "_node_heartbeats",
+        {"uplink_FAMILY": heartbeat},
+    )
+
+    snapshot = nodes._require_ota_compatibility(
+        "uplink_FAMILY",
+        None,
+        _named_firmware_image(target),
+        uart,
+    )
+
+    assert snapshot["heartbeat"]["device_id"] == "uplink_FAMILY"
+
+
+@pytest.mark.parametrize(
+    "image",
+    [
+        b"L" * 1200,
+        esp32s3_app_image(
+            "0.1.0-unknown",
+            project="fof_unknown",
+            placements=((0x200, b"uplink-s3-unknown\0unknown_esp32s3\0"),),
+        ),
+    ],
+    ids=["unparseable", "unknown-catalog-family"],
+)
+def test_raw_ota_rejects_unknown_or_unparseable_images_by_default(
+    monkeypatch,
+    image: bytes,
+):
+    heartbeat, _uart = _heartbeat_for_firmware("uplink-s3")
+    monkeypatch.setattr(
+        detections,
+        "_node_heartbeats",
+        {"uplink_FAMILY": heartbeat},
+    )
+
+    with pytest.raises(HTTPException) as error:
+        nodes._require_ota_compatibility("uplink_FAMILY", None, image)
+
+    assert error.value.status_code == 400
+
+
+def test_unchanged_badge_uplink_and_scanner_bindings_survive_fetch(monkeypatch):
+    for target in (
+        "uplink-s3-fof_badge",
+        "scanner-s3-combo-fof_badge",
+    ):
+        heartbeat, uart = _heartbeat_for_firmware(target)
+        heartbeats = {"uplink_FAMILY": heartbeat}
+        monkeypatch.setattr(detections, "_node_heartbeats", heartbeats)
+        initial = nodes._ota_target_snapshot("uplink_FAMILY", uart)
+        heartbeats["uplink_FAMILY"] = {
+            **heartbeat,
+            "scanners": [dict(item) for item in heartbeat.get("scanners", [])],
+        }
+        current = nodes._ota_target_snapshot("uplink_FAMILY", uart)
+
+        assert nodes._require_same_ota_identity(
+            initial,
+            current,
+            target,
+            uart,
+        ) == current
+
+
+@pytest.mark.parametrize("mutation", ["mac", "ip", "boot_id"])
+def test_badge_uplink_identity_swap_or_reboot_during_fetch_is_rejected(
+    monkeypatch,
+    mutation: str,
+):
+    target = "uplink-s3-fof_badge"
+    heartbeat, uart = _heartbeat_for_firmware(target)
+    heartbeats = {"uplink_FAMILY": heartbeat}
+    monkeypatch.setattr(detections, "_node_heartbeats", heartbeats)
+    initial = nodes._ota_target_snapshot("uplink_FAMILY", uart)
+    changed = dict(heartbeat)
+    replacements = {
+        "mac": ("hardware_mac", "AA:BB:CC:DD:EE:99"),
+        "ip": ("ip", "10.0.0.99"),
+        "boot_id": ("boot_id", 99),
+    }
+    key, value = replacements[mutation]
+    changed[key] = value
+    heartbeats["uplink_FAMILY"] = changed
+    current = nodes._ota_target_snapshot("uplink_FAMILY", uart)
+
+    with pytest.raises(HTTPException) as error:
+        nodes._require_same_ota_identity(initial, current, target, uart)
+
+    assert error.value.status_code == 409
+
+
+@pytest.mark.parametrize("mutation", ["slot", "mac", "boot_id", "ip"])
+def test_badge_scanner_identity_swap_or_reboot_during_fetch_is_rejected(
+    monkeypatch,
+    mutation: str,
+):
+    target = "scanner-s3-combo-fof_badge"
+    heartbeat, uart = _heartbeat_for_firmware(target)
+    heartbeats = {"uplink_FAMILY": heartbeat}
+    monkeypatch.setattr(detections, "_node_heartbeats", heartbeats)
+    initial = nodes._ota_target_snapshot("uplink_FAMILY", uart)
+    changed = {
+        **heartbeat,
+        "scanners": [dict(heartbeat["scanners"][0])],
+    }
+    if mutation == "ip":
+        changed["ip"] = "10.0.0.99"
+    else:
+        replacements = {
+            "slot": 1,
+            "mac": "AA:BB:CC:DD:EE:99",
+            "boot_id": 99,
+        }
+        changed["scanners"][0][mutation] = replacements[mutation]
+    heartbeats["uplink_FAMILY"] = changed
+    current = nodes._ota_target_snapshot("uplink_FAMILY", uart)
+
+    with pytest.raises(HTTPException) as error:
+        nodes._require_same_ota_identity(initial, current, target, uart)
+
+    assert error.value.status_code == 409
+
+
 @pytest.mark.asyncio
 async def test_backend_uplink_is_not_sent_production_image(client, monkeypatch):
     detections._node_heartbeats["uplink_BACK01"] = {
@@ -580,13 +738,15 @@ async def test_backend_uplink_is_not_sent_production_image(client, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_named_ota_rebinds_to_fresh_heartbeat_after_firmware_load(client, monkeypatch):
+async def test_named_ota_rejects_ip_change_after_firmware_load(client, monkeypatch):
     now = time.time()
     detections._node_heartbeats["uplink_REBIND"] = {
         "device_id": "uplink_REBIND", "ip": "10.0.0.10", "last_seen": now,
         "firmware_target": "uplink-s3-backend",
         "app_project": "fof_backend_uplink",
         "hardware_type": "seeed_xiao_esp32s3",
+        "hardware_mac": "AA:BB:CC:DD:EE:10",
+        "boot_id": 10,
     }
     calls: list[str] = []
 
@@ -607,8 +767,9 @@ async def test_named_ota_rebinds_to_fresh_heartbeat_after_firmware_load(client, 
 
     response = await client.post("/nodes/uplink_REBIND/ota/uplink-s3-backend")
 
-    assert response.status_code == 200, response.text
-    assert calls == ["http://10.0.0.11/api/ota"]
+    assert response.status_code == 409, response.text
+    assert "identity changed" in response.json()["detail"]
+    assert calls == []
 
 
 @pytest.mark.asyncio
@@ -666,7 +827,7 @@ async def test_direct_ota_upload_rejects_cross_family_and_invalid_backend_identi
 
     assert badge.status_code == 409
     assert invalid.status_code == 400
-    assert legacy.status_code == 409
+    assert legacy.status_code == 400
 
 
 @pytest.mark.asyncio

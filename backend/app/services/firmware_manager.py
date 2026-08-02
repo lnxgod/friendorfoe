@@ -26,11 +26,26 @@ CACHE_TTL_S = 1800  # Re-check GitHub every 30 minutes
 IMAGE_VERSION_CACHE_SIZE = 32
 
 _ESP_IMAGE_MAGIC = 0xE9
-_APP_DESC_OFFSET = 0x20
+_ESP_IMAGE_HEADER_SIZE = 24
+_ESP_SEGMENT_HEADER_SIZE = 8
+_ESP32_S3_CHIP_ID = 9
+_MIN_ESP_APP_IMAGE_SIZE = 64 * 1024
+_ESP32_S3_EXECUTABLE_RANGES = (
+    (0x40370000, 0x403E0000),
+    (0x42000000, 0x44000000),
+)
+_ESP32_S3_SEGMENT_RANGES = (
+    (0x3C000000, 0x3E000000),
+    (0x3FC88000, 0x3FD00000),
+    (0x40370000, 0x403E0000),
+    (0x42000000, 0x44000000),
+    (0x50000000, 0x50002000),
+)
 _APP_DESC_MAGIC = 0xABCD5432
 _APP_DESC_MIN_SIZE = 112
 _BACKEND_IDENTITY_MAGIC = struct.pack("<I", 0x42464F46)
 _BACKEND_IDENTITY_STRUCT = struct.Struct("<IHH40s40s40s32sI")
+_BACKEND_IDENTITY_OFFSET = 0x120
 _BACKEND_VERSION_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+-backend$")
 _BADGE_VERSION_RE = re.compile(
     r"^[0-9]+\.[0-9]+\.[0-9]+-badge(?:-[0-9A-Za-z][0-9A-Za-z._-]*)?$"
@@ -148,17 +163,66 @@ def _parse_backend_identity_record(image: bytes, offset: int) -> dict | None:
 
 
 def _parse_backend_identity(image: bytes) -> dict | None:
-    valid: list[dict] = []
+    canonical = _parse_backend_identity_record(image, _BACKEND_IDENTITY_OFFSET)
+    if canonical is None:
+        return None
+
     start = 0
     while True:
         offset = image.find(_BACKEND_IDENTITY_MAGIC, start)
         if offset < 0:
             break
-        parsed = _parse_backend_identity_record(image, offset)
-        if parsed is not None:
-            valid.append(parsed)
+        if offset != _BACKEND_IDENTITY_OFFSET and (
+            _parse_backend_identity_record(image, offset) is not None
+            or _looks_like_backend_identity_candidate(image, offset)
+        ):
+            return None
         start = offset + 1
-    return valid[0] if len(valid) == 1 else None
+    return canonical
+
+
+def _relaxed_identity_string(raw: bytes) -> str | None:
+    nul = raw.find(b"\0")
+    if nul <= 0:
+        return None
+    value = raw[:nul]
+    if any(byte < 0x20 or byte > 0x7E for byte in value):
+        return None
+    try:
+        return value.decode("ascii")
+    except UnicodeDecodeError:
+        return None
+
+
+def _looks_like_backend_identity_candidate(image: bytes, offset: int) -> bool:
+    end = offset + _BACKEND_IDENTITY_STRUCT.size
+    if end > len(image):
+        return False
+    (
+        _magic,
+        schema,
+        image_kind,
+        target_raw,
+        project_raw,
+        hardware_raw,
+        version_raw,
+        _crc32,
+    ) = _BACKEND_IDENTITY_STRUCT.unpack(image[offset:end])
+    values = tuple(
+        _relaxed_identity_string(raw)
+        for raw in (target_raw, project_raw, hardware_raw, version_raw)
+    )
+    target, project, hardware, version = values
+    identity_markers = sum((
+        bool(target and target.endswith("-backend")),
+        bool(project and project.startswith("fof_backend_")),
+        bool(hardware and "esp32" in hardware.lower()),
+        bool(version and version.endswith("-backend")),
+    ))
+    printable_fields = sum(value is not None for value in values)
+    return identity_markers >= 2 or (
+        schema <= 16 and image_kind in (0, 1) and printable_fields >= 2
+    )
 
 
 def _validated_backend_image_info(name: str, image: bytes) -> dict | None:
@@ -206,14 +270,76 @@ def _decode_app_desc_field(data: bytes) -> str | None:
     return text
 
 
-def _parse_app_desc_bytes(image: bytes) -> dict | None:
-    """Parse esp_app_desc_t from an ESP-IDF app image, failing closed."""
-    if len(image) < _APP_DESC_OFFSET + _APP_DESC_MIN_SIZE:
+def _parse_esp_image_layout(image: bytes) -> tuple[int, int] | None:
+    """Return the first segment payload bounds for one intact ESP32-S3 app."""
+    if not isinstance(image, bytes) or len(image) < _MIN_ESP_APP_IMAGE_SIZE:
         return None
     if image[0] != _ESP_IMAGE_MAGIC:
         return None
+    segment_count = image[1]
+    if not 1 <= segment_count <= 16:
+        return None
+    if struct.unpack_from("<H", image, 12)[0] != _ESP32_S3_CHIP_ID:
+        return None
+    if image[23] != 1:
+        return None
+    entry_address = struct.unpack_from("<I", image, 4)[0]
+    if entry_address % 4 or not any(
+        low <= entry_address < high
+        for low, high in _ESP32_S3_EXECUTABLE_RANGES
+    ):
+        return None
 
-    desc = image[_APP_DESC_OFFSET:_APP_DESC_OFFSET + _APP_DESC_MIN_SIZE]
+    cursor = _ESP_IMAGE_HEADER_SIZE
+    checksum = 0xEF
+    first_segment_offset = 0
+    first_segment_size = 0
+    for segment_index in range(segment_count):
+        header_end = cursor + _ESP_SEGMENT_HEADER_SIZE
+        if header_end > len(image):
+            return None
+        load_address, segment_size = struct.unpack_from("<II", image, cursor)
+        load_end = load_address + segment_size
+        if segment_size == 0 or load_address % 4 or not any(
+            low <= load_address and load_end <= high
+            for low, high in _ESP32_S3_SEGMENT_RANGES
+        ):
+            return None
+        payload_offset = header_end
+        payload_end = payload_offset + segment_size
+        if payload_end > len(image):
+            return None
+        if segment_index == 0:
+            first_segment_offset = payload_offset
+            first_segment_size = segment_size
+        for value in image[payload_offset:payload_end]:
+            checksum ^= value
+        cursor = payload_end
+
+    checksum_offset = ((cursor + 16) // 16) * 16 - 1
+    digest_offset = checksum_offset + 1
+    expected_end = digest_offset + hashlib.sha256().digest_size
+    if expected_end != len(image):
+        return None
+    if any(image[cursor:checksum_offset]):
+        return None
+    if image[checksum_offset] != checksum:
+        return None
+    if image[digest_offset:] != hashlib.sha256(image[:digest_offset]).digest():
+        return None
+    return first_segment_offset, first_segment_size
+
+
+def _parse_app_desc_bytes(image: bytes) -> dict | None:
+    """Parse esp_app_desc_t from an ESP-IDF app image, failing closed."""
+    layout = _parse_esp_image_layout(image)
+    if layout is None:
+        return None
+    descriptor_offset, first_segment_size = layout
+    if first_segment_size < _APP_DESC_MIN_SIZE:
+        return None
+
+    desc = image[descriptor_offset:descriptor_offset + _APP_DESC_MIN_SIZE]
     if struct.unpack_from("<I", desc)[0] != _APP_DESC_MAGIC:
         return None
 
@@ -277,6 +403,27 @@ def _validated_badge_image_info(name: str, image: bytes) -> dict | None:
     if not name.endswith("-fof_badge"):
         return None
     return _validated_named_image_info(name, image)
+
+
+def _resolve_firmware_image_info(image: bytes) -> dict | None:
+    """Resolve bytes to exactly one validated catalog firmware family."""
+    desc = _parse_app_desc_bytes(image)
+    if desc is None:
+        return None
+    candidates = [
+        name for name, info in FIRMWARE_TYPES.items()
+        if info.get("project") == desc["project"]
+    ]
+    matches = []
+    for name in candidates:
+        validated = (
+            _validated_backend_image_info(name, image)
+            if name.endswith("-backend")
+            else _validated_named_image_info(name, image)
+        )
+        if validated is not None:
+            matches.append(validated)
+    return matches[0] if len(matches) == 1 else None
 
 
 @dataclass

@@ -9,6 +9,7 @@ import pytest
 
 from app.services import firmware_manager
 from app.services.firmware_manager import FIRMWARE_TYPES, FirmwareAsset, FirmwareManager
+from tests.firmware_images import esp32s3_app_image, resign_esp_image
 
 
 PRODUCTION_VERSION = "0.64.68-live-follow"
@@ -41,21 +42,19 @@ def _esp_firmware_image(
     trailer: bytes = b"",
     payload_fill: bytes = b"A",
 ) -> bytes:
-    encoded_version = version.encode("ascii")
-    assert len(encoded_version) < 32
-
-    image = bytearray(0x20 + 256)
-    image[0] = 0xE9
-    struct.pack_into("<I", image, 0x20, 0xABCD5432)
-    image[0x30:0x50] = encoded_version.ljust(32, b"\x00")
-    image[0x50:0x70] = project.encode("ascii").ljust(32, b"\x00")
-    image[0x70:0x80] = b"12:34:56".ljust(16, b"\x00")
-    image[0x80:0x90] = b"Jul 16 2026".ljust(16, b"\x00")
+    placements: list[tuple[int, bytes]] = []
+    cursor = 0x120
     for record in identity_records:
-        image.extend(record)
-    image.extend(trailer)
-    image.extend(payload_fill * 8)
-    return bytes(image)
+        placements.append((cursor, record))
+        cursor += len(record)
+    if trailer:
+        placements.append((cursor, trailer))
+    return esp32s3_app_image(
+        version,
+        project=project,
+        placements=tuple(placements),
+        payload_fill=payload_fill,
+    )
 
 
 BACKEND_IDENTITY_STRUCT = struct.Struct("<IHH40s40s40s32sI")
@@ -400,6 +399,130 @@ def test_bytes_parser_rejects_malformed_images():
     assert parser(_esp_firmware_image("")) is None
 
 
+def _descriptor_only_image(size: int, *, project: str, version: str) -> bytearray:
+    image = bytearray(size)
+    image[0] = 0xE9
+    struct.pack_into("<I", image, 0x20, 0xABCD5432)
+    image[0x30:0x50] = version.encode("ascii").ljust(32, b"\0")
+    image[0x50:0x70] = project.encode("ascii").ljust(32, b"\0")
+    image[0x70:0x80] = b"12:34:56".ljust(16, b"\0")
+    image[0x80:0x90] = b"Aug 02 2026".ljust(16, b"\0")
+    return image
+
+
+def test_catalog_rejects_descriptor_only_named_badge_bytes():
+    image = _descriptor_only_image(
+        183,
+        project="fof_badge_uplink",
+        version=BADGE_VERSION,
+    )
+    image[144:183] = b"uplink-s3-fof_badge\0seeed_xiao_esp32s3\0"
+
+    assert len(image) == 183
+    assert not FirmwareManager().validate_firmware_image(
+        "uplink-s3-fof_badge",
+        bytes(image),
+    )
+
+
+def test_catalog_rejects_descriptor_and_record_only_backend_bytes():
+    image = _descriptor_only_image(
+        308,
+        project="fof_backend_uplink",
+        version="0.1.0-backend",
+    )
+    image[144:308] = _backend_identity_record(
+        target="uplink-s3-backend",
+        project="fof_backend_uplink",
+        hardware="seeed_xiao_esp32s3",
+        version="0.1.0-backend",
+        image_kind=0,
+    )
+
+    assert len(image) == 308
+    assert not FirmwareManager().validate_firmware_image(
+        "uplink-s3-backend",
+        bytes(image),
+    )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "entry_address",
+        "load_address",
+        "load_range",
+        "chip_id",
+        "zero_segments",
+        "too_many_segments",
+        "missing_hash_flag",
+        "padding",
+        "checksum",
+        "digest",
+        "truncated",
+        "trailing_data",
+    ],
+)
+def test_catalog_rejects_invalid_esp32s3_image_layout(mutation: str):
+    image = bytearray(_badge_image("uplink-s3-fof_badge"))
+    if mutation == "entry_address":
+        struct.pack_into("<I", image, 4, 0)
+        image = bytearray(resign_esp_image(bytes(image)))
+    elif mutation == "load_address":
+        struct.pack_into("<I", image, 24, 0)
+        image = bytearray(resign_esp_image(bytes(image)))
+    elif mutation == "load_range":
+        struct.pack_into("<I", image, 24, 0x3DFFF000)
+        image = bytearray(resign_esp_image(bytes(image)))
+    elif mutation == "chip_id":
+        struct.pack_into("<H", image, 12, 5)
+        image = bytearray(resign_esp_image(bytes(image)))
+    elif mutation == "zero_segments":
+        image[1] = 0
+        image = bytearray(resign_esp_image(bytes(image)))
+    elif mutation == "too_many_segments":
+        image[1] = 17
+        image = bytearray(resign_esp_image(bytes(image)))
+    elif mutation == "missing_hash_flag":
+        image[23] = 0
+        image = bytearray(resign_esp_image(bytes(image)))
+    elif mutation == "padding":
+        image[-34] ^= 1
+        image = bytearray(resign_esp_image(bytes(image)))
+    elif mutation == "checksum":
+        image[-33] ^= 1
+        image = bytearray(resign_esp_image(bytes(image)))
+    elif mutation == "digest":
+        image[-1] ^= 1
+    elif mutation == "truncated":
+        image = image[:-1]
+    elif mutation == "trailing_data":
+        image.extend(b"\0")
+
+    assert not FirmwareManager().validate_firmware_image(
+        "uplink-s3-fof_badge",
+        bytes(image),
+    )
+
+
+def test_catalog_rejects_tiny_but_fully_checksummed_named_app():
+    image = esp32s3_app_image(
+        BADGE_VERSION,
+        project="fof_badge_uplink",
+        placements=((
+            0x200,
+            b"uplink-s3-fof_badge\0seeed_xiao_esp32s3\0",
+        ),),
+        payload_size=1200,
+    )
+
+    assert len(image) < 64 * 1024
+    assert not FirmwareManager().validate_firmware_image(
+        "uplink-s3-fof_badge",
+        image,
+    )
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("name", "embedded_version"),
@@ -731,6 +854,27 @@ def test_two_valid_identity_records_are_rejected():
     image = _backend_image("uplink-s3-backend", identity_records=(valid, valid))
     assert firmware_manager._parse_backend_identity(image) is None
     assert firmware_manager._validated_backend_image_info("uplink-s3-backend", image) is None
+
+
+def test_valid_canonical_record_plus_malformed_record_shaped_candidate_is_rejected():
+    candidate = bytearray(_backend_identity_record(
+        target="scanner-s3-combo-backend",
+        project="fof_backend_scanner",
+        hardware="seeed_xiao_esp32s3",
+        version="0.1.0-backend",
+        image_kind=1,
+    ))
+    candidate[-1] ^= 1
+    image = _backend_image(
+        "uplink-s3-backend",
+        trailer=bytes(candidate),
+    )
+
+    assert firmware_manager._parse_backend_identity(image) is None
+    assert firmware_manager._validated_backend_image_info(
+        "uplink-s3-backend",
+        image,
+    ) is None
 
 
 def test_raw_invalid_magic_without_a_valid_record_is_rejected():

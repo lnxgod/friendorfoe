@@ -35,9 +35,7 @@ from app.services.database import get_db
 from app.services.firmware_manager import (
     FIRMWARE_TYPES,
     FirmwareManager,
-    _BACKEND_IDENTITY_MAGIC,
-    _parse_app_desc_bytes,
-    _parse_backend_identity,
+    _resolve_firmware_image_info,
     _validated_backend_image_info,
     _validated_named_image_info,
 )
@@ -135,27 +133,73 @@ def _normalized_hardware_mac(value: object) -> str:
 
 def _ota_identity_binding(snapshot: dict, firmware_name: str, uart: str | None) -> tuple:
     """Stable hardware/firmware identity that must survive an awaited fetch."""
+    if firmware_name not in FIRMWARE_TYPES:
+        raise HTTPException(status_code=409, detail="OTA firmware family is unknown")
     heartbeat = snapshot["heartbeat"]
-    if firmware_name.startswith("scanner-") and firmware_name.endswith("-backend"):
+    ip = str(snapshot.get("ip") or "").strip()
+    if not ip:
+        raise HTTPException(status_code=409, detail="OTA target IP is incomplete")
+
+    if firmware_name.startswith("scanner-"):
         scanners = []
         for scanner in snapshot["scanners"]:
+            scanner_uart = str(scanner.get("uart") or "").strip()
+            slot = scanner.get("slot")
             mac = _normalized_hardware_mac(scanner.get("mac") or scanner.get("hardware_mac"))
             boot_id = scanner.get("boot_id")
-            if not mac or boot_id is None or str(boot_id).strip() == "":
-                raise HTTPException(status_code=409, detail="backend scanner identity is incomplete")
+            target = scanner.get("firmware_target") or scanner.get("firmware_name")
+            project = scanner.get("app_project")
+            hardware = scanner.get("hardware_type")
+            required = (
+                scanner_uart,
+                str(slot).strip() if slot is not None else "",
+                mac,
+                str(boot_id).strip() if boot_id is not None else "",
+                str(target or "").strip(),
+                str(project or "").strip(),
+                str(hardware or "").strip(),
+            )
+            if not all(required):
+                raise HTTPException(status_code=409, detail="scanner OTA identity is incomplete")
             scanners.append((
-                str(scanner.get("uart") or ""), mac, str(boot_id),
-                scanner.get("firmware_target") or scanner.get("firmware_name"),
-                scanner.get("app_project"), scanner.get("hardware_type"),
+                scanner_uart,
+                str(slot),
+                mac,
+                str(boot_id),
+                target,
+                project,
+                hardware,
             ))
-        return tuple(sorted(scanners))
-    if firmware_name.startswith("uplink-") and firmware_name.endswith("-backend"):
-        return (
-            _normalized_hardware_mac(heartbeat.get("hardware_mac")),
-            heartbeat.get("firmware_target") or heartbeat.get("firmware_name"),
-            heartbeat.get("app_project"), heartbeat.get("hardware_type"),
+        if not scanners:
+            raise HTTPException(status_code=409, detail="scanner OTA identity is incomplete")
+        return ("scanner", snapshot.get("device_id"), ip, tuple(sorted(scanners)))
+    if firmware_name.startswith("uplink-"):
+        mac = _normalized_hardware_mac(heartbeat.get("hardware_mac") or heartbeat.get("mac"))
+        target = heartbeat.get("firmware_target") or heartbeat.get("firmware_name")
+        project = heartbeat.get("app_project")
+        hardware = heartbeat.get("hardware_type")
+        required = (
+            mac,
+            str(target or "").strip(),
+            str(project or "").strip(),
+            str(hardware or "").strip(),
         )
-    return ()
+        if not all(required):
+            raise HTTPException(status_code=409, detail="uplink OTA identity is incomplete")
+        boot_id = heartbeat.get("boot_id")
+        if boot_id is not None and not str(boot_id).strip():
+            raise HTTPException(status_code=409, detail="uplink OTA identity is incomplete")
+        return (
+            "uplink",
+            snapshot.get("device_id"),
+            ip,
+            mac,
+            str(boot_id) if boot_id is not None else "",
+            target,
+            project,
+            hardware,
+        )
+    raise HTTPException(status_code=409, detail="OTA firmware role is unknown")
 
 
 def _require_same_ota_identity(
@@ -195,13 +239,6 @@ def _reported_identities(device_id: str, uart: str | None, *, snapshot: dict | N
         "project": item.get("app_project"),
         "hardware": item.get("hardware_type"),
     } for item in selected]
-
-
-def _identity_is_backend(identity: dict) -> bool:
-    return (
-        str(identity.get("target") or "").endswith("-backend")
-        or str(identity.get("project") or "").startswith("fof_backend_")
-    )
 
 
 def _expected_named_firmware_identity(firmware_name: str) -> dict | None:
@@ -244,30 +281,20 @@ def _require_ota_compatibility(
     *,
     snapshot: dict | None = None,
 ) -> dict:
-    requested = None
-    descriptor = _parse_app_desc_bytes(image)
-    claims_backend = (
-        _BACKEND_IDENTITY_MAGIC in image
-        or str((descriptor or {}).get("project") or "").startswith("fof_backend_")
-        or str((descriptor or {}).get("version") or "").endswith("-backend")
-    )
-    if firmware_name and firmware_name.endswith("-backend"):
+    if firmware_name is None:
+        requested = _resolve_firmware_image_info(image)
+        if requested is None:
+            raise HTTPException(status_code=400, detail="invalid or unknown firmware identity")
+    elif firmware_name.endswith("-backend"):
         requested = _validated_backend_image_info(firmware_name, image)
         if requested is None:
             raise HTTPException(status_code=400, detail="invalid backend firmware identity")
-    elif firmware_name and firmware_name in FIRMWARE_TYPES:
+    elif firmware_name in FIRMWARE_TYPES:
         requested = _validated_named_image_info(firmware_name, image)
         if requested is None:
             raise HTTPException(status_code=400, detail="invalid firmware identity")
-    elif claims_backend:
-        identity = _parse_backend_identity(image)
-        claimed_name = identity.get("target") if identity else None
-        requested = (
-            _validated_backend_image_info(claimed_name, image)
-            if claimed_name else None
-        )
-        if requested is None:
-            raise HTTPException(status_code=400, detail="invalid backend firmware identity")
+    else:
+        raise HTTPException(status_code=400, detail="unknown firmware family")
 
     snapshot = snapshot or _ota_target_snapshot(device_id, uart)
     running = _reported_identities(device_id, uart, snapshot=snapshot)
@@ -282,17 +309,15 @@ def _require_ota_compatibility(
             len(running) == required_count
             and all(identity == expected for identity in running)
         )
-    elif requested is not None:
+    else:
         expected = {
             "target": requested["target"],
             "project": requested["project"],
             "hardware": requested["hardware"],
         }
         compatible = len(running) == required_count and all(identity == expected for identity in running)
-    else:
-        compatible = len(running) == required_count and not any(_identity_is_backend(item) for item in running)
     if not compatible:
-        label = firmware_name or (requested["target"] if requested else "legacy image")
+        label = firmware_name or requested["target"]
         raise HTTPException(
             status_code=409,
             detail=f"running firmware identity is incompatible with {label}",

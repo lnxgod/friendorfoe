@@ -9,6 +9,7 @@ from httpx import ASGITransport, AsyncClient
 from app.main import app
 from app.routers import detections, nodes
 from app.services import firmware_manager
+from tests.firmware_images import esp32s3_app_image
 
 
 def _completed(cmd, stdout: bytes):
@@ -17,12 +18,6 @@ def _completed(cmd, stdout: bytes):
 
 def _backend_scanner_image() -> bytes:
     info = firmware_manager.FIRMWARE_TYPES["scanner-s3-combo-backend"]
-    app_desc = bytearray(112)
-    struct.pack_into("<I", app_desc, 0, 0xABCD5432)
-    app_desc[16:48] = b"0.1.0-backend".ljust(32, b"\0")
-    app_desc[48:80] = info["project"].encode().ljust(32, b"\0")
-    app_desc[80:96] = b"12:00:00".ljust(16, b"\0")
-    app_desc[96:112] = b"2026-08-01".ljust(16, b"\0")
     record = bytearray(firmware_manager._BACKEND_IDENTITY_STRUCT.size)
     firmware_manager._BACKEND_IDENTITY_STRUCT.pack_into(
         record, 0, 0x42464F46, 1, info["image_kind"],
@@ -32,26 +27,20 @@ def _backend_scanner_image() -> bytes:
         b"0.1.0-backend".ljust(32, b"\0"), 0,
     )
     struct.pack_into("<I", record, 160, zlib.crc32(record[:160]) & 0xFFFFFFFF)
-    image = bytearray(1200)
-    image[0] = 0xE9
-    image[0x20:0x90] = app_desc
-    image[256:256 + len(record)] = record
-    return bytes(image)
+    return esp32s3_app_image(
+        "0.1.0-backend",
+        project=info["project"],
+        placements=((0x120, bytes(record)),),
+    )
 
 
 def _production_scanner_image() -> bytes:
-    app_desc = bytearray(112)
-    struct.pack_into("<I", app_desc, 0, 0xABCD5432)
-    app_desc[16:48] = b"0.63.0-svc148".ljust(32, b"\0")
-    app_desc[48:80] = b"fof_scanner".ljust(32, b"\0")
-    app_desc[80:96] = b"12:00:00".ljust(16, b"\0")
-    app_desc[96:112] = b"2026-08-01".ljust(16, b"\0")
-    image = bytearray(1200)
-    image[0] = 0xE9
-    image[0x20:0x90] = app_desc
     markers = b"scanner-s3-combo\0esp32-s3-devkitc-1\0"
-    image[256:256 + len(markers)] = markers
-    return bytes(image)
+    return esp32s3_app_image(
+        "0.63.0-svc148",
+        project="fof_scanner",
+        placements=((0x200, markers),),
+    )
 
 
 PRODUCTION_SCANNER_IMAGE = _production_scanner_image()
@@ -68,6 +57,9 @@ def scanner_ota_state(monkeypatch: pytest.MonkeyPatch):
                 "last_seen": time.time(),
                 "scanners": [{
                     "uart": "ble",
+                    "slot": 0,
+                    "mac": "AA:BB:CC:DD:EE:01",
+                    "boot_id": 1,
                     "ver": "0.63.0-svc140",
                     "firmware_target": "scanner-s3-combo",
                     "app_project": "fof_scanner",
@@ -98,11 +90,11 @@ async def test_backend_scanner_ota_requires_exact_running_family(monkeypatch: py
         "app_project": "fof_backend_uplink",
         "hardware_type": "seeed_xiao_esp32s3",
         "scanners": [
-            {"uart": "ble", "mac": "AA:BB:CC:DD:EE:01", "boot_id": 1,
+            {"uart": "ble", "slot": 0, "mac": "AA:BB:CC:DD:EE:01", "boot_id": 1,
              "firmware_target": "scanner-s3-combo-backend",
              "app_project": "fof_backend_scanner", "hardware_type": "seeed_xiao_esp32s3",
              "ver": "0.1.0-backend", "cmd_rx": 1},
-            {"uart": "wifi", "mac": "AA:BB:CC:DD:EE:02", "boot_id": 2,
+            {"uart": "wifi", "slot": 1, "mac": "AA:BB:CC:DD:EE:02", "boot_id": 2,
              "firmware_target": "scanner-s3-combo-backend",
              "app_project": "fof_backend_scanner", "hardware_type": "seeed_xiao_esp32s3",
              "ver": "0.1.0-backend", "cmd_rx": 1},
@@ -170,7 +162,8 @@ async def test_backend_scanner_ota_rejects_same_family_scanner_replacement_durin
     detections._node_heartbeats["uplink_TEST"] = {
         "device_id": "uplink_TEST", "ip": "192.168.1.10", "last_seen": now,
         "scanners": [{
-            "uart": "ble", "mac": "AA:BB:CC:DD:EE:01", "boot_id": 1,
+            "uart": "ble", "slot": 0,
+            "mac": "AA:BB:CC:DD:EE:01", "boot_id": 1,
             "firmware_target": "scanner-s3-combo-backend",
             "app_project": "fof_backend_scanner", "hardware_type": "seeed_xiao_esp32s3",
             "ver": "0.1.0-backend", "cmd_rx": 1,
