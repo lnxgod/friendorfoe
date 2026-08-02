@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import deque
-from threading import Event, Lock
+from threading import Event, Lock, current_thread
 from typing import Iterable
 
 
@@ -20,6 +20,22 @@ class StepClock:
             return value
 
 
+class ManualClock:
+    """A thread-safe clock advanced explicitly by deterministic tests."""
+
+    def __init__(self, *, start: float = 0.0) -> None:
+        self.value = start
+        self._lock = Lock()
+
+    def __call__(self) -> float:
+        with self._lock:
+            return self.value
+
+    def advance(self, seconds: float) -> None:
+        with self._lock:
+            self.value += seconds
+
+
 class FakeSerial:
     """A deterministic unopened PySerial-compatible serial object."""
 
@@ -35,6 +51,7 @@ class FakeSerial:
     ) -> None:
         self.actions: list[tuple[object, ...]] = []
         self.writes: list[bytes] = []
+        self.write_threads: list[str] = []
         self._incoming = deque(incoming)
         self._incoming_lock = Lock()
         self._stale_input = stale_input
@@ -149,6 +166,7 @@ class FakeSerial:
             raise RuntimeError("port is closed")
         copied = bytes(data)
         self.writes.append(copied)
+        self.write_threads.append(current_thread().name)
         self.actions.append(("write", copied))
         self.written.set()
         return len(copied)
