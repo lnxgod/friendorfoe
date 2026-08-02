@@ -247,6 +247,26 @@ class ObservationStoreTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             store.query(HistoryQuery(cursor=cursor))
 
+    def test_cursor_row_id_must_fit_sqlite_signed_64_bit_range(self) -> None:
+        store = ObservationStore(self.path)
+        too_large = urlsafe_b64encode(
+            json.dumps(
+                {"received_at": 1.0, "id": 9_223_372_036_854_775_808},
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).decode("ascii")
+        maximum = urlsafe_b64encode(
+            json.dumps(
+                {"received_at": 1.0, "id": 9_223_372_036_854_775_807},
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).decode("ascii")
+
+        with self.assertRaises(ValueError):
+            store.query(HistoryQuery(cursor=too_large))
+
+        self.assertEqual(store.query(HistoryQuery(cursor=maximum)).items, ())
+
     def _positioned_entity(self) -> BadgeEntity:
         fixture = Path(__file__).parent / "fixtures" / "badge_status_remote_id.json"
         return BadgeEntity.from_payload(json.loads(fixture.read_text())["entities"][0])

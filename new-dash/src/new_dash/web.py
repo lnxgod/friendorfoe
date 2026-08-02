@@ -32,6 +32,7 @@ _MAX_QUERY_STRING_BYTES = 8_192
 _MAX_FILTER_TEXT = 256
 _MAX_FILTER_SCALAR = 64
 _MAX_CURSOR = 2_048
+_MAX_SQLITE_ROW_ID = 9_223_372_036_854_775_807
 _CSP = (
     "default-src 'self'; "
     "img-src 'self' data: https://*.tile.openstreetmap.org; "
@@ -667,6 +668,7 @@ def _validate_cursor(cursor: str) -> None:
         or isinstance(row_id, bool)
         or not isinstance(row_id, int)
         or row_id < 1
+        or row_id > _MAX_SQLITE_ROW_ID
     ):
         raise ValueError("invalid history cursor")
 

@@ -76,6 +76,7 @@ CREATE INDEX IF NOT EXISTS observations_source_idx ON observations (source);
 CREATE INDEX IF NOT EXISTS observations_threat_class_idx ON observations (threat_class);
 """
 _EXPORT_BATCH_SIZE = 500
+_MAX_SQLITE_ROW_ID = 9_223_372_036_854_775_807
 
 
 class ObservationStore:
@@ -349,6 +350,11 @@ def _finite_number(value: Any, name: str) -> float:
 
 
 def _positive_int(value: Any, name: str) -> int:
-    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or value < 1
+        or value > _MAX_SQLITE_ROW_ID
+    ):
         raise ValueError(f"{name} must be a positive integer")
     return value

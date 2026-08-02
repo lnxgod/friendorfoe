@@ -179,6 +179,13 @@ CSV_HEADERS = (
 )
 
 
+def history_cursor(row_id: int) -> str:
+    payload = json.dumps(
+        {"received_at": 1.0, "id": row_id}, separators=(",", ":")
+    ).encode("utf-8")
+    return urlsafe_b64encode(payload).decode("ascii")
+
+
 class WebServerTestCase(unittest.TestCase):
     server: object
 
@@ -497,6 +504,31 @@ class HistoryRouteTest(WebServerTestCase):
         self.assertEqual(response.status, 500)
         self.assertEqual(json.loads(body)["error"]["code"], "internal_error")
         self.assertNotIn(b"secret detail", body)
+
+    def test_cursor_row_id_must_fit_sqlite_signed_64_bit_range(self) -> None:
+        too_large = history_cursor(9_223_372_036_854_775_808)
+        maximum = history_cursor(9_223_372_036_854_775_807)
+
+        response, body = self.request(
+            "GET", "/api/history?cursor=" + quote(too_large)
+        )
+        export_response, export_body = self.request(
+            "GET", "/api/history/export.json?cursor=" + quote(too_large)
+        )
+
+        self.assertEqual(response.status, 400)
+        self.assertEqual(json.loads(body)["error"]["code"], "invalid_request")
+        self.assertEqual(export_response.status, 400)
+        self.assertEqual(
+            json.loads(export_body)["error"]["code"], "invalid_request"
+        )
+        self.assertIsNone(self.application.history_query)
+
+        maximum_response, _ = self.request(
+            "GET", "/api/history?cursor=" + quote(maximum)
+        )
+        self.assertEqual(maximum_response.status, 200)
+        self.assertEqual(self.application.history_query, HistoryQuery(cursor=maximum))
 
 
 APPROVED_POSTS = (
