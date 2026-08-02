@@ -11,11 +11,21 @@ from app.routers import detections, nodes
 
 def test_release_catalog_versions_match_live_follow():
     production_version = "0.64.68-live-follow"
+    badge_version = "0.67.2-badge-defcon34"
 
     assert app.version == production_version
     assert detections._EXPECTED_BACKEND_VERSION == production_version
     assert detections._EXPECTED_FIRMWARE_VERSION == production_version
-    assert detections._EXPECTED_BADGE_FIRMWARE_VERSION == "0.64.76-badge-defcon34"
+    assert detections._EXPECTED_BADGE_FIRMWARE_VERSION == badge_version
+    assert detections._firmware_version_state(
+        badge_version, "uplink-s3-fof_badge",
+    ) == "current"
+    assert detections._firmware_version_state(
+        badge_version, "scanner-s3-combo-fof_badge",
+    ) == "current"
+    assert detections._firmware_version_state(
+        "0.64.76-badge-defcon34", "uplink-s3-fof_badge",
+    ) == "drift"
 
 
 def test_backend_versions_are_target_aware_without_repurposing_api_version():
@@ -286,7 +296,7 @@ async def test_backend_scanner_identity_mismatch_is_blocked_from_fleet_execution
                      "ver": "0.1.0-backend", "cmd_rx": 1, "fw_check_count": 1},
                     {"uart": "wifi", "firmware_target": "scanner-s3-combo-fof_badge",
                      "app_project": "fof_badge_scanner", "hardware_type": "seeed_xiao_esp32s3",
-                     "ver": "0.64.76-badge-defcon34", "cmd_rx": 1, "fw_check_count": 1},
+                     "ver": "0.67.2-badge-defcon34", "cmd_rx": 1, "fw_check_count": 1},
                 ],
             },
         },
