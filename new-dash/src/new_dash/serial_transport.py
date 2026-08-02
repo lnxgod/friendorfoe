@@ -219,6 +219,7 @@ class BadgeSerialTransport:
         self._serial_factory = serial_factory or _default_serial_factory
         self._wall_clock = wall_clock
         self._monotonic_clock = monotonic_clock
+        self._shutdown_clock = time.monotonic
         self._on_frame = on_frame or (lambda _frame, _received_at: None)
         self._on_connection = on_connection or (lambda _update: None)
         self._write_lock = threading.Lock()
@@ -273,6 +274,7 @@ class BadgeSerialTransport:
 
         if timeout < 0:
             raise ValueError("timeout must be nonnegative")
+        deadline = self._shutdown_clock() + timeout
         with self._lifecycle_lock:
             if self._stopping:
                 raise TransportError(
@@ -284,12 +286,16 @@ class BadgeSerialTransport:
                 return
             self._stopping = True
             is_current_worker = worker is threading.current_thread()
-        self._commit_stop(stop_event, wait_for_active=not is_current_worker)
+        self._commit_stop(
+            stop_event,
+            deadline=deadline,
+            wait_for_active=not is_current_worker,
+        )
         if is_current_worker:
             with self._lifecycle_lock:
                 self._stopping = False
             return
-        worker.join(timeout)
+        worker.join(max(0.0, deadline - self._shutdown_clock()))
         if worker.is_alive():
             with self._lifecycle_lock:
                 self._stopping = False
@@ -309,14 +315,18 @@ class BadgeSerialTransport:
         self,
         stop_event: threading.Event,
         *,
+        deadline: float,
         wait_for_active: bool,
     ) -> None:
         with self._side_effect_condition:
             self._stop_requests.add(stop_event)
+            stop_event.set()
             if wait_for_active:
                 while self._active_side_effects.get(stop_event, 0):
-                    self._side_effect_condition.wait()
-            stop_event.set()
+                    remaining = deadline - self._shutdown_clock()
+                    if remaining <= 0:
+                        return
+                    self._side_effect_condition.wait(remaining)
 
     def _begin_side_effect(self, stop_event: threading.Event) -> bool:
         with self._side_effect_condition:

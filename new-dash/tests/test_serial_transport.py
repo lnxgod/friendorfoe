@@ -1632,6 +1632,136 @@ class RememberedIdentityTest(unittest.TestCase):
 
 
 class LifecycleConcurrencyTest(unittest.TestCase):
+    def test_stop_timeout_bounds_an_already_active_callback(self) -> None:
+        callback_active = threading.Event()
+        callback_release = threading.Event()
+        fake = FakeSerial([b"FOF_PONG:active-callback\n"])
+
+        def on_connection(update: ConnectionUpdate) -> None:
+            if update.state == "live":
+                callback_active.set()
+                callback_release.wait(1.0)
+
+        transport = BadgeSerialTransport(
+            enumerate_ports=lambda: [espressif("101")],
+            serial_factory=lambda: fake,
+            on_connection=on_connection,
+        )
+        transport.start()
+        self.assertTrue(callback_active.wait(1.0))
+        stop_done = threading.Event()
+        stop_errors: list[BaseException] = []
+
+        def stop_transport() -> None:
+            try:
+                transport.stop(timeout=0.02)
+            except BaseException as error:
+                stop_errors.append(error)
+            finally:
+                stop_done.set()
+
+        stopper = threading.Thread(target=stop_transport)
+        started_at = time.monotonic()
+        stopper.start()
+        returned_within_bound = stop_done.wait(0.2)
+        elapsed = time.monotonic() - started_at
+        callback_release.set()
+        stopper.join(1.0)
+        self.assertTrue(fake.closed.wait(1.0))
+        transport.stop()
+
+        self.assertTrue(returned_within_bound, elapsed)
+        self.assertLess(elapsed, 0.2)
+        self.assertEqual(len(stop_errors), 1)
+        self.assertIsInstance(stop_errors[0], TransportError)
+        self.assertEqual(stop_errors[0].code, "stop_timeout")  # type: ignore[union-attr]
+
+    def test_callback_triggered_stop_never_waits_on_its_own_side_effect(self) -> None:
+        callback_done = threading.Event()
+        callback_errors: list[BaseException] = []
+        holder: dict[str, BadgeSerialTransport] = {}
+        fake = FakeSerial([b"FOF_PONG:self-stop\n"])
+
+        def on_connection(update: ConnectionUpdate) -> None:
+            if update.state != "live":
+                return
+            try:
+                holder["transport"].stop(timeout=0.02)
+            except BaseException as error:
+                callback_errors.append(error)
+            finally:
+                callback_done.set()
+
+        transport = BadgeSerialTransport(
+            enumerate_ports=lambda: [espressif("101")],
+            serial_factory=lambda: fake,
+            on_connection=on_connection,
+        )
+        holder["transport"] = transport
+        transport.start()
+        self.assertTrue(callback_done.wait(0.2), callback_errors)
+        self.assertTrue(fake.closed.wait(1.0))
+        transport.stop()
+
+        self.assertEqual(callback_errors, [])
+
+    def test_active_callback_finishes_within_budget_then_worker_fully_joins(self) -> None:
+        callback_active = threading.Event()
+        callback_release = threading.Event()
+        shutdown_clock = ManualClock()
+        fake = FakeSerial([b"FOF_PONG:drain-and-join\n"])
+
+        def on_connection(update: ConnectionUpdate) -> None:
+            if update.state == "live":
+                callback_active.set()
+                callback_release.wait(1.0)
+
+        transport = BadgeSerialTransport(
+            enumerate_ports=lambda: [espressif("101")],
+            serial_factory=lambda: fake,
+            on_connection=on_connection,
+        )
+        transport._shutdown_clock = shutdown_clock
+        transport.start()
+        self.assertTrue(callback_active.wait(1.0))
+        stop_event = transport._worker_stop
+        worker = transport._worker
+        self.assertIsNotNone(stop_event)
+        self.assertIsNotNone(worker)
+        original_join = worker.join  # type: ignore[union-attr]
+        join_timeouts: list[float | None] = []
+
+        def recording_join(timeout: float | None = None) -> None:
+            join_timeouts.append(timeout)
+            original_join(timeout)
+
+        worker.join = recording_join  # type: ignore[method-assign,union-attr]
+        stop_done = threading.Event()
+        stop_errors: list[BaseException] = []
+
+        def stop_transport() -> None:
+            try:
+                transport.stop(timeout=1.0)
+            except BaseException as error:
+                stop_errors.append(error)
+            finally:
+                stop_done.set()
+
+        stopper = threading.Thread(target=stop_transport)
+        stopper.start()
+        stop_committed_while_callback_active = stop_event.wait(0.2)  # type: ignore[union-attr]
+        shutdown_clock.advance(0.4)
+        callback_release.set()
+        self.assertTrue(stop_done.wait(1.0), stop_errors)
+        stopper.join(1.0)
+
+        self.assertTrue(stop_committed_while_callback_active)
+        self.assertEqual(stop_errors, [])
+        self.assertTrue(fake.closed.is_set())
+        self.assertIsNone(transport._worker)
+        self.assertEqual(len(join_timeouts), 1)
+        self.assertAlmostEqual(join_timeouts[0], 0.6)  # type: ignore[arg-type]
+
     def test_start_racing_a_stop_cannot_leave_a_replacement_worker_live(self) -> None:
         class OneAttemptTransport(BadgeSerialTransport):
             def _wait_before_retry(self, stop_event, delay):  # type: ignore[no-untyped-def]
