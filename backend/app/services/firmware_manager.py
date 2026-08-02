@@ -393,7 +393,17 @@ class FirmwareManager:
             return "custom"
 
         image = await self.get_firmware_binary(name)
-        return self._version_from_image(image) if image is not None else None
+        return self.get_firmware_version_for_bytes(name, image) if image is not None else None
+
+    def get_firmware_version_for_bytes(self, name: str, image: bytes) -> str | None:
+        """Return a version for bytes already selected for serving.
+
+        Legacy custom images retain their literal ``custom`` sentinel, while
+        backend images always use their validated embedded app version.
+        """
+        if not name.endswith("-backend") and self._custom_firmware.get(name) is image:
+            return "custom"
+        return self._version_from_image(image)
 
     def validate_firmware_image(self, name: str, image: bytes) -> bool:
         if name.endswith("-backend"):

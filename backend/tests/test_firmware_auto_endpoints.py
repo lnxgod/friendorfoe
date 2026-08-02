@@ -61,17 +61,22 @@ def _backend_identity_record(
     return prefix + struct.pack("<I", zlib.crc32(prefix) & 0xFFFFFFFF)
 
 
-def _backend_image(target: str, *, payload_fill: bytes = b"A") -> bytes:
+def _backend_image(
+    target: str,
+    *,
+    version: str = "0.1.0-backend",
+    payload_fill: bytes = b"A",
+) -> bytes:
     project = "fof_backend_uplink" if target == "uplink-s3-backend" else "fof_backend_scanner"
     identity = _backend_identity_record(
         target=target,
         project=project,
         hardware="seeed_xiao_esp32s3",
-        version="0.1.0-backend",
+        version=version,
         image_kind=0 if target == "uplink-s3-backend" else 1,
     )
     return _esp_firmware_image(
-        "0.1.0-backend", project=project, identity_records=(identity,), payload_fill=payload_fill,
+        version, project=project, identity_records=(identity,), payload_fill=payload_fill,
     )
 
 
@@ -319,3 +324,53 @@ async def test_custom_legacy_upload_still_reports_custom_version(client):
         assert response.json()["version"] == "custom"
     finally:
         nodes._firmware_mgr.clear_custom_firmware(name)
+
+
+@pytest.mark.asyncio
+async def test_latest_metadata_binds_version_to_its_selected_backend_bytes(monkeypatch):
+    name = "uplink-s3-backend"
+    first = _backend_image(name, version="0.1.0-backend", payload_fill=b"A")
+    second = _backend_image(name, version="0.1.1-backend", payload_fill=b"B")
+    manager = FirmwareManager()
+    calls: list[str] = []
+
+    async def select_next(requested_name: str) -> bytes:
+        assert requested_name == name
+        calls.append(requested_name)
+        return (first, second)[len(calls) - 1]
+
+    monkeypatch.setattr(manager, "get_firmware_binary", select_next)
+    monkeypatch.setattr(nodes, "_firmware_mgr", manager)
+
+    meta = await nodes._firmware_metadata(name)
+
+    assert calls == [name]
+    assert meta["version"] == "0.1.0-backend"
+    assert meta["size"] == len(first)
+    assert meta["sha256"] == hashlib.sha256(first).hexdigest()
+    assert meta["crc32"] == (zlib.crc32(first) & 0xFFFFFFFF)
+
+
+@pytest.mark.asyncio
+async def test_download_binds_headers_to_its_selected_backend_bytes(monkeypatch):
+    name = "uplink-s3-backend"
+    first = _backend_image(name, version="0.1.0-backend", payload_fill=b"A")
+    second = _backend_image(name, version="0.1.1-backend", payload_fill=b"B")
+    manager = FirmwareManager()
+    calls: list[str] = []
+
+    async def select_next(requested_name: str) -> bytes:
+        assert requested_name == name
+        calls.append(requested_name)
+        return (first, second)[len(calls) - 1]
+
+    monkeypatch.setattr(manager, "get_firmware_binary", select_next)
+    monkeypatch.setattr(nodes, "_firmware_mgr", manager)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.get(f"/nodes/firmware/download/{name}")
+
+    assert calls == [name]
+    assert response.content == first
+    assert response.headers["x-fof-firmware-version"] == "0.1.0-backend"
+    assert response.headers["etag"] == f'"{hashlib.sha256(first).hexdigest()}"'

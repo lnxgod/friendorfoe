@@ -943,7 +943,7 @@ async def _firmware_metadata(name: str) -> dict | None:
     data = await _firmware_mgr.get_firmware_binary(name)
     if not data:
         return None
-    version = await _firmware_mgr.get_firmware_version(name) or "unknown"
+    version = _firmware_mgr.get_firmware_version_for_bytes(name, data) or "unknown"
 
     sha = hashlib.sha256(data).hexdigest()
 
@@ -987,7 +987,7 @@ async def get_firmware_download(name: str, request: Request = None):
     data = await _firmware_mgr.get_firmware_binary(name)
     if not data:
         raise HTTPException(status_code=404, detail=f"firmware '{name}' not available")
-    version = await _firmware_mgr.get_firmware_version(name) or "unknown"
+    version = _firmware_mgr.get_firmware_version_for_bytes(name, data) or "unknown"
     sha = hashlib.sha256(data).hexdigest()
 
     headers = {
