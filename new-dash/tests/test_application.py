@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import tempfile
 import threading
 import time
@@ -14,7 +15,10 @@ from new_dash.controls import ControlValidationError
 from new_dash.models import BadgeEntity, BadgeStatus, ControlReply, DetectionEvent, MachineFrame
 from new_dash.serial_transport import ConnectionUpdate, TransportUnavailable
 from new_dash.storage import HistoryQuery, ObservationStore
-from tests.test_controls import THEME, complete_policy
+if __package__:
+    from .test_controls import THEME, complete_policy
+else:
+    from test_controls import THEME, complete_policy
 
 
 class FakeTransport:
@@ -43,6 +47,61 @@ class BlockingPruneStore(ObservationStore):
         self.prune_started.set()
         self.release_prune.wait(3.0)
         return super().prune(now)
+
+
+class CancellableBlockingPruneStore(ObservationStore):
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        self.prune_started = threading.Event()
+        self.release_prune = threading.Event()
+        self.cancel_calls = 0
+        super().__init__(*args, **kwargs)
+
+    def prune(self, now: float | None = None) -> int:
+        self.prune_started.set()
+        self.release_prune.wait()
+        return super().prune(now)
+
+    def cancel_pending(self) -> None:
+        self.cancel_calls += 1
+        self.release_prune.set()
+        super().cancel_pending()
+
+
+class UncooperativeBlockingPruneStore(ObservationStore):
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        self.prune_started = threading.Event()
+        self.release_prune = threading.Event()
+        super().__init__(*args, **kwargs)
+
+    def prune(self, now: float | None = None) -> int:
+        self.prune_started.set()
+        self.release_prune.wait()
+        return super().prune(now)
+
+
+class LongSQLitePruneStore(ObservationStore):
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        self.prune_started = threading.Event()
+        self._long_connection: sqlite3.Connection | None = None
+        super().__init__(*args, **kwargs)
+
+    def prune(self, now: float | None = None) -> int:
+        with self._write_lock:
+            with self._connection() as connection:
+                self._long_connection = connection
+                self.prune_started.set()
+                connection.execute(
+                    """WITH RECURSIVE count_to_large(value) AS (
+                    VALUES(0) UNION ALL
+                    SELECT value + 1 FROM count_to_large WHERE value < 100000000
+                    ) SELECT sum(value) FROM count_to_large"""
+                ).fetchone()
+        return 0
+
+    def force_interrupt_for_test_cleanup(self) -> None:
+        connection = self._long_connection
+        if connection is not None:
+            connection.interrupt()
 
 
 class CountingPruneStore(ObservationStore):
@@ -116,9 +175,9 @@ class SlowClosingStore(ObservationStore):
         time.sleep(0.02)
         return super().add_event(event, received_at)
 
-    def close(self) -> None:
+    def close(self, timeout: float = 3.0) -> None:
         self.closed = True
-        super().close()
+        super().close(timeout=timeout)
 
 
 class CloseTrackingStore(ObservationStore):
@@ -126,9 +185,9 @@ class CloseTrackingStore(ObservationStore):
         self.close_called = threading.Event()
         super().__init__(*args, **kwargs)
 
-    def close(self) -> None:
+    def close(self, timeout: float = 3.0) -> None:
         self.close_called.set()
-        super().close()
+        super().close(timeout=timeout)
 
 
 class PausingRecordQueue(Queue[object]):
@@ -566,10 +625,14 @@ class NewDashApplicationPersistenceTest(unittest.TestCase):
             self.assertFalse(closer.is_alive())
             self.assertEqual(application._persistence_queue.qsize(), 0)
             self.assertEqual(application.snapshot(now=2.0)["diagnostics"]["persistence_drops"], 0)
-            self.assertEqual(
-                [item.display_id for item in store.query(HistoryQuery()).items],
-                ["pre-close"],
-            )
+            reopened = ObservationStore(Path(temp) / "close-race.sqlite3")
+            try:
+                self.assertEqual(
+                    [item.display_id for item in reopened.query(HistoryQuery()).items],
+                    ["pre-close"],
+                )
+            finally:
+                reopened.close()
 
     def test_full_queue_never_blocks_live_callback_and_counts_unsaved_records(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -669,6 +732,101 @@ class NewDashApplicationPersistenceTest(unittest.TestCase):
             recent_before = application.snapshot(now=500.0)["recent_events"]
             application.handle_frame(MachineFrame("detection", event), 501.0)
             self.assertEqual(application.snapshot(now=501.0)["recent_events"], recent_before)
+
+    def test_close_cancels_a_cooperative_blocked_startup_prune(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            store = CancellableBlockingPruneStore(Path(temp) / "cancel-prune.sqlite3")
+            application = NewDashApplication(store)
+            self.assertTrue(store.prune_started.wait(1.0))
+
+            started = time.monotonic()
+            application.close(timeout=0.25)
+            elapsed = time.monotonic() - started
+
+            self.assertLess(elapsed, 0.5)
+            self.assertGreaterEqual(store.cancel_calls, 1)
+            self.assertFalse(application._worker.is_alive())
+            self.assertTrue(application._worker.daemon)
+            with self.assertRaises(RuntimeError):
+                store.query(HistoryQuery())
+
+    def test_close_interrupts_real_active_sqlite_work(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            store = LongSQLitePruneStore(Path(temp) / "interrupt-prune.sqlite3")
+            application = NewDashApplication(store)
+            self.assertTrue(store.prune_started.wait(1.0))
+
+            try:
+                started = time.monotonic()
+                application.close(timeout=0.5)
+                elapsed = time.monotonic() - started
+
+                self.assertLess(elapsed, 0.8)
+                self.assertFalse(application._worker.is_alive())
+            finally:
+                if application._worker.is_alive():
+                    store.force_interrupt_for_test_cleanup()
+                    application._worker_stop.set()
+                    application._worker.join(1.0)
+                if not application._closed:
+                    with application._lock:
+                        application._closed = True
+                        application._accepting = False
+                    store.close()
+
+    def test_uncooperative_store_raises_stable_timeout_after_bounded_cleanup(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            store = UncooperativeBlockingPruneStore(
+                Path(temp) / "uncooperative-prune.sqlite3"
+            )
+            application = NewDashApplication(store)
+            self.assertTrue(store.prune_started.wait(1.0))
+
+            try:
+                started = time.monotonic()
+                with self.assertRaises(ApplicationError) as raised:
+                    application.close(timeout=0.15)
+                elapsed = time.monotonic() - started
+
+                self.assertEqual(raised.exception.code, "stop_timeout")
+                self.assertLess(elapsed, 0.4)
+                self.assertTrue(application._worker.is_alive())
+                self.assertTrue(application._worker.daemon)
+            finally:
+                store.release_prune.set()
+                application._worker_stop.set()
+                application._worker.join(1.0)
+                if not application._closed:
+                    with application._lock:
+                        application._closed = True
+                        application._accepting = False
+                    store.close()
+
+    def test_concurrent_and_repeated_close_share_one_completion(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            store = ObservationStore(Path(temp) / "concurrent-close.sqlite3")
+            application = NewDashApplication(store)
+            self.assertTrue(application._persistence_barrier())
+            errors: list[BaseException] = []
+
+            def close_application() -> None:
+                try:
+                    application.close(timeout=0.5)
+                except BaseException as error:
+                    errors.append(error)
+
+            first = threading.Thread(target=close_application)
+            second = threading.Thread(target=close_application)
+            first.start()
+            second.start()
+            first.join(1.0)
+            second.join(1.0)
+
+            self.assertFalse(first.is_alive())
+            self.assertFalse(second.is_alive())
+            self.assertEqual(errors, [])
+            self.assertFalse(application._worker.is_alive())
+            application.close(timeout=0.1)
 
 
 class NewDashApplicationControlTest(unittest.TestCase):

@@ -26,6 +26,9 @@ from .storage import HistoryPage, HistoryQuery, ObservationStore
 _PERSISTENCE_CAPACITY = 1_024
 _HISTORY_ERROR_LIMIT = 256
 _PRUNE_INTERVAL_SECONDS = 3_600.0
+_DEFAULT_CLOSE_TIMEOUT_SECONDS = 3.0
+_CANCELLATION_RESERVE_SECONDS = 0.5
+_STOP_TIMEOUT_MESSAGE = "New Dash did not stop within the shutdown timeout."
 
 
 class BadgeTransportLike(Protocol):
@@ -84,6 +87,8 @@ class NewDashApplication:
         self._persistence_drops = 0
         self._accepting = True
         self._closed = False
+        self._close_complete = threading.Event()
+        self._close_error: ApplicationError | None = None
         self._last_prune_queued_at: float | None = None
         self._transport: BadgeTransportLike | None = None
         self._persistence_queue: Queue[_PersistenceAction] = Queue(
@@ -93,7 +98,7 @@ class NewDashApplication:
         self._worker = threading.Thread(
             target=self._run_persistence,
             name="new-dash-persistence",
-            daemon=False,
+            daemon=True,
         )
         self._worker.start()
         self._prune_if_due(self._now())
@@ -282,30 +287,88 @@ class NewDashApplication:
             raise ApplicationError("history_unavailable", self._bounded_error(action.error))
         return action.result
 
-    def close(self) -> None:
+    def close(self, timeout: float = _DEFAULT_CLOSE_TIMEOUT_SECONDS) -> None:
+        """Drain accepted work and release storage within one caller deadline."""
+
+        if timeout < 0:
+            raise ValueError("timeout must be nonnegative")
+        deadline = time.monotonic() + timeout
         with self._lock:
             if self._closed:
-                return
-            self._closed = True
-            self._accepting = False
-        deadline = time.monotonic() + 3.0
+                owns_close = False
+            else:
+                self._closed = True
+                self._accepting = False
+                owns_close = True
+
+        if not owns_close:
+            if not self._close_complete.wait(self._remaining(deadline)):
+                raise ApplicationError("stop_timeout", _STOP_TIMEOUT_MESSAGE)
+            with self._lock:
+                close_error = self._close_error
+            if close_error is not None:
+                raise ApplicationError(close_error.code, close_error.message)
+            return
+
+        cancellation_reserve = min(_CANCELLATION_RESERVE_SECONDS, timeout / 2.0)
+        drain_deadline = deadline - cancellation_reserve
         barrier = _PersistenceAction("barrier", completion=threading.Event())
+        store_closed = False
         try:
-            self._persistence_queue.put(
-                barrier, timeout=max(0.0, deadline - time.monotonic())
+            try:
+                self._persistence_queue.put(
+                    barrier, timeout=self._remaining(drain_deadline)
+                )
+            except Full:
+                pass
+            except Exception as error:
+                self._record_history_error(error)
+            else:
+                barrier.completion.wait(self._remaining(drain_deadline))
+
+            drain_completed = barrier.completion.is_set() and barrier.error is None
+            if not drain_completed:
+                try:
+                    self._discard_queued_actions()
+                except Exception as error:
+                    self._record_history_error(error)
+            self._worker_stop.set()
+
+            if not drain_completed:
+                try:
+                    self._store.cancel_pending()
+                except Exception as error:
+                    self._record_history_error(error)
+
+            try:
+                self._worker.join(self._remaining(deadline))
+            except RuntimeError as error:
+                self._record_history_error(error)
+
+            if self._worker.is_alive():
+                try:
+                    self._store.cancel_pending()
+                except Exception as error:
+                    self._record_history_error(error)
+
+            try:
+                self._store.close(timeout=self._remaining(deadline))
+            except Exception as error:
+                self._record_history_error(error)
+            else:
+                store_closed = True
+        finally:
+            close_error = (
+                ApplicationError("stop_timeout", _STOP_TIMEOUT_MESSAGE)
+                if self._worker.is_alive() or not store_closed
+                else None
             )
-        except Full:
-            pass
-        else:
-            barrier.completion.wait(max(0.0, deadline - time.monotonic()))
-        if not barrier.completion.is_set():
-            self._discard_queued_actions()
-        self._worker_stop.set()
-        self._worker.join()
-        try:
-            self._store.close()
-        except Exception as error:
-            self._record_history_error(error)
+            with self._lock:
+                self._close_error = close_error
+            self._close_complete.set()
+
+        if close_error is not None:
+            raise close_error
 
     def _discard_queued_actions(self) -> None:
         dropped_records = 0
@@ -585,3 +648,7 @@ class NewDashApplication:
 
     def _now(self) -> float:
         return self._wall_clock()
+
+    @staticmethod
+    def _remaining(deadline: float) -> float:
+        return max(0.0, deadline - time.monotonic())

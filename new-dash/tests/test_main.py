@@ -5,6 +5,7 @@ import importlib
 import io
 from pathlib import Path
 import signal
+import time
 import unittest
 from unittest.mock import patch
 
@@ -49,9 +50,11 @@ class _Store:
     def __init__(self, lifecycle: _Lifecycle) -> None:
         self.lifecycle = lifecycle
         self.closed = False
+        self.close_timeout: float | None = None
 
-    def close(self) -> None:
+    def close(self, timeout: float = 3.0) -> None:
         self.lifecycle.events.append("store.close")
+        self.close_timeout = timeout
         self.closed = True
 
 
@@ -60,6 +63,7 @@ class _Application:
         self.lifecycle = lifecycle
         self.store = store
         self.transport: _Transport | None = None
+        self.close_timeout: float | None = None
 
     def attach_transport(self, transport: "_Transport") -> None:
         self.lifecycle.events.append("application.attach_transport")
@@ -71,22 +75,25 @@ class _Application:
     def handle_connection(self, update: object) -> None:
         pass
 
-    def close(self) -> None:
+    def close(self, timeout: float = 3.0) -> None:
         self.lifecycle.events.append("application.close")
-        self.store.close()
+        self.close_timeout = timeout
+        self.store.close(timeout=timeout)
 
 
 class _Transport:
     def __init__(self, lifecycle: _Lifecycle) -> None:
         self.lifecycle = lifecycle
         self.alive = False
+        self.stop_timeout: float | None = None
 
     def start(self) -> None:
         self.lifecycle.events.append("transport.start")
         self.alive = True
 
     def stop(self, timeout: float = 3.0) -> None:
-        self.lifecycle.events.append(f"transport.stop:{timeout}")
+        self.lifecycle.events.append("transport.stop")
+        self.stop_timeout = timeout
         self.alive = False
 
 
@@ -94,9 +101,11 @@ class _Thread:
     def __init__(self, lifecycle: _Lifecycle) -> None:
         self.lifecycle = lifecycle
         self.alive = True
+        self.join_timeout: float | None = None
 
     def join(self, timeout: float | None = None) -> None:
-        self.lifecycle.events.append(f"server.join:{timeout}")
+        self.lifecycle.events.append("server.join")
+        self.join_timeout = timeout
         self.alive = False
 
     def is_alive(self) -> bool:
@@ -205,6 +214,21 @@ class LauncherArgumentTest(unittest.TestCase):
                     with self.assertRaises(SystemExit):
                         launcher.parse_args(list(arguments))
 
+    def test_abbreviated_option_names_are_rejected(self) -> None:
+        abbreviated_arguments = (
+            ("--po", "/dev/cu.usbmodem101"),
+            ("--http", "8123"),
+            ("--no",),
+            ("--data", "/private/tmp/new-dash"),
+            ("--retention", "7"),
+            ("--max", "99"),
+        )
+        for arguments in abbreviated_arguments:
+            with self.subTest(arguments=arguments):
+                with redirect_stderr(io.StringIO()):
+                    with self.assertRaises(SystemExit):
+                        launcher.parse_args(list(arguments))
+
     def test_remote_bind_flags_are_not_accepted(self) -> None:
         with redirect_stderr(io.StringIO()):
             with self.assertRaises(SystemExit):
@@ -288,14 +312,51 @@ class LauncherLifecycleTest(unittest.TestCase):
             [
                 "server.shutdown",
                 "server.close",
-                "server.join:3.0",
-                "transport.stop:3.0",
+                "server.join",
+                "transport.stop",
                 "application.close",
                 "store.close",
             ],
         )
+        self.assertIsNotNone(self.lifecycle.application)
+        self.assertIsNotNone(self.lifecycle.transport)
+        self.assertGreater(self.lifecycle.application.close_timeout, 0.0)
+        self.assertLessEqual(self.lifecycle.application.close_timeout, 3.0)
+        self.assertGreater(self.lifecycle.transport.stop_timeout, 0.0)
+        self.assertLessEqual(self.lifecycle.transport.stop_timeout, 3.0)
         self.assertIn("http://127.0.0.1:8765", output.getvalue())
         self.assertIn("/private/tmp/new-dash/new-dash.sqlite3", output.getvalue())
+
+    def test_cleanup_components_share_one_deadline(self) -> None:
+        args = launcher.parse_args(["--no-browser"])
+        server = _Server(self.lifecycle)
+        original_shutdown = server.shutdown
+
+        def slow_shutdown() -> None:
+            time.sleep(0.03)
+            original_shutdown()
+
+        server.shutdown = slow_shutdown  # type: ignore[method-assign]
+        with patch.object(launcher, "create_http_server", return_value=server):
+            with patch.object(launcher, "_SHUTDOWN_TIMEOUT_SECONDS", 0.05):
+                with patch.object(launcher, "_wait_for_shutdown", return_value=None):
+                    with redirect_stdout(io.StringIO()):
+                        launcher.run(args)
+
+        self.assertIsNotNone(self.lifecycle.application)
+        self.assertIsNotNone(self.lifecycle.transport)
+        self.assertIsNotNone(server.thread.join_timeout)
+        self.assertIsNotNone(self.lifecycle.transport.stop_timeout)
+        self.assertIsNotNone(self.lifecycle.application.close_timeout)
+        self.assertLess(server.thread.join_timeout, 0.03)
+        self.assertLessEqual(
+            self.lifecycle.transport.stop_timeout,
+            server.thread.join_timeout,
+        )
+        self.assertLessEqual(
+            self.lifecycle.application.close_timeout,
+            self.lifecycle.transport.stop_timeout,
+        )
 
     def test_no_browser_suppresses_browser_open(self) -> None:
         args = launcher.parse_args(["--no-browser"])
@@ -317,8 +378,8 @@ class LauncherLifecycleTest(unittest.TestCase):
                 launcher.run(args)
 
         self.assertEqual(self.lifecycle.events.count("transport.start"), 1)
-        self.assertIn("transport.stop:3.0", self.lifecycle.events)
-        self.assertIn("server.join:3.0", self.lifecycle.events)
+        self.assertIn("transport.stop", self.lifecycle.events)
+        self.assertIn("server.join", self.lifecycle.events)
         self.assertIsNotNone(self.lifecycle.transport)
         self.assertFalse(self.lifecycle.transport.alive)
 
@@ -335,8 +396,8 @@ class LauncherLifecycleTest(unittest.TestCase):
                 with redirect_stdout(io.StringIO()):
                     launcher.run(args)
 
-        self.assertIn("transport.stop:3.0", self.lifecycle.events)
-        self.assertIn("server.join:3.0", self.lifecycle.events)
+        self.assertIn("transport.stop", self.lifecycle.events)
+        self.assertIn("server.join", self.lifecycle.events)
         self.assertIsNotNone(self.lifecycle.transport)
         self.assertFalse(self.lifecycle.transport.alive)
 
@@ -360,8 +421,8 @@ class LauncherLifecycleTest(unittest.TestCase):
                 with redirect_stdout(io.StringIO()):
                     launcher.run(args)
 
-        self.assertIn("transport.stop:3.0", self.lifecycle.events)
-        self.assertIn("server.join:3.0", self.lifecycle.events)
+        self.assertIn("transport.stop", self.lifecycle.events)
+        self.assertIn("server.join", self.lifecycle.events)
         self.assertIsNotNone(self.lifecycle.transport)
         self.assertFalse(self.lifecycle.transport.alive)
 
@@ -385,8 +446,8 @@ class LauncherLifecycleTest(unittest.TestCase):
                 with redirect_stdout(io.StringIO()):
                     launcher.run(args)
 
-        self.assertIn("transport.stop:3.0", self.lifecycle.events)
-        self.assertIn("server.join:3.0", self.lifecycle.events)
+        self.assertIn("transport.stop", self.lifecycle.events)
+        self.assertIn("server.join", self.lifecycle.events)
         self.assertIsNotNone(self.lifecycle.transport)
         self.assertFalse(self.lifecycle.transport.alive)
 
@@ -406,7 +467,7 @@ class LauncherLifecycleTest(unittest.TestCase):
 
         self.assertIn("transport.start", self.lifecycle.events)
         self.assertIn("server.close", self.lifecycle.events)
-        self.assertIn("transport.stop:3.0", self.lifecycle.events)
+        self.assertIn("transport.stop", self.lifecycle.events)
         self.assertIn("application.close", self.lifecycle.events)
         self.assertIsNotNone(self.lifecycle.transport)
         self.assertFalse(self.lifecycle.transport.alive)

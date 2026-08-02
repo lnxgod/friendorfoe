@@ -7,6 +7,7 @@ from pathlib import Path
 import signal
 import sys
 import threading
+import time
 from types import FrameType
 from typing import Any, Sequence
 import webbrowser
@@ -42,6 +43,7 @@ def parse_args(arguments: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="python -m new_dash",
         description="Run New Dash for one Friend or Foe badge over USB.",
+        allow_abbrev=False,
     )
     parser.add_argument("--port", help="explicit badge serial device path")
     parser.add_argument(
@@ -162,26 +164,33 @@ def run(arguments: argparse.Namespace) -> None:
     except KeyboardInterrupt:
         stop_event.set()
     finally:
+        shutdown_deadline = time.monotonic() + _SHUTDOWN_TIMEOUT_SECONDS
+
+        def remaining_shutdown_time() -> float:
+            return max(0.0, shutdown_deadline - time.monotonic())
+
         try:
             if server is not None:
                 if server_thread is not None:
                     try:
                         server.shutdown()
                     finally:
-                        server.server_close()
-                        server_thread.join(_SHUTDOWN_TIMEOUT_SECONDS)
+                        try:
+                            server.server_close()
+                        finally:
+                            server_thread.join(remaining_shutdown_time())
                 else:
                     server.server_close()
         finally:
             try:
                 if transport is not None:
-                    transport.stop(timeout=_SHUTDOWN_TIMEOUT_SECONDS)
+                    transport.stop(timeout=remaining_shutdown_time())
             finally:
                 try:
                     if application is not None:
-                        application.close()
+                        application.close(timeout=remaining_shutdown_time())
                     elif store is not None:
-                        store.close()
+                        store.close(timeout=remaining_shutdown_time())
                 finally:
                     for shutdown_signal, previous_handler in reversed(
                         previous_handlers

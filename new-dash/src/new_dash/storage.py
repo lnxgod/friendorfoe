@@ -77,6 +77,12 @@ CREATE INDEX IF NOT EXISTS observations_threat_class_idx ON observations (threat
 """
 _EXPORT_BATCH_SIZE = 500
 _MAX_SQLITE_ROW_ID = 9_223_372_036_854_775_807
+_PROGRESS_INSTRUCTIONS = 1_000
+_WRITE_LOCK_POLL_SECONDS = 0.05
+
+
+class ObservationStoreClosed(RuntimeError):
+    """A local-history operation was attempted after shutdown began."""
 
 
 class ObservationStore:
@@ -97,8 +103,11 @@ class ObservationStore:
         self.retention_days = retention_days
         self.max_observations = max_observations
         self._write_lock = threading.Lock()
+        self._closing = threading.Event()
+        self._connection_condition = threading.Condition()
+        self._active_connections: set[sqlite3.Connection] = set()
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self._write_lock:
+        with self._write_access():
             with self._connection() as connection:
                 connection.executescript(_SCHEMA)
                 connection.execute(
@@ -116,16 +125,50 @@ class ObservationStore:
     @contextmanager
     def _connection(self) -> Iterator[sqlite3.Connection]:
         """Commit or roll back one operation, then always close its connection."""
+        self._ensure_open()
         connection = self._connect()
+        with self._connection_condition:
+            if self._closing.is_set():
+                connection.close()
+                raise ObservationStoreClosed("observation store is closed")
+            self._active_connections.add(connection)
+        connection.set_progress_handler(
+            lambda: 1 if self._closing.is_set() else 0,
+            _PROGRESS_INSTRUCTIONS,
+        )
         try:
             yield connection
         except BaseException:
             connection.rollback()
             raise
         else:
+            self._ensure_open()
             connection.commit()
         finally:
-            connection.close()
+            try:
+                connection.close()
+            finally:
+                with self._connection_condition:
+                    self._active_connections.discard(connection)
+                    self._connection_condition.notify_all()
+
+    @contextmanager
+    def _write_access(self) -> Iterator[None]:
+        """Acquire the writer lock while remaining interruptible by shutdown."""
+
+        while True:
+            self._ensure_open()
+            if self._write_lock.acquire(timeout=_WRITE_LOCK_POLL_SECONDS):
+                break
+        try:
+            self._ensure_open()
+            yield
+        finally:
+            self._write_lock.release()
+
+    def _ensure_open(self) -> None:
+        if self._closing.is_set():
+            raise ObservationStoreClosed("observation store is closed")
 
     def add_event(self, event: DetectionEvent, received_at: float) -> int:
         """Persist an emitted event; protocol events are never deduplicated."""
@@ -137,7 +180,7 @@ class ObservationStore:
             None, None, None, None, None, "",
             json.dumps(event.to_dict(), separators=(",", ":"), allow_nan=False),
         )
-        with self._write_lock:
+        with self._write_access():
             with self._connection() as connection:
                 return _insert_observation(connection, values)
 
@@ -170,7 +213,7 @@ class ObservationStore:
                 entity.to_dict()["extras"], separators=(",", ":"), allow_nan=False
             ),
         )
-        with self._write_lock:
+        with self._write_access():
             with self._connection() as connection:
                 previous = connection.execute(
                     """SELECT latitude, longitude, altitude_m, events, seen_count
@@ -213,7 +256,7 @@ class ObservationStore:
         """Delete expired rows and then the oldest IDs over the row limit."""
         cutoff_now = time.time() if now is None else _finite_number(now, "now")
         cutoff = cutoff_now - self.retention_days * 86_400
-        with self._write_lock:
+        with self._write_access():
             with self._connection() as connection:
                 deleted = connection.execute(
                     "DELETE FROM observations WHERE received_at < ?", (cutoff,)
@@ -231,12 +274,35 @@ class ObservationStore:
 
     def clear(self) -> int:
         """Delete all retained observations and return their number."""
-        with self._write_lock:
+        with self._write_access():
             with self._connection() as connection:
                 return connection.execute("DELETE FROM observations").rowcount
 
-    def close(self) -> None:
-        """Connections are intentionally short-lived, so there is nothing to close."""
+    def cancel_pending(self) -> None:
+        """Reject new work and interrupt every active SQLite operation."""
+
+        self._closing.set()
+        with self._connection_condition:
+            connections = tuple(self._active_connections)
+        for connection in connections:
+            try:
+                connection.interrupt()
+            except sqlite3.Error:
+                pass
+
+    def close(self, timeout: float = 3.0) -> None:
+        """Cancel active work and wait only until the supplied deadline."""
+
+        if timeout < 0:
+            raise ValueError("timeout must be nonnegative")
+        deadline = time.monotonic() + timeout
+        self.cancel_pending()
+        with self._connection_condition:
+            while self._active_connections:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError("observation store did not close in time")
+                self._connection_condition.wait(remaining)
 
 
 def _observation_from_row(row: sqlite3.Row) -> Observation:

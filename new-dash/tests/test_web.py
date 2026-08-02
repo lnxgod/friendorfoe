@@ -26,7 +26,10 @@ from new_dash.models import ControlReply, Observation
 from new_dash.serial_transport import ControlTimeout, TransportUnavailable
 from new_dash.storage import HistoryPage, HistoryQuery
 from new_dash.web import create_http_server
-from tests.test_controls import THEME, complete_policy
+if __package__:
+    from .test_controls import THEME, complete_policy
+else:
+    from test_controls import THEME, complete_policy
 
 
 STATIC_ROOT = Path(__file__).parents[1] / "src" / "new_dash" / "static"

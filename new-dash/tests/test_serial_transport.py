@@ -15,7 +15,10 @@ from new_dash.serial_transport import (
     discover_badge_ports,
 )
 
-from tests.fakes import FakeSerial, ManualClock, StepClock
+if __package__:
+    from .fakes import FakeSerial, ManualClock, StepClock
+else:
+    from fakes import FakeSerial, ManualClock, StepClock
 
 
 ESPRESSIF_VID = 0x303A
