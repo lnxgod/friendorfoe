@@ -86,6 +86,15 @@ def _reject_symlink_components(path: Path, boundary: Path) -> None:
             raise ValueError(f"unsafe vendor destination symlink: {current}")
 
 
+def _reject_existing_path_symlinks(path: Path) -> None:
+    absolute = path.absolute()
+    current = Path(absolute.anchor)
+    for part in absolute.parts[1:]:
+        current = current / part
+        if current.is_symlink():
+            raise ValueError(f"unsafe vendor output path symlink: {current}")
+
+
 def _write_provenance_atomically(path: Path, payload: str, output_root: Path) -> None:
     _reject_symlink_components(path, output_root)
     temporary_name: str | None = None
@@ -120,8 +129,7 @@ def snapshot(
     repository = repository.resolve(strict=True)
     manifest_path = manifest_path.resolve(strict=True)
     requested_output_root = output_root.expanduser()
-    if requested_output_root.is_symlink():
-        raise ValueError(f"unsafe vendor output root symlink: {requested_output_root}")
+    _reject_existing_path_symlinks(requested_output_root)
     output_root = requested_output_root.resolve(strict=False)
     output_root.mkdir(parents=True, exist_ok=True)
     manifest = load_manifest(manifest_path)

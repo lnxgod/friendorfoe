@@ -29,6 +29,13 @@ BARE_PATH = re.compile(
     r"(?<![A-Za-z0-9_$%{}])"
     r"([A-Za-z0-9_.@+~-]+(?:/[A-Za-z0-9_.*?@+~-]+)+)"
 )
+SINGLE_SEGMENT_VENDOR = re.compile(
+    r"(?<![A-Za-z0-9_./$%{}])(vendor)(?![A-Za-z0-9_./])"
+)
+VARIABLE_EXPRESSION = re.compile(
+    r"(\$ENV\{[^}\r\n]+\}|\$\{[^}\r\n]+\}|"
+    r"\$[A-Za-z_][A-Za-z0-9_]*|%[A-Za-z_][A-Za-z0-9_]*%)"
+)
 KNOWN_ROOT_VARIABLES = (
     "${CMAKE_SOURCE_DIR}",
     "${PROJECT_SOURCE_DIR}",
@@ -36,10 +43,8 @@ KNOWN_ROOT_VARIABLES = (
     "$PROJECT_DIR",
     "%PROJECT_DIR%",
 )
-KNOWN_LOCAL_VARIABLES = (
-    "${CMAKE_CURRENT_LIST_DIR}",
-    "${CMAKE_CURRENT_SOURCE_DIR}",
-)
+KNOWN_LIST_VARIABLE = "${CMAKE_CURRENT_LIST_DIR}"
+KNOWN_SOURCE_VARIABLE = "${CMAKE_CURRENT_SOURCE_DIR}"
 
 
 def _is_within(path: Path, parent: Path) -> bool:
@@ -97,12 +102,18 @@ def _clean_candidate(candidate: str) -> str:
     return candidate.strip().strip("\"'<>(),;[]")
 
 
-def _expand_known_variables(candidate: str, root: Path, base_directory: Path) -> str:
+def _expand_known_variables(
+    candidate: str,
+    root: Path,
+    base_directory: Path,
+    display_file: str,
+) -> str:
     expanded = candidate
     for variable in KNOWN_ROOT_VARIABLES:
         expanded = expanded.replace(variable, str(root))
-    for variable in KNOWN_LOCAL_VARIABLES:
-        expanded = expanded.replace(variable, str(base_directory))
+    expanded = expanded.replace(KNOWN_LIST_VARIABLE, str(base_directory))
+    if Path(display_file).name == "CMakeLists.txt":
+        expanded = expanded.replace(KNOWN_SOURCE_VARIABLE, str(base_directory))
     return expanded
 
 
@@ -118,7 +129,9 @@ def _finding_for_path(
     original_candidate = _clean_candidate(candidate)
     if not original_candidate or original_candidate.startswith(("http://", "https://")):
         return None
-    candidate = _expand_known_variables(original_candidate, root, base_directory)
+    candidate = _expand_known_variables(
+        original_candidate, root, base_directory, display_file
+    )
     if "$" in candidate or "%" in candidate:
         return f"{display_file}: unresolved build path {original_candidate}"
 
@@ -153,6 +166,8 @@ def _config_candidates(path: Path, text: str) -> Iterable[str]:
     yield from INCLUDE_FLAG.findall(text)
     yield from UNQUOTED_PATH.findall(text)
     yield from BARE_PATH.findall(text)
+    yield from SINGLE_SEGMENT_VENDOR.findall(text)
+    yield from VARIABLE_EXPRESSION.findall(text)
 
 
 def _build_files(root: Path) -> Iterable[Path]:

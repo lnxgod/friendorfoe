@@ -179,6 +179,7 @@ def test_expands_known_local_build_variables_without_escaping(tmp_path: Path) ->
             [
                 'target_sources(app PRIVATE "${CMAKE_SOURCE_DIR}/shared/backend_identity.c")',
                 'target_include_directories(app PRIVATE "${CMAKE_CURRENT_LIST_DIR}/shared")',
+                'target_include_directories(app PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/shared")',
                 'target_include_directories(app PRIVATE "${PROJECT_DIR}/shared")',
             ]
         )
@@ -187,6 +188,42 @@ def test_expands_known_local_build_variables_without_escaping(tmp_path: Path) ->
     )
 
     assert _auditor().audit_tree(root, allowed_tool_roots=[]) == []
+
+
+def test_rejects_single_segment_vendor_build_path(tmp_path: Path) -> None:
+    root = make_backend_tree(tmp_path)
+    (root / "CMakeLists.txt").write_text(
+        "target_include_directories(app PRIVATE vendor)\n", encoding="utf-8"
+    )
+
+    assert "vendor source compiled vendor" in "\n".join(
+        _auditor().audit_tree(root, allowed_tool_roots=[])
+    )
+
+
+def test_rejects_unquoted_unresolved_variable_expression(tmp_path: Path) -> None:
+    root = make_backend_tree(tmp_path)
+    (root / "CMakeLists.txt").write_text(
+        "target_sources(app PRIVATE ${UNTRUSTED_SOURCES})\n", encoding="utf-8"
+    )
+
+    assert "unresolved build path ${UNTRUSTED_SOURCES}" in "\n".join(
+        _auditor().audit_tree(root, allowed_tool_roots=[])
+    )
+
+
+def test_fails_closed_on_current_source_dir_inside_included_cmake(tmp_path: Path) -> None:
+    root = make_backend_tree(tmp_path)
+    fragment = root / "cmake/fragment.cmake"
+    fragment.parent.mkdir()
+    fragment.write_text(
+        'target_sources(app PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../esp32/scanner/main/main.c")\n',
+        encoding="utf-8",
+    )
+
+    findings = "\n".join(_auditor().audit_tree(root, allowed_tool_roots=[]))
+    assert "unresolved build path" in findings
+    assert "${CMAKE_CURRENT_SOURCE_DIR}/../esp32/scanner/main/main.c" in findings
 
 
 def test_compile_database_accepts_canonical_absolute_local_path(tmp_path: Path) -> None:
@@ -432,3 +469,17 @@ def test_vendor_tool_does_not_follow_provenance_symlink(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="symlink"):
         tool.snapshot(ROOT.parent, _minimal_manifest(tmp_path), output)
     assert victim.read_text(encoding="utf-8") == "keep me\n"
+
+
+def test_vendor_tool_rejects_symlink_in_requested_output_ancestors(tmp_path: Path) -> None:
+    tool = _vendor_tool()
+    safe = tmp_path / "safe"
+    safe.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (safe / "link").symlink_to(outside, target_is_directory=True)
+    requested = safe / "link/snapshot"
+
+    with pytest.raises(ValueError, match="symlink"):
+        tool.snapshot(ROOT.parent, _minimal_manifest(tmp_path), requested)
+    assert not (outside / "snapshot").exists()
