@@ -50,6 +50,11 @@ import javax.inject.Inject
 private const val MAP_FRAME_INTERVAL_MS = 250L
 private const val MAX_LAST_KNOWN_LOCATION_AGE_NANOS = 30_000_000_000L
 
+internal data class MapLastKnownLocationCandidate<T>(
+    val value: T,
+    val elapsedRealtimeNanos: Long,
+)
+
 internal fun shouldSeedMapFromLastKnownLocation(
     locationElapsedRealtimeNanos: Long,
     nowElapsedRealtimeNanos: Long,
@@ -57,6 +62,20 @@ internal fun shouldSeedMapFromLastKnownLocation(
     val ageNanos = nowElapsedRealtimeNanos - locationElapsedRealtimeNanos
     return ageNanos in 0..MAX_LAST_KNOWN_LOCATION_AGE_NANOS
 }
+
+internal fun <T> selectFreshestMapLastKnownLocation(
+    gps: MapLastKnownLocationCandidate<T>?,
+    network: MapLastKnownLocationCandidate<T>?,
+    nowElapsedRealtimeNanos: Long,
+): T? = listOfNotNull(gps, network)
+    .filter { candidate ->
+        shouldSeedMapFromLastKnownLocation(
+            locationElapsedRealtimeNanos = candidate.elapsedRealtimeNanos,
+            nowElapsedRealtimeNanos = nowElapsedRealtimeNanos,
+        )
+    }
+    .maxByOrNull(MapLastKnownLocationCandidate<T>::elapsedRealtimeNanos)
+    ?.value
 
 internal fun mapFrameClock(
     epochNowMs: () -> Long = System::currentTimeMillis,
@@ -422,13 +441,19 @@ class MapViewModel @Inject constructor(
                 )
             }
 
-            val lastKnown = locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER)
-                ?: locationManager.getLastKnownLocation(LocationManager.NETWORK_PROVIDER)
-            if (lastKnown != null && shouldSeedMapFromLastKnownLocation(
-                    locationElapsedRealtimeNanos = lastKnown.elapsedRealtimeNanos,
-                    nowElapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos(),
-                )
-            ) {
+            val gpsLastKnown = locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER)
+            val networkLastKnown =
+                locationManager.getLastKnownLocation(LocationManager.NETWORK_PROVIDER)
+            val lastKnown = selectFreshestMapLastKnownLocation(
+                gps = gpsLastKnown?.let { location ->
+                    MapLastKnownLocationCandidate(location, location.elapsedRealtimeNanos)
+                },
+                network = networkLastKnown?.let { location ->
+                    MapLastKnownLocationCandidate(location, location.elapsedRealtimeNanos)
+                },
+                nowElapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos(),
+            )
+            if (lastKnown != null) {
                 _userPosition.value = Position(
                     latitude = lastKnown.latitude,
                     longitude = lastKnown.longitude,

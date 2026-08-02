@@ -16,20 +16,51 @@ import org.junit.Test
 
 class MapPresentationTest {
     @Test
-    fun staleLastKnownLocationCannotInitializeTheMapCamera() {
+    fun staleGpsDoesNotHideAFreshNetworkLocation() {
         val nowElapsedRealtimeNanos = 120_000_000_000L
 
-        assertFalse(
-            shouldSeedMapFromLastKnownLocation(
-                locationElapsedRealtimeNanos = 1_000_000_000L,
+        assertEquals(
+            "network",
+            selectFreshestMapLastKnownLocation(
+                gps = MapLastKnownLocationCandidate(
+                    value = "gps",
+                    elapsedRealtimeNanos = 1_000_000_000L,
+                ),
+                network = MapLastKnownLocationCandidate(
+                    value = "network",
+                    elapsedRealtimeNanos = 115_000_000_000L,
+                ),
                 nowElapsedRealtimeNanos = nowElapsedRealtimeNanos,
-            )
+            ),
         )
-        assertTrue(
-            shouldSeedMapFromLastKnownLocation(
-                locationElapsedRealtimeNanos = 115_000_000_000L,
-                nowElapsedRealtimeNanos = nowElapsedRealtimeNanos,
-            )
+    }
+
+    @Test
+    fun futureLastKnownLocationIsRejected() {
+        assertNull(
+            selectFreshestMapLastKnownLocation(
+                gps = MapLastKnownLocationCandidate(
+                    value = "future-gps",
+                    elapsedRealtimeNanos = 121_000_000_000L,
+                ),
+                network = null,
+                nowElapsedRealtimeNanos = 120_000_000_000L,
+            ),
+        )
+    }
+
+    @Test
+    fun exactFreshnessBoundaryIsAccepted() {
+        assertEquals(
+            "boundary-network",
+            selectFreshestMapLastKnownLocation(
+                gps = null,
+                network = MapLastKnownLocationCandidate(
+                    value = "boundary-network",
+                    elapsedRealtimeNanos = 90_000_000_000L,
+                ),
+                nowElapsedRealtimeNanos = 120_000_000_000L,
+            ),
         )
     }
 
