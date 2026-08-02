@@ -114,6 +114,7 @@ import com.friendorfoe.presentation.list.listPrimaryText
 import com.friendorfoe.presentation.util.categoryBadge
 import com.friendorfoe.presentation.util.categoryColor
 import com.friendorfoe.domain.model.ObjectCategory
+import com.friendorfoe.sensor.ArVisualRangePolicy
 import com.friendorfoe.sensor.ScreenPosition
 import kotlin.math.atan2
 import kotlin.math.cos
@@ -806,6 +807,12 @@ private fun CameraPreview(
 
 // ---- AR Overlay ----
 
+internal fun selectOffScreenRadioPositions(screenPositions: List<ScreenPosition>): List<ScreenPosition> =
+    screenPositions.filter {
+        !it.isInView && it.distanceMeters > 0 &&
+            ArVisualRangePolicy.includes(it.skyObject, it.distanceMeters)
+    }.sortedBy { it.distanceMeters }.take(8)
+
 /**
  * Transparent Canvas overlay that draws floating labels at screen positions.
  *
@@ -1043,9 +1050,7 @@ internal fun ArOverlay(
         }
 
         // Layer 4: Off-screen directional arrows for nearby objects outside FOV
-        val offScreenObjects = screenPositions.filter {
-            !it.isInView && it.distanceMeters > 0 && it.distanceMeters <= 13_000.0
-        }.sortedBy { it.distanceMeters }.take(8)
+        val offScreenObjects = selectOffScreenRadioPositions(screenPositions)
 
         offScreenObjects.forEach { sp ->
             val arrowRect = drawEdgeArrow(
