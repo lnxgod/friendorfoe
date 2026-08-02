@@ -264,6 +264,52 @@ class AboutViewModelTest {
     }
 
     @Test
+    fun backendOnlyCannotRemainEnabledWithoutBackendConsent() {
+        val configured = DetectionSettings.defaults().copy(
+            sensorBackendEnabled = true,
+            backendOnlyMode = true,
+        )
+
+        val disabled = configured.withSetting(InfoSettingKey.SENSOR_BACKEND, false)
+        val rejectedEnable = DetectionSettings.defaults()
+            .withSetting(InfoSettingKey.BACKEND_ONLY, true)
+
+        assertFalse(disabled.sensorBackendEnabled)
+        assertFalse(disabled.backendOnlyMode)
+        assertFalse(rejectedEnable.backendOnlyMode)
+        assertEquals(
+            "Enable Sensor backend connection first.",
+            infoSettingDisabledReason(
+                InfoSettingKey.BACKEND_ONLY,
+                DetectionSettings.defaults(),
+                PermissionUiState.Granted,
+            ),
+        )
+
+        assertTrue(
+            shouldRestartSkySourcesForInfoSetting(
+                key = InfoSettingKey.SENSOR_BACKEND,
+                enabled = false,
+                previousSettings = configured,
+            ),
+        )
+        assertFalse(
+            shouldRestartSkySourcesForInfoSetting(
+                key = InfoSettingKey.SENSOR_BACKEND,
+                enabled = true,
+                previousSettings = configured,
+            ),
+        )
+        assertFalse(
+            shouldRestartSkySourcesForInfoSetting(
+                key = InfoSettingKey.SENSOR_BACKEND,
+                enabled = false,
+                previousSettings = configured.copy(backendOnlyMode = false),
+            ),
+        )
+    }
+
+    @Test
     fun pendingPermissionEnableSurvivesRecreationAndCommitsAfterGrant() = runTest {
         val settings = FakeInfoSettingsStore(
             DetectionSettings.defaults().copy(phonePrivacyScanEnabled = false)
@@ -309,12 +355,14 @@ class AboutViewModelTest {
 
     @Test
     fun onlyCollectorTopologySettingsRequestASkyRestart() {
-        assertTrue(shouldRestartSkySourcesForInfoSetting(InfoSettingKey.ADS_B))
-        assertTrue(shouldRestartSkySourcesForInfoSetting(InfoSettingKey.BLE_REMOTE_ID))
-        assertTrue(shouldRestartSkySourcesForInfoSetting(InfoSettingKey.WIFI_REMOTE_ID))
-        assertTrue(shouldRestartSkySourcesForInfoSetting(InfoSettingKey.BACKEND_ONLY))
-        assertFalse(shouldRestartSkySourcesForInfoSetting(InfoSettingKey.STALKER))
-        assertFalse(shouldRestartSkySourcesForInfoSetting(InfoSettingKey.ULTRASONIC))
+        val settings = DetectionSettings.defaults()
+
+        assertTrue(shouldRestartSkySourcesForInfoSetting(InfoSettingKey.ADS_B, true, settings))
+        assertTrue(shouldRestartSkySourcesForInfoSetting(InfoSettingKey.BLE_REMOTE_ID, true, settings))
+        assertTrue(shouldRestartSkySourcesForInfoSetting(InfoSettingKey.WIFI_REMOTE_ID, true, settings))
+        assertTrue(shouldRestartSkySourcesForInfoSetting(InfoSettingKey.BACKEND_ONLY, true, settings))
+        assertFalse(shouldRestartSkySourcesForInfoSetting(InfoSettingKey.STALKER, true, settings))
+        assertFalse(shouldRestartSkySourcesForInfoSetting(InfoSettingKey.ULTRASONIC, true, settings))
     }
 
     private fun viewModel(

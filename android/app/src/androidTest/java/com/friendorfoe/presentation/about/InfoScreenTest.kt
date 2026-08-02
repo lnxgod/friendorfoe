@@ -12,6 +12,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.test.assertIsOff
 import androidx.compose.ui.test.assertIsOn
 import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.junit4.createComposeRule
@@ -28,6 +29,7 @@ import com.friendorfoe.data.BackendEndpoint
 import com.friendorfoe.data.DetectionSettings
 import com.friendorfoe.data.repository.SessionHealth
 import com.friendorfoe.presentation.theme.FriendOrFoeTheme
+import com.friendorfoe.presentation.permissions.PermissionUiState
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -81,6 +83,39 @@ class InfoScreenTest {
             .performScrollTo()
             .performClick()
             .assertIsOn()
+    }
+
+    @Test
+    fun freshStateShowsBackendOffAndPreventsBackendOnlyMode() {
+        val settings = DetectionSettings.defaults()
+        setInfoContent(
+            state = state().copy(
+                settings = settings,
+                backendUrlCanTest = false,
+            ),
+            actions = InfoActions(
+                settingDisabledReason = { key ->
+                    infoSettingDisabledReason(
+                        key = key,
+                        settings = settings,
+                        phonePrivacyPermission = PermissionUiState.Granted,
+                    )
+                },
+            ),
+        )
+
+        scrollToSection(1)
+        compose.onNodeWithTag("setting_sensor_backend")
+            .performScrollTo()
+            .assertIsOff()
+        compose.onNodeWithTag("setting_backend_only")
+            .performScrollTo()
+            .assertIsNotEnabled()
+        compose.onNodeWithText(
+            "Enable Sensor backend connection first.",
+            substring = true,
+        ).assertIsDisplayed()
+        compose.onNodeWithTag("backend_test").assertIsNotEnabled()
     }
 
     @Test

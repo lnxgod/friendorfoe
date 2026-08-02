@@ -41,7 +41,7 @@ data class DetectionSettings(
             helicopterAlertsEnabled = false,
             militaryAlertsEnabled = false,
             policeAlertsEnabled = false,
-            sensorBackendEnabled = true,
+            sensorBackendEnabled = false,
             backendOnlyMode = false,
             backendUrl = "http://fof-server.local:8000/",
         )
@@ -90,6 +90,9 @@ class DetectionPrefs @Inject constructor(
 
     init {
         prefs.registerOnSharedPreferenceChangeListener(listener)
+        if (!sensorBackendEnabled && prefs.getBoolean(KEY_BACKEND_ONLY, false)) {
+            prefs.edit().putBoolean(KEY_BACKEND_ONLY, false).apply()
+        }
     }
 
     private fun snapshot() = DetectionSettings(
@@ -173,10 +176,15 @@ class DetectionPrefs @Inject constructor(
         get() = prefs.getBoolean(KEY_POLICE_ALERTS, false)
         set(value) = prefs.edit().putBoolean(KEY_POLICE_ALERTS, value).apply()
 
-    /** Sensor backend (ESP32 network) — enabled by default */
+    /** Sensor backend (ESP32 network) — disabled until explicitly enabled. */
     var sensorBackendEnabled: Boolean
-        get() = prefs.getBoolean(KEY_SENSOR_BACKEND, true)
-        set(value) = prefs.edit().putBoolean(KEY_SENSOR_BACKEND, value).apply()
+        get() = prefs.getBoolean(KEY_SENSOR_BACKEND, false)
+        set(value) {
+            prefs.edit().apply {
+                putBoolean(KEY_SENSOR_BACKEND, value)
+                if (!value) putBoolean(KEY_BACKEND_ONLY, false)
+            }.apply()
+        }
 
     /** Backend URL — configurable */
     override var backendUrl: String
@@ -185,8 +193,10 @@ class DetectionPrefs @Inject constructor(
 
     /** Backend-only mode — phone sensors off; ESP32/API/badge feeds remain available. */
     var backendOnlyMode: Boolean
-        get() = prefs.getBoolean(KEY_BACKEND_ONLY, false)
-        set(value) = prefs.edit().putBoolean(KEY_BACKEND_ONLY, value).apply()
+        get() = sensorBackendEnabled && prefs.getBoolean(KEY_BACKEND_ONLY, false)
+        set(value) = prefs.edit()
+            .putBoolean(KEY_BACKEND_ONLY, value && sensorBackendEnabled)
+            .apply()
 
     /** Bearer token for the calibration walk endpoints.
      *  Default matches the backend's `_DEV_DEFAULT_CAL_TOKEN` so a

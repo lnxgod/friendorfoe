@@ -139,6 +139,8 @@ class AndroidInfoSettingsStore @Inject constructor(
     override val settings: StateFlow<DetectionSettings> = detectionPrefs.settings
 
     override fun set(key: InfoSettingKey, enabled: Boolean) {
+        val previousSettings = settings.value
+
         when (key) {
             InfoSettingKey.ADS_B -> detectionPrefs.adsbEnabled = enabled
             InfoSettingKey.BLE_REMOTE_ID -> detectionPrefs.bleRidEnabled = enabled
@@ -156,7 +158,7 @@ class AndroidInfoSettingsStore @Inject constructor(
             InfoSettingKey.SENSOR_BACKEND -> detectionPrefs.sensorBackendEnabled = enabled
             InfoSettingKey.BACKEND_ONLY -> detectionPrefs.backendOnlyMode = enabled
         }
-        if (shouldRestartSkySourcesForInfoSetting(key)) {
+        if (shouldRestartSkySourcesForInfoSetting(key, enabled, previousSettings)) {
             skyObjectRepository.restartDetectionSources()
         }
     }
@@ -166,11 +168,19 @@ class AndroidInfoSettingsStore @Inject constructor(
     }
 }
 
-internal fun shouldRestartSkySourcesForInfoSetting(key: InfoSettingKey): Boolean = key in setOf(
+internal fun shouldRestartSkySourcesForInfoSetting(
+    key: InfoSettingKey,
+    enabled: Boolean,
+    previousSettings: DetectionSettings,
+): Boolean = key in setOf(
     InfoSettingKey.ADS_B,
     InfoSettingKey.BLE_REMOTE_ID,
     InfoSettingKey.WIFI_REMOTE_ID,
     InfoSettingKey.BACKEND_ONLY,
+) || (
+    key == InfoSettingKey.SENSOR_BACKEND &&
+        !enabled &&
+        previousSettings.backendOnlyMode
 )
 
 internal fun DetectionSettings.withSetting(
@@ -189,8 +199,13 @@ internal fun DetectionSettings.withSetting(
     InfoSettingKey.HELICOPTER_ALERTS -> copy(helicopterAlertsEnabled = enabled)
     InfoSettingKey.MILITARY_ALERTS -> copy(militaryAlertsEnabled = enabled)
     InfoSettingKey.POLICE_ALERTS -> copy(policeAlertsEnabled = enabled)
-    InfoSettingKey.SENSOR_BACKEND -> copy(sensorBackendEnabled = enabled)
-    InfoSettingKey.BACKEND_ONLY -> copy(backendOnlyMode = enabled)
+    InfoSettingKey.SENSOR_BACKEND -> copy(
+        sensorBackendEnabled = enabled,
+        backendOnlyMode = backendOnlyMode && enabled,
+    )
+    InfoSettingKey.BACKEND_ONLY -> copy(
+        backendOnlyMode = enabled && sensorBackendEnabled,
+    )
 }
 
 private data class BackendDraft(
@@ -615,6 +630,9 @@ internal fun infoSettingDisabledReason(
     settings: DetectionSettings,
     phonePrivacyPermission: PermissionUiState,
 ): String? {
+    if (key == InfoSettingKey.BACKEND_ONLY && !settings.sensorBackendEnabled) {
+        return "Enable Sensor backend connection first."
+    }
     if (key != InfoSettingKey.STALKER && key != InfoSettingKey.WIFI_ANOMALY) return null
     return when {
         !settings.phonePrivacyScanEnabled || !phonePrivacyPermission.isUsable() ->

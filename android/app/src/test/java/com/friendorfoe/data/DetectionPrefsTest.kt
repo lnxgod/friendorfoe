@@ -23,6 +23,26 @@ class DetectionPrefsTest {
 
         assertFalse(prefs.settings.value.phonePrivacyScanEnabled)
     }
+
+    @Test
+    fun missingBackendPreferenceDefaultsToDisabled() {
+        val prefs = DetectionPrefs(TestContext(TestSharedPreferences()))
+
+        assertFalse(prefs.settings.value.sensorBackendEnabled)
+    }
+
+    @Test
+    fun explicitBackendPreferenceValuesRemainAuthoritative() {
+        val enabled = DetectionPrefs(TestContext(TestSharedPreferences(
+            mapOf("sensor_backend_enabled" to true),
+        )))
+        val disabled = DetectionPrefs(TestContext(TestSharedPreferences(
+            mapOf("sensor_backend_enabled" to false),
+        )))
+
+        assertTrue(enabled.settings.value.sensorBackendEnabled)
+        assertFalse(disabled.settings.value.sensorBackendEnabled)
+    }
 }
 
 private class TestContext(
