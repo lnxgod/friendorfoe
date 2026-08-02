@@ -65,3 +65,16 @@ The native environment links only the portable Task-2 source list. NimBLE,
 ESP-Wi-Fi, NVS settings, the BLE investigator runtime, and BLE-JA3 remain
 device-only. See `BACKEND_PORT_NOTES.md` for exact donor digests and adaptation
 decisions.
+
+## Canary and flashing boundary
+
+The initial hardware canary is the guarded, direct-USB three-board procedure in
+[`docs/backend-firmware-canary.md`](../docs/backend-firmware-canary.md). It
+requires no-write inventory and complete backups first, then a fresh explicit
+approval for scanner0, scanner1, and uplink in that order. The web flasher is
+never the initial-canary path or a fallback after failure.
+
+Confirm all three boards are physical no-screen Lite XIAO ESP32-S3 sensors and
+that no XIAO Sense SD expansion is connected; its GPIO3 SD chip-select conflicts
+with uplink slot1 TX GPIO3. Native badge `0.67.2-badge-defcon34` remains the
+normal USB/factory default and is not modified by the Lite procedure.
