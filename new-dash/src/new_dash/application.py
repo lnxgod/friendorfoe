@@ -1,0 +1,493 @@
+"""Thread-safe live badge state coordinated with bounded local persistence."""
+
+from __future__ import annotations
+
+from collections import deque
+from collections.abc import Iterator, Mapping
+from dataclasses import dataclass
+from queue import Empty, Full, Queue
+import threading
+import time
+from typing import Callable, Protocol, cast
+
+from .controls import (
+    BadgeControlCommand,
+    build_display_nav,
+    build_display_policy,
+    build_display_policy_reset,
+    build_theme,
+    build_theme_reset,
+)
+from .models import BadgeEntity, BadgeStatus, ControlReply, DetectionEvent, MachineFrame
+from .serial_transport import ConnectionUpdate, TransportUnavailable
+from .storage import HistoryPage, HistoryQuery, ObservationStore
+
+
+_PERSISTENCE_CAPACITY = 1_024
+_HISTORY_ERROR_LIMIT = 256
+_PRUNE_INTERVAL_SECONDS = 3_600.0
+
+
+class BadgeTransportLike(Protocol):
+    """The safe application-facing portion of the serial transport."""
+
+    def send_control(
+        self, command: BadgeControlCommand, timeout: float = 5.0
+    ) -> ControlReply: ...
+
+
+class ApplicationError(RuntimeError):
+    """A stable, bounded application-level operation failure."""
+
+    def __init__(self, code: str, message: str) -> None:
+        self.code = code
+        self.message = message[:_HISTORY_ERROR_LIMIT]
+        super().__init__(f"{code}: {self.message}")
+
+
+@dataclass(slots=True)
+class _PersistenceAction:
+    kind: str
+    value: object | None = None
+    received_at: float | None = None
+    completion: threading.Event | None = None
+    result: object | None = None
+    error: BaseException | None = None
+
+
+class NewDashApplication:
+    """Coordinate immutable protocol state, persistence, and safe controls."""
+
+    def __init__(
+        self,
+        store: ObservationStore,
+        *,
+        wall_clock: Callable[[], float] = time.time,
+    ) -> None:
+        self._store = store
+        self._wall_clock = wall_clock
+        self._lock = threading.RLock()
+        self._status: BadgeStatus | None = None
+        self._status_received_at: float | None = None
+        self._connection: ConnectionUpdate | None = None
+        self._recent_events: deque[tuple[DetectionEvent, float]] = deque(maxlen=20)
+        self._track_fingerprints: dict[str, tuple[object, ...]] = {}
+        self._history_available = True
+        self._history_error: str | None = None
+        self._persistence_drops = 0
+        self._accepting = True
+        self._closed = False
+        self._last_prune_queued_at: float | None = None
+        self._transport: BadgeTransportLike | None = None
+        self._persistence_queue: Queue[_PersistenceAction] = Queue(
+            maxsize=_PERSISTENCE_CAPACITY
+        )
+        self._worker_stop = threading.Event()
+        self._worker = threading.Thread(
+            target=self._run_persistence,
+            name="new-dash-persistence",
+            daemon=False,
+        )
+        self._worker.start()
+        self._prune_if_due(self._now())
+
+    def handle_frame(self, frame: MachineFrame, received_at: float) -> None:
+        """Update live state first, then offer persistence without waiting."""
+
+        if frame.kind == "detection" and isinstance(frame.value, DetectionEvent):
+            with self._lock:
+                if not self._accepting:
+                    return
+                self._recent_events.append((frame.value, received_at))
+            self._enqueue(_PersistenceAction("event", frame.value, received_at))
+        elif frame.kind == "status" and isinstance(frame.value, BadgeStatus):
+            tracks: list[tuple[BadgeEntity, tuple[object, ...]]] = []
+            with self._lock:
+                if not self._accepting:
+                    return
+                self._status = frame.value
+                self._status_received_at = received_at
+                for entity in frame.value.entities:
+                    if entity.stale or not entity.is_remote_id or not entity.has_position:
+                        continue
+                    fingerprint = self._track_fingerprint(entity)
+                    if self._track_fingerprints.get(entity.stable_key) != fingerprint:
+                        tracks.append((entity, fingerprint))
+            for entity, fingerprint in tracks:
+                if self._enqueue(_PersistenceAction("track", entity, received_at)):
+                    with self._lock:
+                        self._track_fingerprints[entity.stable_key] = fingerprint
+        self._prune_if_due(received_at)
+
+    def handle_connection(self, update: ConnectionUpdate) -> None:
+        with self._lock:
+            if self._accepting:
+                self._connection = update
+
+    def attach_transport(self, transport: BadgeTransportLike) -> None:
+        with self._lock:
+            if not self._accepting:
+                return
+            self._transport = transport
+
+    def snapshot(self, now: float | None = None) -> dict[str, object]:
+        current_time = self._now() if now is None else now
+        self._prune_if_due(current_time)
+        with self._lock:
+            status = self._status
+            status_received_at = self._status_received_at
+            connection = self._connection
+            recent = tuple(self._recent_events)
+            history_available = self._history_available
+            history_error = self._history_error
+            persistence_drops = self._persistence_drops
+        return {
+            "connection": self._connection_dict(connection),
+            "freshness": self._freshness_dict(
+                connection, status_received_at, current_time
+            ),
+            "status": self._status_dict(
+                status,
+                sensing_health=self._sensing_health(
+                    status, connection, status_received_at, current_time
+                ),
+            ),
+            "recent_events": [
+                {**event.to_dict(), "received_at": received_at}
+                for event, received_at in reversed(recent)
+            ],
+            "diagnostics": {
+                "malformed_lines": connection.malformed_frames if connection else 0,
+                "overlong_lines": connection.overlong_lines if connection else 0,
+                "history_available": history_available,
+                "history_error": history_error,
+                "persistence_queue_depth": self._persistence_queue.qsize(),
+                "persistence_drops": persistence_drops,
+            },
+        }
+
+    def query_history(self, query: HistoryQuery) -> HistoryPage:
+        """Read a bounded history page without involving the serial callback."""
+
+        try:
+            return self._store.query(query)
+        except Exception as error:
+            self._record_history_error(error)
+            raise
+
+    def export_history(self, query: HistoryQuery) -> Iterator[object]:
+        """Stream history while recording storage degradation on iteration."""
+
+        try:
+            yield from self._store.iter_export(query)
+        except Exception as error:
+            self._record_history_error(error)
+            raise
+
+    def clear_history(self, timeout: float = 3.0) -> int:
+        """Delete history after every mutation queued before this call."""
+
+        result = self._ordered_mutation("clear", timeout=timeout)
+        return int(result)
+
+    def prune_history(self, now: float | None = None, timeout: float = 3.0) -> int:
+        """Run explicit retention as an ordered persistence barrier."""
+
+        result = self._ordered_mutation(
+            "prune", received_at=self._now() if now is None else now, timeout=timeout
+        )
+        return int(result)
+
+    def display_nav(self, action: str, timeout: float = 5.0) -> ControlReply:
+        return self._send_control(build_display_nav(action), timeout)
+
+    def set_theme(self, payload: object, timeout: float = 5.0) -> ControlReply:
+        return self._send_control(build_theme(payload), timeout)
+
+    def reset_theme(self, timeout: float = 5.0) -> ControlReply:
+        return self._send_control(build_theme_reset(), timeout)
+
+    def set_display_policy(
+        self, payload: object, timeout: float = 5.0
+    ) -> ControlReply:
+        return self._send_control(build_display_policy(payload), timeout)
+
+    def reset_display_policy(self, timeout: float = 5.0) -> ControlReply:
+        return self._send_control(build_display_policy_reset(), timeout)
+
+    def _send_control(
+        self, command: BadgeControlCommand, timeout: float
+    ) -> ControlReply:
+        with self._lock:
+            transport = self._transport if self._accepting else None
+        if transport is None:
+            raise TransportUnavailable()
+        return transport.send_control(command, timeout=timeout)
+
+    def _persistence_barrier(self, timeout: float = 3.0) -> bool:
+        action = _PersistenceAction("barrier", completion=threading.Event())
+        if not self._enqueue(action):
+            return False
+        if not action.completion.wait(timeout):
+            return False
+        return action.error is None
+
+    def _ordered_mutation(
+        self,
+        kind: str,
+        *,
+        received_at: float | None = None,
+        timeout: float,
+    ) -> object:
+        action = _PersistenceAction(
+            kind, received_at=received_at, completion=threading.Event()
+        )
+        if not self._enqueue(action):
+            raise ApplicationError(
+                "history_busy", "History persistence is currently unavailable."
+            )
+        if not action.completion.wait(timeout):
+            raise ApplicationError(
+                "history_timeout", "The history operation did not finish in time."
+            )
+        if action.error is not None:
+            raise ApplicationError("history_unavailable", self._bounded_error(action.error))
+        return action.result
+
+    def close(self) -> None:
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+            self._accepting = False
+        deadline = time.monotonic() + 3.0
+        barrier = _PersistenceAction("barrier", completion=threading.Event())
+        try:
+            self._persistence_queue.put(
+                barrier, timeout=max(0.0, deadline - time.monotonic())
+            )
+        except Full:
+            pass
+        else:
+            barrier.completion.wait(max(0.0, deadline - time.monotonic()))
+        if not barrier.completion.is_set():
+            self._discard_queued_actions()
+        self._worker_stop.set()
+        self._worker.join()
+        try:
+            self._store.close()
+        except Exception as error:
+            self._record_history_error(error)
+
+    def _discard_queued_actions(self) -> None:
+        dropped_records = 0
+        while True:
+            try:
+                action = self._persistence_queue.get_nowait()
+            except Empty:
+                break
+            if action.kind in {"event", "track"}:
+                dropped_records += 1
+            action.error = ApplicationError(
+                "application_closing", "The application stopped before this action ran."
+            )
+            if action.completion is not None:
+                action.completion.set()
+            self._persistence_queue.task_done()
+        if dropped_records:
+            with self._lock:
+                self._persistence_drops += dropped_records
+
+    def _enqueue(self, action: _PersistenceAction) -> bool:
+        with self._lock:
+            accepting = self._accepting
+        if not accepting and action.kind != "barrier":
+            self._record_drop()
+            return False
+        try:
+            self._persistence_queue.put_nowait(action)
+        except Full:
+            self._record_drop()
+            return False
+        return True
+
+    def _run_persistence(self) -> None:
+        while not self._worker_stop.is_set() or not self._persistence_queue.empty():
+            try:
+                action = self._persistence_queue.get(timeout=0.05)
+            except Empty:
+                continue
+            try:
+                if action.kind == "event":
+                    self._store.add_event(
+                        cast(DetectionEvent, action.value),
+                        cast(float, action.received_at),
+                    )
+                elif action.kind == "track":
+                    self._store.add_track(
+                        cast(BadgeEntity, action.value),
+                        cast(float, action.received_at),
+                    )
+                elif action.kind == "prune":
+                    action.result = self._store.prune(action.received_at)
+                elif action.kind == "clear":
+                    action.result = self._store.clear()
+            except Exception as error:
+                action.error = error
+                self._record_history_error(error)
+                if action.kind in {"event", "track"}:
+                    self._record_drop()
+            finally:
+                if action.completion is not None:
+                    action.completion.set()
+                self._persistence_queue.task_done()
+
+    def _prune_if_due(self, now: float) -> None:
+        with self._lock:
+            if not self._accepting:
+                return
+            last = self._last_prune_queued_at
+            if last is not None and now - last < _PRUNE_INTERVAL_SECONDS:
+                return
+            self._last_prune_queued_at = now
+        if not self._enqueue(_PersistenceAction("prune", received_at=now)):
+            with self._lock:
+                if self._last_prune_queued_at == now:
+                    self._last_prune_queued_at = last
+
+    def _record_drop(self) -> None:
+        with self._lock:
+            self._persistence_drops += 1
+
+    def _record_history_error(self, error: BaseException) -> None:
+        message = self._bounded_error(error)
+        with self._lock:
+            self._history_available = False
+            self._history_error = message
+
+    @staticmethod
+    def _track_fingerprint(entity: BadgeEntity) -> tuple[object, ...]:
+        return (
+            entity.latitude,
+            entity.longitude,
+            entity.altitude_m,
+            entity.events,
+            entity.seen_count,
+        )
+
+    @staticmethod
+    def _status_dict(
+        status: BadgeStatus | None, *, sensing_health: str
+    ) -> dict[str, object]:
+        if status is None:
+            return {
+                "version": None,
+                "uptime_s": None,
+                "mode": None,
+                "mode_label": None,
+                "safe_mode": None,
+                "safe_reason": None,
+                "recovery_mode": None,
+                "threat_score": None,
+                "counts": None,
+                "scanners": [],
+                "entities": [],
+                "remote_id_entities": [],
+                "reporting": None,
+                "memory": None,
+                "display_state": None,
+                "theme": None,
+                "display_policy": None,
+                "sensing_health": sensing_health,
+            }
+        result = status.to_dict()
+        result.update({
+            "version": status.version,
+            "uptime_s": status.uptime_seconds,
+            "mode": status.mode,
+            "mode_label": status.mode_label,
+            "safe_mode": status.safe_mode,
+            "safe_reason": result.get("safe_reason"),
+            "recovery_mode": status.recovery_mode,
+            "threat_score": status.threat_score,
+            "counts": result.get("counts") if status.counts is not None else None,
+            "reporting": result.get("reporting"),
+            "memory": result.get("memory"),
+            "display_state": result.get("display_state"),
+            "theme": result.get("theme"),
+            "display_policy": result.get("display_policy"),
+            "sensing_health": sensing_health,
+        })
+        entities = result["entities"]
+        for entity, rendered in zip(status.entities, entities):
+            rendered["is_remote_id"] = entity.is_remote_id
+            rendered["has_position"] = entity.has_position
+        result["remote_id_entities"] = [
+            rendered
+            for entity, rendered in zip(status.entities, entities)
+            if entity.is_remote_id
+        ]
+        return result
+
+    @staticmethod
+    def _connection_dict(update: ConnectionUpdate | None) -> dict[str, object]:
+        if update is None:
+            return {
+                "phase": "unavailable",
+                "detail": "not_connected",
+                "port": None,
+                "candidates": [],
+                "firmware_version": None,
+                "reconnect_attempt": 0,
+            }
+        return {
+            "phase": update.state,
+            "detail": update.detail,
+            "port": update.port,
+            "candidates": [list(candidate) for candidate in update.candidates],
+            "firmware_version": update.firmware_version,
+            "reconnect_attempt": update.reconnect_attempt,
+        }
+
+    @staticmethod
+    def _freshness_dict(
+        connection: ConnectionUpdate | None,
+        received_at: float | None,
+        now: float,
+    ) -> dict[str, object]:
+        if received_at is None:
+            return {"state": "unavailable", "age_s": None}
+        age = round(max(now - received_at, 0.0), 1)
+        state = (
+            "fresh"
+            if connection is not None and connection.state == "live" and age <= 5.0
+            else "stale"
+        )
+        return {"state": state, "age_s": age}
+
+    @classmethod
+    def _sensing_health(
+        cls,
+        status: BadgeStatus | None,
+        connection: ConnectionUpdate | None,
+        received_at: float | None,
+        now: float,
+    ) -> str:
+        if status is None:
+            return "unknown"
+        if status.safe_mode is True or status.recovery_mode == "safe_usb":
+            return "safe_usb"
+        freshness = cls._freshness_dict(connection, received_at, now)["state"]
+        if freshness != "fresh":
+            return "degraded"
+        for scanner in status.scanners:
+            if isinstance(scanner, Mapping) and scanner.get("connected") is not True:
+                return "degraded"
+        return "healthy"
+
+    @staticmethod
+    def _bounded_error(error: BaseException) -> str:
+        return f"{type(error).__name__}: {error}"[:_HISTORY_ERROR_LIMIT]
+
+    def _now(self) -> float:
+        return self._wall_clock()
