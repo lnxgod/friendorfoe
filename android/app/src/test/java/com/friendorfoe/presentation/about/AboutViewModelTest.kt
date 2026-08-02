@@ -150,6 +150,49 @@ class AboutViewModelTest {
     }
 
     @Test
+    fun idleUpdateCheckRunsOnlyOnceForTheViewModelLifecycle() = runTest {
+        val repository = CountingUpdateRepository(Result.success(
+            AppUpdateMetadata(
+                AppVersion(null, "0.67.7"),
+                "https://github.com/lnxgod/friendorfoe/releases/tag/v0.67.7",
+            ),
+        ))
+        val viewModel = viewModel(
+            settings = FakeInfoSettingsStore(DetectionSettings.defaults()),
+            session = sessionRepository(),
+            updateRepository = repository,
+            installed = AppVersion(120, "0.67.7-android-ar-overlay-range"),
+        )
+
+        viewModel.checkForUpdatesIfIdle()
+        viewModel.checkForUpdatesIfIdle()
+        advanceUntilIdle()
+        viewModel.checkForUpdatesIfIdle()
+
+        assertEquals(1, repository.calls)
+        assertTrue(viewModel.uiState.value.updateState is UpdateUiState.UpToDate)
+    }
+
+    @Test
+    fun genuinelyNewerGitHubReleaseBecomesAvailable() = runTest {
+        val remote = AppUpdateMetadata(
+            AppVersion(null, "0.68.0"),
+            "https://github.com/lnxgod/friendorfoe/releases/tag/v0.68.0",
+        )
+        val viewModel = viewModel(
+            settings = FakeInfoSettingsStore(DetectionSettings.defaults()),
+            session = sessionRepository(),
+            updateRepository = FixedUpdateRepository(Result.success(remote)),
+            installed = AppVersion(120, "0.67.7-android-ar-overlay-range"),
+        )
+
+        viewModel.checkForUpdatesIfIdle()
+        advanceUntilIdle()
+
+        assertEquals(UpdateUiState.Available(remote), viewModel.uiState.value.updateState)
+    }
+
+    @Test
     fun freshSettingsProjectBackendTestingAsDisabled() {
         val viewModel = viewModel(
             settings = FakeInfoSettingsStore(DetectionSettings.defaults()),
@@ -428,4 +471,15 @@ private class FixedUpdateRepository(
     private val result: Result<AppUpdateMetadata>,
 ) : AppUpdateRepository {
     override suspend fun latest(): Result<AppUpdateMetadata> = result
+}
+
+private class CountingUpdateRepository(
+    private val result: Result<AppUpdateMetadata>,
+) : AppUpdateRepository {
+    var calls = 0
+
+    override suspend fun latest(): Result<AppUpdateMetadata> {
+        calls++
+        return result
+    }
 }

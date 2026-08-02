@@ -699,49 +699,12 @@ private fun AboutAndUpdateRows(state: InfoUiState, actions: InfoActions) {
             StatusPill("Build $it", InfoTone.Muted)
         }
     }
-    UpdateRow(state.updateState, actions)
-}
-
-@Composable
-private fun UpdateRow(update: UpdateUiState, actions: InfoActions) {
-    when (update) {
-        UpdateUiState.Idle -> FofActionRow(
-            title = "App updates",
-            description = "Check the official release feed",
-            trailingLabel = "Check",
-            onClick = actions.onCheckForUpdates,
-            modifier = Modifier.testTag("info_check_updates"),
-        )
-        UpdateUiState.Checking -> FofActionRow(
-            title = "Checking for updates",
-            description = "Comparing ordered app versions",
-            trailingLabel = "Checking…",
-            enabled = false,
-            onClick = actions.onCheckForUpdates,
-            modifier = Modifier.testTag("info_check_updates"),
-        )
-        is UpdateUiState.UpToDate -> FofActionRow(
-            title = "Up to date",
-            description = "Version ${update.installed.name} is not older than the latest release",
-            trailingLabel = "Check again",
-            onClick = actions.onCheckForUpdates,
-            modifier = Modifier.testTag("info_check_updates"),
-        )
-        is UpdateUiState.Available -> FofActionRow(
-            title = "Update available",
-            description = "Version ${update.remote.version.name}",
-            trailingLabel = "Open",
-            onClick = { actions.onOpenUpdate(update.remote.releaseUrl) },
-            modifier = Modifier.testTag("info_open_update"),
-        )
-        is UpdateUiState.Failed -> FofActionRow(
-            title = update.message,
-            description = "Check your network and try again. Your installed app is unchanged.",
-            trailingLabel = "Retry",
-            onClick = actions.onCheckForUpdates,
-            modifier = Modifier.testTag("info_check_updates"),
-        )
-    }
+    AppUpdateRow(
+        update = state.updateState,
+        onCheck = actions.onCheckForUpdates,
+        onOpen = actions.onOpenUpdate,
+        testTagPrefix = "info",
+    )
 }
 
 @Composable

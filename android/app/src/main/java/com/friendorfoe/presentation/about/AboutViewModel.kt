@@ -407,6 +407,10 @@ class AboutViewModel @Inject constructor(
         }
     }
 
+    fun checkForUpdatesIfIdle() {
+        if (updateState.value == UpdateUiState.Idle) checkForUpdates()
+    }
+
     // Compatibility wrappers for the previous AboutScreen while its UI is replaced.
     fun setAdsbEnabled(enabled: Boolean) = setSetting(InfoSettingKey.ADS_B, enabled)
     fun setBleRidEnabled(enabled: Boolean) = setSetting(InfoSettingKey.BLE_REMOTE_ID, enabled)
