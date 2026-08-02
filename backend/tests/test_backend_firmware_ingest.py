@@ -61,6 +61,21 @@ PORTABLE_EVIDENCE = {
 }
 
 
+PERSISTED_BACKEND_FIELDS = (
+    "fused_confidence", "vertical_speed_mps", "freq_mhz", "channel",
+    "channel_width_mhz", "ua_type", "id_type", "self_id_desc_type",
+    "height_agl_m", "geodetic_alt_m", "h_accuracy_m", "v_accuracy_m",
+    "area_count", "area_radius", "area_ceiling", "area_floor",
+    "classification_type", "first_seen_ms", "last_updated_ms",
+    "wifi_generation", "auth_m", "ie_hash", "scanner_slot", "scanner_slots_seen",
+    "ble_ja3", "ble_apple_auth", "ble_activity", "ble_apple_flags",
+    "ble_raw_mfr", "ble_adv_interval", "ble_svc_uuids",
+    "ble_threat_kind", "ble_prompt_family_mask", "ble_unique_macs",
+    "ble_observation_count", "ble_serial_service_uuid",
+    "ble_threat_evidence_mask",
+)
+
+
 async def _post_with_failed_primary_commit(
     client, backend_sensor_session_factory, monkeypatch, body,
 ):
@@ -135,6 +150,32 @@ def test_backend_batch_preserves_identity_health_and_queue_metadata():
     assert scanner["hardware_type"] == "seeed_xiao_esp32s3"
     assert scanner["boot_id"] == 305419896
     assert scanner["rollback_state"] == "valid"
+
+
+@pytest.mark.asyncio
+async def test_backend_evidence_survives_history_persistence(client):
+    drone_id = f"RID-BACKEND-{uuid.uuid4().hex}"
+    item = {**PORTABLE_EVIDENCE, "drone_id": drone_id}
+    response = await client.post("/detections/drones", json={
+        "device_id": "uplink_CB77A4",
+        "timestamp": int(time.time()),
+        "detections": [item],
+    })
+    assert response.status_code == 200
+    history = await client.get(
+        "/detections/drones/history", params={"hours": 1, "limit": 200},
+    )
+    row = next(entry for entry in history.json()["detections"] if entry["drone_id"] == drone_id)
+    for field in PERSISTED_BACKEND_FIELDS:
+        assert row[field] == item[field]
+
+    node_history = await client.get("/nodes/uplink_CB77A4/detections")
+    node_row = next(
+        entry for entry in node_history.json()["detections"]
+        if entry["drone_id"] == drone_id
+    )
+    for field in PERSISTED_BACKEND_FIELDS:
+        assert node_row[field] == item[field]
 
 
 @pytest.mark.asyncio
