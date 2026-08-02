@@ -88,7 +88,8 @@ class ConnectionUpdate:
 class _ControlRequest:
     command: BadgeControlCommand
     generation: int
-    deadline: float
+    timeout: float
+    deadline: float | None = None
     completion: threading.Event = field(default_factory=threading.Event)
     reply: ControlReply | None = None
     error: BaseException | None = None
@@ -223,6 +224,9 @@ class BadgeSerialTransport:
         self._write_lock = threading.Lock()
         self._lifecycle_lock = threading.Lock()
         self._control_lock = threading.Lock()
+        self._side_effect_condition = threading.Condition()
+        self._stop_requests: set[threading.Event] = set()
+        self._active_side_effects: dict[threading.Event, int] = {}
         self._worker: threading.Thread | None = None
         self._worker_stop: threading.Event | None = None
         self._stopping = False
@@ -230,6 +234,7 @@ class BadgeSerialTransport:
         self._malformed_frames = 0
         self._overlong_lines = 0
         self._last_valid_status_at: float | None = None
+        self._last_valid_status_monotonic: float | None = None
         self._generation = 0
         self._live_generation: int | None = None
         self._control_queue: deque[_ControlRequest] = deque()
@@ -278,10 +283,12 @@ class BadgeSerialTransport:
             if worker is None or stop_event is None:
                 return
             self._stopping = True
-            stop_event.set()
-            if worker is threading.current_thread():
+            is_current_worker = worker is threading.current_thread()
+        self._commit_stop(stop_event, wait_for_active=not is_current_worker)
+        if is_current_worker:
+            with self._lifecycle_lock:
                 self._stopping = False
-                return
+            return
         worker.join(timeout)
         if worker.is_alive():
             with self._lifecycle_lock:
@@ -289,12 +296,45 @@ class BadgeSerialTransport:
             raise TransportError(
                 "stop_timeout", "The serial worker did not stop in time."
             )
+        with self._side_effect_condition:
+            self._stop_requests.discard(stop_event)
         with self._lifecycle_lock:
             if self._worker is worker:
                 self._worker = None
             if self._worker_stop is stop_event:
                 self._worker_stop = None
             self._stopping = False
+
+    def _commit_stop(
+        self,
+        stop_event: threading.Event,
+        *,
+        wait_for_active: bool,
+    ) -> None:
+        with self._side_effect_condition:
+            self._stop_requests.add(stop_event)
+            if wait_for_active:
+                while self._active_side_effects.get(stop_event, 0):
+                    self._side_effect_condition.wait()
+            stop_event.set()
+
+    def _begin_side_effect(self, stop_event: threading.Event) -> bool:
+        with self._side_effect_condition:
+            if stop_event.is_set() or stop_event in self._stop_requests:
+                return False
+            self._active_side_effects[stop_event] = (
+                self._active_side_effects.get(stop_event, 0) + 1
+            )
+            return True
+
+    def _end_side_effect(self, stop_event: threading.Event) -> None:
+        with self._side_effect_condition:
+            remaining = self._active_side_effects[stop_event] - 1
+            if remaining:
+                self._active_side_effects[stop_event] = remaining
+            else:
+                del self._active_side_effects[stop_event]
+                self._side_effect_condition.notify_all()
 
     def send_control(
         self,
@@ -312,7 +352,7 @@ class BadgeSerialTransport:
             request = _ControlRequest(
                 command=command,
                 generation=generation,
-                deadline=self._monotonic_clock() + timeout,
+                timeout=timeout,
             )
             self._control_queue.append(request)
         request.completion.wait()
@@ -401,7 +441,12 @@ class BadgeSerialTransport:
             serial_port.setRTS(False)
             serial_port.reset_input_buffer()
             framer = LineFramer()
-            self._write(serial_port, b"\nFOF_PING\n")
+            if not self._write_if_running(
+                serial_port,
+                b"\nFOF_PING\n",
+                stop_event,
+            ):
+                return _SessionOutcome(False, "stopped", identity)
 
             handshake_deadline = self._monotonic_clock() + 3.0
             firmware_version = self._await_pong(
@@ -444,7 +489,23 @@ class BadgeSerialTransport:
                     )
                 return _SessionOutcome(False, "wrong_device", identity)
             verified = True
-            self._emit_session_update("live", identity, firmware_version)
+            publication_now = self._monotonic_clock()
+            if publication_now >= handshake_deadline or stop_event.is_set():
+                return _SessionOutcome(False, "wrong_device", identity)
+            initial_state = (
+                "stale"
+                if self._last_valid_status_monotonic is not None
+                and publication_now - self._last_valid_status_monotonic >= 6.0
+                else "live"
+            )
+            if not self._emit_session_update(
+                initial_state,
+                identity,
+                firmware_version,
+                detail=("status_stale" if initial_state == "stale" else None),
+                stop_event=stop_event,
+            ):
+                return _SessionOutcome(True, "stopped", identity, firmware_version)
             detail = self._run_live_session(
                 serial_port,
                 framer,
@@ -452,6 +513,7 @@ class BadgeSerialTransport:
                 identity,
                 firmware_version,
                 generation,
+                initial_state,
             )
             return _SessionOutcome(True, detail, identity, firmware_version)
         except OSError:
@@ -484,7 +546,7 @@ class BadgeSerialTransport:
             if generation is not None:
                 self._fail_generation(generation, TransportUnavailable())
             if serial_port is not None:
-                serial_port.close()
+                self._safe_close(serial_port)
 
     def _run_live_session(
         self,
@@ -494,13 +556,18 @@ class BadgeSerialTransport:
         identity: PortIdentity,
         firmware_version: str,
         generation: int,
+        initial_state: str,
     ) -> str:
         session_started = self._monotonic_clock()
         next_poll = session_started
         next_presence_check = session_started + 1.0
         last_valid_frame = session_started
-        last_valid_status = session_started
-        state = "live"
+        last_valid_status = (
+            self._last_valid_status_monotonic
+            if self._last_valid_status_monotonic is not None
+            else session_started
+        )
+        state = initial_state
         while not stop_event.is_set():
             now = self._monotonic_clock()
             if self._control_timed_out(generation, now):
@@ -514,22 +581,32 @@ class BadgeSerialTransport:
                     identity,
                     firmware_version,
                     detail="status_stale",
+                    stop_event=stop_event,
                 )
             if now >= next_presence_check:
                 if not self._current_path_present(identity.device):
                     return "path_missing"
                 next_presence_check = now + 1.0
             if now >= next_poll:
-                self._write(serial_port, b"FOF_STATUS\n")
+                if not self._write_if_running(
+                    serial_port,
+                    b"FOF_STATUS\n",
+                    stop_event,
+                ):
+                    return "stopped"
                 next_poll += 2.0
                 while next_poll <= now:
                     next_poll += 2.0
 
             request = self._take_next_control(generation)
             if request is not None:
-                if stop_event.is_set():
+                if not self._write_if_running(
+                    serial_port,
+                    request.command.to_wire(),
+                    stop_event,
+                ):
                     return "stopped"
-                self._write(serial_port, request.command.to_wire())
+                self._mark_control_transmitted(request, generation)
 
             prior_overlong = framer.overlong_lines
             chunk = serial_port.read(4096)
@@ -540,13 +617,23 @@ class BadgeSerialTransport:
             lines = framer.feed(chunk)
             if framer.overlong_lines != prior_overlong:
                 self._overlong_lines += framer.overlong_lines - prior_overlong
-                self._emit_session_update(state, identity, firmware_version)
+                self._emit_session_update(
+                    state,
+                    identity,
+                    firmware_version,
+                    stop_event=stop_event,
+                )
             for line in lines:
                 try:
                     frame = parse_machine_line(line)
                 except MachineFrameError:
                     self._malformed_frames += 1
-                    self._emit_session_update(state, identity, firmware_version)
+                    self._emit_session_update(
+                        state,
+                        identity,
+                        firmware_version,
+                        stop_event=stop_event,
+                    )
                     continue
                 if frame is None:
                     continue
@@ -555,6 +642,7 @@ class BadgeSerialTransport:
                 last_valid_frame = frame_monotonic
                 if frame.kind == "status":
                     self._last_valid_status_at = received_at
+                    self._last_valid_status_monotonic = frame_monotonic
                     last_valid_status = frame_monotonic
                     if state == "stale":
                         state = "live"
@@ -563,13 +651,26 @@ class BadgeSerialTransport:
                             identity,
                             firmware_version,
                             detail="status_recovered",
+                            stop_event=stop_event,
                         )
                 if frame.kind in {"detection", "status"}:
-                    self._on_frame(frame, received_at)
+                    if not self._emit_frame_if_running(
+                        frame,
+                        received_at,
+                        stop_event,
+                    ):
+                        return "stopped"
                 elif frame.kind in {"control_ok", "control_error"}:
+                    if self._control_timed_out(generation, frame_monotonic):
+                        return "control_timeout"
                     if not self._route_control_reply(frame, generation):
                         self._malformed_frames += 1
-                        self._emit_session_update(state, identity, firmware_version)
+                        self._emit_session_update(
+                            state,
+                            identity,
+                            firmware_version,
+                            stop_event=stop_event,
+                        )
         return "stopped"
 
     def _current_path_present(self, device: str) -> bool:
@@ -596,6 +697,19 @@ class BadgeSerialTransport:
                 request.completion.set()
             return None
 
+    def _mark_control_transmitted(
+        self,
+        request: _ControlRequest,
+        generation: int,
+    ) -> None:
+        transmitted_at = self._monotonic_clock()
+        with self._control_lock:
+            if (
+                self._live_generation == generation
+                and self._outstanding_control is request
+            ):
+                request.deadline = transmitted_at + request.timeout
+
     def _route_control_reply(self, frame: MachineFrame, generation: int) -> bool:
         with self._control_lock:
             request = self._outstanding_control
@@ -617,6 +731,7 @@ class BadgeSerialTransport:
             if (
                 request is None
                 or request.generation != generation
+                or request.deadline is None
                 or now < request.deadline
             ):
                 return False
@@ -653,6 +768,34 @@ class BadgeSerialTransport:
         with self._write_lock:
             serial_port.write(data)
 
+    def _write_if_running(
+        self,
+        serial_port: Any,
+        data: bytes,
+        stop_event: threading.Event,
+    ) -> bool:
+        if not self._begin_side_effect(stop_event):
+            return False
+        try:
+            self._write(serial_port, data)
+            return True
+        finally:
+            self._end_side_effect(stop_event)
+
+    def _emit_frame_if_running(
+        self,
+        frame: MachineFrame,
+        received_at: float,
+        stop_event: threading.Event,
+    ) -> bool:
+        if not self._begin_side_effect(stop_event):
+            return False
+        try:
+            self._on_frame(frame, received_at)
+            return True
+        finally:
+            self._end_side_effect(stop_event)
+
     def _emit_session_update(
         self,
         state: str,
@@ -661,19 +804,27 @@ class BadgeSerialTransport:
         *,
         detail: str | None = None,
         reconnect_attempt: int = 0,
-    ) -> None:
-        self._emit(
-            ConnectionUpdate(
-                state=state,
-                detail=detail or ("verified" if state == "live" else state),
-                port=identity.device,
-                firmware_version=firmware_version,
-                last_valid_status_at=self._last_valid_status_at,
-                malformed_frames=self._malformed_frames,
-                overlong_lines=self._overlong_lines,
-                reconnect_attempt=reconnect_attempt,
+        stop_event: threading.Event | None = None,
+    ) -> bool:
+        if stop_event is not None and not self._begin_side_effect(stop_event):
+            return False
+        try:
+            self._emit(
+                ConnectionUpdate(
+                    state=state,
+                    detail=detail or ("verified" if state == "live" else state),
+                    port=identity.device,
+                    firmware_version=firmware_version,
+                    last_valid_status_at=self._last_valid_status_at,
+                    malformed_frames=self._malformed_frames,
+                    overlong_lines=self._overlong_lines,
+                    reconnect_attempt=reconnect_attempt,
+                )
             )
-        )
+            return True
+        finally:
+            if stop_event is not None:
+                self._end_side_effect(stop_event)
 
     def _read_port_identities(self) -> tuple[PortIdentity, ...]:
         raw_ports = tuple(self._enumerate_ports())
@@ -748,8 +899,14 @@ class BadgeSerialTransport:
             serial_port.open()
             return serial_port
         except Exception:
-            serial_port.close()
+            self._safe_close(serial_port)
             raise
+
+    def _safe_close(self, serial_port: Any) -> None:
+        try:
+            serial_port.close()
+        except Exception:
+            pass
 
     def _await_pong(
         self,

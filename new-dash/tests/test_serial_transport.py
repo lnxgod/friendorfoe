@@ -414,6 +414,35 @@ class VerifiedSessionTest(unittest.TestCase):
         with self.assertRaises(TransportUnavailable):
             transport.send_control(build_display_nav("next"))
 
+    def test_stop_immediately_before_live_callback_suppresses_publication(self) -> None:
+        about_to_publish = threading.Event()
+        publish_release = threading.Event()
+
+        class PausingTransport(BadgeSerialTransport):
+            def _emit_session_update(self, state, *args, **kwargs):  # type: ignore[no-untyped-def]
+                if state == "live":
+                    about_to_publish.set()
+                    publish_release.wait(1.0)
+                return super()._emit_session_update(state, *args, **kwargs)
+
+        fake = FakeSerial([b"FOF_PONG:before-stop\n"])
+        updates: list[ConnectionUpdate] = []
+        transport = PausingTransport(
+            enumerate_ports=lambda: [espressif("101")],
+            serial_factory=lambda: fake,
+            on_connection=updates.append,
+        )
+
+        transport.start()
+        self.assertTrue(about_to_publish.wait(1.0), updates)
+        with self.assertRaises(TransportError):
+            transport.stop(timeout=0.0)
+        publish_release.set()
+        self.assertTrue(fake.closed.wait(1.0), updates)
+        transport.stop()
+
+        self.assertNotIn("live", [update.state for update in updates])
+
     def test_deadline_after_await_return_never_reaches_live_publication(self) -> None:
         await_returned = threading.Event()
         publish_release = threading.Event()
@@ -751,6 +780,92 @@ class ControlTest(unittest.TestCase):
         with self.assertRaises(TransportUnavailable):
             transport.send_control(build_display_nav("page"))
 
+    def test_queued_control_receives_full_timeout_window_after_transmission(self) -> None:
+        clock = ManualClock()
+        fake = FakeSerial([b"FOF_PONG:v-live\n"])
+        transport = BadgeSerialTransport(
+            enumerate_ports=lambda: [espressif("101", serial_number="ABC")],
+            serial_factory=lambda: fake,
+            monotonic_clock=clock,
+        )
+        self.addCleanup(transport.stop)
+        transport.start()
+        self._wait_for_write(fake, b"FOF_STATUS\n")
+        first_command = build_display_nav("next")
+        second_command = build_display_nav("detail")
+        replies: dict[str, object] = {}
+        errors: list[BaseException] = []
+
+        def call(name: str, command: object) -> None:
+            try:
+                replies[name] = transport.send_control(command)  # type: ignore[arg-type]
+            except BaseException as error:
+                errors.append(error)
+
+        first = threading.Thread(target=call, args=("first", first_command))
+        second = threading.Thread(target=call, args=("second", second_command))
+        first.start()
+        self._wait_for_write(fake, first_command.to_wire())
+        second.start()
+        clock.advance(0.2)
+        self.assertFalse(fake.closed.wait(0.02))
+        clock.advance(4.7)
+        fake.feed(b'FOF_CTL_OK:{"message":"display nav updated"}\n')
+        self._wait_for_write(fake, second_command.to_wire())
+
+        clock.advance(0.2)
+        self.assertFalse(fake.closed.wait(0.02))
+        clock.advance(4.7)
+        fake.feed(b'FOF_CTL_OK:{"message":"display nav updated"}\n')
+        first.join(1.0)
+        second.join(1.0)
+
+        self.assertEqual(errors, [])
+        self.assertTrue(replies["first"].ok)  # type: ignore[union-attr]
+        self.assertTrue(replies["second"].ok)  # type: ignore[union-attr]
+
+    def test_ack_at_deadline_times_out_and_quarantines_generation(self) -> None:
+        clock = ManualClock()
+
+        class DeadlineAckSerial(FakeSerial):
+            def read(self, size: int = 1) -> bytes:
+                data = super().read(size)
+                if data.startswith(b"FOF_CTL_OK:"):
+                    clock.advance(5.0)
+                return data
+
+        fake = DeadlineAckSerial([b"FOF_PONG:v-live\n"])
+        transport = BadgeSerialTransport(
+            enumerate_ports=lambda: [espressif("101", serial_number="ABC")],
+            serial_factory=lambda: fake,
+            monotonic_clock=clock,
+        )
+        self.addCleanup(transport.stop)
+        transport.start()
+        self._wait_for_write(fake, b"FOF_STATUS\n")
+        command = build_display_nav("next")
+        errors: list[BaseException] = []
+        replies: list[object] = []
+
+        def send() -> None:
+            try:
+                replies.append(transport.send_control(command))
+            except BaseException as error:
+                errors.append(error)
+
+        caller = threading.Thread(target=send)
+        caller.start()
+        self._wait_for_write(fake, command.to_wire())
+        fake.feed(b'FOF_CTL_OK:{"message":"display nav updated"}\n')
+        caller.join(1.0)
+
+        self.assertEqual(replies, [])
+        self.assertEqual(len(errors), 1)
+        self.assertIsInstance(errors[0], ControlTimeout)
+        self.assertTrue(fake.closed.wait(1.0))
+        with self.assertRaises(TransportUnavailable):
+            transport.send_control(build_display_nav("detail"))
+
     def test_disconnect_fails_pending_and_future_requests(self) -> None:
         fake = FakeSerial([b"FOF_PONG:v-live\n"])
         transport = BadgeSerialTransport(
@@ -809,6 +924,50 @@ class ControlTest(unittest.TestCase):
         caller = threading.Thread(target=send)
         caller.start()
         self.assertTrue(taken.wait(1.0))
+        with self.assertRaises(TransportError):
+            transport.stop(timeout=0.0)
+        write_release.set()
+        self.assertTrue(fake.closed.wait(1.0))
+        caller.join(1.0)
+        transport.stop()
+
+        self.assertNotIn(command.to_wire(), fake.writes)
+        self.assertIsInstance(errors[0], TransportUnavailable)
+
+    def test_stop_immediately_before_control_write_suppresses_mutation(self) -> None:
+        about_to_write = threading.Event()
+        write_release = threading.Event()
+
+        class PausingTransport(BadgeSerialTransport):
+            def _write_if_running(self, serial_port, data, stop_event):  # type: ignore[no-untyped-def]
+                if data.startswith(b"FOF_CTL:"):
+                    about_to_write.set()
+                    write_release.wait(1.0)
+                return super()._write_if_running(serial_port, data, stop_event)
+
+        fake = FakeSerial([b"FOF_PONG:v-live\n"])
+        transport = PausingTransport(
+            enumerate_ports=lambda: [espressif("101", serial_number="ABC")],
+            serial_factory=lambda: fake,
+        )
+        command = build_display_nav("next")
+        errors: list[BaseException] = []
+        transport.start()
+        self._wait_for_write(fake, b"FOF_STATUS\n")
+
+        def send() -> None:
+            try:
+                transport.send_control(command)
+            except BaseException as error:
+                errors.append(error)
+
+        caller = threading.Thread(target=send)
+        caller.start()
+        reached_write_boundary = about_to_write.wait(0.05)
+        if not reached_write_boundary:
+            transport.stop()
+            caller.join(1.0)
+            self.fail("control write did not use the stop-linearized boundary")
         with self.assertRaises(TransportError):
             transport.stop(timeout=0.0)
         write_release.set()
@@ -1106,6 +1265,88 @@ class ReconnectTest(unittest.TestCase):
         self.assertEqual(second_live.last_valid_status_at, wall.value)
         self.assertEqual(second_live.malformed_frames, 1)
         self.assertEqual(second_live.overlong_lines, 1)
+
+    def test_old_status_remains_stale_after_reconnect_until_new_status(self) -> None:
+        clock = ManualClock()
+        wall = ManualClock(start=1_700_000_000.0)
+        identity = espressif("101", serial_number="ABC")
+        first_fake = FakeSerial(
+            [
+                b"FOF_PONG:first\n",
+                b'FOF_STATUS:{"version":"first","uptime_s":1}\n',
+            ],
+            read_exception=OSError("detached"),
+        )
+        second_fake = FakeSerial([b"FOF_PONG:second\n"])
+        fakes = iter((first_fake, second_fake))
+        updates: list[ConnectionUpdate] = []
+        second_stale = threading.Event()
+        recovered = threading.Event()
+
+        class AgingRetryTransport(self.RecordingRetryTransport):
+            def _wait_before_retry(self, stop_event, delay):  # type: ignore[no-untyped-def]
+                self.delays.append(delay)
+                clock.advance(7.0)
+                return stop_event.is_set()
+
+        def on_connection(update: ConnectionUpdate) -> None:
+            updates.append(update)
+            if update.state == "stale" and update.firmware_version == "second":
+                second_stale.set()
+            if update.detail == "status_recovered":
+                recovered.set()
+
+        transport = AgingRetryTransport(
+            enumerate_ports=lambda: [identity],
+            serial_factory=lambda: next(fakes),
+            monotonic_clock=clock,
+            wall_clock=wall,
+            on_connection=on_connection,
+        )
+        self.addCleanup(transport.stop)
+        transport.start()
+        self.assertTrue(second_stale.wait(1.0), updates)
+        self.assertEqual(updates[-1].last_valid_status_at, wall.value)
+        self.assertFalse(
+            any(
+                update.state == "live" and update.firmware_version == "second"
+                for update in updates
+            )
+        )
+
+        second_fake.feed(b'FOF_STATUS:{"version":"second","uptime_s":2}\n')
+        self.assertTrue(recovered.wait(1.0), updates)
+        transport.stop()
+
+    def test_close_failure_cannot_terminate_reconnect_owner(self) -> None:
+        identity = espressif("101", serial_number="ABC")
+
+        class CloseRaisingSerial(FakeSerial):
+            def close(self) -> None:
+                super().close()
+                raise OSError("close failed")
+
+        first_fake = CloseRaisingSerial(
+            [b"FOF_PONG:first\n"],
+            read_exception=OSError("detached"),
+        )
+        second_fake = FakeSerial([b"FOF_PONG:second\n"])
+        fakes = iter((first_fake, second_fake))
+        updates: list[ConnectionUpdate] = []
+        transport = self.RecordingRetryTransport(
+            enumerate_ports=lambda: [identity],
+            serial_factory=lambda: next(fakes),
+            on_connection=updates.append,
+        )
+        self.addCleanup(transport.stop)
+        transport.start()
+        self._wait_for(
+            lambda: any(update.firmware_version == "second" for update in updates)
+        )
+        transport.stop()
+
+        self.assertTrue(first_fake.closed.is_set())
+        self.assertTrue(any(update.state == "reconnecting" for update in updates))
 
     def _wait_for(self, predicate) -> None:  # type: ignore[no-untyped-def]
         deadline = time.monotonic() + 1.0
