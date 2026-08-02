@@ -129,7 +129,6 @@ def test_uplink_project_uses_backend_version_and_explicit_local_sources() -> Non
     assert 'set(PROJECT_VER "' not in top
     forbidden_build_features = (
         "SRC_DIRS",
-        "EXTRA_COMPONENT_DIRS",
         "GLOB",
         "../../../",
         "vendor/",
@@ -150,7 +149,7 @@ def test_uplink_project_uses_backend_version_and_explicit_local_sources() -> Non
         "comms/backend_uart_slot.c",
         "core/backend_coordinator.c",
         "core/backend_health.c",
-        "hw/backend_yellow_led.c",
+        "../../shared/backend_status_led.c",
         "network/backend_command_client.c",
         "network/backend_config_portal.c",
         "network/backend_http_transport.c",
@@ -265,7 +264,7 @@ def test_uplink_main_composes_the_backend_lite_runtime() -> None:
         "backend_scanner_plan_compute(",
         "backend_scanner_control_encode(",
         "backend_threat_ingest(",
-        "backend_yellow_led_set_state(",
+        "backend_status_led_set_state(",
         "backend_upload_builder_add(",
         "backend_upload_fifo_push(",
         "backend_http_post_json(",
@@ -298,3 +297,31 @@ def test_uplink_main_composes_the_backend_lite_runtime() -> None:
         "fof_backend_embedded_identity.image_kind != "
         "BACKEND_IMAGE_UPLINK"
     ) in source
+
+
+def test_uplink_led_profile_build_artifacts_select_only_the_requested_adapter() -> None:
+    lite = UPLINK / ".pio/build/uplink-s3-backend"
+    fullsize = UPLINK / ".pio/build/uplink-s3-fullsize-backend"
+    lite_commands = (lite / "compile_commands.json").read_text(encoding="utf-8")
+    lite_map = (lite / "fof_backend_uplink.map").read_text(
+        encoding="utf-8", errors="replace"
+    )
+    lite_app = (lite / "firmware.elf").read_bytes().decode("latin-1")
+    assert "backend_yellow_led.c" in lite_commands
+    assert "backend_yellow_led.c.o" in lite_map
+    for marker in (
+        "backend_fullsize_rgb_led",
+        "led_strip",
+        "fullsize-components/backend_fullsize_led",
+    ):
+        assert marker not in lite_commands
+        assert marker not in lite_map
+        assert marker not in lite_app
+
+    fullsize_map = (fullsize / "fof_backend_uplink_fullsize.map").read_text(
+        encoding="utf-8", errors="replace"
+    )
+    assert "backend_fullsize_led" in fullsize_map
+    assert "backend_fullsize_rgb_led.c.o" in fullsize_map
+    assert "espressif__led_strip" in fullsize_map
+    assert "backend_yellow_led.c.o" not in fullsize_map

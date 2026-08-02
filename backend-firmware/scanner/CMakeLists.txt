@@ -17,6 +17,8 @@ if("${FOF_BACKEND_PROFILE_NAME}" STREQUAL "badge_lite")
     set(FOF_BACKEND_EXPECTED_PROJECT_NAME "fof_backend_scanner")
 elseif("${FOF_BACKEND_PROFILE_NAME}" STREQUAL "s3_fullsize")
     set(FOF_BACKEND_EXPECTED_PROJECT_NAME "fof_backend_scanner_fullsize")
+    list(APPEND EXTRA_COMPONENT_DIRS
+         "${CMAKE_CURRENT_LIST_DIR}/../fullsize-components")
 else()
     message(FATAL_ERROR "Unknown backend scanner profile: ${FOF_BACKEND_PROFILE_NAME}")
 endif()

@@ -8,6 +8,7 @@
 #include <unity.h>
 
 #include "backend_led_pattern.h"
+#include "backend_status_led.h"
 #include "driver/gpio.h"
 #include "freertos/task.h"
 #include "backend_test_main.h"
@@ -18,6 +19,9 @@
 
 /* Compile the exact scanner or uplink adapter into this isolated host suite. */
 #include BACKEND_YELLOW_LED_ADAPTER_SOURCE
+
+/* Exercise the production profile boundary against the selected adapter. */
+#include "../../shared/backend_status_led.c"
 
 static gpio_config_t observed_gpio_config;
 static unsigned gpio_config_count;
@@ -210,6 +214,18 @@ void test_yellow_led_adapter_prevents_double_static_task_creation(void)
     TEST_ASSERT_EQUAL(BACKEND_LED_META, backend_yellow_led_state());
 }
 
+void test_status_led_dispatch_keeps_the_lite_active_low_gpio21_driver(void)
+{
+    TEST_ASSERT_TRUE(backend_status_led_init(BACKEND_LED_DRONE));
+    TEST_ASSERT_EQUAL_UINT(1, gpio_config_count);
+    TEST_ASSERT_EQUAL_HEX64(
+        UINT64_C(1) << GPIO_NUM_21, observed_gpio_config.pin_bit_mask);
+    TEST_ASSERT_EQUAL_UINT(1, task_create_count);
+    TEST_ASSERT_EQUAL(BACKEND_LED_DRONE, backend_status_led_state());
+    TEST_ASSERT_TRUE(backend_status_led_set_state(BACKEND_LED_META));
+    TEST_ASSERT_EQUAL(BACKEND_LED_META, backend_status_led_state());
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -221,5 +237,7 @@ int main(void)
         test_yellow_led_adapter_takes_a_coherent_revision_state_snapshot);
     BACKEND_RUN_TEST(
         test_yellow_led_adapter_prevents_double_static_task_creation);
+    BACKEND_RUN_TEST(
+        test_status_led_dispatch_keeps_the_lite_active_low_gpio21_driver);
     return UNITY_END();
 }

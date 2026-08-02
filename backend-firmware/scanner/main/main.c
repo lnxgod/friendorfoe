@@ -18,7 +18,7 @@
 #include "detection/ble_investigator.h"
 #include "detection/ble_remote_id.h"
 #include "detection/wifi_scanner.h"
-#include "hw/backend_yellow_led.h"
+#include "backend_status_led.h"
 
 #include "backend_detection_codec.h"
 #include "backend_identity.h"
@@ -1142,7 +1142,7 @@ static void supervisor_task(void *argument)
                 &s_app.led_mirror, now_ms);
             app_unlock();
         }
-        (void)backend_yellow_led_set_state(led_state);
+        (void)backend_status_led_set_state(led_state);
         evaluate_rollback(now_ms);
         maybe_emit_health();
         if (status_due && send_status() && app_lock()) {
@@ -1256,13 +1256,13 @@ void app_main(void)
         ESP_LOGE(TAG, "NVS initialization failed");
         return;
     }
-    if (!backend_yellow_led_init(BACKEND_LED_UART_LOST)) {
+    if (!backend_status_led_init(BACKEND_LED_UART_LOST)) {
         ESP_LOGE(TAG, "GPIO21 yellow LED initialization failed");
         return;
     }
     if (!initialize_running_ota_state()) {
         ESP_LOGE(TAG, "Initial image is not ESP_OTA_IMG_VALID");
-        (void)backend_yellow_led_set_state(BACKEND_LED_FATAL);
+        (void)backend_status_led_set_state(BACKEND_LED_FATAL);
         return;
     }
     s_app.boot_id = generate_boot_id();
@@ -1272,7 +1272,7 @@ void app_main(void)
             &s_app.rollback, s_app.boot_id,
             s_app.running_pending_verify)) {
         ESP_LOGE(TAG, "Identity or rollback initialization failed");
-        (void)backend_yellow_led_set_state(BACKEND_LED_FATAL);
+        (void)backend_status_led_set_state(BACKEND_LED_FATAL);
         return;
     }
     if (s_app.running_pending_verify &&
@@ -1283,7 +1283,7 @@ void app_main(void)
         if (action == SCANNER_ROLLBACK_FORCE_ROLLBACK) {
             (void)esp_ota_mark_app_invalid_rollback_and_reboot();
         }
-        (void)backend_yellow_led_set_state(BACKEND_LED_FATAL);
+        (void)backend_status_led_set_state(BACKEND_LED_FATAL);
         return;
     }
 
@@ -1297,7 +1297,7 @@ void app_main(void)
         s_app.detection_queue == NULL || s_app.control_queue == NULL ||
         !initialize_uart()) {
         ESP_LOGE(TAG, "Required queue, mutex, or UART initialization failed");
-        (void)backend_yellow_led_set_state(BACKEND_LED_FATAL);
+        (void)backend_status_led_set_state(BACKEND_LED_FATAL);
         return;
     }
 
@@ -1331,7 +1331,7 @@ void app_main(void)
             investigation_uart_write, &s_app) ||
         !uart_ota_init(&s_app.ota, &ota_config)) {
         ESP_LOGE(TAG, "UART protocol initialization failed");
-        (void)backend_yellow_led_set_state(BACKEND_LED_FATAL);
+        (void)backend_status_led_set_state(BACKEND_LED_FATAL);
         return;
     }
 
@@ -1344,7 +1344,7 @@ void app_main(void)
             uart_rx_task, "be_uart_rx", UART_CMD_TASK_STACK_SIZE,
             UART_CMD_TASK_PRIORITY, UART_CMD_TASK_CORE)) {
         ESP_LOGE(TAG, "UART ingress task creation failed");
-        (void)backend_yellow_led_set_state(BACKEND_LED_FATAL);
+        (void)backend_status_led_set_state(BACKEND_LED_FATAL);
         return;
     }
     s_app.command_ingress_healthy = true;
@@ -1363,7 +1363,7 @@ void app_main(void)
     if (boot_written <= 0 ||
         (size_t)boot_written >= sizeof(s_app.boot_record)) {
         ESP_LOGE(TAG, "Boot record encoding failed");
-        (void)backend_yellow_led_set_state(BACKEND_LED_FATAL);
+        (void)backend_status_led_set_state(BACKEND_LED_FATAL);
         return;
     }
     emit_usb_record(s_app.boot_record);
@@ -1383,6 +1383,6 @@ void app_main(void)
             UART_TX_TASK_PRIORITY, CORE_PROCESSING);
     if (!tasks_created) {
         ESP_LOGE(TAG, "Required backend scanner task creation failed");
-        (void)backend_yellow_led_set_state(BACKEND_LED_FATAL);
+        (void)backend_status_led_set_state(BACKEND_LED_FATAL);
     }
 }

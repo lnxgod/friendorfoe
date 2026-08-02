@@ -52,7 +52,7 @@
 #include "backend_upload_fifo.h"
 #include "backend_uploader.h"
 #include "backend_wifi_manager.h"
-#include "backend_yellow_led.h"
+#include "backend_status_led.h"
 
 #define UPLINK_FACTORY_URL "http://192.168.4.2:8000"
 #define UPLINK_SCANNER_STALE_MS INT64_C(15000)
@@ -376,7 +376,7 @@ static bool upload_context_locked(
     context->command_failure_count = s_runtime.command_failure_count;
     context->uptime_ms = now_ms >= s_runtime.boot_monotonic_ms
         ? (uint64_t)(now_ms - s_runtime.boot_monotonic_ms) : 0U;
-    context->led_state = backend_yellow_led_state();
+    context->led_state = backend_status_led_state();
     context->upload_queue.depth_batches = s_runtime.upload_fifo.count;
     context->upload_queue.capacity_batches = s_runtime.upload_fifo.capacity;
     context->upload_queue.overflow_dropped_batches =
@@ -1582,7 +1582,7 @@ static void coordinator_worker(void *argument)
         };
         backend_health_snapshot_t health_snapshot;
         backend_health_evaluate(&inputs, &health_snapshot);
-        (void)backend_yellow_led_set_state(health_snapshot.led_state);
+        (void)backend_status_led_set_state(health_snapshot.led_state);
         uint8_t connected_mask = 0U;
         for (size_t slot = 0U; slot < 2U; ++slot) {
             if (s_runtime.scanner_health[slot].connected) {
@@ -2446,7 +2446,7 @@ void app_main(void)
         return;
     }
 
-    s_runtime.led_started = backend_yellow_led_init(BACKEND_LED_NETWORK_DEGRADED);
+    s_runtime.led_started = backend_status_led_init(BACKEND_LED_NETWORK_DEGRADED);
     if (!backend_uart_slots_init(&s_runtime.uarts)) {
         print_line("FOF_BACKEND_FATAL {\"reason\":\"uart_slots\"}");
         return;

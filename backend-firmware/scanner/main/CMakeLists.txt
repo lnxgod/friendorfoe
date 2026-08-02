@@ -1,3 +1,20 @@
+set(BACKEND_STATUS_LED_SRCS "../../shared/backend_status_led.c")
+set(BACKEND_STATUS_LED_REQUIRES)
+set(BACKEND_STATUS_PROJECT_NAME "${PROJECT_NAME}")
+if(NOT "${BACKEND_STATUS_PROJECT_NAME}" STREQUAL "fof_backend_scanner" AND
+   NOT "${BACKEND_STATUS_PROJECT_NAME}" STREQUAL "fof_backend_scanner_fullsize")
+    set(BACKEND_STATUS_PROJECT_NAME "${CMAKE_PROJECT_NAME}")
+endif()
+if("${BACKEND_STATUS_PROJECT_NAME}" STREQUAL "fof_backend_scanner")
+    list(APPEND BACKEND_STATUS_LED_SRCS "hw/backend_yellow_led.c")
+elseif("${BACKEND_STATUS_PROJECT_NAME}" STREQUAL "fof_backend_scanner_fullsize")
+    list(APPEND BACKEND_STATUS_LED_SRCS "../../shared/backend_rgb_led_pattern.c")
+    list(APPEND BACKEND_STATUS_LED_REQUIRES backend_fullsize_led)
+else()
+    message(FATAL_ERROR
+        "Unknown backend scanner project: ${BACKEND_STATUS_PROJECT_NAME}")
+endif()
+
 idf_component_register(
     SRCS
     "main.c"
@@ -24,7 +41,7 @@ idf_component_register(
     "detection/wifi_oui_database.c"
     "detection/wifi_scanner.c"
     "detection/wifi_ssid_patterns.c"
-    "hw/backend_yellow_led.c"
+    ${BACKEND_STATUS_LED_SRCS}
     "../../shared/backend_embedded_identity.c"
     "../../shared/backend_detection_codec.c"
     "../../shared/backend_flow_policy.c"
@@ -58,4 +75,5 @@ idf_component_register(
     mbedtls
     esp_psram
     driver
+    ${BACKEND_STATUS_LED_REQUIRES}
 )

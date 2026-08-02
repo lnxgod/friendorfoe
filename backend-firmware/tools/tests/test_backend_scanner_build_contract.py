@@ -95,7 +95,7 @@ def test_scanner_project_has_exact_backend_descriptor_and_local_sources() -> Non
 
     assert "FOF_VERSION_BACKEND" in project
     assert "project(${FOF_BACKEND_PROJECT_NAME})" in project
-    assert "EXTRA_COMPONENT_DIRS" not in project + component
+    assert "EXTRA_COMPONENT_DIRS" in project
     for forbidden in ("SRC_DIRS", "GLOB", "../../../", "vendor/"):
         assert forbidden not in component
 
@@ -111,7 +111,7 @@ def test_scanner_project_has_exact_backend_descriptor_and_local_sources() -> Non
         "detection/ble_remote_id.c",
         "detection/ble_investigator.c",
         "detection/wifi_scanner.c",
-        "hw/backend_yellow_led.c",
+        "../../shared/backend_status_led.c",
         "../../shared/backend_embedded_identity.c",
         "../../shared/backend_identity.c",
         "../../shared/backend_ota_identity.c",
@@ -139,7 +139,6 @@ def test_scanner_project_has_exact_backend_descriptor_and_local_sources() -> Non
         "display_st7735",
         "oled_display",
         "badge_easter",
-        "ws2812",
         "cjson",
     ):
         assert forbidden not in component.lower()
@@ -219,7 +218,7 @@ def test_scanner_main_composes_uart_radios_led_identity_ota_and_rollback() -> No
         "backend_investigation_sink_register",
         "backend_uart_rx_init",
         "backend_scanner_status_encode",
-        "backend_yellow_led_init",
+        "backend_status_led_init",
         "ble_remote_id_init",
         "wifi_scanner_init",
         "uart_ota_init",
@@ -256,6 +255,34 @@ def test_scanner_main_composes_uart_radios_led_identity_ota_and_rollback() -> No
         "advertiser",
     ):
         assert forbidden not in lower
+
+
+def test_scanner_led_profile_build_artifacts_select_only_the_requested_adapter() -> None:
+    lite = SCANNER / ".pio/build/scanner-s3-combo-backend"
+    fullsize = SCANNER / ".pio/build/scanner-s3-combo-fullsize-backend"
+    lite_commands = (lite / "compile_commands.json").read_text(encoding="utf-8")
+    lite_map = (lite / "fof_backend_scanner.map").read_text(
+        encoding="utf-8", errors="replace"
+    )
+    lite_app = (lite / "firmware.elf").read_bytes().decode("latin-1")
+    assert "backend_yellow_led.c" in lite_commands
+    assert "backend_yellow_led.c.o" in lite_map
+    for marker in (
+        "backend_fullsize_rgb_led",
+        "led_strip",
+        "fullsize-components/backend_fullsize_led",
+    ):
+        assert marker not in lite_commands
+        assert marker not in lite_map
+        assert marker not in lite_app
+
+    fullsize_map = (fullsize / "fof_backend_scanner_fullsize.map").read_text(
+        encoding="utf-8", errors="replace"
+    )
+    assert "backend_fullsize_led" in fullsize_map
+    assert "backend_fullsize_rgb_led.c.o" in fullsize_map
+    assert "espressif__led_strip" in fullsize_map
+    assert "backend_yellow_led.c.o" not in fullsize_map
 
 
 def test_scanner_kconfig_defines_only_backend_glasses_switch() -> None:

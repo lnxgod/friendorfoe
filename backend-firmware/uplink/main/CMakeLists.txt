@@ -1,3 +1,20 @@
+set(BACKEND_STATUS_LED_SRCS "../../shared/backend_status_led.c")
+set(BACKEND_STATUS_LED_REQUIRES)
+set(BACKEND_STATUS_PROJECT_NAME "${PROJECT_NAME}")
+if(NOT "${BACKEND_STATUS_PROJECT_NAME}" STREQUAL "fof_backend_uplink" AND
+   NOT "${BACKEND_STATUS_PROJECT_NAME}" STREQUAL "fof_backend_uplink_fullsize")
+    set(BACKEND_STATUS_PROJECT_NAME "${CMAKE_PROJECT_NAME}")
+endif()
+if("${BACKEND_STATUS_PROJECT_NAME}" STREQUAL "fof_backend_uplink")
+    list(APPEND BACKEND_STATUS_LED_SRCS "hw/backend_yellow_led.c")
+elseif("${BACKEND_STATUS_PROJECT_NAME}" STREQUAL "fof_backend_uplink_fullsize")
+    list(APPEND BACKEND_STATUS_LED_SRCS "../../shared/backend_rgb_led_pattern.c")
+    list(APPEND BACKEND_STATUS_LED_REQUIRES backend_fullsize_led)
+else()
+    message(FATAL_ERROR
+        "Unknown backend uplink project: ${BACKEND_STATUS_PROJECT_NAME}")
+endif()
+
 idf_component_register(
     SRCS
         "main.c"
@@ -5,7 +22,7 @@ idf_component_register(
         "comms/backend_uart_slot.c"
         "core/backend_coordinator.c"
         "core/backend_health.c"
-        "hw/backend_yellow_led.c"
+        ${BACKEND_STATUS_LED_SRCS}
         "network/backend_command_client.c"
         "network/backend_config_portal.c"
         "network/backend_http_transport.c"
@@ -76,4 +93,5 @@ idf_component_register(
         lwip
         esp_psram
         driver
+        ${BACKEND_STATUS_LED_REQUIRES}
 )
