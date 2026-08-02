@@ -15,3 +15,4 @@ TaskHandle_t xTaskCreateStatic(
     StaticTask_t *task_buffer);
 
 void vTaskDelay(TickType_t ticks);
+void vTaskSuspend(TaskHandle_t task);

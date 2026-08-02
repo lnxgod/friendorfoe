@@ -28,6 +28,7 @@ static bool strip_create_fails;
 static unsigned strip_set_fail_on_call;
 static unsigned strip_refresh_fail_on_call;
 static unsigned strip_clear_fail_on_call;
+static unsigned strip_delete_fail_on_call;
 static uint32_t observed_red[4];
 static uint32_t observed_green[4];
 static uint32_t observed_blue[4];
@@ -37,6 +38,7 @@ static unsigned task_create_count;
 static bool task_create_fails;
 static int delay_scenario;
 static unsigned delay_count;
+static unsigned fault_task_park_count;
 static jmp_buf task_exit;
 static struct led_strip_t {
     unsigned opaque;
@@ -101,6 +103,9 @@ esp_err_t led_strip_del(led_strip_handle_t strip)
 {
     TEST_ASSERT_EQUAL_PTR(&observed_strip, strip);
     ++strip_delete_count;
+    if (strip_delete_count == strip_delete_fail_on_call) {
+        return -1;
+    }
     return ESP_OK;
 }
 
@@ -142,6 +147,13 @@ void vTaskDelay(TickType_t ticks)
     }
 }
 
+void vTaskSuspend(TaskHandle_t task)
+{
+    TEST_ASSERT_NULL(task);
+    ++fault_task_park_count;
+    longjmp(task_exit, 1);
+}
+
 void setUp(void)
 {
     atomic_store_explicit(
@@ -160,6 +172,7 @@ void setUp(void)
     strip_set_fail_on_call = 0U;
     strip_refresh_fail_on_call = 0U;
     strip_clear_fail_on_call = 0U;
+    strip_delete_fail_on_call = 0U;
     memset(observed_red, 0, sizeof(observed_red));
     memset(observed_green, 0, sizeof(observed_green));
     memset(observed_blue, 0, sizeof(observed_blue));
@@ -169,6 +182,7 @@ void setUp(void)
     task_create_fails = false;
     delay_scenario = 0;
     delay_count = 0U;
+    fault_task_park_count = 0U;
 }
 
 void tearDown(void)
@@ -245,6 +259,36 @@ void test_fullsize_rgb_led_releases_after_task_creation_failure_before_retry(voi
     TEST_ASSERT_EQUAL(BACKEND_LED_META, backend_fullsize_rgb_led_state());
 }
 
+void test_fullsize_rgb_led_locks_out_after_delete_failure_during_initial_cleanup(void)
+{
+    strip_clear_fail_on_call = 1U;
+    strip_delete_fail_on_call = 1U;
+    TEST_ASSERT_FALSE(backend_fullsize_rgb_led_init(BACKEND_LED_DRONE));
+    TEST_ASSERT_EQUAL_UINT(1, strip_create_count);
+    TEST_ASSERT_EQUAL_UINT(1, strip_delete_count);
+    TEST_ASSERT_NOT_NULL(s_strip);
+    TEST_ASSERT_NOT_EQUAL(
+        BACKEND_RGB_LED_STOPPED,
+        atomic_load_explicit(&s_lifecycle, memory_order_relaxed));
+    TEST_ASSERT_FALSE(backend_fullsize_rgb_led_init(BACKEND_LED_META));
+    TEST_ASSERT_EQUAL_UINT(1, strip_create_count);
+}
+
+void test_fullsize_rgb_led_locks_out_after_delete_failure_during_task_cleanup(void)
+{
+    task_create_fails = true;
+    strip_delete_fail_on_call = 1U;
+    TEST_ASSERT_FALSE(backend_fullsize_rgb_led_init(BACKEND_LED_DRONE));
+    TEST_ASSERT_EQUAL_UINT(1, strip_create_count);
+    TEST_ASSERT_EQUAL_UINT(1, strip_delete_count);
+    TEST_ASSERT_NOT_NULL(s_strip);
+    TEST_ASSERT_NOT_EQUAL(
+        BACKEND_RGB_LED_STOPPED,
+        atomic_load_explicit(&s_lifecycle, memory_order_relaxed));
+    TEST_ASSERT_FALSE(backend_fullsize_rgb_led_init(BACKEND_LED_META));
+    TEST_ASSERT_EQUAL_UINT(1, strip_create_count);
+}
+
 void test_fullsize_rgb_led_faults_without_refresh_after_set_pixel_failure(void)
 {
     TEST_ASSERT_TRUE(backend_fullsize_rgb_led_init(BACKEND_LED_DRONE));
@@ -258,8 +302,10 @@ void test_fullsize_rgb_led_faults_without_refresh_after_set_pixel_failure(void)
     TEST_ASSERT_EQUAL_UINT(2, strip_clear_count);
     TEST_ASSERT_EQUAL_UINT(1, strip_delete_count);
     TEST_ASSERT_NULL(s_strip);
+    TEST_ASSERT_EQUAL_UINT(1, fault_task_park_count);
     TEST_ASSERT_FALSE(backend_fullsize_rgb_led_set_state(BACKEND_LED_META));
-    TEST_ASSERT_TRUE(backend_fullsize_rgb_led_init(BACKEND_LED_META));
+    TEST_ASSERT_FALSE(backend_fullsize_rgb_led_init(BACKEND_LED_META));
+    TEST_ASSERT_EQUAL_UINT(1, strip_create_count);
 }
 
 void test_fullsize_rgb_led_faults_after_refresh_failure(void)
@@ -275,8 +321,10 @@ void test_fullsize_rgb_led_faults_after_refresh_failure(void)
     TEST_ASSERT_EQUAL_UINT(2, strip_clear_count);
     TEST_ASSERT_EQUAL_UINT(1, strip_delete_count);
     TEST_ASSERT_NULL(s_strip);
+    TEST_ASSERT_EQUAL_UINT(1, fault_task_park_count);
     TEST_ASSERT_FALSE(backend_fullsize_rgb_led_set_state(BACKEND_LED_META));
-    TEST_ASSERT_TRUE(backend_fullsize_rgb_led_init(BACKEND_LED_META));
+    TEST_ASSERT_FALSE(backend_fullsize_rgb_led_init(BACKEND_LED_META));
+    TEST_ASSERT_EQUAL_UINT(1, strip_create_count);
 }
 
 void test_fullsize_rgb_led_faults_after_off_step_clear_failure(void)
@@ -292,8 +340,30 @@ void test_fullsize_rgb_led_faults_after_off_step_clear_failure(void)
     TEST_ASSERT_EQUAL_UINT(3, strip_clear_count);
     TEST_ASSERT_EQUAL_UINT(1, strip_delete_count);
     TEST_ASSERT_NULL(s_strip);
+    TEST_ASSERT_EQUAL_UINT(1, fault_task_park_count);
     TEST_ASSERT_FALSE(backend_fullsize_rgb_led_set_state(BACKEND_LED_META));
-    TEST_ASSERT_TRUE(backend_fullsize_rgb_led_init(BACKEND_LED_META));
+    TEST_ASSERT_FALSE(backend_fullsize_rgb_led_init(BACKEND_LED_META));
+    TEST_ASSERT_EQUAL_UINT(1, strip_create_count);
+}
+
+void test_fullsize_rgb_led_parks_and_locks_out_after_runtime_delete_failure(void)
+{
+    TEST_ASSERT_TRUE(backend_fullsize_rgb_led_init(BACKEND_LED_DRONE));
+    strip_set_fail_on_call = 1U;
+    strip_delete_fail_on_call = 1U;
+    if (setjmp(task_exit) == 0) {
+        captured_task(captured_task_argument);
+    }
+
+    TEST_ASSERT_EQUAL_UINT(1, strip_delete_count);
+    TEST_ASSERT_NOT_NULL(s_strip);
+    TEST_ASSERT_EQUAL_UINT(1, fault_task_park_count);
+    TEST_ASSERT_NOT_EQUAL(
+        BACKEND_RGB_LED_STOPPED,
+        atomic_load_explicit(&s_lifecycle, memory_order_relaxed));
+    TEST_ASSERT_FALSE(backend_fullsize_rgb_led_set_state(BACKEND_LED_META));
+    TEST_ASSERT_FALSE(backend_fullsize_rgb_led_init(BACKEND_LED_META));
+    TEST_ASSERT_EQUAL_UINT(1, strip_create_count);
 }
 
 void test_fullsize_rgb_led_interrupts_a_step_after_an_atomic_state_revision(void)
@@ -325,10 +395,16 @@ int main(void)
     BACKEND_RUN_TEST(
         test_fullsize_rgb_led_releases_after_task_creation_failure_before_retry);
     BACKEND_RUN_TEST(
+        test_fullsize_rgb_led_locks_out_after_delete_failure_during_initial_cleanup);
+    BACKEND_RUN_TEST(
+        test_fullsize_rgb_led_locks_out_after_delete_failure_during_task_cleanup);
+    BACKEND_RUN_TEST(
         test_fullsize_rgb_led_faults_without_refresh_after_set_pixel_failure);
     BACKEND_RUN_TEST(test_fullsize_rgb_led_faults_after_refresh_failure);
     BACKEND_RUN_TEST(
         test_fullsize_rgb_led_faults_after_off_step_clear_failure);
+    BACKEND_RUN_TEST(
+        test_fullsize_rgb_led_parks_and_locks_out_after_runtime_delete_failure);
     BACKEND_RUN_TEST(
         test_fullsize_rgb_led_interrupts_a_step_after_an_atomic_state_revision);
     return UNITY_END();

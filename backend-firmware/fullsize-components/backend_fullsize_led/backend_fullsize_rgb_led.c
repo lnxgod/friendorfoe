@@ -33,6 +33,7 @@ typedef enum {
     BACKEND_RGB_LED_STARTING,
     BACKEND_RGB_LED_STARTED,
     BACKEND_RGB_LED_FAULTED,
+    BACKEND_RGB_LED_RELEASE_FAILED,
 } backend_rgb_led_lifecycle_t;
 
 static atomic_int s_lifecycle = BACKEND_RGB_LED_STOPPED;
@@ -49,23 +50,48 @@ static backend_led_state_t snapshot_state(uint_fast32_t snapshot)
     return (backend_led_state_t)(snapshot & BACKEND_LED_STATE_MASK);
 }
 
-static void release_strip(void)
+static bool release_strip(void)
 {
     led_strip_handle_t strip = s_strip;
-    s_strip = NULL;
-    if (strip != NULL) {
-        (void)led_strip_clear(strip);
-        (void)led_strip_del(strip);
+    if (strip == NULL) {
+        return true;
     }
+    (void)led_strip_clear(strip);
+    if (led_strip_del(strip) != ESP_OK) {
+        return false;
+    }
+    s_strip = NULL;
+    return true;
 }
 
-static void fault_stop(void)
+static void initialization_fault_stop(void)
 {
     atomic_store_explicit(
         &s_lifecycle, BACKEND_RGB_LED_FAULTED, memory_order_release);
-    release_strip();
+    if (!release_strip()) {
+        atomic_store_explicit(
+            &s_lifecycle,
+            BACKEND_RGB_LED_RELEASE_FAILED,
+            memory_order_release);
+        return;
+    }
     atomic_store_explicit(
         &s_lifecycle, BACKEND_RGB_LED_STOPPED, memory_order_release);
+}
+
+static void runtime_fault_stop(void)
+{
+    atomic_store_explicit(
+        &s_lifecycle, BACKEND_RGB_LED_FAULTED, memory_order_release);
+    if (!release_strip()) {
+        atomic_store_explicit(
+            &s_lifecycle,
+            BACKEND_RGB_LED_RELEASE_FAILED,
+            memory_order_release);
+    }
+    for (;;) {
+        vTaskSuspend(NULL);
+    }
 }
 
 static bool drive_led(const backend_rgb_led_step_t *step)
@@ -96,8 +122,7 @@ static void rgb_led_task(void *argument)
         }
         for (size_t index = 0U; index < step_count; ++index) {
             if (!drive_led(&steps[index])) {
-                fault_stop();
-                return;
+                runtime_fault_stop();
             }
             vTaskDelay(pdMS_TO_TICKS(steps[index].duration_ms));
             if (snapshot != atomic_load_explicit(
@@ -143,7 +168,7 @@ bool backend_fullsize_rgb_led_init(backend_led_state_t initial_state)
         return false;
     }
     if (led_strip_clear(s_strip) != ESP_OK) {
-        fault_stop();
+        initialization_fault_stop();
         return false;
     }
 
@@ -158,7 +183,7 @@ bool backend_fullsize_rgb_led_init(backend_led_state_t initial_state)
             BACKEND_RGB_LED_TASK_PRIORITY,
             s_led_task_stack,
             &s_led_task_buffer) == NULL) {
-        fault_stop();
+        initialization_fault_stop();
         return false;
     }
     atomic_store_explicit(
