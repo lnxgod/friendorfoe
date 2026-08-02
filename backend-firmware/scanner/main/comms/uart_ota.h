@@ -4,6 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "backend_hardware_profile.h"
 #include "backend_ota_identity.h"
 #include "backend_scanner_control_codec.h"
 #include "backend_uart_protocol.h"
@@ -12,7 +13,7 @@
 extern "C" {
 #endif
 
-#define UART_OTA_INACTIVE_SLOT_CAPACITY (2U * 1024U * 1024U)
+#define UART_OTA_INACTIVE_SLOT_CAPACITY FOF_BACKEND_SCANNER_OTA_CAPACITY
 #define UART_OTA_FLASH_WRITE_BYTES 16384U
 #define UART_OTA_RECEIPT_REASON_CAPACITY 32U
 
@@ -76,7 +77,7 @@ typedef struct {
         void *context, uint8_t *buffer, size_t size);
     bool (*emit_receipt)(
         void *context, const uart_ota_receipt_t *receipt);
-    /* These callbacks must address only the inactive 2 MiB OTA slot. */
+    /* These callbacks address only the selected scanner's inactive OTA slot. */
     bool (*inactive_slot_begin)(void *context, size_t size);
     bool (*inactive_slot_write)(
         void *context, size_t offset,

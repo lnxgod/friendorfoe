@@ -10,7 +10,7 @@ bool backend_firmware_buffer_init_once(
     }
     if (buffer->initialized) {
         return buffer->bytes != NULL &&
-               buffer->capacity == BACKEND_FIRMWARE_BUFFER_CAPACITY;
+               buffer->capacity == FOF_BACKEND_SCANNER_CACHE_CAPACITY;
     }
     if (!psram_alloc) {
         return false;
@@ -18,14 +18,14 @@ bool backend_firmware_buffer_init_once(
 
     buffer->initialized = true;
     buffer->bytes = psram_alloc(
-        BACKEND_FIRMWARE_BUFFER_CAPACITY, alloc_context);
+        FOF_BACKEND_SCANNER_CACHE_CAPACITY, alloc_context);
     if (!buffer->bytes) {
         buffer->capacity = 0U;
         buffer->owner_generation = 0U;
         buffer->acquired = false;
         return false;
     }
-    buffer->capacity = BACKEND_FIRMWARE_BUFFER_CAPACITY;
+    buffer->capacity = FOF_BACKEND_SCANNER_CACHE_CAPACITY;
     buffer->owner_generation = 0U;
     buffer->acquired = false;
     return true;
@@ -36,7 +36,7 @@ bool backend_firmware_buffer_acquire(
     uint32_t owner_generation)
 {
     if (!buffer || !buffer->initialized || !buffer->bytes ||
-        buffer->capacity != BACKEND_FIRMWARE_BUFFER_CAPACITY ||
+        buffer->capacity != FOF_BACKEND_SCANNER_CACHE_CAPACITY ||
         buffer->acquired || owner_generation == 0U) {
         return false;
     }
@@ -60,7 +60,7 @@ void backend_firmware_buffer_release(
 uint8_t *backend_firmware_buffer_data(backend_firmware_buffer_t *buffer)
 {
     if (!buffer || !buffer->initialized ||
-        buffer->capacity != BACKEND_FIRMWARE_BUFFER_CAPACITY) {
+        buffer->capacity != FOF_BACKEND_SCANNER_CACHE_CAPACITY) {
         return NULL;
     }
     return buffer->bytes;
@@ -70,7 +70,7 @@ size_t backend_firmware_buffer_capacity(
     const backend_firmware_buffer_t *buffer)
 {
     if (!buffer || !buffer->initialized || !buffer->bytes ||
-        buffer->capacity != BACKEND_FIRMWARE_BUFFER_CAPACITY) {
+        buffer->capacity != FOF_BACKEND_SCANNER_CACHE_CAPACITY) {
         return 0U;
     }
     return buffer->capacity;

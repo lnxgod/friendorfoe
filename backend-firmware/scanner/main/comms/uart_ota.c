@@ -38,7 +38,7 @@ static bool config_is_valid(const uart_ota_config_t *config)
            config->running_version[0] != '\0' &&
            strlen(config->running_version) < 32U &&
            config->inactive_slot_capacity ==
-               UART_OTA_INACTIVE_SLOT_CAPACITY &&
+               FOF_BACKEND_SCANNER_OTA_CAPACITY &&
            config->ops.read_binding != NULL &&
            config->ops.psram_acquire != NULL &&
            config->ops.psram_release != NULL &&

@@ -366,7 +366,7 @@ bool backend_scanner_relay_can_begin(
         manifest == NULL || !mac_is_specific(expected_mac) ||
         generation == 0U || generation != manifest->generation ||
         manifest->image_size == 0U ||
-        manifest->image_size > BACKEND_FIRMWARE_STORE_CAPACITY) {
+        manifest->image_size > FOF_BACKEND_SCANNER_CACHE_CAPACITY) {
         return false;
     }
     return fixed_string_equals_literal(

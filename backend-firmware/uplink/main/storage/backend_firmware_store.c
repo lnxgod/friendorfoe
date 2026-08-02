@@ -153,7 +153,7 @@ backend_firmware_store_result_t backend_firmware_store_stage(
         return BACKEND_FIRMWARE_STORE_REJECT_IDENTITY;
     }
     if (admitted.image_size == 0U ||
-        admitted.image_size > BACKEND_FIRMWARE_STORE_CAPACITY) {
+        admitted.image_size > FOF_BACKEND_SCANNER_CACHE_CAPACITY) {
         return BACKEND_FIRMWARE_STORE_REJECT_CAPACITY;
     }
     if (persist && (store->partition.erase == NULL ||
@@ -181,7 +181,7 @@ backend_firmware_store_result_t backend_firmware_store_stage(
     if (!store->partition.erase(
             store->partition.context,
             BACKEND_FIRMWARE_STORE_PARTITION_LABEL,
-            BACKEND_FIRMWARE_STORE_CAPACITY)) {
+            FOF_BACKEND_SCANNER_CACHE_CAPACITY)) {
         return BACKEND_FIRMWARE_STORE_ERASE_FAILED;
     }
 

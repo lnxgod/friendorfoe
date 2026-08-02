@@ -155,9 +155,15 @@ static image_fixture_t valid_image_fixture(void)
     strcpy(fixture.manifest.project, FOF_BACKEND_SCANNER_PROJECT);
     strcpy(fixture.manifest.hardware, FOF_BACKEND_HARDWARE);
     strcpy(fixture.manifest.version, "0.1.1-backend");
+#if defined(FOF_BACKEND_PROFILE_BADGE_LITE)
     strcpy(fixture.manifest.sha256,
            "e786a9b17b2b9c8d3043fe237294ecdf"
            "b7e504987a12dd5eae4301b0146d9fe7");
+#else
+    strcpy(fixture.manifest.sha256,
+           "39e7f61363e9b33abdfa8c87b1708e53"
+           "d5bcd1c044705ba00964400780820f32");
+#endif
     fixture.manifest.image_size = (uint32_t)fixture.length;
     fixture.manifest.crc32 = backend_identity_crc32(
         fixture.bytes, fixture.length);
@@ -452,6 +458,33 @@ void test_begin_rejects_cross_family_binding_capacity_stale_and_no_psram(void)
     uart_ota_reset(&ota);
     TEST_ASSERT_EQUAL(UART_OTA_RESULT_STALE_GENERATION,
         uart_ota_begin(&ota, &begin));
+}
+
+void test_profile_slot_capacity_rejects_the_first_oversize_scanner_image(void)
+{
+    image_fixture_t fixture = valid_image_fixture();
+    fake_t fake = fresh_fake();
+    uart_ota_config_t config = config_for(&fake);
+    uart_ota_t ota;
+    TEST_ASSERT_TRUE(uart_ota_init(&ota, &config));
+
+    backend_scanner_ota_begin_control_t begin = begin_for(&fixture, true);
+#if defined(FOF_BACKEND_PROFILE_BADGE_LITE)
+    begin.image_size = UINT32_C(0x200001);
+    TEST_ASSERT_EQUAL(UART_OTA_RESULT_MANIFEST_REJECTED,
+        uart_ota_begin(&ota, &begin));
+    TEST_ASSERT_EQUAL_UINT(0U, fake.allocations);
+#else
+    begin.image_size = UINT32_C(0x300000);
+    TEST_ASSERT_EQUAL(UART_OTA_RESULT_NO_PSRAM,
+        uart_ota_begin(&ota, &begin));
+    TEST_ASSERT_EQUAL_UINT(1U, fake.allocations);
+
+    begin.image_size = UINT32_C(0x300001);
+    TEST_ASSERT_EQUAL(UART_OTA_RESULT_MANIFEST_REJECTED,
+        uart_ota_begin(&ota, &begin));
+    TEST_ASSERT_EQUAL_UINT(1U, fake.allocations);
+#endif
 }
 
 void test_exact_begin_retry_reemits_receipt_without_reallocation_or_reset(void)
@@ -838,6 +871,8 @@ int main(void)
         test_begin_admits_exact_backend_scanner_binding_and_emits_exact_ack);
     BACKEND_RUN_TEST(
         test_begin_rejects_cross_family_binding_capacity_stale_and_no_psram);
+    BACKEND_RUN_TEST(
+        test_profile_slot_capacity_rejects_the_first_oversize_scanner_image);
     BACKEND_RUN_TEST(
         test_exact_begin_retry_reemits_receipt_without_reallocation_or_reset);
     BACKEND_RUN_TEST(

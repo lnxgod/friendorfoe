@@ -284,7 +284,7 @@ void test_time_validity_uses_the_vendored_epoch_policy(void)
         backend_coordinator_epoch_valid(INT64_C(1700000000001)));
 }
 
-void test_uart_slot_records_match_xiao_wiring_and_each_has_bounded_framer(void)
+void test_uart_slot_records_match_selected_profile_and_each_has_bounded_framer(void)
 {
     backend_uart_slot_config_t slot0 = {0};
     backend_uart_slot_config_t slot1 = {0};
@@ -295,11 +295,19 @@ void test_uart_slot_records_match_xiao_wiring_and_each_has_bounded_framer(void)
     TEST_ASSERT_FALSE(backend_uart_slot_config(2U, &slot0));
     TEST_ASSERT_FALSE(backend_uart_slot_config(0U, NULL));
     TEST_ASSERT_EQUAL_INT(1, slot0.uart);
+#if defined(FOF_BACKEND_PROFILE_BADGE_LITE)
     TEST_ASSERT_EQUAL_INT(2, slot0.rx_gpio);
     TEST_ASSERT_EQUAL_INT(1, slot0.tx_gpio);
     TEST_ASSERT_EQUAL_INT(2, slot1.uart);
     TEST_ASSERT_EQUAL_INT(4, slot1.rx_gpio);
     TEST_ASSERT_EQUAL_INT(3, slot1.tx_gpio);
+#else
+    TEST_ASSERT_EQUAL_INT(18, slot0.rx_gpio);
+    TEST_ASSERT_EQUAL_INT(17, slot0.tx_gpio);
+    TEST_ASSERT_EQUAL_INT(2, slot1.uart);
+    TEST_ASSERT_EQUAL_INT(16, slot1.rx_gpio);
+    TEST_ASSERT_EQUAL_INT(15, slot1.tx_gpio);
+#endif
     TEST_ASSERT_EQUAL_INT(921600, slot0.baud);
     TEST_ASSERT_EQUAL_INT(8, slot0.data_bits);
     TEST_ASSERT_EQUAL_INT(1, slot0.stop_bits);
@@ -338,8 +346,13 @@ void test_scanner_runtime_boots_quiescent_and_preserves_control_during_quiet_mod
         BACKEND_SCAN_PROFILE_QUIESCENT,
         backend_scanner_runtime_profile(&runtime));
     TEST_ASSERT_EQUAL_INT(1, BACKEND_SCANNER_UART_PORT);
+#if defined(FOF_BACKEND_PROFILE_BADGE_LITE)
     TEST_ASSERT_EQUAL_INT(1, BACKEND_SCANNER_UART_TX_GPIO);
     TEST_ASSERT_EQUAL_INT(2, BACKEND_SCANNER_UART_RX_GPIO);
+#else
+    TEST_ASSERT_EQUAL_INT(17, BACKEND_SCANNER_UART_TX_GPIO);
+    TEST_ASSERT_EQUAL_INT(18, BACKEND_SCANNER_UART_RX_GPIO);
+#endif
     TEST_ASSERT_EQUAL_INT(921600, BACKEND_SCANNER_UART_BAUD);
     TEST_ASSERT_TRUE(backend_scanner_runtime_status_due(&runtime, 0));
     TEST_ASSERT_TRUE(backend_scanner_runtime_status_due(&runtime, 1));
@@ -511,7 +524,7 @@ int main(void)
         test_watchdog_readiness_requires_each_worker_own_iteration);
     BACKEND_RUN_TEST(test_time_validity_uses_the_vendored_epoch_policy);
     BACKEND_RUN_TEST(
-        test_uart_slot_records_match_xiao_wiring_and_each_has_bounded_framer);
+        test_uart_slot_records_match_selected_profile_and_each_has_bounded_framer);
     BACKEND_RUN_TEST(
         test_scanner_runtime_boots_quiescent_and_preserves_control_during_quiet_modes);
     BACKEND_RUN_TEST(

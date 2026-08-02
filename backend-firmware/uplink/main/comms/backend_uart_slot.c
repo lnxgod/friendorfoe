@@ -1,5 +1,7 @@
 #include "backend_uart_slot.h"
 
+#include "backend_hardware_profile.h"
+
 #ifdef ESP_PLATFORM
 #include "driver/uart.h"
 #define BACKEND_UART_PORT_1 ((int)UART_NUM_1)
@@ -12,8 +14,8 @@
 static const backend_uart_slot_config_t SLOT_CONFIG[BACKEND_UART_SLOT_COUNT] = {
     {
         .uart = BACKEND_UART_PORT_1,
-        .rx_gpio = 2,
-        .tx_gpio = 1,
+        .rx_gpio = FOF_BACKEND_UPLINK_SLOT0_UART_RX_PIN,
+        .tx_gpio = FOF_BACKEND_UPLINK_SLOT0_UART_TX_PIN,
         .baud = BACKEND_UART_BAUD,
         .data_bits = BACKEND_UART_DATA_BITS,
         .stop_bits = BACKEND_UART_STOP_BITS,
@@ -22,8 +24,8 @@ static const backend_uart_slot_config_t SLOT_CONFIG[BACKEND_UART_SLOT_COUNT] = {
     },
     {
         .uart = BACKEND_UART_PORT_2,
-        .rx_gpio = 4,
-        .tx_gpio = 3,
+        .rx_gpio = FOF_BACKEND_UPLINK_SLOT1_UART_RX_PIN,
+        .tx_gpio = FOF_BACKEND_UPLINK_SLOT1_UART_TX_PIN,
         .baud = BACKEND_UART_BAUD,
         .data_bits = BACKEND_UART_DATA_BITS,
         .stop_bits = BACKEND_UART_STOP_BITS,

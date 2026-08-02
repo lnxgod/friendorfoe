@@ -37,6 +37,11 @@ void test_firmware_buffer_allocates_once_and_serializes_generations(void)
     TEST_ASSERT_EQUAL_UINT32(1U, allocator.calls);
     TEST_ASSERT_EQUAL_UINT32(
         BACKEND_FIRMWARE_BUFFER_CAPACITY, allocator.last_size);
+#if defined(FOF_BACKEND_PROFILE_BADGE_LITE)
+    TEST_ASSERT_EQUAL_UINT32(UINT32_C(0x200000), allocator.last_size);
+#else
+    TEST_ASSERT_EQUAL_UINT32(UINT32_C(0x300000), allocator.last_size);
+#endif
     TEST_ASSERT_EQUAL_PTR(&allocator, allocator.last_context);
     TEST_ASSERT_EQUAL_PTR(
         firmware_storage, backend_firmware_buffer_data(&buffer));

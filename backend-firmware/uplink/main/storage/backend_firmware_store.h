@@ -5,6 +5,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "backend_hardware_profile.h"
 #include "backend_ota_identity.h"
 
 #ifdef __cplusplus
@@ -12,7 +13,7 @@ extern "C" {
 #endif
 
 #define BACKEND_FIRMWARE_STORE_PARTITION_LABEL "fw_scanner_be"
-#define BACKEND_FIRMWARE_STORE_CAPACITY 0x200000U
+#define BACKEND_FIRMWARE_STORE_CAPACITY FOF_BACKEND_SCANNER_CACHE_CAPACITY
 #define BACKEND_FIRMWARE_STORE_COPY_CHUNK 512U
 
 typedef struct {

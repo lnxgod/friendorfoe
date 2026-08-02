@@ -14,9 +14,9 @@ def load_ini(path: Path) -> ConfigParser:
     return parser
 
 
-def sdkconfig_values() -> dict[str, str]:
+def sdkconfig_values(filename: str) -> dict[str, str]:
     values: dict[str, str] = {}
-    for raw_line in (SCANNER / "sdkconfig.defaults").read_text(
+    for raw_line in (SCANNER / filename).read_text(
         encoding="utf-8"
     ).splitlines():
         line = raw_line.strip()
@@ -47,10 +47,50 @@ def test_scanner_platformio_environment_is_backend_only() -> None:
     assert "-DFOF_BACKEND_FIRMWARE=1" in flags
     assert "-DFOF_BACKEND_SCANNER=1" in flags
     assert "-DBOARD_HAS_PSRAM" in flags
+    assert "-DFOF_BACKEND_PROFILE_BADGE_LITE=1" in flags
     text = (SCANNER / "platformio.ini").read_text(encoding="utf-8")
     assert "FOF_BADGE_VARIANT" not in text
     assert "fof_badge" not in text.lower()
-    assert parser.sections() == ["platformio", "env:scanner-s3-combo-backend"]
+    assert parser.get("platformio", "default_envs") == "scanner-s3-combo-backend"
+
+
+def test_fullsize_scanner_environment_selects_its_16mb_generated_config_input() -> None:
+    parser = load_ini(SCANNER / "platformio.ini")
+    section = parser["env:scanner-s3-combo-fullsize-backend"]
+    assert section["board"] == "esp32-s3-devkitc-1"
+    assert section["board_upload.flash_size"] == "16MB"
+    assert section["board_build.partitions"] == (
+        "partitions_backend_scanner_fullsize_16mb.csv"
+    )
+    assert section["board_build.flash_mode"] == "qio"
+    assert section["board_build.psram_type"] == "opi"
+    assert '-DSDKCONFIG_DEFAULTS="sdkconfig.fullsize.defaults"' in section[
+        "board_build.cmake_extra_args"
+    ]
+
+    config = sdkconfig_values("sdkconfig.fullsize.defaults")
+    expected = {
+        "CONFIG_ESPTOOLPY_FLASHSIZE_16MB": "y",
+        "CONFIG_ESPTOOLPY_FLASHSIZE": '"16MB"',
+        "CONFIG_ESPTOOLPY_FLASHMODE_QIO": "y",
+        # ESP-IDF flashes a QIO bootloader over DIO, then the bootloader
+        # switches the application to the selected QIO mode.
+        "CONFIG_ESPTOOLPY_FLASHMODE": '"dio"',
+        "CONFIG_ESPTOOLPY_FLASHFREQ_80M": "y",
+        "CONFIG_PARTITION_TABLE_CUSTOM_FILENAME": (
+            '"partitions_backend_scanner_fullsize_16mb.csv"'
+        ),
+        "CONFIG_SPIRAM": "y",
+        "CONFIG_SPIRAM_MODE_OCT": "y",
+    }
+    for key, value in expected.items():
+        assert config.get(key) == value
+
+    generated = SCANNER / "sdkconfig.scanner-s3-combo-fullsize-backend"
+    if generated.exists():
+        selected = sdkconfig_values(generated.name)
+        for key, value in expected.items():
+            assert selected.get(key) == value
 
 
 def test_scanner_project_has_exact_backend_descriptor_and_local_sources() -> None:
@@ -61,7 +101,7 @@ def test_scanner_project_has_exact_backend_descriptor_and_local_sources() -> Non
     )
 
     assert "FOF_VERSION_BACKEND" in project
-    assert "project(fof_backend_scanner)" in project
+    assert "project(${FOF_BACKEND_PROJECT_NAME})" in project
     assert "EXTRA_COMPONENT_DIRS" not in project + component
     for forbidden in ("SRC_DIRS", "GLOB", "../../../", "vendor/"):
         assert forbidden not in component
@@ -113,7 +153,7 @@ def test_scanner_project_has_exact_backend_descriptor_and_local_sources() -> Non
 
 
 def test_scanner_sdkconfig_enables_exact_headless_radio_and_rollback_contract() -> None:
-    config = sdkconfig_values()
+    config = sdkconfig_values("sdkconfig.defaults")
     expected = {
         "CONFIG_ESPTOOLPY_FLASHSIZE_8MB": "y",
         "CONFIG_PARTITION_TABLE_CUSTOM": "y",
@@ -139,6 +179,12 @@ def test_scanner_sdkconfig_enables_exact_headless_radio_and_rollback_contract() 
     for key, value in expected.items():
         assert config.get(key) == value
 
+    generated = SCANNER / "sdkconfig.scanner-s3-combo-backend"
+    if generated.exists():
+        selected = sdkconfig_values(generated.name)
+        for key, value in expected.items():
+            assert selected.get(key) == value
+
 
 def test_scanner_partition_table_has_two_exact_2mb_ota_slots_and_safe_nvs() -> None:
     with (SCANNER / "partitions_backend_scanner_8mb.csv").open(
@@ -157,6 +203,23 @@ def test_scanner_partition_table_has_two_exact_2mb_ota_slots_and_safe_nvs() -> N
         ["reserved", "data", "fat", "0x520000", "0x2e0000", ""],
     ]
     assert int(normalized[-1][3], 16) + int(normalized[-1][4], 16) == 0x800000
+
+
+def test_fullsize_scanner_partition_admits_3mb_images_without_overlap() -> None:
+    path = SCANNER / "partitions_backend_scanner_fullsize_16mb.csv"
+    with path.open(newline="", encoding="utf-8") as handle:
+        rows = [row for row in csv.reader(handle) if row and not row[0].startswith("#")]
+    normalized = [[field.strip() for field in row] for row in rows]
+    assert normalized == [
+        ["nvs", "data", "nvs", "0x9000", "0x6000", ""],
+        ["otadata", "data", "ota", "0xf000", "0x2000", ""],
+        ["phy_init", "data", "phy", "0x11000", "0x1000", ""],
+        ["ota_0", "app", "ota_0", "0x20000", "0x300000", ""],
+        ["ota_1", "app", "ota_1", "0x320000", "0x300000", ""],
+        ["storage", "data", "spiffs", "0x620000", "0x100000", ""],
+        ["reserved", "data", "fat", "0x720000", "0x8e0000", ""],
+    ]
+    assert int(normalized[-1][3], 16) + int(normalized[-1][4], 16) == 0x1000000
 
 
 def test_scanner_main_composes_uart_radios_led_identity_ota_and_rollback() -> None:

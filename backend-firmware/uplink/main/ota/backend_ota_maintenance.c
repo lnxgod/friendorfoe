@@ -1294,7 +1294,7 @@ static void journal_to_evidence(
            sizeof(evidence->catalog_name));
     evidence->manifest = record->manifest;
     evidence->decision = decision;
-    evidence->partition_capacity = BACKEND_FIRMWARE_BUFFER_CAPACITY;
+    evidence->partition_capacity = FOF_BACKEND_SCANNER_CACHE_CAPACITY;
     memcpy(evidence->expected_target_mac,
            record->expected_target_mac, 6U);
     memcpy(evidence->actual_target_mac,
@@ -1500,5 +1500,5 @@ bool backend_ota_maintenance_available(
 {
     return state != NULL && state->initialized && !state->busy &&
            backend_firmware_buffer_capacity(state->firmware_buffer) ==
-               BACKEND_FIRMWARE_BUFFER_CAPACITY;
+               FOF_BACKEND_SCANNER_CACHE_CAPACITY;
 }

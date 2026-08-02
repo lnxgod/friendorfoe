@@ -1309,7 +1309,7 @@ void app_main(void)
     };
     const uart_ota_config_t ota_config = {
         .running_version = FOF_VERSION_BACKEND,
-        .inactive_slot_capacity = UART_OTA_INACTIVE_SLOT_CAPACITY,
+        .inactive_slot_capacity = FOF_BACKEND_SCANNER_OTA_CAPACITY,
         .ops = {
             .context = &s_app,
             .read_binding = ota_read_binding,

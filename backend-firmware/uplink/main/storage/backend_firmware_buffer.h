@@ -5,11 +5,13 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "backend_hardware_profile.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-#define BACKEND_FIRMWARE_BUFFER_CAPACITY 0x200000U
+#define BACKEND_FIRMWARE_BUFFER_CAPACITY FOF_BACKEND_SCANNER_CACHE_CAPACITY
 
 typedef void *(*backend_firmware_alloc_fn)(size_t size, void *context);
 

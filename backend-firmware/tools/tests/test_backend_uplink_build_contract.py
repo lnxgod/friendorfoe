@@ -17,12 +17,17 @@ def _load_environment() -> tuple[ConfigParser, str]:
     return parser, text
 
 
-def _sdkconfig() -> dict[str, str]:
+def _sdkconfig(filename: str = "sdkconfig.defaults") -> dict[str, str]:
     values: dict[str, str] = {}
-    for raw_line in (UPLINK / "sdkconfig.defaults").read_text(
+    for raw_line in (UPLINK / filename).read_text(
         encoding="utf-8"
     ).splitlines():
         line = raw_line.strip()
+        if line.startswith("# CONFIG_") and line.endswith(" is not set"):
+            key = line[len("# ") : -len(" is not set")]
+            assert key not in values, f"duplicate sdkconfig key: {key}"
+            values[key] = "n"
+            continue
         if not line or line.startswith("#"):
             continue
         key, separator, value = line.partition("=")
@@ -32,9 +37,9 @@ def _sdkconfig() -> dict[str, str]:
     return values
 
 
-def _partition_rows() -> list[tuple[str, str, str, int, int]]:
+def _partition_rows(filename: str = "partitions_backend_uplink_8mb.csv") -> list[tuple[str, str, str, int, int]]:
     rows: list[tuple[str, str, str, int, int]] = []
-    path = UPLINK / "partitions_backend_uplink_8mb.csv"
+    path = UPLINK / filename
     with path.open(encoding="utf-8", newline="") as handle:
         for row in csv.reader(handle):
             if not row or row[0].strip().startswith("#"):
@@ -69,20 +74,62 @@ def test_uplink_environment_drives_one_exact_backend_image() -> None:
     assert environment["board_build.f_flash"] == "80000000L"
     flags = set(environment["build_flags"].split())
     assert {"-DFOF_BACKEND_FIRMWARE=1", "-DFOF_BACKEND_UPLINK=1", "-DBOARD_HAS_PSRAM"} <= flags
-    assert parser.sections() == ["platformio", "env:uplink-s3-backend"]
+    assert "-DFOF_BACKEND_PROFILE_BADGE_LITE=1" in flags
+    assert parser.get("platformio", "default_envs") == "uplink-s3-backend"
     assert "FOF_BADGE_VARIANT" not in text
     assert "fof_badge" not in text.lower()
     for script in environment.get("extra_scripts", "").split():
         script_path = script.split(":", 1)[-1]
         assert not Path(script_path).is_absolute()
-        assert ".." not in Path(script_path).parts
+        resolved = (UPLINK / script_path).resolve()
+        assert resolved.is_relative_to(ROOT)
+        assert resolved.is_file()
+
+
+def test_fullsize_uplink_environment_selects_its_16mb_generated_config_input() -> None:
+    parser, _ = _load_environment()
+    environment = parser["env:uplink-s3-fullsize-backend"]
+    assert environment["board"] == "esp32-s3-devkitc-1"
+    assert environment["board_upload.flash_size"] == "16MB"
+    assert environment["board_build.partitions"] == (
+        "partitions_backend_uplink_fullsize_16mb.csv"
+    )
+    assert environment["board_build.flash_mode"] == "qio"
+    assert environment["board_build.psram_type"] == "opi"
+    assert '-DSDKCONFIG_DEFAULTS="sdkconfig.fullsize.defaults"' in environment[
+        "board_build.cmake_extra_args"
+    ]
+
+    config = _sdkconfig("sdkconfig.fullsize.defaults")
+    expected = {
+        "CONFIG_ESPTOOLPY_FLASHSIZE_16MB": "y",
+        "CONFIG_ESPTOOLPY_FLASHSIZE": '"16MB"',
+        "CONFIG_ESPTOOLPY_FLASHMODE_QIO": "y",
+        # ESP-IDF flashes a QIO bootloader over DIO, then the bootloader
+        # switches the application to the selected QIO mode.
+        "CONFIG_ESPTOOLPY_FLASHMODE": '"dio"',
+        "CONFIG_ESPTOOLPY_FLASHFREQ_80M": "y",
+        "CONFIG_PARTITION_TABLE_CUSTOM_FILENAME": (
+            '"partitions_backend_uplink_fullsize_16mb.csv"'
+        ),
+        "CONFIG_SPIRAM": "y",
+        "CONFIG_SPIRAM_MODE_OCT": "y",
+    }
+    for key, value in expected.items():
+        assert config.get(key) == value
+
+    generated = UPLINK / "sdkconfig.uplink-s3-fullsize-backend"
+    if generated.exists():
+        selected = _sdkconfig(generated.name)
+        for key, value in expected.items():
+            assert selected.get(key, "n") == value
 
 
 def test_uplink_project_uses_backend_version_and_explicit_local_sources() -> None:
     top = (UPLINK / "CMakeLists.txt").read_text(encoding="utf-8")
     component = (UPLINK / "main/CMakeLists.txt").read_text(encoding="utf-8")
 
-    assert "project(fof_backend_uplink)" in top
+    assert "project(${FOF_BACKEND_PROJECT_NAME})" in top
     assert "FOF_VERSION_BACKEND" in top
     assert "backend_version.h" in top
     assert 'STRINGS "../shared/backend_version.h" PROJECT_VER' in top
@@ -150,6 +197,23 @@ def test_uplink_partition_table_is_exact_nonoverlapping_eight_megabytes() -> Non
     assert rows[-1][3] + rows[-1][4] == 0x800000
 
 
+def test_fullsize_uplink_partition_has_exact_3mb_scanner_cache() -> None:
+    rows = _partition_rows("partitions_backend_uplink_fullsize_16mb.csv")
+    assert rows == [
+        ("nvs", "data", "nvs", 0x9000, 0x6000),
+        ("otadata", "data", "ota", 0xF000, 0x2000),
+        ("phy_init", "data", "phy", 0x11000, 0x1000),
+        ("ota_0", "app", "ota_0", 0x20000, 0x200000),
+        ("ota_1", "app", "ota_1", 0x220000, 0x200000),
+        ("fw_scanner_be", "data", "0x40", 0x420000, 0x300000),
+        ("storage", "data", "spiffs", 0x720000, 0x100000),
+        ("reserved", "data", "fat", 0x820000, 0x7E0000),
+    ]
+    for previous, current in zip(rows, rows[1:]):
+        assert previous[3] + previous[4] <= current[3]
+    assert rows[-1][3] + rows[-1][4] == 0x1000000
+
+
 def test_uplink_sdkconfig_enables_rollback_psram_usb_wifi_and_no_bluetooth() -> None:
     config = _sdkconfig()
     expected = {
@@ -173,6 +237,12 @@ def test_uplink_sdkconfig_enables_rollback_psram_usb_wifi_and_no_bluetooth() -> 
     }
     for key, value in expected.items():
         assert config.get(key) == value
+
+    generated = UPLINK / "sdkconfig.uplink-s3-backend"
+    if generated.exists():
+        selected = _sdkconfig(generated.name)
+        for key, value in expected.items():
+            assert selected.get(key, "n") == value
 
 
 def test_uplink_main_has_no_badge_presentation_location_or_bluetooth_runtime() -> None:

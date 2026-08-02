@@ -110,9 +110,15 @@ static backend_ota_manifest_t build_valid_image(source_t *source)
     strcpy(manifest.hardware, FOF_BACKEND_HARDWARE);
     strcpy(manifest.version, version);
     manifest.image_size = IMAGE_LENGTH;
+#if defined(FOF_BACKEND_PROFILE_BADGE_LITE)
     manifest.crc32 = UINT32_C(0xA473F422);
     strcpy(manifest.sha256,
         "e786a9b17b2b9c8d3043fe237294ecdfb7e504987a12dd5eae4301b0146d9fe7");
+#else
+    manifest.crc32 = UINT32_C(0x340616F0);
+    strcpy(manifest.sha256,
+        "39e7f61363e9b33abdfa8c87b1708e53d5bcd1c044705ba00964400780820f32");
+#endif
     manifest.generation = 7U;
     return manifest;
 }
@@ -479,6 +485,26 @@ void test_relay_binds_one_physical_scanner_and_immutable_manifest(void)
         manifest.generation));
 }
 
+void test_relay_capacity_gate_tracks_the_selected_scanner_cache_partition(void)
+{
+    backend_ota_manifest_t manifest = build_valid_image(&s_source);
+#if defined(FOF_BACKEND_PROFILE_BADGE_LITE)
+    manifest.image_size = UINT32_C(0x200001);
+    TEST_ASSERT_FALSE(backend_scanner_relay_can_begin(
+        BACKEND_SCANNER_SLOT_BLE, &manifest, SCANNER0_MAC,
+        manifest.generation));
+#else
+    manifest.image_size = UINT32_C(0x300000);
+    TEST_ASSERT_TRUE(backend_scanner_relay_can_begin(
+        BACKEND_SCANNER_SLOT_BLE, &manifest, SCANNER0_MAC,
+        manifest.generation));
+    manifest.image_size = UINT32_C(0x300001);
+    TEST_ASSERT_FALSE(backend_scanner_relay_can_begin(
+        BACKEND_SCANNER_SLOT_BLE, &manifest, SCANNER0_MAC,
+        manifest.generation));
+#endif
+}
+
 void test_chunk_ack_nack_and_timeout_never_advance_or_change_retry_bytes(void)
 {
     backend_ota_manifest_t manifest;
@@ -692,6 +718,8 @@ int main(void)
     BACKEND_RUN_TEST(test_store_failures_never_expose_partial_image);
     BACKEND_RUN_TEST(
         test_relay_binds_one_physical_scanner_and_immutable_manifest);
+    BACKEND_RUN_TEST(
+        test_relay_capacity_gate_tracks_the_selected_scanner_cache_partition);
     BACKEND_RUN_TEST(
         test_chunk_ack_nack_and_timeout_never_advance_or_change_retry_bytes);
     BACKEND_RUN_TEST(

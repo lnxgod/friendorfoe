@@ -4,6 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "backend_hardware_profile.h"
 #include "backend_flow_policy.h"
 #include "backend_recovery_policy.h"
 #include "backend_scanner_role.h"
@@ -12,10 +13,10 @@
 extern "C" {
 #endif
 
-#define BACKEND_SCANNER_UART_PORT 1
-#define BACKEND_SCANNER_UART_TX_GPIO 1
-#define BACKEND_SCANNER_UART_RX_GPIO 2
-#define BACKEND_SCANNER_UART_BAUD 921600
+#define BACKEND_SCANNER_UART_PORT FOF_BACKEND_SCANNER_UART_PORT
+#define BACKEND_SCANNER_UART_TX_GPIO FOF_BACKEND_SCANNER_UART_TX_PIN
+#define BACKEND_SCANNER_UART_RX_GPIO FOF_BACKEND_SCANNER_UART_RX_PIN
+#define BACKEND_SCANNER_UART_BAUD FOF_BACKEND_SCANNER_UART_BAUD
 
 #define BACKEND_SCANNER_TIME_SOURCE_CAPACITY 8U
 #define BACKEND_SCANNER_RADIO_BLE UINT8_C(0x01)
