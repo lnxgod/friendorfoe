@@ -28,7 +28,7 @@ import subprocess
 import sys
 import termios
 import time
-from typing import Any, Callable, Literal, Mapping, Sequence
+from typing import Any, Callable, Iterator, Literal, Mapping, Sequence
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -249,6 +249,39 @@ class BackupRecord:
 
 
 @dataclass(frozen=True)
+class StagedReleasePart:
+    name: str
+    offset: int
+    path: str
+    size: int
+    sha256: str
+    crc32: int
+    device: int
+    inode: int
+    mode: int
+    uid: int
+    nlink: int
+    mtime_ns: int
+    ctime_ns: int
+
+
+@dataclass(frozen=True)
+class ChallengeReceiptBinding:
+    path: str
+    root_path: str
+    relative_parts: tuple[str, ...]
+    root_device: int
+    root_inode: int
+    parent_device: int
+    parent_inode: int
+    file_device: int
+    file_inode: int
+    file_mode: int
+    file_uid: int
+    file_nlink: int
+
+
+@dataclass(frozen=True)
 class ApprovalChallenge:
     challenge_id: str
     role: str
@@ -272,6 +305,8 @@ class ApprovalChallenge:
     restore_source: Literal["original", "backend-baseline"] | None
     expires_at: int
     consumed_at: int | None
+    staging_directory: str | None = None
+    staged_parts: tuple[StagedReleasePart, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -503,16 +538,19 @@ def _run_checked(
     command: Sequence[str],
     *,
     runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+    pass_fds: Sequence[int] = (),
 ) -> subprocess.CompletedProcess[str]:
     try:
-        completed = runner(
-            list(command),
-            check=False,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            env={**os.environ, "PYTHONUNBUFFERED": "1"},
-        )
+        kwargs: dict[str, Any] = {
+            "check": False,
+            "text": True,
+            "stdout": subprocess.PIPE,
+            "stderr": subprocess.STDOUT,
+            "env": {**os.environ, "PYTHONUNBUFFERED": "1"},
+        }
+        if pass_fds:
+            kwargs["pass_fds"] = tuple(pass_fds)
+        completed = runner(list(command), **kwargs)
     except OSError as exc:
         raise CanarySecurityError(
             f"unable to execute pinned command: {command[0]}"
@@ -1021,7 +1059,7 @@ def execute_backup(
             raise CanaryOrderError(
                 "all final health evidence is required before backend-baseline backup"
             )
-        if state.catalog_evidence_sha256 is None:
+        if state.baseline_catalog_evidence_sha256 is None:
             raise CanaryOrderError(
                 "catalog preflight is required before backend-baseline backup"
             )
@@ -1122,13 +1160,17 @@ def execute_backup(
         toolchain_sha256=receipt.sha256,
     )
     state.record_backup(role, kind, record)
+    current = int(time.time()) if now is None else now
     if kind == "original" and role == "uplink":
         state.record_original_uplink_quiesced(
             port=inventory.port,
             mac=inventory.mac,
             toolchain_sha256=receipt.sha256,
-            now=int(time.time()) if now is None else now,
+            now=current,
         )
+    elif kind == "backend-baseline":
+        state.begin_backend_backup_reboot(role, now=current)
+        _run_checked(build_run_command(receipt, inventory.port), runner=runner)
     else:
         _run_checked(build_run_command(receipt, inventory.port), runner=runner)
     return record
@@ -1357,6 +1399,20 @@ def validate_catalog_evidence(
     return hashlib.sha256(_canonical_json(value)).hexdigest()
 
 
+def catalog_receipt_binding_sha256(
+    value: Mapping[str, Any],
+    *,
+    file_sha256: str,
+    index: Path,
+    now: int,
+) -> str:
+    canonical_sha = validate_catalog_evidence(value, index=index, now=now)
+    return hashlib.sha256(
+        bytes.fromhex(_require_hex64(file_sha256, "catalog evidence file SHA"))
+        + bytes.fromhex(canonical_sha)
+    ).hexdigest()
+
+
 def run_ota_probe(
     state: "CanaryState",
     *,
@@ -1364,6 +1420,8 @@ def run_ota_probe(
     catalog_name: str,
     expected_sha256: str,
     catalog_evidence: Mapping[str, Any],
+    catalog_evidence_sha256: str,
+    catalog_evidence_path: Path,
     index: Path,
     port: str,
     receipt: ToolchainReceipt,
@@ -1379,7 +1437,21 @@ def run_ota_probe(
     if uplink is None or port != uplink.port:
         raise CanaryInventoryError("OTA probe port is not the recorded uplink")
     current = int(time.time()) if now is None else now
-    validate_catalog_evidence(catalog_evidence, index=index, now=current)
+    combined_catalog_sha = catalog_receipt_binding_sha256(
+        catalog_evidence,
+        file_sha256=catalog_evidence_sha256,
+        index=index,
+        now=current,
+    )
+    if (
+        state.ota_catalog_evidence_path is None
+        or catalog_evidence_path.expanduser().resolve()
+        != Path(state.ota_catalog_evidence_path)
+        or combined_catalog_sha != state.ota_catalog_evidence_sha256
+    ):
+        raise CanaryApprovalError(
+            "OTA probe requires the active fresh catalog receipt"
+        )
     document, _raw_index = _load_release_index(index)
     target = BACKEND_IDENTITIES[_role_kind(component)][0]
     if catalog_name != target:
@@ -1422,7 +1494,11 @@ def run_ota_probe(
     if output is not None:
         secure_write_json(output.expanduser().resolve(), asdict(evidence))
     if record:
-        state.record_ota_probe(evidence, now=current)
+        state.record_ota_probe(
+            evidence,
+            now=current,
+            catalog_receipt_sha256=combined_catalog_sha,
+        )
     return evidence
 
 
@@ -1442,20 +1518,19 @@ def issue_ota_apply_challenge(
 ) -> tuple[ApprovalChallenge, str]:
     require_toolchain_binding(state, receipt)
     current = int(time.time()) if now is None else now
-    canonical_catalog_sha = validate_catalog_evidence(
-        catalog_evidence, index=index, now=current
+    combined_catalog_sha = catalog_receipt_binding_sha256(
+        catalog_evidence,
+        file_sha256=catalog_evidence_sha256,
+        index=index,
+        now=current,
     )
-    # Bind both file bytes and canonical content. A whitespace rewrite or a
-    # semantic mutation therefore requires a new preflight/challenge.
-    combined_catalog_sha = hashlib.sha256(
-        bytes.fromhex(catalog_evidence_sha256)
-        + bytes.fromhex(canonical_catalog_sha)
-    ).hexdigest()
-    state.record_catalog_preflight(
-        combined_catalog_sha,
-        now=catalog_evidence["captured_at"],
-        evidence_path=catalog_evidence_path,
-    )
+    if (
+        state.ota_catalog_evidence_path is None
+        or catalog_evidence_path.expanduser().resolve()
+        != Path(state.ota_catalog_evidence_path)
+        or combined_catalog_sha != state.ota_catalog_evidence_sha256
+    ):
+        raise CanaryApprovalError("OTA challenge catalog receipt is not active")
     recorded = state.ota_probes.get(component)
     if recorded is None or asdict(recorded) != asdict(probe):
         raise CanaryApprovalError("OTA challenge probe is not the latest recorded probe")
@@ -1530,18 +1605,15 @@ def execute_ota_apply(
     if challenge.artifact_sha256 != part["sha256"] or challenge.artifact_crc32 != part["crc32"]:
         raise CanaryReleaseError("OTA challenge artifact no longer matches release index")
     current = int(time.time()) if now is None else now
-    canonical_catalog_sha = validate_catalog_evidence(
-        catalog_evidence, index=index, now=current
+    combined_catalog_sha = catalog_receipt_binding_sha256(
+        catalog_evidence,
+        file_sha256=catalog_evidence_sha256,
+        index=index,
+        now=current,
     )
-    combined_catalog_sha = hashlib.sha256(
-        bytes.fromhex(_require_hex64(
-            catalog_evidence_sha256, "catalog evidence file SHA"
-        ))
-        + bytes.fromhex(canonical_catalog_sha)
-    ).hexdigest()
     if (
         combined_catalog_sha != challenge.offsets_sha256
-        or combined_catalog_sha != state.catalog_evidence_sha256
+        or combined_catalog_sha != state.ota_catalog_evidence_sha256
     ):
         raise CanaryApprovalError("catalog evidence file/content changed after approval")
     latest = run_ota_probe(
@@ -1550,6 +1622,8 @@ def execute_ota_apply(
         catalog_name=target,
         expected_sha256=part["sha256"],
         catalog_evidence=catalog_evidence,
+        catalog_evidence_sha256=catalog_evidence_sha256,
+        catalog_evidence_path=Path(state.ota_catalog_evidence_path or ""),
         index=index,
         port=port,
         receipt=receipt,
@@ -1837,7 +1911,7 @@ def _load_release_index(index: Path) -> tuple[dict[str, Any], bytes]:
                 name not in expected_names
                 or name in seen
                 or part.get("offset") != expected_names[name]
-                or Path(part.get("path", "")) != Path("firmware") / target / name
+                or part.get("path") != f"{target}/{name}"
                 or not isinstance(part.get("size"), int)
                 or isinstance(part["size"], bool)
                 or part["size"] <= 0
@@ -2518,11 +2592,11 @@ def verify_release_artifact(
         if not isinstance(part, dict) or set(part) != {"name", "path", "offset", "size", "sha256", "crc32"}:
             raise CanaryReleaseError("release part fields are not exact")
         name = part["name"]
-        if name not in expected_names or Path(part["path"]).name != name or Path(part["path"]).parent != Path("firmware") / target:
+        if name not in expected_names or part["path"] != f"{target}/{name}":
             raise CanaryReleaseError("release part path/name is unsafe")
         if part["offset"] != expected_names[name] or name in found_names:
             raise CanaryReleaseError("release part offset/name is duplicated or changed")
-        resolved = (directory.parent.parent / part["path"]).resolve()
+        resolved = (directory.parent / part["path"]).resolve()
         if resolved.parent != directory or resolved.name != name:
             raise CanaryReleaseError("release part path escapes verified directory")
         if not resolved.is_file():
@@ -2637,6 +2711,598 @@ def flash_binding_sha256(
     return hashlib.sha256(_canonical_json(payload)).hexdigest()
 
 
+def _challenge_private_root(state: "CanaryState", receipt_path: Path) -> Path:
+    if state.state_path is not None:
+        root = Path(os.path.abspath(Path(state.state_path).expanduser())).parent
+    else:
+        resolved = Path(os.path.abspath(receipt_path.expanduser()))
+        root = next(
+            (parent for parent in (resolved.parent, *resolved.parents)
+             if parent.name == ".canary"),
+            None,
+        )
+        if root is None:
+            raise CanarySecurityError(
+                "initial-flash staging requires a private .canary directory"
+            )
+    try:
+        root.mkdir(mode=0o700)
+    except FileExistsError:
+        pass
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    directory_flag = getattr(os, "O_DIRECTORY", 0)
+    descriptor = -1
+    try:
+        descriptor = os.open(root, os.O_RDONLY | directory_flag | nofollow)
+        observed = os.fstat(descriptor)
+        if (
+            not stat.S_ISDIR(observed.st_mode)
+            or stat.S_IMODE(observed.st_mode) != 0o700
+        ):
+            raise CanarySecurityError("canary root is not an exact private directory")
+    except OSError as exc:
+        raise CanarySecurityError(
+            "unable to open exact private canary root"
+        ) from exc
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+    return root
+
+
+def _receipt_relative_parts(root: Path, receipt_path: Path) -> tuple[Path, tuple[str, ...]]:
+    destination = Path(os.path.abspath(receipt_path.expanduser()))
+    try:
+        relative = destination.relative_to(root)
+    except ValueError as exc:
+        raise CanarySecurityError(
+            "challenge receipt must remain beneath the exact canary root"
+        ) from exc
+    parts = relative.parts
+    if not parts or any(part in ("", ".", "..") for part in parts):
+        raise CanarySecurityError("challenge receipt path is not exact")
+    return destination, parts
+
+
+def _write_bound_challenge_receipt(
+    root: Path,
+    receipt_path: Path,
+    payload: bytes,
+) -> ChallengeReceiptBinding:
+    """Create a receipt beneath one no-follow root and bind every final inode."""
+    destination, parts = _receipt_relative_parts(root, receipt_path)
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    directory_flag = getattr(os, "O_DIRECTORY", 0)
+    root_fd = -1
+    parent_fd = -1
+    file_fd = -1
+    created = False
+    try:
+        root_fd = os.open(root, os.O_RDONLY | directory_flag | nofollow)
+        root_stat = os.fstat(root_fd)
+        if (
+            not stat.S_ISDIR(root_stat.st_mode)
+            or stat.S_IMODE(root_stat.st_mode) != 0o700
+        ):
+            raise CanarySecurityError("challenge receipt root binding changed")
+        parent_fd = os.dup(root_fd)
+        for component in parts[:-1]:
+            try:
+                os.mkdir(component, 0o700, dir_fd=parent_fd)
+            except FileExistsError:
+                pass
+            next_fd = os.open(
+                component,
+                os.O_RDONLY | directory_flag | nofollow,
+                dir_fd=parent_fd,
+            )
+            next_stat = os.fstat(next_fd)
+            if (
+                not stat.S_ISDIR(next_stat.st_mode)
+                or stat.S_IMODE(next_stat.st_mode) != 0o700
+            ):
+                os.close(next_fd)
+                raise CanarySecurityError(
+                    "challenge receipt parent is not private"
+                )
+            os.close(parent_fd)
+            parent_fd = next_fd
+        parent_stat = os.fstat(parent_fd)
+        file_fd = os.open(
+            parts[-1],
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | nofollow,
+            0o600,
+            dir_fd=parent_fd,
+        )
+        created = True
+        _write_all(file_fd, payload)
+        os.fsync(file_fd)
+        file_stat = os.fstat(file_fd)
+        if (
+            not stat.S_ISREG(file_stat.st_mode)
+            or stat.S_IMODE(file_stat.st_mode) != 0o600
+            or file_stat.st_nlink != 1
+        ):
+            raise CanarySecurityError("challenge receipt is not private and unique")
+        os.fsync(parent_fd)
+        return ChallengeReceiptBinding(
+            path=str(destination),
+            root_path=str(root),
+            relative_parts=parts,
+            root_device=root_stat.st_dev,
+            root_inode=root_stat.st_ino,
+            parent_device=parent_stat.st_dev,
+            parent_inode=parent_stat.st_ino,
+            file_device=file_stat.st_dev,
+            file_inode=file_stat.st_ino,
+            file_mode=stat.S_IMODE(file_stat.st_mode),
+            file_uid=file_stat.st_uid,
+            file_nlink=file_stat.st_nlink,
+        )
+    except OSError as exc:
+        if created and parent_fd >= 0:
+            with contextlib.suppress(OSError):
+                os.unlink(parts[-1], dir_fd=parent_fd)
+                os.fsync(parent_fd)
+        raise CanarySecurityError(
+            "unable to create exact private challenge receipt"
+        ) from exc
+    except BaseException:
+        if created and parent_fd >= 0:
+            with contextlib.suppress(OSError):
+                os.unlink(parts[-1], dir_fd=parent_fd)
+                os.fsync(parent_fd)
+        raise
+    finally:
+        if file_fd >= 0:
+            os.close(file_fd)
+        if parent_fd >= 0:
+            os.close(parent_fd)
+        if root_fd >= 0:
+            os.close(root_fd)
+
+
+def _remove_bound_challenge_receipt(binding: ChallengeReceiptBinding) -> None:
+    """Remove only the exact receipt inode; never traverse a replaced symlink."""
+    root = Path(binding.root_path)
+    destination, parts = _receipt_relative_parts(root, Path(binding.path))
+    if tuple(parts) != tuple(binding.relative_parts) or str(destination) != binding.path:
+        raise CanarySecurityError("challenge receipt path binding changed")
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    directory_flag = getattr(os, "O_DIRECTORY", 0)
+    root_fd = -1
+    parent_fd = -1
+    file_fd = -1
+    try:
+        root_fd = os.open(root, os.O_RDONLY | directory_flag | nofollow)
+        root_stat = os.fstat(root_fd)
+        if (
+            not stat.S_ISDIR(root_stat.st_mode)
+            or stat.S_IMODE(root_stat.st_mode) != 0o700
+            or (root_stat.st_dev, root_stat.st_ino)
+            != (binding.root_device, binding.root_inode)
+        ):
+            raise CanarySecurityError("challenge receipt root binding changed")
+        parent_fd = os.dup(root_fd)
+        for component in parts[:-1]:
+            try:
+                next_fd = os.open(
+                    component,
+                    os.O_RDONLY | directory_flag | nofollow,
+                    dir_fd=parent_fd,
+                )
+            except FileNotFoundError:
+                return
+            os.close(parent_fd)
+            parent_fd = next_fd
+        parent_stat = os.fstat(parent_fd)
+        if (
+            not stat.S_ISDIR(parent_stat.st_mode)
+            or stat.S_IMODE(parent_stat.st_mode) != 0o700
+            or (parent_stat.st_dev, parent_stat.st_ino)
+            != (binding.parent_device, binding.parent_inode)
+        ):
+            raise CanarySecurityError("challenge receipt parent binding changed")
+        try:
+            file_fd = os.open(parts[-1], os.O_RDONLY | nofollow, dir_fd=parent_fd)
+        except FileNotFoundError:
+            return
+        file_stat = os.fstat(file_fd)
+        observed = (
+            file_stat.st_dev,
+            file_stat.st_ino,
+            stat.S_IMODE(file_stat.st_mode),
+            file_stat.st_uid,
+            file_stat.st_nlink,
+        )
+        expected = (
+            binding.file_device,
+            binding.file_inode,
+            binding.file_mode,
+            binding.file_uid,
+            binding.file_nlink,
+        )
+        if not stat.S_ISREG(file_stat.st_mode) or observed != expected:
+            raise CanarySecurityError("challenge receipt file binding changed")
+        os.unlink(parts[-1], dir_fd=parent_fd)
+        os.fsync(parent_fd)
+    except OSError as exc:
+        raise CanarySecurityError(
+            "unable to remove exact private challenge receipt"
+        ) from exc
+    finally:
+        if file_fd >= 0:
+            os.close(file_fd)
+        if parent_fd >= 0:
+            os.close(parent_fd)
+        if root_fd >= 0:
+            os.close(root_fd)
+
+
+def _remove_staging_directory(root: Path, challenge_id: str) -> None:
+    """Remove one exact challenge tree using no-follow, fd-relative calls."""
+    if re.fullmatch(r"[0-9a-f]{32}", challenge_id) is None:
+        raise CanarySecurityError("challenge staging cleanup ID is invalid")
+    root = Path(os.path.abspath(root.expanduser()))
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    directory_flag = getattr(os, "O_DIRECTORY", 0)
+    root_fd = -1
+    challenges_fd = -1
+    staged_fd = -1
+    try:
+        root_fd = os.open(root, os.O_RDONLY | directory_flag | nofollow)
+        root_stat = os.fstat(root_fd)
+        if (
+            not stat.S_ISDIR(root_stat.st_mode)
+            or stat.S_IMODE(root_stat.st_mode) != 0o700
+        ):
+            raise CanarySecurityError("private staging root binding changed")
+        challenges_fd = os.open(
+            "challenges",
+            os.O_RDONLY | directory_flag | nofollow,
+            dir_fd=root_fd,
+        )
+        challenges_stat = os.fstat(challenges_fd)
+        if (
+            not stat.S_ISDIR(challenges_stat.st_mode)
+            or stat.S_IMODE(challenges_stat.st_mode) != 0o700
+        ):
+            raise CanarySecurityError("challenge staging parent binding changed")
+        try:
+            entry_stat = os.stat(
+                challenge_id, dir_fd=challenges_fd, follow_symlinks=False
+            )
+        except FileNotFoundError:
+            return
+        if not stat.S_ISDIR(entry_stat.st_mode):
+            # A replaced symlink or regular file is removed as an entry only;
+            # its target is never opened or traversed.
+            os.unlink(challenge_id, dir_fd=challenges_fd)
+            os.fsync(challenges_fd)
+            return
+        staged_fd = os.open(
+            challenge_id,
+            os.O_RDONLY | directory_flag | nofollow,
+            dir_fd=challenges_fd,
+        )
+        for name in os.listdir(staged_fd):
+            child_stat = os.stat(name, dir_fd=staged_fd, follow_symlinks=False)
+            if stat.S_ISDIR(child_stat.st_mode):
+                raise CanarySecurityError(
+                    "unexpected directory inside challenge staging"
+                )
+            os.unlink(name, dir_fd=staged_fd)
+        os.fsync(staged_fd)
+        os.close(staged_fd)
+        staged_fd = -1
+        os.rmdir(challenge_id, dir_fd=challenges_fd)
+        os.fsync(challenges_fd)
+    except FileNotFoundError:
+        return
+    finally:
+        if staged_fd >= 0:
+            os.close(staged_fd)
+        if challenges_fd >= 0:
+            os.close(challenges_fd)
+        if root_fd >= 0:
+            os.close(root_fd)
+
+
+def stage_release_parts(
+    state: "CanaryState",
+    *,
+    artifact: VerifiedReleaseArtifact,
+    challenge_id: str,
+    receipt_path: Path,
+) -> tuple[Path, tuple[StagedReleasePart, ...]]:
+    """Exclusively freeze the four index-verified parts for one approval."""
+    if re.fullmatch(r"[0-9a-f]{32}", challenge_id) is None:
+        raise CanarySecurityError("challenge staging ID is invalid")
+    root = _challenge_private_root(state, receipt_path)
+    directory = root / "challenges" / challenge_id
+    staged: list[StagedReleasePart] = []
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    directory_flag = getattr(os, "O_DIRECTORY", 0)
+    root_fd = -1
+    challenges_fd = -1
+    staged_fd = -1
+    created = False
+    try:
+        root_fd = os.open(root, os.O_RDONLY | directory_flag | nofollow)
+        root_stat = os.fstat(root_fd)
+        if (
+            not stat.S_ISDIR(root_stat.st_mode)
+            or stat.S_IMODE(root_stat.st_mode) != 0o700
+        ):
+            raise CanarySecurityError("private staging root binding changed")
+        try:
+            os.mkdir("challenges", 0o700, dir_fd=root_fd)
+        except FileExistsError:
+            pass
+        challenges_fd = os.open(
+            "challenges",
+            os.O_RDONLY | directory_flag | nofollow,
+            dir_fd=root_fd,
+        )
+        challenges_stat = os.fstat(challenges_fd)
+        if (
+            not stat.S_ISDIR(challenges_stat.st_mode)
+            or stat.S_IMODE(challenges_stat.st_mode) != 0o700
+        ):
+            raise CanarySecurityError("challenge staging parent binding changed")
+        try:
+            os.mkdir(challenge_id, 0o700, dir_fd=challenges_fd)
+        except FileExistsError as exc:
+            raise CanarySecurityError(
+                "challenge staging directory already exists"
+            ) from exc
+        created = True
+        staged_fd = os.open(
+            challenge_id,
+            os.O_RDONLY | directory_flag | nofollow,
+            dir_fd=challenges_fd,
+        )
+        staged_stat = os.fstat(staged_fd)
+        if (
+            not stat.S_ISDIR(staged_stat.st_mode)
+            or stat.S_IMODE(staged_stat.st_mode) != 0o700
+        ):
+            raise CanarySecurityError("challenge staging directory binding changed")
+        for expected in artifact.parts:
+            source = Path(artifact.artifact_directory) / expected["name"]
+            destination = directory / expected["name"]
+            source_fd = os.open(source, os.O_RDONLY | nofollow)
+            destination_fd = -1
+            try:
+                source_stat = os.fstat(source_fd)
+                if not stat.S_ISREG(source_stat.st_mode):
+                    raise CanaryReleaseError("release source part is not regular")
+                destination_fd = os.open(
+                    expected["name"],
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL | nofollow,
+                    0o600,
+                    dir_fd=staged_fd,
+                )
+                sha = hashlib.sha256()
+                crc = 0
+                size = 0
+                while True:
+                    chunk = os.read(source_fd, 1024 * 1024)
+                    if not chunk:
+                        break
+                    _write_all(destination_fd, chunk)
+                    sha.update(chunk)
+                    crc = zlib.crc32(chunk, crc)
+                    size += len(chunk)
+                os.fsync(destination_fd)
+                destination_stat = os.fstat(destination_fd)
+            finally:
+                if destination_fd >= 0:
+                    os.close(destination_fd)
+                os.close(source_fd)
+            digest = sha.hexdigest()
+            crc &= 0xFFFFFFFF
+            if (
+                size != expected["size"]
+                or digest != expected["sha256"]
+                or crc != expected["crc32"]
+            ):
+                raise CanaryReleaseError(
+                    f"staged release part differs from canonical index: {expected['name']}"
+                )
+            mode = stat.S_IMODE(destination_stat.st_mode)
+            if (
+                not stat.S_ISREG(destination_stat.st_mode)
+                or mode != 0o600
+                or destination_stat.st_nlink != 1
+            ):
+                raise CanarySecurityError("staged release part is not private and unique")
+            staged.append(StagedReleasePart(
+                name=expected["name"],
+                offset=expected["offset"],
+                path=str(destination),
+                size=size,
+                sha256=digest,
+                crc32=crc,
+                device=destination_stat.st_dev,
+                inode=destination_stat.st_ino,
+                mode=mode,
+                uid=destination_stat.st_uid,
+                nlink=destination_stat.st_nlink,
+                mtime_ns=destination_stat.st_mtime_ns,
+                ctime_ns=destination_stat.st_ctime_ns,
+            ))
+        os.fsync(staged_fd)
+        os.fsync(challenges_fd)
+        return directory, tuple(staged)
+    except BaseException as exc:
+        if created:
+            if staged_fd >= 0:
+                os.close(staged_fd)
+                staged_fd = -1
+            if challenges_fd >= 0:
+                os.close(challenges_fd)
+                challenges_fd = -1
+            os.close(root_fd)
+            root_fd = -1
+            _remove_staging_directory(root, challenge_id)
+        if isinstance(exc, OSError):
+            raise CanarySecurityError(
+                "unable to create exact private challenge staging"
+            ) from exc
+        raise
+    finally:
+        if staged_fd >= 0:
+            os.close(staged_fd)
+        if challenges_fd >= 0:
+            os.close(challenges_fd)
+        if root_fd >= 0:
+            os.close(root_fd)
+
+
+@contextlib.contextmanager
+def open_verified_staged_release_parts(
+    challenge: ApprovalChallenge,
+    artifact: VerifiedReleaseArtifact,
+) -> Iterator[tuple[tuple[StagedReleasePart, ...], tuple[int, ...]]]:
+    """Hold the exact verified part inodes open through the child write."""
+    if challenge.staging_directory is None or challenge.staged_parts is None:
+        raise CanaryReleaseError("initial-flash challenge has no staged release")
+    directory = Path(challenge.staging_directory)
+    if (
+        not directory.is_absolute()
+        or directory != Path(os.path.abspath(directory))
+    ):
+        raise CanaryReleaseError("staged release directory binding changed")
+    parts = challenge.staged_parts
+    if len(parts) != 4:
+        raise CanaryReleaseError("staged release must contain exactly four parts")
+    expected = {part["name"]: part for part in artifact.parts}
+    if set(expected) != {part.name for part in parts}:
+        raise CanaryReleaseError("staged release part set changed")
+    ranges: list[tuple[int, int]] = []
+    opened: list[tuple[StagedReleasePart, int]] = []
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    directory_flag = getattr(os, "O_DIRECTORY", 0)
+    directory_fd = -1
+    try:
+        directory_fd = os.open(
+            directory, os.O_RDONLY | directory_flag | nofollow
+        )
+        directory_stat = os.fstat(directory_fd)
+        if (
+            not stat.S_ISDIR(directory_stat.st_mode)
+            or stat.S_IMODE(directory_stat.st_mode) != 0o700
+        ):
+            raise CanaryReleaseError("staged release directory binding changed")
+        if set(os.listdir(directory_fd)) != set(expected):
+            raise CanaryReleaseError("staged release directory contents changed")
+        for part in parts:
+            canonical = expected[part.name]
+            path = Path(part.path)
+            if (
+                not path.is_absolute()
+                or path.parent != directory
+                or path.name != part.name
+                or path != Path(os.path.abspath(path))
+            ):
+                raise CanaryReleaseError("staged release path binding changed")
+            descriptor = os.open(
+                part.name, os.O_RDONLY | nofollow, dir_fd=directory_fd
+            )
+            opened.append((part, descriptor))
+            observed = os.fstat(descriptor)
+            stat_binding = (
+                observed.st_dev,
+                observed.st_ino,
+                stat.S_IMODE(observed.st_mode),
+                observed.st_uid,
+                observed.st_nlink,
+                observed.st_mtime_ns,
+                observed.st_ctime_ns,
+            )
+            expected_stat = (
+                part.device, part.inode, part.mode, part.uid, part.nlink,
+                part.mtime_ns, part.ctime_ns,
+            )
+            if not stat.S_ISREG(observed.st_mode) or stat_binding != expected_stat:
+                raise CanaryReleaseError(f"staged release stat changed: {part.name}")
+            sha = hashlib.sha256()
+            crc = 0
+            size = 0
+            while True:
+                chunk = os.read(descriptor, 1024 * 1024)
+                if not chunk:
+                    break
+                sha.update(chunk)
+                crc = zlib.crc32(chunk, crc)
+                size += len(chunk)
+            os.lseek(descriptor, 0, os.SEEK_SET)
+            crc &= 0xFFFFFFFF
+            if (
+                part.offset != canonical["offset"]
+                or size != part.size
+                or size != canonical["size"]
+                or sha.hexdigest() != part.sha256
+                or part.sha256 != canonical["sha256"]
+                or crc != part.crc32
+                or part.crc32 != canonical["crc32"]
+            ):
+                raise CanaryReleaseError(
+                    f"staged release digest changed: {part.name}"
+                )
+            ranges.append((part.offset, size))
+        validate_flash_ranges(sorted(ranges))
+        ordered = tuple(sorted(opened, key=lambda item: item[0].offset))
+        yield (
+            tuple(item[0] for item in ordered),
+            tuple(item[1] for item in ordered),
+        )
+    finally:
+        for _part, descriptor in opened:
+            os.close(descriptor)
+        if directory_fd >= 0:
+            os.close(directory_fd)
+
+
+def verify_staged_release_parts(
+    challenge: ApprovalChallenge,
+    artifact: VerifiedReleaseArtifact,
+) -> tuple[StagedReleasePart, ...]:
+    """Reopen and rehash all approved files without retaining descriptors."""
+    with open_verified_staged_release_parts(challenge, artifact) as (parts, _fds):
+        return parts
+
+
+def build_staged_initial_flash_command(
+    esptool: Path,
+    port: str,
+    parts: Sequence[StagedReleasePart],
+    *,
+    python_exe: Path | None = None,
+    file_descriptors: Sequence[int] | None = None,
+) -> list[str]:
+    ranges = [(part.offset, part.size) for part in parts]
+    validate_flash_ranges(ranges)
+    command = _base_esptool_command(
+        esptool, port, python_exe=python_exe, after="no_reset"
+    )
+    command += [
+        "write_flash", "--flash_mode", "dio", "--flash_freq", "80m",
+        "--flash_size", "8MB", "--verify",
+    ]
+    if file_descriptors is not None and len(file_descriptors) != len(parts):
+        raise CanaryReleaseError("staged descriptor count changed")
+    for index, part in enumerate(parts):
+        path = (
+            part.path
+            if file_descriptors is None
+            else f"/dev/fd/{file_descriptors[index]}"
+        )
+        command += [hex(part.offset), path]
+    return command
+
+
 def _identity_fingerprint(identity: BoardIdentity) -> str:
     return hashlib.sha256(_canonical_json(asdict(identity))).hexdigest()
 
@@ -2723,17 +3389,33 @@ def issue_initial_flash_challenge(
     binding = flash_binding_sha256(
         artifact, role=role, port=live.port, mac=live.mac
     )
-    challenge, token = state.issue_challenge(
-        role=role,
-        port=live.port,
-        mac=live.mac,
-        artifact_sha256=artifact.firmware_sha256,
-        offsets_sha256=binding,
-        artifact_kind=artifact.kind,
+    challenge_id = secrets.token_hex(16)
+    staging_directory, staged_parts = stage_release_parts(
+        state,
+        artifact=artifact,
+        challenge_id=challenge_id,
         receipt_path=output,
-        now=int(time.time()) if now is None else now,
     )
-    return challenge, token
+    try:
+        challenge, token = state.issue_challenge(
+            role=role,
+            port=live.port,
+            mac=live.mac,
+            artifact_sha256=artifact.firmware_sha256,
+            offsets_sha256=binding,
+            artifact_kind=artifact.kind,
+            receipt_path=output,
+            now=int(time.time()) if now is None else now,
+            challenge_id=challenge_id,
+            staging_directory=staging_directory,
+            staged_parts=staged_parts,
+        )
+        return challenge, token
+    except BaseException:
+        _remove_staging_directory(
+            staging_directory.parent.parent, challenge_id
+        )
+        raise
 
 
 def execute_initial_flash(
@@ -2754,72 +3436,107 @@ def execute_initial_flash(
     challenge = state.challenges.get(challenge_id)
     if challenge is None or challenge.operation != "flash-initial" or challenge.role != role:
         raise CanaryApprovalError("challenge is not for this initial Lite write")
-    binding = flash_binding_sha256(
-        artifact,
-        role=role,
-        port=board.inventory.port,
-        mac=board.inventory.mac,
-    )
-    live = probe_live_inventory(
-        board.installed,
-        role=role,
-        port=board.inventory.port,
-        receipt=receipt,
-        runner=runner,
-    )
-    _live_identity_matches(board.inventory, live)
-    if role.startswith("scanner"):
-        verify_original_uplink_quiescence(
-            state, receipt=receipt, runner=runner, persist=False
+    try:
+        staged_parts = verify_staged_release_parts(challenge, artifact)
+    except BaseException:
+        state.invalidate_challenge(
+            challenge_id,
+            now=int(time.time()) if now is None else now,
         )
-    consumed_at = int(time.time()) if now is None else now
-    state.consume_challenge(
-        challenge_id,
-        token,
-        now=consumed_at,
-        port=live.port,
-        mac=live.mac,
-        artifact_sha256=artifact.firmware_sha256,
-        offsets_sha256=binding,
-        toolchain=receipt,
-    )
-    # Final post-consumption TOCTOU check. A swapped board here is a zero-write
-    # admission failure and does not create a false restore requirement.
-    final_live = probe_live_inventory(
-        board.installed,
-        role=role,
-        port=board.inventory.port,
-        receipt=receipt,
-        runner=runner,
-    )
-    _live_identity_matches(board.inventory, final_live)
-    original = state.verify_backup(role, "original")
-    expected_table = canonical_partition_sha256(
-        BACKEND_PARTITIONS[_role_kind(role)]
-    )
-    partition_part = next(
-        part for part in artifact.parts if part["offset"] == PARTITION_OFFSET
-    )
-    partition_path = (
-        Path(artifact.artifact_directory).parent.parent / partition_part["path"]
-    ).resolve()
-    decoded_table = canonical_partition_sha256(
-        decode_partition_table(partition_path.read_bytes())
-    )
-    if decoded_table != expected_table:
-        raise CanaryReleaseError(
-            "verified release partition table is not the exact backend table"
+        raise
+    try:
+        binding = flash_binding_sha256(
+            artifact,
+            role=role,
+            port=board.inventory.port,
+            mac=board.inventory.mac,
         )
+        live = probe_live_inventory(
+            board.installed,
+            role=role,
+            port=board.inventory.port,
+            receipt=receipt,
+            runner=runner,
+        )
+        _live_identity_matches(board.inventory, live)
+        if role.startswith("scanner"):
+            verify_original_uplink_quiescence(
+                state, receipt=receipt, runner=runner, persist=False
+            )
+        consumed_at = int(time.time()) if now is None else now
+        state.consume_challenge(
+            challenge_id,
+            token,
+            now=consumed_at,
+            port=live.port,
+            mac=live.mac,
+            artifact_sha256=artifact.firmware_sha256,
+            offsets_sha256=binding,
+            toolchain=receipt,
+        )
+    except BaseException:
+        state.invalidate_challenge(
+            challenge_id,
+            now=int(time.time()) if now is None else now,
+        )
+        raise
     write_started = False
     try:
-        command = build_initial_flash_command(
-            Path(receipt.esptool_path),
-            board.inventory.port,
-            Path(artifact.artifact_directory),
-            python_exe=Path(receipt.python_exe),
+        original = state.verify_backup(role, "original")
+        expected_table = canonical_partition_sha256(
+            BACKEND_PARTITIONS[_role_kind(role)]
         )
-        write_started = True
-        _run_checked(command, runner=runner)
+        # Verify and retain all four descriptors. The child reopens only
+        # inherited /dev/fd handles, so a same-UID pathname replacement cannot
+        # change the bytes after this digest check.
+        with open_verified_staged_release_parts(
+            challenge, artifact
+        ) as (staged_parts, staged_fds):
+            partition_index = next(
+                index
+                for index, part in enumerate(staged_parts)
+                if part.offset == PARTITION_OFFSET
+            )
+            partition_fd = staged_fds[partition_index]
+            partition_bytes = bytearray()
+            while True:
+                chunk = os.read(partition_fd, 1024 * 1024)
+                if not chunk:
+                    break
+                partition_bytes.extend(chunk)
+            os.lseek(partition_fd, 0, os.SEEK_SET)
+            decoded_table = canonical_partition_sha256(
+                decode_partition_table(bytes(partition_bytes))
+            )
+            if decoded_table != expected_table:
+                raise CanaryReleaseError(
+                    "verified release partition table is not the exact backend table"
+                )
+            command = build_staged_initial_flash_command(
+                Path(receipt.esptool_path),
+                board.inventory.port,
+                staged_parts,
+                python_exe=Path(receipt.python_exe),
+                file_descriptors=staged_fds,
+            )
+            if role.startswith("scanner"):
+                verify_original_uplink_quiescence(
+                    state, receipt=receipt, runner=runner, persist=False
+                )
+            # This target MAC probe is the final subprocess before write_flash.
+            # The operator must not touch or swap USB from challenge approval
+            # through completion; physical replacement remains outside the
+            # software-only canary boundary.
+            final_live = probe_live_inventory(
+                board.installed,
+                role=role,
+                port=board.inventory.port,
+                receipt=receipt,
+                runner=runner,
+            )
+            _live_identity_matches(board.inventory, final_live)
+            write_started = True
+            _run_checked(command, runner=runner, pass_fds=staged_fds)
         private_root = secure_directory(
             Path(state.state_path).parent if state.state_path else Path(original.nvs_path).parent
         )
@@ -2855,6 +3572,8 @@ def execute_initial_flash(
                 role, phase="initial", reason=redact_text(str(exc))[:1000]
             )
         raise
+    finally:
+        state._remove_staging(challenge_id)
 
 
 def issue_full_restore_challenge(
@@ -2991,16 +3710,24 @@ class CanaryState:
     challenges: dict[str, ApprovalChallenge] = field(default_factory=dict)
     challenge_hashes: dict[str, str] = field(default_factory=dict)
     challenge_receipts: dict[str, str] = field(default_factory=dict)
+    challenge_receipt_bindings: dict[str, ChallengeReceiptBinding] = field(
+        default_factory=dict
+    )
     toolchain: ToolchainReceipt | None = None
     state_path: str | None = None
     original_uplink_quiesced: bool = False
     original_uplink_quiescence: dict[str, Any] | None = None
     installed_capture: dict[str, Any] | None = None
     captured_device_id: str = "uplink_CB77A4"
-    catalog_evidence_sha256: str | None = None
-    catalog_captured_at: int | None = None
-    catalog_evidence_path: str | None = None
+    baseline_catalog_evidence_sha256: str | None = None
+    baseline_catalog_captured_at: int | None = None
+    baseline_catalog_evidence_path: str | None = None
+    ota_catalog_evidence_sha256: str | None = None
+    ota_catalog_captured_at: int | None = None
+    ota_catalog_evidence_path: str | None = None
     ota_probes: dict[str, OtaEvidence] = field(default_factory=dict)
+    ota_probe_catalog_sha256: dict[str, str] = field(default_factory=dict)
+    post_backup_reboot: dict[str, Any] | None = None
 
     @classmethod
     def create(
@@ -3014,7 +3741,7 @@ class CanaryState:
         return state
 
     @classmethod
-    def load(cls, path: Path) -> "CanaryState":
+    def load(cls, path: Path, *, now: int | None = None) -> "CanaryState":
         destination = path.expanduser().resolve()
         _private_mode(destination.parent, 0o700, "canary state directory")
         _private_mode(destination, 0o600, "canary state")
@@ -3024,7 +3751,11 @@ class CanaryState:
             raise CanarySecurityError("unable to read canary state") from exc
         if not isinstance(value, dict) or value.get("schema") != 1:
             raise CanarySecurityError("canary state schema is not exactly 1")
-        return cls._from_dict(value, destination)
+        state = cls._from_dict(value, destination)
+        state._reconcile_challenge_lifecycle(
+            int(time.time()) if now is None else now
+        )
+        return state
 
     @classmethod
     def _from_dict(cls, value: Mapping[str, Any], path: Path) -> "CanaryState":
@@ -3056,14 +3787,26 @@ class CanaryState:
                 failure_reason=raw.get("failure_reason"),
                 flashed_backend_partition_sha256=raw.get("flashed_backend_partition_sha256"),
             )
-        challenges = {
-            key: ApprovalChallenge(**item)
-            for key, item in value.get("challenges", {}).items()
-        }
+        challenges: dict[str, ApprovalChallenge] = {}
+        for key, raw_challenge in value.get("challenges", {}).items():
+            item = dict(raw_challenge)
+            raw_parts = item.get("staged_parts")
+            if raw_parts is not None:
+                item["staged_parts"] = tuple(
+                    StagedReleasePart(**part) for part in raw_parts
+                )
+            challenges[key] = ApprovalChallenge(**item)
         probes = {
             key: OtaEvidence(**item)
             for key, item in value.get("ota_probes", {}).items()
         }
+        receipt_bindings: dict[str, ChallengeReceiptBinding] = {}
+        for key, raw_binding in value.get(
+            "challenge_receipt_bindings", {}
+        ).items():
+            item = dict(raw_binding)
+            item["relative_parts"] = tuple(item["relative_parts"])
+            receipt_bindings[key] = ChallengeReceiptBinding(**item)
         return cls(
             schema=1,
             created_at=value["created_at"],
@@ -3072,16 +3815,32 @@ class CanaryState:
             challenges=challenges,
             challenge_hashes=dict(value.get("challenge_hashes", {})),
             challenge_receipts=dict(value.get("challenge_receipts", {})),
+            challenge_receipt_bindings=receipt_bindings,
             toolchain=tool,
             state_path=str(path),
             original_uplink_quiesced=value.get("original_uplink_quiesced", False),
             original_uplink_quiescence=value.get("original_uplink_quiescence"),
             installed_capture=value.get("installed_capture"),
             captured_device_id=value.get("captured_device_id", ""),
-            catalog_evidence_sha256=value.get("catalog_evidence_sha256"),
-            catalog_captured_at=value.get("catalog_captured_at"),
-            catalog_evidence_path=value.get("catalog_evidence_path"),
+            baseline_catalog_evidence_sha256=value.get(
+                "baseline_catalog_evidence_sha256",
+                value.get("catalog_evidence_sha256"),
+            ),
+            baseline_catalog_captured_at=value.get(
+                "baseline_catalog_captured_at", value.get("catalog_captured_at")
+            ),
+            baseline_catalog_evidence_path=value.get(
+                "baseline_catalog_evidence_path",
+                value.get("catalog_evidence_path"),
+            ),
+            ota_catalog_evidence_sha256=value.get("ota_catalog_evidence_sha256"),
+            ota_catalog_captured_at=value.get("ota_catalog_captured_at"),
+            ota_catalog_evidence_path=value.get("ota_catalog_evidence_path"),
             ota_probes=probes,
+            ota_probe_catalog_sha256=dict(
+                value.get("ota_probe_catalog_sha256", {})
+            ),
+            post_backup_reboot=value.get("post_backup_reboot"),
         )
 
     def _dict(self) -> dict[str, Any]:
@@ -3093,15 +3852,24 @@ class CanaryState:
             "challenges": {key: asdict(item) for key, item in self.challenges.items()},
             "challenge_hashes": dict(self.challenge_hashes),
             "challenge_receipts": dict(self.challenge_receipts),
+            "challenge_receipt_bindings": {
+                key: asdict(item)
+                for key, item in self.challenge_receipt_bindings.items()
+            },
             "toolchain": asdict(self.toolchain) if self.toolchain else None,
             "original_uplink_quiesced": self.original_uplink_quiesced,
             "original_uplink_quiescence": self.original_uplink_quiescence,
             "installed_capture": self.installed_capture,
             "captured_device_id": self.captured_device_id,
-            "catalog_evidence_sha256": self.catalog_evidence_sha256,
-            "catalog_captured_at": self.catalog_captured_at,
-            "catalog_evidence_path": self.catalog_evidence_path,
+            "baseline_catalog_evidence_sha256": self.baseline_catalog_evidence_sha256,
+            "baseline_catalog_captured_at": self.baseline_catalog_captured_at,
+            "baseline_catalog_evidence_path": self.baseline_catalog_evidence_path,
+            "ota_catalog_evidence_sha256": self.ota_catalog_evidence_sha256,
+            "ota_catalog_captured_at": self.ota_catalog_captured_at,
+            "ota_catalog_evidence_path": self.ota_catalog_evidence_path,
             "ota_probes": {key: asdict(item) for key, item in self.ota_probes.items()},
+            "ota_probe_catalog_sha256": dict(self.ota_probe_catalog_sha256),
+            "post_backup_reboot": self.post_backup_reboot,
         }
 
     def save(self, *, initial: bool = False) -> None:
@@ -3212,10 +3980,23 @@ class CanaryState:
             if role != next_role:
                 raise CanaryOrderError(f"original backup order requires {next_role}")
         else:
+            if self.post_backup_reboot is not None:
+                raise CanaryOrderError(
+                    "post-backup provisional and full final health are required"
+                )
             if any(board.final_health is None for board in self.boards.values()):
                 raise CanaryOrderError("all final health evidence is required before backend-baseline backups")
-            if self.catalog_evidence_sha256 is None:
+            if self.baseline_catalog_evidence_sha256 is None:
                 raise CanaryOrderError("catalog preflight is required before backend-baseline backups")
+            completed = [
+                item for item in BOARD_ROLES
+                if "backend-baseline" in self.boards[item].backups
+            ]
+            next_role = BOARD_ROLES[len(completed)] if len(completed) < 3 else None
+            if role != next_role:
+                raise CanaryOrderError(
+                    f"backend-baseline backup order requires {next_role}"
+                )
         if self.state_path is not None:
             private_root = Path(self.state_path).parent.resolve()
             for candidate in (
@@ -3238,6 +4019,52 @@ class CanaryState:
             raise CanaryBackupError("backup decoded partition table is not recognized")
         self.boards[role].backups[kind] = backup
         self.boards[role].status = f"{kind}-backed-up"
+        self._touch()
+
+    def begin_backend_backup_reboot(self, role: str, *, now: int) -> None:
+        """Persist invalidation before `esptool run` reboots a backed-up role."""
+        _role_kind(role)
+        if self.post_backup_reboot is not None:
+            raise CanaryOrderError("another post-backup reboot is still pending")
+        backup = self.verify_backup(role, "backend-baseline")
+        board = self.boards[role]
+        if board.inventory is None or board.provisional is None:
+            raise CanaryOrderError("backend provisional identity is required before reboot")
+        if any(item.final_health is None for item in self.boards.values()):
+            raise CanaryOrderError("all final health must precede backup reboot")
+        expected_partition = canonical_partition_sha256(
+            BACKEND_PARTITIONS[_role_kind(role)]
+        )
+        observed_partition = board.provisional.get(
+            "partition_sha256", board.flashed_backend_partition_sha256
+        )
+        if observed_partition != expected_partition:
+            raise CanaryInventoryError(
+                "pre-reboot backend partition identity changed"
+            )
+        old_provisional = dict(board.provisional)
+        self.post_backup_reboot = {
+            "role": role,
+            "mac": board.inventory.mac,
+            "old_boot_id": old_provisional["boot_id"],
+            "old_provisional": old_provisional,
+            "partition_sha256": expected_partition,
+            "nvs_sha256": backup.nvs_sha256,
+            "backup_full_sha256": backup.full_sha256,
+            "invalidated_at": now,
+            "provisional_reverified": False,
+        }
+        board.provisional = None
+        for item_role, item in self.boards.items():
+            item.final_health = None
+            item.status = (
+                "backend-baseline-reboot-awaiting-provisional"
+                if item_role == role
+                else "topology-invalidated-by-backup-reboot"
+            )
+        self.ota_probes.clear()
+        self.ota_probe_catalog_sha256.clear()
+        self._clear_challenges()
         self._touch()
 
     def record_original_uplink_quiesced(
@@ -3312,23 +4139,53 @@ class CanaryState:
         *,
         receipt_path: Path | None = None,
     ) -> tuple[ApprovalChallenge, str]:
+        # Any older challenge is permanently stale once a new generation is
+        # issued. Remove its private receipt/staging before recording this one.
+        self._clear_challenges()
         token = secrets.token_urlsafe(32)
         self.challenges[challenge.challenge_id] = challenge
         self.challenge_hashes[challenge.challenge_id] = _approval_hash(token, challenge)
-        if receipt_path is not None:
-            receipt = receipt_path.expanduser().resolve()
-            secure_write_bytes(
-                receipt,
-                json.dumps(
+        try:
+            if receipt_path is not None:
+                root = _challenge_private_root(self, receipt_path)
+                payload = json.dumps(
                     {"challenge": asdict(challenge), "approval_token": token},
                     sort_keys=True,
                     indent=2,
-                ).encode("utf-8") + b"\n",
-            )
-            self.challenge_receipts[challenge.challenge_id] = str(receipt)
-        self.generation = challenge.state_generation
-        self.save()
-        return challenge, token
+                ).encode("utf-8") + b"\n"
+                binding = _write_bound_challenge_receipt(
+                    root, receipt_path, payload
+                )
+                self.challenge_receipts[challenge.challenge_id] = binding.path
+                self.challenge_receipt_bindings[challenge.challenge_id] = binding
+            self.generation = challenge.state_generation
+            self.save()
+            return challenge, token
+        except BaseException as issuance_error:
+            cleanup_error: BaseException | None = None
+            try:
+                self._remove_receipt(challenge.challenge_id)
+                self._remove_staging(challenge.challenge_id)
+            except BaseException as exc:
+                cleanup_error = exc
+            self.challenges.pop(challenge.challenge_id, None)
+            self.challenge_hashes.pop(challenge.challenge_id, None)
+            self.challenge_receipts.pop(challenge.challenge_id, None)
+            self.challenge_receipt_bindings.pop(challenge.challenge_id, None)
+            # Persist a no-challenge generation after a partially completed
+            # issuance. This also invalidates any superseded token that might
+            # still exist in a pre-failure state file.
+            self.generation = max(self.generation, challenge.state_generation)
+            try:
+                self.save()
+            except BaseException as exc:
+                if cleanup_error is None:
+                    cleanup_error = exc
+            if cleanup_error is not None:
+                raise CanarySecurityError(
+                    "challenge issuance failed and rollback could not be persisted"
+                ) from cleanup_error
+            raise issuance_error
 
     def issue_challenge(
         self,
@@ -3341,6 +4198,9 @@ class CanaryState:
         now: int,
         artifact_kind: str | None = None,
         receipt_path: Path | None = None,
+        challenge_id: str | None = None,
+        staging_directory: Path | None = None,
+        staged_parts: tuple[StagedReleasePart, ...] | None = None,
     ) -> tuple[ApprovalChallenge, str]:
         kind = _role_kind(role)
         self._assert_original_ready(role)
@@ -3354,8 +4214,13 @@ class CanaryState:
         if self.toolchain is None:
             raise CanarySecurityError("PlatformIO toolchain receipt is missing")
         generation = self.generation + 1
+        identifier = challenge_id or secrets.token_hex(16)
+        if re.fullmatch(r"[0-9a-f]{32}", identifier) is None:
+            raise CanarySecurityError("challenge ID is invalid")
+        if (staging_directory is None) != (staged_parts is None):
+            raise CanarySecurityError("challenge staging binding is incomplete")
         challenge = ApprovalChallenge(
-            challenge_id=secrets.token_hex(16),
+            challenge_id=identifier,
             role=role,
             port=port,
             mac=board.inventory.mac,
@@ -3377,6 +4242,11 @@ class CanaryState:
             restore_source=None,
             expires_at=now + CHALLENGE_TTL_SECONDS,
             consumed_at=None,
+            staging_directory=(
+                str(staging_directory.resolve())
+                if staging_directory is not None else None
+            ),
+            staged_parts=staged_parts,
         )
         return self._issue(challenge, receipt_path=receipt_path)
 
@@ -3406,9 +4276,15 @@ class CanaryState:
             self.challenges[challenge_id] = replace(challenge, consumed_at=now)
             self.challenge_hashes.pop(challenge_id, None)
             self._remove_receipt(challenge_id)
+            self._remove_staging(challenge_id)
             self._touch()
             raise CanaryApprovalError("approval challenge expired")
         if challenge.state_generation != self.generation:
+            self.challenges[challenge_id] = replace(challenge, consumed_at=now)
+            self.challenge_hashes.pop(challenge_id, None)
+            self._remove_receipt(challenge_id)
+            self._remove_staging(challenge_id)
+            self._touch()
             raise CanaryApprovalError("approval state generation changed")
         stored_hash = self.challenge_hashes.get(challenge_id)
         if not token or stored_hash != _approval_hash(token, challenge):
@@ -3449,26 +4325,90 @@ class CanaryState:
         return True
 
     def _remove_receipt(self, challenge_id: str) -> None:
-        raw = self.challenge_receipts.pop(challenge_id, None)
-        if raw is not None:
-            path = Path(raw)
-            if path.exists():
-                path.unlink()
-                directory_fd = os.open(path.parent, os.O_RDONLY)
-                try:
-                    os.fsync(directory_fd)
-                finally:
-                    os.close(directory_fd)
+        raw = self.challenge_receipts.get(challenge_id)
+        binding = self.challenge_receipt_bindings.get(challenge_id)
+        if raw is None and binding is None:
+            return
+        if raw is None or binding is None or raw != binding.path:
+            raise CanarySecurityError("challenge receipt binding is incomplete")
+        _remove_bound_challenge_receipt(binding)
+        self.challenge_receipts.pop(challenge_id, None)
+        self.challenge_receipt_bindings.pop(challenge_id, None)
+
+    def _remove_staging(self, challenge_id: str) -> None:
+        challenge = self.challenges.get(challenge_id)
+        if challenge is None or challenge.staging_directory is None:
+            return
+        directory = Path(challenge.staging_directory)
+        if self.state_path is not None:
+            root = Path(self.state_path).parent
+        else:
+            root = directory.parent.parent
+            if root.name != ".canary":
+                raise CanarySecurityError(
+                    "challenge staging has no private state root"
+                )
+        root = Path(os.path.abspath(root.expanduser()))
+        expected = root / "challenges" / challenge.challenge_id
+        if not directory.is_absolute() or directory != expected:
+            raise CanarySecurityError("challenge staging cleanup binding changed")
+        _remove_staging_directory(root, challenge.challenge_id)
+
+    def invalidate_challenge(self, challenge_id: str, *, now: int) -> None:
+        challenge = self.challenges.get(challenge_id)
+        if challenge is None:
+            return
+        self.challenges[challenge_id] = replace(challenge, consumed_at=now)
+        self.challenge_hashes.pop(challenge_id, None)
+        self._remove_receipt(challenge_id)
+        self._remove_staging(challenge_id)
+        self._touch()
 
     def _clear_challenges(self) -> None:
-        for challenge_id in list(self.challenge_receipts):
+        challenge_ids = (
+            set(self.challenges)
+            | set(self.challenge_receipts)
+            | set(self.challenge_receipt_bindings)
+        )
+        for challenge_id in challenge_ids:
             self._remove_receipt(challenge_id)
+            self._remove_staging(challenge_id)
         self.challenges.clear()
         self.challenge_hashes.clear()
+        self.challenge_receipts.clear()
+        self.challenge_receipt_bindings.clear()
+
+    def _reconcile_challenge_lifecycle(self, now: int) -> None:
+        """Retire expired/consumed crash remnants before returning loaded state."""
+        changed = False
+        for challenge_id, challenge in list(self.challenges.items()):
+            if challenge.consumed_at is None and now <= challenge.expires_at:
+                continue
+            consumed_at = challenge.consumed_at
+            if consumed_at is None:
+                consumed_at = now
+            self.challenge_hashes.pop(challenge_id, None)
+            self._remove_receipt(challenge_id)
+            self._remove_staging(challenge_id)
+            self.challenges[challenge_id] = replace(
+                challenge,
+                consumed_at=consumed_at,
+                staging_directory=None,
+                staged_parts=None,
+            )
+            changed = True
+        if changed:
+            self.generation += 1
+            self.save()
 
     def record_provisional_backend_identity(
         self, role: str, value: Mapping[str, Any]
     ) -> None:
+        reboot = self.post_backup_reboot
+        if reboot is not None and role != reboot.get("role"):
+            raise CanaryOrderError(
+                f"{reboot.get('role')} provisional reboot verification is required"
+            )
         board = self.boards[role]
         if board.inventory is None:
             raise CanaryOrderError("inventory is required before provisional verification")
@@ -3485,8 +4425,35 @@ class CanaryState:
         observed = value.get("partition_sha256", board.flashed_backend_partition_sha256)
         if observed != expected_table:
             raise CanaryInventoryError("provisional backend partition table is missing or changed")
+        if reboot is not None:
+            if normalize_mac(reboot.get("mac", "")) != board.inventory.mac:
+                raise CanaryInventoryError("post-backup reboot MAC binding changed")
+            if reboot.get("partition_sha256") != expected_table:
+                raise CanaryInventoryError(
+                    "post-backup reboot partition binding changed"
+                )
+            old = dict(reboot.get("old_provisional", {}))
+            if validated["boot_id"] == reboot.get("old_boot_id"):
+                raise CanaryInventoryError(
+                    "post-backup boot_id must change after esptool run"
+                )
+            old.pop("boot_id", None)
+            old.pop("partition_sha256", None)
+            comparison = dict(validated)
+            comparison.pop("boot_id", None)
+            comparison.pop("partition_sha256", None)
+            if comparison != old:
+                raise CanaryInventoryError(
+                    "post-backup provisional identity/NVS/config changed"
+                )
+            reboot["new_boot_id"] = validated["boot_id"]
+            reboot["provisional_reverified"] = True
+            reboot["provisional_reverified_at"] = int(time.time())
         board.provisional = validated
-        board.status = "provisional-verified"
+        board.status = (
+            "post-backup-provisional-verified-awaiting-full-health"
+            if reboot is not None else "provisional-verified"
+        )
         self._touch()
 
     def record_final_backend_health_set(
@@ -3505,6 +4472,7 @@ class CanaryState:
             self.boards[role].final_health = dict(health[role])
             self.boards[role].status = "final-verified"
         self.captured_device_id = device_id
+        self.post_backup_reboot = None
         self._touch()
 
     def record_final_backend_health(
@@ -3531,6 +4499,7 @@ class CanaryState:
             )
             for item in BOARD_ROLES:
                 self.boards[item].status = "final-verified"
+            self.post_backup_reboot = None
         else:
             self.boards[role].status = "final-evidence-captured"
         self._touch()
@@ -3542,24 +4511,83 @@ class CanaryState:
         now: int,
         evidence_path: Path | None = None,
     ) -> None:
-        self.catalog_evidence_sha256 = _require_hex64(
-            evidence_sha256, "catalog evidence SHA"
+        if self.baseline_catalog_evidence_sha256 is not None:
+            raise CanaryApprovalError("baseline catalog admission is immutable")
+        self.baseline_catalog_evidence_sha256 = _require_hex64(
+            evidence_sha256, "baseline catalog evidence SHA"
         )
-        self.catalog_captured_at = now
+        self.baseline_catalog_captured_at = now
         if evidence_path is not None:
-            self.catalog_evidence_path = str(evidence_path.expanduser().resolve())
+            self.baseline_catalog_evidence_path = str(
+                evidence_path.expanduser().resolve()
+            )
+        self._touch()
+
+    def record_ota_catalog_receipt(
+        self,
+        evidence_sha256: str,
+        *,
+        now: int,
+        evidence_path: Path,
+    ) -> None:
+        if self.post_backup_reboot is not None:
+            raise CanaryOrderError("post-backup topology verification is incomplete")
+        if any(board.final_health is None for board in self.boards.values()):
+            raise CanaryOrderError("all final health is required before OTA catalog refresh")
+        for role in BOARD_ROLES:
+            self.verify_backup(role, "backend-baseline")
+        path = evidence_path.expanduser().resolve()
+        if (
+            str(path) == self.baseline_catalog_evidence_path
+            or str(path) == self.ota_catalog_evidence_path
+        ):
+            raise CanaryApprovalError(
+                "OTA catalog refresh requires a fresh unique receipt path"
+            )
+        _private_mode(path.parent, 0o700, "OTA catalog receipt directory")
+        _private_mode(path, 0o600, "OTA catalog receipt")
+        self._clear_challenges()
+        self.ota_probes.clear()
+        self.ota_probe_catalog_sha256.clear()
+        self.ota_catalog_evidence_sha256 = _require_hex64(
+            evidence_sha256, "OTA catalog evidence SHA"
+        )
+        self.ota_catalog_captured_at = now
+        self.ota_catalog_evidence_path = str(path)
         self._touch()
 
     def record_ota_probe(
-        self, evidence: OtaEvidence, *, now: int | None = None
+        self,
+        evidence: OtaEvidence,
+        *,
+        now: int | None = None,
+        catalog_receipt_sha256: str | None = None,
     ) -> OtaEvidence:
         self._assert_no_failure()
         if evidence.mode != "probe" or evidence.decision != "admit":
             raise CanaryApprovalError("only an admitted read-only OTA probe is recordable")
         if not evidence.complete_image_validated or evidence.image_writes_before != evidence.image_writes_after or evidence.boot_id_before != evidence.boot_id_after:
             raise CanaryApprovalError("OTA probe was not read-only and complete")
-        captured = replace(evidence, captured_at=evidence.captured_at if now is None else now)
+        current = evidence.captured_at if now is None else now
+        if (
+            self.ota_catalog_evidence_sha256 is None
+            or self.ota_catalog_captured_at is None
+            or current < self.ota_catalog_captured_at
+            or current - self.ota_catalog_captured_at > CATALOG_TTL_SECONDS
+        ):
+            raise CanaryApprovalError("fresh OTA catalog receipt is missing or stale")
+        receipt_sha = (
+            self.ota_catalog_evidence_sha256
+            if catalog_receipt_sha256 is None
+            else _require_hex64(
+                catalog_receipt_sha256, "OTA probe catalog receipt SHA"
+            )
+        )
+        if receipt_sha != self.ota_catalog_evidence_sha256:
+            raise CanaryApprovalError("OTA probe catalog receipt binding changed")
+        captured = replace(evidence, captured_at=current)
         self.ota_probes[evidence.component] = captured
+        self.ota_probe_catalog_sha256[evidence.component] = receipt_sha
         self._touch()
         return captured
 
@@ -3580,11 +4608,13 @@ class CanaryState:
             raise CanaryOrderError("all final health is required before OTA")
         for role in BOARD_ROLES:
             self.verify_backup(role, "backend-baseline")
-        if self.catalog_evidence_sha256 is None or self.catalog_captured_at is None or now < self.catalog_captured_at or now - self.catalog_captured_at > CATALOG_TTL_SECONDS:
-            raise CanaryApprovalError("catalog preflight is missing or stale")
+        if self.ota_catalog_evidence_sha256 is None or self.ota_catalog_captured_at is None or now < self.ota_catalog_captured_at or now - self.ota_catalog_captured_at > CATALOG_TTL_SECONDS:
+            raise CanaryApprovalError("fresh OTA catalog receipt is missing or stale")
         probe = self.ota_probes.get(component)
         if probe is None or now < probe.captured_at or now - probe.captured_at > PROBE_TTL_SECONDS:
             raise CanaryApprovalError("OTA probe is missing or stale")
+        if self.ota_probe_catalog_sha256.get(component) != self.ota_catalog_evidence_sha256:
+            raise CanaryApprovalError("OTA probe is bound to another catalog receipt")
         digest = _require_hex64(artifact_sha256, "OTA challenge SHA")
         if digest != probe.sha256 or artifact_crc32 != probe.crc32:
             raise CanaryApprovalError("OTA challenge digest/whole-image CRC32 mismatch")
@@ -3604,7 +4634,7 @@ class CanaryState:
             ota_mode=mode,
             artifact_sha256=digest,
             artifact_crc32=artifact_crc32,
-            offsets_sha256=self.catalog_evidence_sha256,
+            offsets_sha256=self.ota_catalog_evidence_sha256,
             state_generation=generation,
             target_slot=None if component == "uplink" else probe.component_slot,
             target_mac=probe.actual_target_mac,
@@ -3919,7 +4949,7 @@ def _handle_inventory(args: argparse.Namespace) -> None:
 
 
 def _record_catalog_for_baseline(state: CanaryState) -> None:
-    if state.catalog_evidence_sha256 is not None:
+    if state.baseline_catalog_evidence_sha256 is not None:
         return
     selected = input(
         "Path to fresh verify-catalog evidence inside .canary: "
@@ -3962,17 +4992,16 @@ def _handle_backup(args: argparse.Namespace) -> None:
         output_dir=_require_canary_path(Path(args.output_dir), directory=True),
         receipt=receipt,
     )
-    if args.kind == "backend-baseline":
-        verify_final_serial(
-            state,
-            role=args.role,
-            port=board.inventory.port,
-            timeout=180,
-        )
     print(
         f"Verified immutable {args.kind} backup for {args.role}: "
         f"full_sha256={record.full_sha256} nvs_sha256={record.nvs_sha256}"
     )
+    if args.kind == "backend-baseline":
+        print(
+            f"{args.role} was rebooted. Run verify-provisional for {args.role} "
+            "and then verify-final for scanner0, scanner1, and uplink before "
+            "the next backend-baseline backup. The boot_id must change."
+        )
 
 
 def _handle_verify_backup(args: argparse.Namespace) -> None:
@@ -4079,17 +5108,45 @@ def _handle_verify_catalog(args: argparse.Namespace) -> None:
     )
 
 
+def _handle_refresh_ota_catalog(args: argparse.Namespace) -> None:
+    state = _load_state(args.state)
+    output = _require_canary_path(Path(args.output))
+    evidence = verify_catalog_preflight(
+        backend_base=args.backend_base,
+        index=Path(args.index),
+        output=output,
+    )
+    loaded, file_sha = load_private_json(output, label="OTA catalog evidence")
+    combined = catalog_receipt_binding_sha256(
+        loaded,
+        file_sha256=file_sha,
+        index=Path(args.index),
+        now=evidence["captured_at"],
+    )
+    state.record_ota_catalog_receipt(
+        combined,
+        now=evidence["captured_at"],
+        evidence_path=output,
+    )
+    print(
+        "Fresh post-backup OTA catalog receipt recorded: "
+        f"sha256={combined} captured_at={evidence['captured_at']}"
+    )
+
+
 def _handle_ota_probe(args: argparse.Namespace) -> None:
     state = _load_state(args.state)
     receipt = _resolve_for_state(state, args.pio)
     catalog_path = _require_canary_path(Path(args.catalog_evidence))
-    catalog, _sha = load_private_json(catalog_path, label="catalog evidence")
+    catalog, catalog_sha = load_private_json(catalog_path, label="catalog evidence")
     evidence = run_ota_probe(
         state,
         component=args.component,
         catalog_name=args.catalog_name,
         expected_sha256=args.expected_sha,
         catalog_evidence=catalog,
+        catalog_evidence_sha256=catalog_sha,
+        catalog_evidence_path=catalog_path,
         index=Path(args.index),
         port=args.port,
         receipt=receipt,
@@ -4137,10 +5194,10 @@ def _handle_challenge_ota(args: argparse.Namespace) -> None:
 def _handle_ota_apply(args: argparse.Namespace) -> None:
     state = _load_state(args.state)
     receipt = _resolve_for_state(state, args.pio)
-    if not state.catalog_evidence_path:
+    if not state.ota_catalog_evidence_path:
         raise CanaryOrderError("OTA challenge has no bound catalog evidence path")
     catalog, catalog_sha = load_private_json(
-        Path(state.catalog_evidence_path), label="catalog evidence"
+        Path(state.ota_catalog_evidence_path), label="catalog evidence"
     )
     _accepted, final = execute_ota_apply(
         state,
@@ -4237,6 +5294,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "verify-provisional": ("--role", "--state", "--port", "--timeout"),
         "verify-final": ("--role", "--state", "--port", "--timeout"),
         "verify-catalog": ("--backend-base", "--index", "--output"),
+        "refresh-ota-catalog": ("--backend-base", "--index", "--state", "--output"),
         "ota-probe": ("--component", "--catalog-name", "--expected-sha", "--catalog-evidence", "--index", "--state", "--port", "--pio", "--output", "--timeout"),
         "challenge-ota": ("--component", "--mode", "--probe", "--catalog-evidence", "--index", "--state", "--pio", "--output"),
         "ota-apply": ("--component", "--mode", "--index", "--state", "--port", "--challenge-id", "--token", "--pio", "--output", "--timeout"),
@@ -4283,6 +5341,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "verify-provisional": _handle_verify_provisional,
         "verify-final": _handle_verify_final,
         "verify-catalog": _handle_verify_catalog,
+        "refresh-ota-catalog": _handle_refresh_ota_catalog,
         "ota-probe": _handle_ota_probe,
         "challenge-ota": _handle_challenge_ota,
         "ota-apply": _handle_ota_apply,

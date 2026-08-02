@@ -36,6 +36,8 @@ from tools.backend_canary import (
     canonical_partition_sha256,
     decode_partition_table,
     execute_backup,
+    execute_initial_flash,
+    issue_initial_flash_challenge,
     parse_evidence_line,
     parse_live_inventory,
     parse_ota_evidence,
@@ -618,7 +620,7 @@ def make_release(tmp_path: Path, target: str) -> tuple[Path, Path]:
             private_file(directory / name, data)
             parts.append({
                 "name": name,
-                "path": f"firmware/{release_target}/{name}",
+                "path": f"{release_target}/{name}",
                 "offset": offset,
                 "size": size,
                 "sha256": hashlib.sha256(data).hexdigest(),
@@ -640,6 +642,29 @@ def make_release(tmp_path: Path, target: str) -> tuple[Path, Path]:
     }
     index_path = private_file(tmp_path / "index.json", json.dumps(index).encode())
     return index_path, tmp_path / "web-flasher" / "firmware" / target
+
+
+@pytest.mark.parametrize(
+    ("role", "target"),
+    [
+        ("scanner0", "scanner-s3-combo-backend"),
+        ("uplink", "uplink-s3-backend"),
+    ],
+)
+def test_committed_release_index_resolves_real_artifact_directory(
+    role: str,
+    target: str,
+):
+    backend_firmware = Path(__file__).resolve().parents[2]
+    index = backend_firmware / "release/backend-release-index.json"
+    directory = backend_firmware / "web-flasher/firmware" / target
+
+    artifact = verify_release_artifact(index, directory, role=role)
+
+    assert artifact.target == target
+    assert [part["path"] for part in artifact.parts] == [
+        f"{target}/{part['name']}" for part in artifact.parts
+    ]
 
 
 def test_release_artifact_is_exact_kind_verified_and_cannot_escape(tmp_path: Path):
@@ -665,6 +690,385 @@ def test_unverified_release_fails_before_subprocess(tmp_path: Path):
     assert started == []
 
 
+def inventory_runner(calls: list[list[str]]):
+    macs = {
+        "/dev/cu.usbmodem-scanner0": "AA:00:00:00:00:01",
+        "/dev/cu.usbmodem-scanner1": "AA:00:00:00:00:02",
+        "/dev/cu.usbmodem-uplink": "AA:00:00:00:00:03",
+    }
+
+    def run(command, **_kwargs):
+        calls.append(list(command))
+        operation = command[-1]
+        if operation == "get_security_info":
+            output = (
+                "Chip is ESP32-S3 (revision v0.2)\n"
+                "Secure Boot: Disabled\nFlash Encryption: Disabled\n"
+            )
+        elif operation == "flash_id":
+            output = "Detected flash size: 8MB\n"
+        elif operation == "read_mac":
+            port = command[command.index("--port") + 1]
+            output = f"MAC: {macs[port]}\n"
+        else:
+            output = "ok\n"
+        return subprocess.CompletedProcess(command, 0, stdout=output)
+
+    return run
+
+
+@pytest.mark.parametrize("part_index", range(4))
+def test_initial_flash_rejects_each_staged_part_mutation_before_write(
+    tmp_path: Path, part_index: int,
+):
+    state = ready_state(tmp_path / "backups")
+    index, directory = make_release(
+        tmp_path / "release", "scanner-s3-combo-backend",
+    )
+    artifact = verify_release_artifact(index, directory, role="scanner0")
+    calls: list[list[str]] = []
+    runner = inventory_runner(calls)
+    receipt_path = tmp_path / ".canary" / "receipts" / "scanner0.json"
+    challenge, token = issue_initial_flash_challenge(
+        state,
+        role="scanner0",
+        artifact=artifact,
+        receipt=toolchain(),
+        output=receipt_path,
+        runner=runner,
+        now=100,
+    )
+    assert challenge.staged_parts is not None
+    assert len(challenge.staged_parts) == 4
+    staged = Path(challenge.staged_parts[part_index].path)
+    staged.write_bytes(b"mutated-after-approval")
+    staged.chmod(0o600)
+
+    with pytest.raises(CanaryReleaseError, match="staged"):
+        execute_initial_flash(
+            state,
+            role="scanner0",
+            artifact=artifact,
+            challenge_id=challenge.challenge_id,
+            token=token,
+            receipt=toolchain(),
+            runner=runner,
+            now=101,
+        )
+
+    assert not any("write_flash" in command for command in calls)
+    assert not staged.parent.exists()
+    assert not receipt_path.exists()
+    assert state.challenges[challenge.challenge_id].consumed_at == 101
+    assert state.boards["scanner0"].status != "restore_required"
+
+
+def test_initial_flash_writes_only_frozen_challenge_parts(tmp_path: Path):
+    state = ready_state(tmp_path / "backups")
+    index, directory = make_release(
+        tmp_path / "release", "scanner-s3-combo-backend",
+    )
+    artifact = verify_release_artifact(index, directory, role="scanner0")
+    calls: list[list[str]] = []
+    base_runner = inventory_runner(calls)
+    inherited_bytes: list[bytes] = []
+    inherited_fds: tuple[int, ...] = ()
+    challenge = None
+
+    def runner(command, **kwargs):
+        nonlocal inherited_fds
+        if "write_flash" in command:
+            calls.append(list(command))
+            inherited_fds = tuple(kwargs.get("pass_fds", ()))
+            assert challenge is not None
+            for part in challenge.staged_parts or ():
+                staged = Path(part.path)
+                staged.unlink()
+                staged.write_bytes(b"same-uid-path-replacement")
+                staged.chmod(0o600)
+            inherited_bytes.extend(
+                Path(path).read_bytes() for path in command[-7::2]
+            )
+            return subprocess.CompletedProcess(command, 0, stdout="write ok\n")
+        if "read_flash" in command:
+            calls.append(list(command))
+            output = Path(command[-1])
+            output.write_bytes(bytes([0xA5]) * 0x6000)
+            output.chmod(0o600)
+            return subprocess.CompletedProcess(command, 0, stdout="read ok\n")
+        return base_runner(command, **kwargs)
+
+    challenge, token = issue_initial_flash_challenge(
+        state,
+        role="scanner0",
+        artifact=artifact,
+        receipt=toolchain(),
+        output=tmp_path / ".canary" / "receipts" / "scanner0.json",
+        runner=runner,
+        now=100,
+    )
+    staged_directory = Path(challenge.staging_directory or "")
+    execute_initial_flash(
+        state,
+        role="scanner0",
+        artifact=artifact,
+        challenge_id=challenge.challenge_id,
+        token=token,
+        receipt=toolchain(),
+        runner=runner,
+        now=101,
+    )
+
+    writes = [command for command in calls if "write_flash" in command]
+    assert len(writes) == 1
+    write = writes[0]
+    assert tuple(write[-7::2]) == tuple(
+        f"/dev/fd/{descriptor}" for descriptor in inherited_fds
+    )
+    expected_bytes = [
+        (directory / part.name).read_bytes()
+        for part in sorted(challenge.staged_parts or (), key=lambda item: item.offset)
+    ]
+    assert inherited_bytes == expected_bytes
+    assert all(
+        Path(part.path).parent == staged_directory
+        for part in challenge.staged_parts or ()
+    )
+    write_index = calls.index(write)
+    assert calls[write_index - 1][-1] == "read_mac"
+    assert calls[write_index - 1][
+        calls[write_index - 1].index("--port") + 1
+    ] == "/dev/cu.usbmodem-scanner0"
+    assert not staged_directory.exists()
+
+
+def test_staging_cleanup_never_follows_replaced_challenge_symlink(tmp_path: Path):
+    state = ready_state(tmp_path / "backups")
+    index, directory = make_release(
+        tmp_path / "release", "scanner-s3-combo-backend",
+    )
+    artifact = verify_release_artifact(index, directory, role="scanner0")
+    calls: list[list[str]] = []
+    receipt_path = tmp_path / ".canary/receipts/scanner0.json"
+    challenge, _token = issue_initial_flash_challenge(
+        state,
+        role="scanner0",
+        artifact=artifact,
+        receipt=toolchain(),
+        output=receipt_path,
+        runner=inventory_runner(calls),
+        now=100,
+    )
+    staging = Path(challenge.staging_directory or "")
+    outside = tmp_path / "must-survive"
+    outside.mkdir()
+    sentinel = private_file(outside / "sentinel.bin", b"do not delete")
+    for child in staging.iterdir():
+        child.unlink()
+    staging.rmdir()
+    staging.symlink_to(outside, target_is_directory=True)
+
+    state.invalidate_challenge(challenge.challenge_id, now=101)
+
+    assert sentinel.read_bytes() == b"do not delete"
+    assert not os.path.lexists(staging)
+    assert not receipt_path.exists()
+
+
+def test_staging_creation_rejects_symlinked_challenges_parent(tmp_path: Path):
+    state = ready_state(tmp_path / "backups")
+    index, directory = make_release(
+        tmp_path / "release", "scanner-s3-combo-backend",
+    )
+    artifact = verify_release_artifact(index, directory, role="scanner0")
+    canary = tmp_path / ".canary"
+    canary.mkdir(mode=0o700)
+    outside = tmp_path / "outside-staging"
+    outside.mkdir()
+    (canary / "challenges").symlink_to(outside, target_is_directory=True)
+    calls: list[list[str]] = []
+
+    with pytest.raises(CanarySecurityError, match="exact private"):
+        issue_initial_flash_challenge(
+            state,
+            role="scanner0",
+            artifact=artifact,
+            receipt=toolchain(),
+            output=canary / "receipts/scanner0.json",
+            runner=inventory_runner(calls),
+            now=100,
+        )
+
+    assert list(outside.iterdir()) == []
+    assert not any("write_flash" in command for command in calls)
+
+
+def test_stale_generation_cleans_frozen_parts_and_receipt(tmp_path: Path):
+    state = ready_state(tmp_path / "backups")
+    index, directory = make_release(
+        tmp_path / "release", "scanner-s3-combo-backend",
+    )
+    artifact = verify_release_artifact(index, directory, role="scanner0")
+    calls: list[list[str]] = []
+    receipt_path = tmp_path / ".canary/receipts/scanner0.json"
+    challenge, token = issue_initial_flash_challenge(
+        state,
+        role="scanner0",
+        artifact=artifact,
+        receipt=toolchain(),
+        output=receipt_path,
+        runner=inventory_runner(calls),
+        now=100,
+    )
+    staging = Path(challenge.staging_directory or "")
+    state._touch()
+
+    with pytest.raises(CanaryApprovalError, match="generation"):
+        state.consume_challenge(challenge.challenge_id, token, now=101)
+
+    assert not staging.exists()
+    assert not receipt_path.exists()
+
+
+def test_receipt_cleanup_fails_closed_if_parent_is_replaced_by_symlink(
+    tmp_path: Path,
+):
+    state = ready_state(tmp_path / "backups")
+    index, directory = make_release(
+        tmp_path / "release", "scanner-s3-combo-backend",
+    )
+    artifact = verify_release_artifact(index, directory, role="scanner0")
+    canary = tmp_path / ".canary"
+    receipt_path = canary / "receipts/scanner0.json"
+    challenge, _token = issue_initial_flash_challenge(
+        state,
+        role="scanner0",
+        artifact=artifact,
+        receipt=toolchain(),
+        output=receipt_path,
+        runner=inventory_runner([]),
+        now=100,
+    )
+    bound_parent = canary / "receipts-bound"
+    receipt_path.parent.rename(bound_parent)
+    outside = tmp_path / "outside-receipts"
+    outside.mkdir(mode=0o700)
+    sentinel = private_file(outside / receipt_path.name, b"must survive")
+    receipt_path.parent.symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(CanarySecurityError, match="exact private"):
+        state.invalidate_challenge(challenge.challenge_id, now=101)
+
+    assert sentinel.read_bytes() == b"must survive"
+    assert Path(challenge.staging_directory or "").exists()
+
+
+def test_initial_challenge_save_failure_rolls_back_receipt_stage_and_hash(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    state = ready_state(tmp_path / "backups")
+    index, directory = make_release(
+        tmp_path / "release", "scanner-s3-combo-backend",
+    )
+    artifact = verify_release_artifact(index, directory, role="scanner0")
+    original_save = state.save
+    failed = False
+
+    def fail_after_receipt(*, initial: bool = False):
+        nonlocal failed
+        if state.challenge_receipts and not failed:
+            failed = True
+            raise OSError("injected state fsync failure")
+        return original_save(initial=initial)
+
+    monkeypatch.setattr(state, "save", fail_after_receipt)
+    canary = tmp_path / ".canary"
+    with pytest.raises(OSError, match="injected"):
+        issue_initial_flash_challenge(
+            state,
+            role="scanner0",
+            artifact=artifact,
+            receipt=toolchain(),
+            output=canary / "receipts/scanner0.json",
+            runner=inventory_runner([]),
+            now=100,
+        )
+
+    assert failed is True
+    assert state.challenges == {}
+    assert state.challenge_hashes == {}
+    assert state.challenge_receipts == {}
+    assert state.challenge_receipt_bindings == {}
+    assert not any((canary / "challenges").iterdir())
+    assert not any((canary / "receipts").iterdir())
+
+
+def test_load_retires_expired_challenge_receipt_and_staging(tmp_path: Path):
+    state = ready_state(tmp_path / "backups")
+    state_path = tmp_path / ".canary/state.json"
+    state.state_path = str(state_path.resolve())
+    state.save(initial=True)
+    index, directory = make_release(
+        tmp_path / "release", "scanner-s3-combo-backend",
+    )
+    artifact = verify_release_artifact(index, directory, role="scanner0")
+    receipt_path = state_path.parent / "receipts/scanner0.json"
+    challenge, _token = issue_initial_flash_challenge(
+        state,
+        role="scanner0",
+        artifact=artifact,
+        receipt=toolchain(),
+        output=receipt_path,
+        runner=inventory_runner([]),
+        now=100,
+    )
+    staging = Path(challenge.staging_directory or "")
+
+    loaded = CanaryState.load(state_path, now=401)
+
+    retired = loaded.challenges[challenge.challenge_id]
+    assert retired.consumed_at == 401
+    assert retired.staging_directory is None
+    assert retired.staged_parts is None
+    assert challenge.challenge_id not in loaded.challenge_hashes
+    assert challenge.challenge_id not in loaded.challenge_receipts
+    assert challenge.challenge_id not in loaded.challenge_receipt_bindings
+    assert not receipt_path.exists()
+    assert not staging.exists()
+
+
+def test_load_cleans_staging_left_after_consumed_challenge(tmp_path: Path):
+    state = ready_state(tmp_path / "backups")
+    state_path = tmp_path / ".canary/state.json"
+    state.state_path = str(state_path.resolve())
+    state.save(initial=True)
+    index, directory = make_release(
+        tmp_path / "release", "scanner-s3-combo-backend",
+    )
+    artifact = verify_release_artifact(index, directory, role="scanner0")
+    challenge, token = issue_initial_flash_challenge(
+        state,
+        role="scanner0",
+        artifact=artifact,
+        receipt=toolchain(),
+        output=state_path.parent / "receipts/scanner0.json",
+        runner=inventory_runner([]),
+        now=100,
+    )
+    staging = Path(challenge.staging_directory or "")
+    state.consume_challenge(challenge.challenge_id, token, now=101)
+    assert staging.exists()
+
+    loaded = CanaryState.load(state_path, now=102)
+
+    retired = loaded.challenges[challenge.challenge_id]
+    assert retired.consumed_at == 101
+    assert retired.staging_directory is None
+    assert retired.staged_parts is None
+    assert not staging.exists()
+
+
 def test_provisional_requires_exact_backend_identity_mac_and_valid_direct_usb_ota():
     value = backend_identity("scanner0", "AA:00:00:00:00:01")
     assert validate_provisional_identity("scanner0", value, "AA:00:00:00:00:01")["boot_id"] == 100
@@ -687,10 +1091,10 @@ def scanner_health(mac: str, boot_id: int, role: str) -> dict[str, object]:
     }
 
 
-def uplink_health() -> dict[str, object]:
+def uplink_health(boot_id: int = 300) -> dict[str, object]:
     return {
         "target": "uplink-s3-backend", "mac": "AA:00:00:00:00:03",
-        "boot_id": 300, "device_id": "uplink_CB77A4",
+        "boot_id": boot_id, "device_id": "uplink_CB77A4",
         "config_state": "loaded", "config_generation": 9,
         "nvs_loaded": True, "nvs_erased": False,
         "auto_update_enabled": False, "uart0_started": True,
@@ -714,6 +1118,100 @@ def test_final_health_requires_distinct_scanner_roles_same_boots_and_uplink_stat
     health["scanner1"] = scanner_health("AA:00:00:00:00:02", 200, "ble_primary")
     with pytest.raises(CanaryInventoryError, match="roles"):
         validate_final_health_set(health, provisional, device_id="uplink_CB77A4")
+
+
+def test_backend_backup_reboot_sequence_requires_new_boot_and_full_topology(
+    tmp_path: Path,
+):
+    state = ready_state(tmp_path / "original")
+    boots = {"scanner0": 100, "scanner1": 200, "uplink": 300}
+    for role in BOARD_ROLES:
+        state.record_provisional_backend_identity(
+            role,
+            backend_identity(
+                role, state.boards[role].inventory.mac, boot_id=boots[role],
+            ),
+        )
+    state.record_final_backend_health_set(
+        {
+            "scanner0": scanner_health(
+                state.boards["scanner0"].inventory.mac, boots["scanner0"],
+                "ble_primary",
+            ),
+            "scanner1": scanner_health(
+                state.boards["scanner1"].inventory.mac, boots["scanner1"],
+                "wifi_primary",
+            ),
+            "uplink": uplink_health(boots["uplink"]),
+        },
+        device_id="uplink_CB77A4",
+    )
+    state.record_catalog_preflight("e" * 64, now=90)
+
+    for sequence, role in enumerate(BOARD_ROLES, start=1):
+        state.record_backup(
+            role,
+            "backend-baseline",
+            make_backup(
+                tmp_path / "baseline", role, "backend-baseline",
+                state.boards[role].inventory.mac, fill=0x5A,
+            ),
+        )
+        state.begin_backend_backup_reboot(role, now=100 + sequence)
+        assert state.post_backup_reboot["role"] == role
+        assert state.boards[role].provisional is None
+        assert all(board.final_health is None for board in state.boards.values())
+
+        with pytest.raises(CanaryInventoryError, match="boot_id.*change"):
+            state.record_provisional_backend_identity(
+                role,
+                backend_identity(
+                    role, state.boards[role].inventory.mac,
+                    boot_id=boots[role],
+                ),
+            )
+
+        boots[role] += 1
+        state.record_provisional_backend_identity(
+            role,
+            backend_identity(
+                role, state.boards[role].inventory.mac, boot_id=boots[role],
+            ),
+        )
+        assert state.post_backup_reboot["provisional_reverified"] is True
+        if role != "uplink":
+            next_role = BOARD_ROLES[sequence]
+            with pytest.raises(CanaryOrderError, match="final health"):
+                state.record_backup(
+                    next_role,
+                    "backend-baseline",
+                    make_backup(
+                        tmp_path / "too-early", next_role,
+                        "backend-baseline",
+                        state.boards[next_role].inventory.mac, fill=0x5A,
+                    ),
+                )
+
+        state.record_final_backend_health_set(
+            {
+                "scanner0": scanner_health(
+                    state.boards["scanner0"].inventory.mac,
+                    boots["scanner0"], "ble_primary",
+                ),
+                "scanner1": scanner_health(
+                    state.boards["scanner1"].inventory.mac,
+                    boots["scanner1"], "wifi_primary",
+                ),
+                "uplink": uplink_health(boots["uplink"]),
+            },
+            device_id="uplink_CB77A4",
+        )
+        assert state.post_backup_reboot is None
+        assert all(board.final_health is not None for board in state.boards.values())
+
+    assert all(
+        "backend-baseline" in state.boards[role].backups for role in BOARD_ROLES
+    )
 
 
 def test_json_evidence_rejects_duplicate_keys_and_multiple_records():
@@ -795,18 +1293,83 @@ def ota_ready_state(tmp_path: Path) -> CanaryState:
         },
         device_id="uplink_CB77A4",
     )
-    state.record_catalog_preflight("e" * 64, now=95)
+    baseline_receipt = private_file(
+        tmp_path / ".canary/catalog/baseline.json", b"baseline\n",
+    )
+    state.record_catalog_preflight(
+        "e" * 64, now=10, evidence_path=baseline_receipt,
+    )
     for role in BOARD_ROLES:
         state.record_backup(
             role, "backend-baseline",
             make_backup(tmp_path, role, "backend-baseline", state.boards[role].inventory.mac, fill=0x5A),
         )
+    ota_receipt = private_file(
+        tmp_path / ".canary/catalog/ota-scanner0-001.json", b"fresh ota\n",
+    )
+    state.record_ota_catalog_receipt(
+        "f" * 64, now=95, evidence_path=ota_receipt,
+    )
     return state
+
+
+def test_stale_baseline_receipt_cannot_replace_fresh_post_backup_ota_receipt(
+    tmp_path: Path,
+):
+    state = ready_state(tmp_path / "original")
+    for role, boot in (("scanner0", 100), ("scanner1", 200), ("uplink", 300)):
+        state.record_provisional_backend_identity(
+            role,
+            backend_identity(role, state.boards[role].inventory.mac, boot_id=boot),
+        )
+    state.record_final_backend_health_set(
+        {
+            "scanner0": scanner_health("AA:00:00:00:00:01", 100, "ble_primary"),
+            "scanner1": scanner_health("AA:00:00:00:00:02", 200, "wifi_primary"),
+            "uplink": uplink_health(),
+        },
+        device_id="uplink_CB77A4",
+    )
+    baseline_path = private_file(
+        tmp_path / ".canary/catalog/baseline-100.json", b"baseline\n",
+    )
+    state.record_catalog_preflight(
+        "b" * 64, now=100, evidence_path=baseline_path,
+    )
+    for role in BOARD_ROLES:
+        state.record_backup(
+            role, "backend-baseline",
+            make_backup(
+                tmp_path / "baseline", role, "backend-baseline",
+                state.boards[role].inventory.mac, fill=0x5A,
+            ),
+        )
+    probe = parse_ota_evidence(valid_probe())
+    with pytest.raises(CanaryApprovalError, match="fresh OTA catalog"):
+        state.record_ota_probe(probe, now=402)
+
+    fresh_path = private_file(
+        tmp_path / ".canary/catalog/ota-scanner0-401.json", b"fresh\n",
+    )
+    state.record_ota_catalog_receipt(
+        "f" * 64, now=401, evidence_path=fresh_path,
+    )
+    recorded = state.record_ota_probe(probe, now=402)
+    challenge, _token = state.issue_ota_challenge(
+        component="scanner0",
+        artifact_sha256=recorded.sha256,
+        artifact_crc32=recorded.crc32,
+        mode="newer-only",
+        now=402,
+    )
+    assert challenge.offsets_sha256 == "f" * 64
+    assert state.baseline_catalog_captured_at == 100
+    assert state.ota_catalog_captured_at == 401
 
 
 def test_ota_probe_is_read_only_and_apply_requires_one_use_challenge(tmp_path: Path):
     state = ota_ready_state(tmp_path)
-    probe = state.record_ota_probe(parse_ota_evidence(valid_probe()))
+    probe = state.record_ota_probe(parse_ota_evidence(valid_probe()), now=100)
     challenge, token = state.issue_ota_challenge(
         component="scanner0", artifact_sha256=probe.sha256,
         artifact_crc32=probe.crc32, mode="same-version-recovery", now=100,
