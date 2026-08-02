@@ -10,6 +10,7 @@ firmware; this recorder accepts only the explicit backend firmware family.
 from __future__ import annotations
 
 import argparse
+import contextlib
 from dataclasses import asdict, dataclass
 from email.utils import parsedate_to_datetime
 import fcntl
@@ -18,6 +19,7 @@ import json
 import os
 from pathlib import Path
 import re
+import secrets
 import stat
 import sys
 import time
@@ -61,13 +63,29 @@ MAX_EPOCH_MS = MAX_EPOCH_SECONDS * 1000 + 999
 MAX_HTTP_JSON = 8 * 1024 * 1024
 HTTP_TIMEOUT_SECONDS = 10
 POLL_INTERVAL_SECONDS = 0.5
+SERIAL_LOG_MAX_AGE_MS = 300_000
+SERIAL_LOG_ROLES = ("scanner0", "scanner1", "uplink")
+HEALTHY_SNAPSHOT_PHASES = frozenset({
+    "baseline", "drone", "meta", "drone-meta", "outage-start",
+    "outage-end", "network-recovery", "scanner0-reconnected",
+    "fatal-recovered",
+})
+DEGRADED_SNAPSHOT_PHASES = {
+    "scanner0-disconnected": ((False, True), "uart_lost"),
+    "both-scanners-disconnected": ((False, False), "fatal"),
+}
+ZERO_QUEUE_PHASES = frozenset({"baseline", "network-recovery"})
+HEALTHY_LED_PHASES = frozenset({
+    "baseline", "network-recovery", "scanner0-reconnected", "fatal-recovered",
+})
 
 SECRET_KEY = re.compile(
     r"password|secret|credential|token|authorization|cookie|set-cookie|api_key",
     re.IGNORECASE,
 )
 RAW_BLE_KEY = re.compile(
-    r"^(?:value_hex|ble_raw(?:_.*)?|raw_ble(?:_.*)?|characteristic_value)$",
+    r"^(?:value_hex|ble_raw(?:_.*)?|raw_ble(?:_.*)?|characteristic_value|"
+    r"ble_apple_auth|ble_auth_payload|raw_auth_payload|auth(?:entication)?_value)$",
     re.IGNORECASE,
 )
 MAC_RE = re.compile(r"^[0-9A-F]{2}(?::[0-9A-F]{2}){5}$")
@@ -244,29 +262,61 @@ def _fsync_directory(path: Path) -> None:
         os.close(descriptor)
 
 
-def _create_ready_file(path: Path, payload: Mapping[str, Any]) -> None:
+def _create_ready_file(
+    path: Path,
+    payload: Mapping[str, Any],
+    *,
+    requested_after_ms: int,
+    now: Callable[[], float],
+) -> int:
     destination = _require_canary_storage(path, "ready file")
     parent = _secure_directory(destination.parent)
+    if os.path.lexists(destination):
+        raise EvidenceError("ready file already exists")
+    temporary = parent / f".{destination.name}.{secrets.token_hex(8)}.tmp"
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
     try:
-        descriptor = os.open(destination, flags, 0o600)
+        descriptor = os.open(temporary, flags, 0o600)
     except FileExistsError as exc:
-        raise EvidenceError("ready file already exists") from exc
+        raise EvidenceError("ready file temporary collision") from exc
     try:
         os.fchmod(descriptor, 0o600)
-        _write_all(descriptor, _canonical_json_bytes(payload) + b"\n")
+        prepared_ms = int(now() * 1000)
+        ready_cutoff_ms = max(
+            requested_after_ms,
+            (prepared_ms // 1000 + 5) * 1000,
+        )
+        ready = dict(payload)
+        ready.update(
+            state="ready",
+            requested_after_ms=requested_after_ms,
+            ready_cutoff_ms=ready_cutoff_ms,
+        )
+        _write_all(descriptor, _canonical_json_bytes(ready) + b"\n")
         os.fsync(descriptor)
-    except BaseException:
-        try:
-            destination.unlink()
-        except OSError:
-            pass
-        raise
     finally:
         os.close(descriptor)
-    _fsync_directory(parent)
+    try:
+        if int(now() * 1000) >= ready_cutoff_ms:
+            raise EvidenceError("ready cutoff elapsed before atomic publication")
+        try:
+            os.link(temporary, destination, follow_symlinks=False)
+        except FileExistsError as exc:
+            raise EvidenceError("ready file already exists") from exc
+        _fsync_directory(parent)
+        if int(now() * 1000) >= ready_cutoff_ms:
+            destination.unlink()
+            _fsync_directory(parent)
+            raise EvidenceError("ready cutoff elapsed during atomic publication")
+        temporary.unlink()
+        _fsync_directory(parent)
+        return ready_cutoff_ms
+    except BaseException:
+        with contextlib.suppress(OSError):
+            temporary.unlink()
+        raise
     _private_mode(destination, 0o600, "ready file")
 
 
@@ -750,8 +800,6 @@ def _validate_node(
         "upload": redact_secrets(dict(_required_mapping(node.get("upload"), "upload telemetry"))),
         "health": redact_secrets(dict(health)),
         "fifo_sequence": fifo_sequence,
-        "unexpected_resets": 0,
-        "schema_errors": 0,
         "continuity": dict(continuity),
         "node": redact_secrets(dict(node)),
     }
@@ -835,12 +883,32 @@ class CanaryEvidenceRecorder:
         return backend, responses, server_times
 
     def snapshot(self, phase: str) -> dict[str, Any]:
-        if not isinstance(phase, str) or not phase.strip():
-            raise EvidenceError("snapshot phase is required")
+        if (
+            not isinstance(phase, str)
+            or phase != phase.strip()
+            or phase not in HEALTHY_SNAPSHOT_PHASES | set(DEGRADED_SNAPSHOT_PHASES)
+        ):
+            raise EvidenceError("snapshot phase is not an exact bounded phase")
+        degraded = DEGRADED_SNAPSHOT_PHASES.get(phase)
         backend, response_hashes, server_times = self._capture_backend(
             include_history=True,
-            require_healthy=True,
+            require_healthy=degraded is None,
         )
+        health = tuple(
+            scanner["radio_healthy"] for scanner in backend["scanners"]
+        )
+        if degraded is not None:
+            expected_health, expected_led = degraded
+            if health != expected_health or backend["led_state"] != expected_led:
+                raise EvidenceError(
+                    "degraded snapshot topology/LED state is not exact"
+                )
+        if phase in ZERO_QUEUE_PHASES and (
+            backend["upload_queue"]["depth_batches"] != 0
+        ):
+            raise EvidenceError(f"{phase} requires an empty upload queue")
+        if phase in HEALTHY_LED_PHASES and backend["led_state"] != "healthy":
+            raise EvidenceError(f"{phase} requires exact healthy LED state")
         record = redact_secrets({
             "schema": 1,
             "record_type": "snapshot",
@@ -935,7 +1003,7 @@ def wait_for_detection(
     initial = _fetch(fetch_json, history_url)
     # Validate the first response, but never accept it: only a ready file that
     # was fsynced after this successful poll authorizes RF source enablement.
-    find_matching_detection(
+    initial_match = find_matching_detection(
         _required_mapping(initial.payload, "history response"),
         device_id=device_id,
         kind=kind,
@@ -946,14 +1014,14 @@ def wait_for_detection(
         service_uuid_token=service_uuid_token,
         after_ms=after_ms,
     )
-    _create_ready_file(ready_file, {
+    if initial_match is not None:
+        raise EvidenceError("matching source was already present before ready")
+    ready_cutoff_ms = _create_ready_file(ready_file, {
         "schema": 1,
         "device_id": device_id,
         "kind": kind,
-        "after_ms": after_ms,
         "initial_response_sha256": _sha256(initial.raw),
-        "ready_at_ms": int(now() * 1000),
-    })
+    }, requested_after_ms=after_ms, now=now)
     while monotonic() <= deadline:
         response = _fetch(fetch_json, history_url)
         match = find_matching_detection(
@@ -965,7 +1033,7 @@ def wait_for_detection(
             identity_value=identity_value,
             manufacturer=manufacturer,
             service_uuid_token=service_uuid_token,
-            after_ms=after_ms,
+            after_ms=ready_cutoff_ms,
         )
         if match is not None:
             record = redact_secrets({
@@ -974,7 +1042,8 @@ def wait_for_detection(
                 "phase": kind,
                 "device_id": device_id,
                 "observed_at_ms": int(now() * 1000),
-                "after_ms": after_ms,
+                "after_ms": ready_cutoff_ms,
+                "requested_after_ms": after_ms,
                 "response_sha256": _sha256(response.raw),
                 "detection": match,
             })
@@ -1101,28 +1170,81 @@ def wait_for_led(
     raise EvidenceError("LED wait timed out before the exact state")
 
 
-def _serial_log_receipt(directory: Path) -> list[dict[str, Any]]:
+def _serial_log_receipt(
+    directory: Path,
+    *,
+    observed_at_ms: int,
+) -> list[dict[str, Any]]:
     root = directory.expanduser().resolve()
     if not root.is_dir() or root.is_symlink():
         raise EvidenceError("serial log directory is unavailable")
+    _private_mode(root, 0o700, "serial log directory")
+    expected_names = {f"{role}.log" for role in SERIAL_LOG_ROLES}
+    observed_names = {path.name for path in root.iterdir()}
+    if observed_names != expected_names:
+        raise EvidenceError(
+            "serial log directory must contain exactly scanner0.log, "
+            "scanner1.log, and uplink.log"
+        )
     receipts: list[dict[str, Any]] = []
     forbidden_content = re.compile(
-        rb"password|credential|authorization|api[_-]?key|value_hex|"
-        rb"watchdog|guru meditation|panic|rollback_failed",
+        rb"password|secret|credential|token|authorization|cookie|"
+        rb"set[-_]?cookie|api[_-]?key|value[_-]?hex|ble[_-]?raw|"
+        rb"raw[_-]?ble|characteristic[_-]?value|ble[_-]?apple[_-]?auth|"
+        rb"ble[_-]?auth[_-]?payload|raw[_-]?auth[_-]?payload|"
+        rb"auth(?:entication)?[_-]?value|watchdog|guru meditation|panic|"
+        rb"rollback_failed",
         re.IGNORECASE,
     )
-    for path in sorted(root.iterdir(), key=lambda item: item.name):
-        if path.is_symlink() or not path.is_file():
-            continue
+    for role in SERIAL_LOG_ROLES:
+        path = root / f"{role}.log"
+        details = path.lstat()
+        if path.is_symlink() or not stat.S_ISREG(details.st_mode):
+            raise EvidenceError(f"serial log {path.name} is not a regular file")
+        if stat.S_IMODE(details.st_mode) != 0o600:
+            raise EvidenceError(f"serial log {path.name} must have mode 0600")
         raw = path.read_bytes()
+        mtime_ms = details.st_mtime_ns // 1_000_000
+        if not raw:
+            raise EvidenceError(f"serial log {path.name} is empty")
+        if (
+            mtime_ms > observed_at_ms + 5_000
+            or observed_at_ms - mtime_ms > SERIAL_LOG_MAX_AGE_MS
+        ):
+            raise EvidenceError(f"serial log {path.name} is not current")
         if forbidden_content.search(raw):
             raise EvidenceError(f"serial log gate failed for {path.name}")
         receipts.append({
+            "role": role,
             "name": path.name,
             "size": len(raw),
             "sha256": _sha256(raw),
+            "mtime_ms": mtime_ms,
         })
     return receipts
+
+
+def _validate_serial_log_receipts(value: Any, *, observed_at_ms: int) -> None:
+    if not isinstance(value, list) or len(value) != len(SERIAL_LOG_ROLES):
+        raise EvidenceError("soak serial evidence requires exactly three role logs")
+    for raw, role in zip(value, SERIAL_LOG_ROLES):
+        receipt = _required_mapping(raw, "soak serial receipt")
+        if set(receipt) != {"role", "name", "size", "sha256", "mtime_ms"}:
+            raise EvidenceError("soak serial receipt fields are not exact")
+        if receipt.get("role") != role or receipt.get("name") != f"{role}.log":
+            raise EvidenceError("soak serial receipt role binding changed")
+        _required_int(receipt.get("size"), "soak serial size", minimum=1)
+        digest = receipt.get("sha256")
+        if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+            raise EvidenceError("soak serial receipt SHA-256 is invalid")
+        mtime_ms = _required_int(
+            receipt.get("mtime_ms"), "soak serial mtime", minimum=MIN_EPOCH_MS,
+        )
+        if (
+            mtime_ms > observed_at_ms + 5_000
+            or observed_at_ms - mtime_ms > SERIAL_LOG_MAX_AGE_MS
+        ):
+            raise EvidenceError("soak serial receipt is not current")
 
 
 def monitor_soak(
@@ -1210,7 +1332,9 @@ def monitor_soak(
             "heartbeat_at_ms": heartbeat_at_ms,
             "server_timestamps_ms": server_times,
             "response_sha256": hashes,
-            "serial_logs": _serial_log_receipt(serial_log_dir),
+            "serial_logs": _serial_log_receipt(
+                serial_log_dir, observed_at_ms=observed_at_ms,
+            ),
             "backend": backend,
         })
         if contains_secret_key(record):
@@ -1269,8 +1393,6 @@ def _validate_soak_backend(value: Any) -> dict[str, Any]:
     ):
         _required_int(queue.get(field), f"soak queue {field}")
     _required_int(backend.get("fifo_sequence"), "soak FIFO sequence", minimum=1)
-    _required_int(backend.get("unexpected_resets"), "soak reset counter")
-    _required_int(backend.get("schema_errors"), "soak schema error counter")
     health = _required_mapping(backend.get("health"), "soak health")
     _required_int(health.get("uptime_ms"), "soak uptime")
     continuity = _required_mapping(backend.get("continuity"), "soak continuity")
@@ -1337,6 +1459,9 @@ def verify_soak(
             raise EvidenceError("soak device ID changed")
         observed = _required_int(row.get("observed_at_ms"), "soak observed time", minimum=MIN_EPOCH_MS)
         heartbeat = _required_int(row.get("heartbeat_at_ms"), "soak heartbeat time", minimum=MIN_EPOCH_MS)
+        _validate_serial_log_receipts(
+            row.get("serial_logs"), observed_at_ms=observed,
+        )
         if observed < previous_observed or heartbeat > observed:
             raise EvidenceError("soak heartbeat/timestamp ordering is invalid")
         previous_observed = observed
@@ -1364,10 +1489,6 @@ def verify_soak(
         if uptime < previous_uptime:
             raise EvidenceError("soak contains an unexpected uplink reset")
         previous_uptime = uptime
-        if backend["unexpected_resets"] != 0:
-            raise EvidenceError("soak contains an unexpected reset")
-        if backend["schema_errors"] != 0:
-            raise EvidenceError("soak contains a schema error")
         identity_key = tuple(sorted(backend["identity"].items()))
         boots = (
             backend["uplink_boot_id"],

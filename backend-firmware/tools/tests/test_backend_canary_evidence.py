@@ -10,8 +10,11 @@ import pytest
 from tools.backend_canary_evidence import (
     CanaryEvidenceRecorder,
     EvidenceError,
+    _create_ready_file,
+    _serial_log_receipt,
     contains_secret_key,
     find_matching_detection,
+    monitor_soak,
     normalize_history_timestamp_ms,
     validate_command_history,
     verify_soak,
@@ -249,6 +252,8 @@ def test_evidence_snapshot_is_canonical_redacted_and_bound_to_device(tmp_path):
     ]
     assert record["backend"]["uplink_boot_id"] == 9001
     assert record["backend"]["uplink_final_health"]["rollback_clear"] is True
+    assert "unexpected_resets" not in record["backend"]
+    assert "schema_errors" not in record["backend"]
     assert not contains_secret_key(record)
     assert stat.S_IMODE(path.parent.stat().st_mode) == 0o700
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
@@ -261,6 +266,52 @@ def test_snapshot_rejects_wrong_device_id(tmp_path):
     )
     with pytest.raises(EvidenceError, match="device"):
         recorder.snapshot("baseline")
+
+
+@pytest.mark.parametrize(
+    ("phase", "healthy", "led"),
+    [
+        ("scanner0-disconnected", (False, True), "uart_lost"),
+        ("both-scanners-disconnected", (False, False), "fatal"),
+    ],
+)
+def test_snapshot_accepts_only_exact_bounded_degraded_topology(
+    tmp_path, phase, healthy, led,
+):
+    status = nodes_status_fixture()
+    node = status["nodes"][0]
+    node["led_state"] = led
+    for scanner, expected in zip(node["scanners"], healthy):
+        scanner["radio_healthy"] = expected
+    record = make_recorder(
+        tmp_path, FakeBackend(nodes_status=status),
+    ).snapshot(phase)
+    assert [
+        item["radio_healthy"] for item in record["backend"]["scanners"]
+    ] == list(healthy)
+    assert record["backend"]["led_state"] == led
+
+
+def test_snapshot_rejects_arbitrary_degraded_baseline_and_nonzero_queue(tmp_path):
+    status = nodes_status_fixture()
+    status["nodes"][0]["scanners"][0]["radio_healthy"] = False
+    status["nodes"][0]["led_state"] = "uart_lost"
+    with pytest.raises(EvidenceError):
+        make_recorder(
+            tmp_path / "degraded", FakeBackend(nodes_status=status),
+        ).snapshot("baseline")
+
+    queued = nodes_status_fixture()
+    queued["nodes"][0]["upload_queue"]["depth_batches"] = 1
+    with pytest.raises(EvidenceError, match="queue"):
+        make_recorder(
+            tmp_path / "queued", FakeBackend(nodes_status=queued),
+        ).snapshot("baseline")
+
+    with pytest.raises(EvidenceError, match="phase"):
+        make_recorder(tmp_path / "unknown", FakeBackend()).snapshot(
+            "network-recovery-copy"
+        )
 
 
 def test_snapshot_refuses_output_outside_ignored_canary_directory(tmp_path):
@@ -443,6 +494,26 @@ def test_command_history_redacts_raw_characteristic_values():
     assert "value_hex" not in record["events"][1]
 
 
+def test_command_history_redacts_real_apple_auth_payload_but_keeps_boolean():
+    history = command_history_fixture(
+        states=("ble_inv_begin", "ble_inv_read", "ble_inv_end"),
+        terminal_state="complete",
+    )
+    history["events"][1].update(
+        ble_apple_auth="01a5ff",
+        ble_auth_payload="01a5ff",
+        authentication_required=True,
+    )
+    record = validate_command_history(
+        history, device_id=DEVICE_ID, command_id=COMMAND_ID,
+        terminal_state="complete",
+    )
+    event = record["events"][1]
+    assert "ble_apple_auth" not in event
+    assert "ble_auth_payload" not in event
+    assert event["authentication_required"] is True
+
+
 def test_command_wait_rejects_nonterminal_timeout(tmp_path):
     history = command_history_fixture(states=("ble_inv_begin",))
     history.update(
@@ -571,7 +642,7 @@ def test_wait_detection_creates_ready_file_only_after_successful_initial_poll(
         calls.append((ready.exists(), timeout, url))
         if len(calls) == 1:
             return history_fixture()
-        return history_fixture(history_row(kind="drone"))
+        return history_fixture(history_row(kind="drone", timestamp=1_785_600_006))
 
     ticks = iter((0.0, 0.0, 0.1, 0.1))
     record = wait_for_detection(
@@ -585,7 +656,135 @@ def test_wait_detection_creates_ready_file_only_after_successful_initial_poll(
     assert calls[0][0] is False
     assert calls[1][0] is True
     assert record["detection"]["drone_id"] == "RID-CANON-001"
+    ready_record = json.loads(ready.read_text())
+    assert record["after_ms"] == ready_record["ready_cutoff_ms"]
+    assert record["after_ms"] > 1_785_600_001_000
     assert stat.S_IMODE(ready.stat().st_mode) == 0o600
+
+
+def test_ready_file_is_absent_until_atomic_ready_publication(tmp_path):
+    ready = tmp_path / ".canary/evidence/source.ready"
+    visible: list[bool] = []
+
+    def now() -> float:
+        visible.append(ready.exists() and ready.stat().st_size > 0)
+        return 1_785_600_001.0
+
+    cutoff = _create_ready_file(
+        ready,
+        {"schema": 1, "kind": "drone"},
+        requested_after_ms=1_785_600_000_000,
+        now=now,
+    )
+    assert visible[:2] == [False, False]
+    assert visible[-1] is True
+    assert json.loads(ready.read_text()) == {
+        "kind": "drone",
+        "ready_cutoff_ms": cutoff,
+        "requested_after_ms": 1_785_600_000_000,
+        "schema": 1,
+        "state": "ready",
+    }
+
+
+def test_wait_detection_rejects_source_already_present_before_ready(tmp_path):
+    ready = tmp_path / ".canary/evidence/drone.ready"
+    with pytest.raises(EvidenceError, match="before ready"):
+        wait_for_detection(
+            backend_base="http://127.0.0.1:8000", device_id=DEVICE_ID,
+            kind="drone", source="wifi_beacon_rid", identity_field="drone_id",
+            identity_value="RID-CANON-001", after_ms=1_785_600_000_000,
+            ready_file=ready, timeout_s=120,
+            output=tmp_path / ".canary/evidence/canary.jsonl",
+            fetch_json=lambda _url, timeout: history_fixture(
+                history_row(kind="drone", timestamp=1_785_600_001)
+            ),
+            now=lambda: 1_785_600_001.0,
+            monotonic=lambda: 0.0,
+            sleep=lambda _seconds: None,
+        )
+    assert not ready.exists()
+
+
+def test_serial_log_receipt_requires_exact_private_current_three_roles(tmp_path):
+    root = tmp_path / "serial-logs"
+    root.mkdir(mode=0o700)
+    observed_at_ms = 1_785_600_000_000
+    for role in ("scanner0", "scanner1", "uplink"):
+        path = root / f"{role}.log"
+        path.write_bytes(f"{role} healthy\n".encode())
+        path.chmod(0o600)
+        os.utime(path, ns=(observed_at_ms * 1_000_000,) * 2)
+    receipts = _serial_log_receipt(root, observed_at_ms=observed_at_ms)
+    assert [item["role"] for item in receipts] == [
+        "scanner0", "scanner1", "uplink",
+    ]
+    (root / "scanner1.log").unlink()
+    with pytest.raises(EvidenceError, match="exactly"):
+        _serial_log_receipt(root, observed_at_ms=observed_at_ms)
+
+
+@pytest.mark.parametrize(
+    "forbidden",
+    (
+        b"secret=wifi-value\n",
+        b"token=backend-value\n",
+        b"cookie=session-value\n",
+        b"Set-Cookie: session=value\n",
+        b"raw_auth_payload=001122\n",
+    ),
+)
+def test_serial_log_receipt_rejects_full_secret_and_raw_auth_vocabulary(
+    tmp_path,
+    forbidden,
+):
+    root = tmp_path / "serial-logs"
+    root.mkdir(mode=0o700)
+    observed_at_ms = 1_785_600_000_000
+    for role in ("scanner0", "scanner1", "uplink"):
+        path = root / f"{role}.log"
+        path.write_bytes(b"healthy\n")
+        path.chmod(0o600)
+        os.utime(path, ns=(observed_at_ms * 1_000_000,) * 2)
+    (root / "scanner0.log").write_bytes(forbidden)
+    (root / "scanner0.log").chmod(0o600)
+    os.utime(
+        root / "scanner0.log",
+        ns=(observed_at_ms * 1_000_000,) * 2,
+    )
+
+    with pytest.raises(EvidenceError, match="serial log gate"):
+        _serial_log_receipt(root, observed_at_ms=observed_at_ms)
+
+
+def test_monitor_records_exact_three_board_serial_receipts(tmp_path):
+    output = tmp_path / ".canary/evidence/monitor.jsonl"
+    write_state(output)
+    logs = tmp_path / ".canary/serial-logs"
+    logs.mkdir(mode=0o700)
+    observed_at_ms = 1_785_600_000_000
+    for role in ("scanner0", "scanner1", "uplink"):
+        path = logs / f"{role}.log"
+        path.write_text(f"{role} running\n")
+        path.chmod(0o600)
+        os.utime(path, ns=(observed_at_ms * 1_000_000,) * 2)
+    ticks = iter((0.0, 1.0))
+    monitor_soak(
+        backend_base="http://127.0.0.1:8000",
+        device_id=DEVICE_ID,
+        duration_s=1,
+        interval_s=1,
+        serial_log_dir=logs,
+        output=output,
+        fetch_json=FakeBackend(),
+        now=lambda: observed_at_ms / 1000,
+        monotonic=lambda: next(ticks),
+        sleep=lambda _seconds: None,
+    )
+    row = json.loads(output.read_text())
+    assert [item["role"] for item in row["serial_logs"]] == [
+        "scanner0", "scanner1", "uplink",
+    ]
 
 
 def soak_backend(*, queue_depth: int = 0, fifo_sequence: int = 1) -> dict:
@@ -616,8 +815,6 @@ def soak_backend(*, queue_depth: int = 0, fifo_sequence: int = 1) -> dict:
             "quarantined_batches": 0,
         },
         "fifo_sequence": fifo_sequence,
-        "unexpected_resets": 0,
-        "schema_errors": 0,
         "continuity": dict(CONTINUITY),
         "health": {"uptime_ms": 90_000},
     }
@@ -628,8 +825,6 @@ def write_soak_fixture(
     *,
     duration_s: int = 86_400,
     heartbeat_gap_s: int = 90,
-    unexpected_resets: int = 0,
-    schema_errors: int = 0,
     final_queue_depth: int = 0,
 ) -> Path:
     path = tmp_path / "canary.jsonl"
@@ -655,10 +850,18 @@ def write_soak_fixture(
             "device_id": DEVICE_ID,
             "observed_at_ms": first_ms + offset_s * 1000,
             "heartbeat_at_ms": first_ms + offset_s * 1000,
+            "serial_logs": [
+                {
+                    "role": role,
+                    "name": f"{role}.log",
+                    "size": 100 + index,
+                    "sha256": f"{slot + 1}" * 64,
+                    "mtime_ms": first_ms + offset_s * 1000,
+                }
+                for slot, role in enumerate(("scanner0", "scanner1", "uplink"))
+            ],
             "backend": backend,
         })
-    rows[-1]["backend"]["unexpected_resets"] = unexpected_resets
-    rows[-1]["backend"]["schema_errors"] = schema_errors
     path.write_text("".join(
         json.dumps(row, sort_keys=True, separators=(",", ":")) + "\n"
         for row in rows
@@ -667,11 +870,9 @@ def write_soak_fixture(
     return path
 
 
-def test_soak_rejects_gap_reset_schema_error_or_unfinished_queue(tmp_path):
+def test_soak_rejects_gap_or_unfinished_queue(tmp_path):
     for kwargs in (
         {"heartbeat_gap_s": 91},
-        {"unexpected_resets": 1},
-        {"schema_errors": 1},
         {"final_queue_depth": 2},
     ):
         path = write_soak_fixture(tmp_path, **kwargs)
@@ -708,6 +909,15 @@ def test_soak_rejects_missing_scanner_final_health(tmp_path):
     rows[-1]["backend"]["scanners"][1].pop("final_health")
     path.write_text("".join(json.dumps(row) + "\n" for row in rows))
     with pytest.raises(EvidenceError, match="final_health"):
+        verify_soak(path, expected_duration_s=86_400, max_heartbeat_gap_s=90)
+
+
+def test_soak_rejects_missing_three_board_serial_receipts(tmp_path):
+    path = write_soak_fixture(tmp_path)
+    rows = [json.loads(line) for line in path.read_text().splitlines()]
+    rows[-1]["serial_logs"] = rows[-1]["serial_logs"][:2]
+    path.write_text("".join(json.dumps(row) + "\n" for row in rows))
+    with pytest.raises(EvidenceError, match="serial"):
         verify_soak(path, expected_duration_s=86_400, max_heartbeat_gap_s=90)
 
 
