@@ -1,7 +1,8 @@
 """Pydantic v2 models for API request/response schemas."""
 
 import math
-from typing import Any, Literal
+import re
+from typing import Annotated, Any, Literal
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 
@@ -129,6 +130,12 @@ class DroneDetectionItem(BaseModel):
     altitude_m: float | None = Field(None, description="Altitude in meters MSL")
     heading_deg: float | None = Field(None, description="Heading 0-360 degrees true north")
     speed_mps: float | None = Field(None, description="Ground speed in m/s")
+    fused_confidence: float | None = Field(None, ge=0.0, le=1.0)
+    vertical_speed_mps: float | None = None
+    freq_mhz: int | None = Field(
+        None,
+        validation_alias=AliasChoices("freq_mhz", "frequency_mhz"),
+    )
     rssi: int | None = Field(None, description="Signal strength in dBm")
     estimated_distance_m: float | None = Field(
         None,
@@ -152,27 +159,44 @@ class DroneDetectionItem(BaseModel):
     ssid: str | None = Field(None, description="WiFi SSID if detected via WiFi")
     bssid: str | None = Field(None, description="WiFi BSSID (MAC address)")
     channel: int | None = Field(None, description="WiFi channel if available from the scanner")
-    auth_m: int | None = Field(
-        None,
-        description="WiFi AP authentication mode (v0.61+, Marauder-parity). "
-                    "0=open, 1=WEP, 2=WPA-PSK, 3=WPA2-PSK, 4=WPA/WPA2-PSK, "
-                    "5=WPA2-Enterprise, 6=WPA3-PSK, 7=WPA2/WPA3-PSK, 8=WAPI, "
-                    "9=OWE, 10=WPA3-Enterprise-192. Absent for non-WiFi or pre-v0.61. "
-                    "Key is 'auth_m' (not 'auth') to avoid substring collision with 'auth_fr'."
-    )
+    channel_width_mhz: int | None = None
+    ua_type: int | None = Field(None, ge=0, le=255)
+    id_type: int | None = Field(None, ge=0, le=255)
+    self_id_desc_type: int | None = Field(None, ge=0, le=255)
+    height_agl_m: float | None = None
+    geodetic_alt_m: float | None = None
+    h_accuracy_m: float | None = Field(None, ge=0.0)
+    v_accuracy_m: float | None = Field(None, ge=0.0)
+    area_count: int | None = Field(None, ge=0, le=65535)
+    area_radius: int | None = Field(None, ge=0, le=65535)
+    area_ceiling: float | None = None
+    area_floor: float | None = None
+    classification_type: int | None = Field(None, ge=0, le=255)
+    first_seen_ms: int | None = None
+    last_updated_ms: int | None = None
+    wifi_generation: int | None = Field(None, ge=0, le=6)
+    auth_m: int | None = Field(None, ge=0, le=10)
     # BLE fingerprinting fields (from ESP32 scanner)
     ble_company_id: int | None = Field(None, description="BLE company ID (0x004C=Apple, 0x0075=Samsung, etc.)")
     ble_apple_type: int | None = Field(None, description="Apple Continuity sub-type (0x07=AirPods, 0x10=NearbyInfo, 0x12=FindMy)")
     ble_ad_type_count: int | None = Field(None, description="Number of distinct AD types in advertisement")
     ble_payload_len: int | None = Field(None, description="Raw BLE advertisement payload length")
     ble_addr_type: int | None = Field(None, description="BLE address type (0=public, 1=random static, 2=RPA)")
-    ble_ja3: str | None = Field(None, description="BLE-JA3 structural profile hash (same for all devices of same model)")
-    ble_apple_auth: str | None = Field(None, description="Apple Continuity auth tag hex (rotates slower than MAC)")
-    ble_activity: int | None = Field(None, description="Apple activity code (0=idle, 1=audio, 2=phone, 3=video)")
-    ble_raw_mfr: str | None = Field(None, description="Raw manufacturer data hex (first 20 bytes)")
-    ble_adv_interval: float | None = Field(None, description="BLE advertisement interval in ms")
-    ble_svc_uuids: str | None = Field(None, description="Comma-separated 16-bit BLE service UUIDs (hex)")
-    ble_apple_flags: int | None = Field(None, description="Apple Nearby Info data-flags byte (v0.58+ scanners, always emitted — 0 ≠ absent).")
+    ble_ja3: str | None = Field(None, pattern=r"^[0-9A-Fa-f]{8}$")
+    ble_apple_auth: str | None = Field(None, pattern=r"^[0-9A-Fa-f]{6}$")
+    ble_activity: int | None = Field(None, ge=0, le=255)
+    ble_raw_mfr: str | None = Field(
+        None, pattern=r"^(?:[0-9A-Fa-f]{2}){1,20}$",
+    )
+    ble_adv_interval: float | None = Field(None, gt=0, allow_inf_nan=False)
+    ble_svc_uuids: str | None = Field(None, max_length=160)
+    ble_apple_flags: int | None = Field(None, ge=0, le=255)
+    ble_threat_kind: int | None = Field(None, ge=0, le=255)
+    ble_prompt_family_mask: int | None = Field(None, ge=0, le=255)
+    ble_unique_macs: int | None = Field(None, ge=0, le=65535)
+    ble_observation_count: int | None = Field(None, ge=0, le=65535)
+    ble_serial_service_uuid: int | None = Field(None, ge=0, le=65535)
+    ble_threat_evidence_mask: int | None = Field(None, ge=0, le=255)
     ble_name: str | None = Field(None, description="BLE local name evidence, if advertised")
     class_reason: str | None = Field(None, description="Short scanner classification reason/evidence")
     probed_ssids: list[str] | None = Field(
@@ -180,13 +204,7 @@ class DroneDetectionItem(BaseModel):
         validation_alias=AliasChoices("probed_ssids", "probed"),
         description="SSIDs this device is probing for (from probe requests)",
     )
-    ie_hash: str | None = Field(
-        None,
-        description="Hex FNV1a hash of WiFi probe-request Information Elements — "
-                    "a stable identity across MAC rotations (phones reuse the same "
-                    "IE ordering + capability bits after rotating MACs). Populated "
-                    "by the scanner for probe_request sources when firmware supports it.",
-    )
+    ie_hash: str | None = Field(None, pattern=r"^[0-9A-Fa-f]{8}$")
     mac_is_randomized: bool | None = Field(None, description="True when the MAC is randomized/private")
     mac_identity_kind: str | None = Field(None, description="public_oui, randomized, ble_rpa, ble_random_static, or unknown")
     mac_reason: str | None = Field(None, description="Reason for MAC identity classification")
@@ -274,6 +292,44 @@ class DroneDetectionItem(BaseModel):
         cleaned = [part for part in values if part]
         return cleaned or None
 
+    @field_validator("ie_hash", "ble_ja3", "ble_apple_auth", "ble_raw_mfr", mode="after")
+    @classmethod
+    def normalize_hex_evidence(cls, value: str | None) -> str | None:
+        return value.lower() if value is not None else None
+
+    @field_validator("ble_svc_uuids", mode="after")
+    @classmethod
+    def normalize_ble_service_uuids(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        tokens = value.split(",")
+        if not 1 <= len(tokens) <= 6:
+            raise ValueError("ble_svc_uuids must contain one through six UUIDs")
+        uuid_re = re.compile(
+            r"^(?:[0-9A-Fa-f]{4}|[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12})$"
+        )
+        if any(not token or token != token.strip() or not uuid_re.fullmatch(token) for token in tokens):
+            raise ValueError("ble_svc_uuids must be comma-separated canonical UUIDs")
+        return ",".join(token.lower() for token in tokens)
+
+
+class BackendUploadQueueTelemetry(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    depth_batches: int = Field(ge=0, le=512)
+    capacity_batches: int = Field(512, ge=1, le=512)
+    overflow_dropped_batches: int = Field(ge=0)
+    quarantined_batches: int = Field(ge=0)
+
+
+class BackendUploadTelemetry(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    ok: int = Field(ge=0)
+    failed: int = Field(ge=0)
+    retry_count: int = Field(ge=0)
+    last_success_age_s: int | None = Field(None, ge=0)
+
 
 class DroneDetectionBatch(BaseModel):
     """Batch of drone detections from a single ESP32 sensor node."""
@@ -286,6 +342,27 @@ class DroneDetectionBatch(BaseModel):
     device_alt: float | None = Field(None, description="Sensor device altitude in meters")
     timestamp: int | None = Field(None, description="Batch timestamp (epoch seconds)")
     firmware_version: str | None = Field(None, description="Firmware version (e.g. 0.35.0)")
+    firmware_target: str | None = Field(
+        None,
+        validation_alias=AliasChoices("firmware_target", "firmware_name"),
+    )
+    app_project: str | None = None
+    hardware_type: str | None = None
+    hardware_mac: str | None = Field(
+        None,
+        validation_alias=AliasChoices("hardware_mac", "hardware_id"),
+        pattern=r"^[0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5}$",
+    )
+    capabilities: list[Annotated[str, Field(max_length=40)]] | None = Field(
+        None, max_length=16,
+    )
+    node_name: str | None = Field(None, max_length=64)
+    led_state: Literal[
+        "healthy", "network_degraded", "drone", "meta",
+        "drone_meta", "fatal", "uart_lost",
+    ] | None = None
+    upload_queue: BackendUploadQueueTelemetry | None = None
+    upload: BackendUploadTelemetry | None = None
     board_type: str | None = Field(None, description="Board type (uplink-s3)")
     scanners: list[dict] | None = Field(
         None,
@@ -318,8 +395,11 @@ class DroneDetectionResponse(BaseModel):
     """Response for POST /detections/drones."""
 
     status: str = "ok"
-    accepted: int = Field(..., description="Number of detections accepted")
+    accepted: int = Field(..., description="Number of syntactically accepted transport items")
     device_id: str = Field(..., description="Echo of the submitting device ID")
+    processed: int = 0
+    deduplicated: int = 0
+    filtered: int = 0
 
 
 class StoredDetection(DroneDetectionItem):

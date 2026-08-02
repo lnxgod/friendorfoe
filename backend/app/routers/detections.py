@@ -9,7 +9,7 @@ from collections import defaultdict, deque
 from datetime import datetime, timezone, timedelta
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import func, select
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -371,7 +371,8 @@ _position_dedup: dict[str, tuple[float, float]] = {}
 # classifier / anomaly detector / DB aren't fed the same observation repeatedly.
 _INGEST_DEDUP_TTL_S = 30.0
 _INGEST_DEDUP_MAX = 4096
-_ingest_dedup: dict[tuple[str, str, str, int], float] = {}
+IngestDedupKey = tuple[str, str, str, int]
+_ingest_dedup: dict[IngestDedupKey, float] = {}
 
 # Drone-protocol sources bypass ingest dedup. ASTM Remote ID / DJI DroneID /
 # WiFi Beacon RID are precious signals — the drone is actively broadcasting
@@ -383,29 +384,32 @@ _NEVER_DEDUP_SOURCES = frozenset({"ble_rid", "wifi_beacon_rid", "wifi_dji_ie"})
 _MAC_RE = re.compile(r"[0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5}")
 
 
-def _ingest_dedup_hit(drone_id: str, source: str, bssid: str, ts: float) -> bool:
-    """True if we've seen this (drone, source, bssid) in the last 30 s.
-
-    Uses a 10-second timestamp bucket so the same beacon reported multiple
-    times within a scan window collapses to one record.
-
-    Drone-protocol sources are exempt — every RID / DJI IE / Beacon RID frame
-    is forwarded to the full pipeline.
-    """
+def _ingest_dedup_key(
+    drone_id: str, source: str, bssid: str, ts: float,
+) -> IngestDedupKey | None:
     if source in _NEVER_DEDUP_SOURCES:
-        return False
-    bucket = int(ts // 10)
-    key = (drone_id or "", source or "", (bssid or "").upper(), bucket)
-    prev = _ingest_dedup.get(key)
-    if prev is not None and (ts - prev) < _INGEST_DEDUP_TTL_S:
-        return True
-    _ingest_dedup[key] = ts
-    if len(_ingest_dedup) > _INGEST_DEDUP_MAX:
-        cutoff = ts - _INGEST_DEDUP_TTL_S
-        for k, v in list(_ingest_dedup.items()):
-            if v < cutoff:
-                del _ingest_dedup[k]
-    return False
+        return None
+    return (
+        drone_id or "",
+        source or "",
+        (bssid or "").upper(),
+        int(ts // 10),
+    )
+
+
+def _ingest_dedup_seen(key: IngestDedupKey, ts: float) -> bool:
+    previous = _ingest_dedup.get(key)
+    return previous is not None and (ts - previous) < _INGEST_DEDUP_TTL_S
+
+
+def _publish_ingest_dedup(keys: dict[IngestDedupKey, float], ts: float) -> None:
+    _ingest_dedup.update(keys)
+    if len(_ingest_dedup) <= _INGEST_DEDUP_MAX:
+        return
+    cutoff = ts - _INGEST_DEDUP_TTL_S
+    for key, seen_at in list(_ingest_dedup.items()):
+        if seen_at < cutoff:
+            del _ingest_dedup[key]
 
 
 # BSSID → most recent AP observation (SSID / vendor / channel) so association
@@ -960,10 +964,11 @@ async def ingest_drone_detections(
         batch.device_id, len(batch.detections), sensor_lat, sensor_lon, position_mode, geometry_enabled,
     )
 
-    accepted = 0
+    processed = 0
     db_detections = []
 
     dedup_skipped = 0
+    staged_dedup: dict[IngestDedupKey, float] = {}
     newly_emitted_events: list[tuple[str, str]] = []
     for det in batch.detections:
         # Skip our own infrastructure SSIDs — never store or process FoF-* detections
@@ -997,10 +1002,15 @@ async def ingest_drone_detections(
         )
 
         # Drop duplicates (scanner re-emission, uplink offline-replay, batch retries)
-        if (not is_calibration_beacon and
-                _ingest_dedup_hit(det.drone_id, det.source, det.bssid or "", received_at)):
-            dedup_skipped += 1
-            continue
+        if not is_calibration_beacon:
+            dedup_key = _ingest_dedup_key(
+                det.drone_id, det.source, det.bssid or "", received_at,
+            )
+            if dedup_key is not None:
+                if dedup_key in staged_dedup or _ingest_dedup_seen(dedup_key, received_at):
+                    dedup_skipped += 1
+                    continue
+                staged_dedup[dedup_key] = received_at
 
         # Enrich manufacturer from the IEEE OUI registry when the scanner
         # couldn't identify it locally. Wireshark's 56k-entry manuf file
@@ -1097,7 +1107,7 @@ async def ingest_drone_detections(
                     timestamp=det_ts,
                     range_authority="backend_rssi",
                 )
-                accepted += 1
+                processed += 1
                 continue
 
             # Ignore inactive or geometry-excluded calibration beacons
@@ -1374,7 +1384,7 @@ async def ingest_drone_detections(
             sensor_lon=sensor_lon,
             sensor_alt=sensor_alt,
             probed_ssids=json.dumps(det.probed_ssids) if det.probed_ssids else None,
-            timestamp=batch.timestamp,
+            timestamp=int(received_at),
         )
         db_detections.append(db_det)
 
@@ -1445,81 +1455,85 @@ async def ingest_drone_detections(
                         det.drone_id, batch.device_id, gps_spread_m, rssi_range
                     )
 
-        accepted += 1
+        processed += 1
 
     # Bulk insert to PostgreSQL
-    try:
-        db.add_all(db_detections)
-
-        # Store triangulated positions — skip range_only, deduplicate
-        located = _sensor_tracker.get_located_drones()
-        for d in located:
-            if _is_calibration_tracking_id(d.drone_id):
-                continue
-            # Skip single-sensor range_only (just sensor position, no real data)
-            if d.position_source == "range_only":
-                continue
-            # Skip if position hasn't moved >1m from last logged position
-            last_key = f"_last_pos_{d.drone_id}"
-            last_pos = _position_dedup.get(last_key)
-            if last_pos:
-                dlat = (d.lat - last_pos[0]) * 111320
-                dlon = (d.lon - last_pos[1]) * 111320 * 0.78  # cos(37°)
-                moved = (dlat**2 + dlon**2) ** 0.5
-                if moved < 1.0:
-                    continue
-            _position_dedup[last_key] = (d.lat, d.lon)
-
-            # Get best observation's SSID
-            best_obs = max(d.observations, key=lambda o: o.confidence) if d.observations else None
-            tri = TriangulatedPosition(
-                drone_id=d.drone_id,
-                lat=d.lat,
-                lon=d.lon,
-                alt=d.alt,
-                accuracy_m=d.accuracy_m,
-                position_source=d.position_source,
-                sensor_count=d.sensor_count,
-                confidence=d.confidence,
-                manufacturer=d.manufacturer,
-                model=d.model,
-                ssid=best_obs.ssid if best_obs else None,
-                classification=classify_detection(
-                    source=best_obs.source if best_obs else "",
-                    confidence=d.confidence,
-                    ssid=best_obs.ssid if best_obs else None,
-                    manufacturer=d.manufacturer,
-                    drone_id=d.drone_id,
-                    model=d.model,
-                    bssid=best_obs.bssid if best_obs and hasattr(best_obs, 'bssid') else None,
-                    latitude=d.lat,
-                    longitude=d.lon,
-                )[0] if best_obs else None,
-                observations_json=json.dumps([
-                    {
-                        "device_id": o.device_id,
-                        "rssi": o.rssi,
-                        "distance_m": o.estimated_distance_m,
-                        "scanner_distance_m": o.scanner_estimated_distance_m,
-                        "backend_distance_m": o.backend_estimated_distance_m,
-                        "distance_source": o.distance_source,
-                        "range_model": o.range_model,
-                        "sensor_lat": o.sensor_lat,
-                        "sensor_lon": o.sensor_lon,
-                        "ssid": o.ssid,
-                    }
-                    for o in d.observations
-                ]),
-            )
-            db.add(tri)
-
-        await db.commit()
-    except Exception as e:
+    if db_detections:
         try:
+            db.add_all(db_detections)
+
+            # Store triangulated positions — skip range_only, deduplicate
+            located = _sensor_tracker.get_located_drones()
+            for d in located:
+                if _is_calibration_tracking_id(d.drone_id):
+                    continue
+                # Skip single-sensor range_only (just sensor position, no real data)
+                if d.position_source == "range_only":
+                    continue
+                # Skip if position hasn't moved >1m from last logged position
+                last_key = f"_last_pos_{d.drone_id}"
+                last_pos = _position_dedup.get(last_key)
+                if last_pos:
+                    dlat = (d.lat - last_pos[0]) * 111320
+                    dlon = (d.lon - last_pos[1]) * 111320 * 0.78  # cos(37°)
+                    moved = (dlat**2 + dlon**2) ** 0.5
+                    if moved < 1.0:
+                        continue
+                _position_dedup[last_key] = (d.lat, d.lon)
+
+                # Get best observation's SSID
+                best_obs = max(d.observations, key=lambda o: o.confidence) if d.observations else None
+                tri = TriangulatedPosition(
+                    drone_id=d.drone_id,
+                    lat=d.lat,
+                    lon=d.lon,
+                    alt=d.alt,
+                    accuracy_m=d.accuracy_m,
+                    position_source=d.position_source,
+                    sensor_count=d.sensor_count,
+                    confidence=d.confidence,
+                    manufacturer=d.manufacturer,
+                    model=d.model,
+                    ssid=best_obs.ssid if best_obs else None,
+                    classification=classify_detection(
+                        source=best_obs.source if best_obs else "",
+                        confidence=d.confidence,
+                        ssid=best_obs.ssid if best_obs else None,
+                        manufacturer=d.manufacturer,
+                        drone_id=d.drone_id,
+                        model=d.model,
+                        bssid=best_obs.bssid if best_obs and hasattr(best_obs, 'bssid') else None,
+                        latitude=d.lat,
+                        longitude=d.lon,
+                    )[0] if best_obs else None,
+                    observations_json=json.dumps([
+                        {
+                            "device_id": o.device_id,
+                            "rssi": o.rssi,
+                            "distance_m": o.estimated_distance_m,
+                            "scanner_distance_m": o.scanner_estimated_distance_m,
+                            "backend_distance_m": o.backend_estimated_distance_m,
+                            "distance_source": o.distance_source,
+                            "range_model": o.range_model,
+                            "sensor_lat": o.sensor_lat,
+                            "sensor_lon": o.sensor_lon,
+                            "ssid": o.ssid,
+                        }
+                        for o in d.observations
+                    ]),
+                )
+                db.add(tri)
+
+            await db.commit()
+        except Exception as exc:
             await db.rollback()
-        except Exception:
-            pass
-        logger.warning("DB write failed (detections still in memory): %s", e)
+            logger.warning("Primary detection persistence failed: %s", exc)
+            raise HTTPException(
+                status_code=503,
+                detail="detection persistence unavailable",
+            ) from exc
+        else:
+            _publish_ingest_dedup(staged_dedup, received_at)
 
     # Debounced entity checkpoint — persists dirty entities roughly every 30 s
     # so the dashboard entity count survives a backend restart. Runs on its
@@ -1557,7 +1571,12 @@ async def ingest_drone_detections(
                      dedup_skipped, batch.device_id)
 
     return DroneDetectionResponse(
-        status="ok", accepted=accepted, device_id=batch.device_id
+        status="ok",
+        accepted=len(batch.detections),
+        processed=processed,
+        deduplicated=dedup_skipped,
+        filtered=max(0, len(batch.detections) - processed - dedup_skipped),
+        device_id=batch.device_id,
     )
 
 
