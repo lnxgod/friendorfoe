@@ -446,6 +446,90 @@ def test_serial_status_times_out_without_exact_boot_health():
         )
 
 
+@pytest.mark.parametrize(
+    ("wire", "match"),
+    (
+        (
+            lambda pair: (
+                serial_wire_line("FOF_BACKEND_BOOT", pair["boot"])
+                + serial_wire_line("FOF_BACKEND_BOOT", pair["boot"])
+                + serial_wire_line("FOF_BACKEND_HEALTH", pair["health"])
+            ),
+            "duplicated/out of order",
+        ),
+        (
+            lambda pair: (
+                serial_wire_line("FOF_BACKEND_BOOT", pair["boot"])
+                + serial_wire_line("FOF_BACKEND_HEALTH", pair["health"])
+                + serial_wire_line("FOF_BACKEND_HEALTH", pair["health"])
+            ),
+            "duplicated/out of order",
+        ),
+        (
+            lambda pair: (
+                serial_wire_line("FOF_BACKEND_HEALTH", pair["health"])
+                + serial_wire_line("FOF_BACKEND_BOOT", pair["boot"])
+            ),
+            "duplicated/out of order",
+        ),
+        (lambda _pair: b"FOF_BACKEND_BOOTSTRAP {}\n", "prefix"),
+    ),
+)
+def test_serial_status_rejects_duplicate_reordered_or_malformed_reserved_records(
+    wire,
+    match,
+):
+    chunks = [wire(serial_status_pair("scanner0"))]
+    with pytest.raises(EvidenceError, match=match):
+        evidence_tool._read_serial_status_response(
+            41,
+            role="scanner0",
+            expected_mac="AA:BB:CC:DD:EE:01",
+            expected_boot_id=100,
+            timeout_s=1,
+            buffer=bytearray(),
+            line_sink=lambda _wire, _decoded: None,
+            monotonic=lambda: 0.0,
+            selector=lambda _read, _write, _error, _timeout: ([41], [], []),
+            reader=lambda _fd, _size: chunks.pop(0),
+            writer=lambda _fd, payload: len(payload),
+        )
+
+
+def test_serial_status_rejects_partial_command_write():
+    with pytest.raises(EvidenceError, match="atomically"):
+        evidence_tool._read_serial_status_response(
+            41,
+            role="scanner0",
+            expected_mac="AA:BB:CC:DD:EE:01",
+            expected_boot_id=100,
+            timeout_s=1,
+            buffer=bytearray(),
+            line_sink=lambda _wire, _decoded: None,
+            monotonic=lambda: 0.0,
+            selector=lambda _read, _write, _error, _timeout: ([], [], []),
+            reader=lambda _fd, _size: b"",
+            writer=lambda _fd, payload: len(payload) - 1,
+        )
+
+
+def test_serial_status_rejects_readable_tty_eof_immediately():
+    with pytest.raises(EvidenceError, match="serial port closed"):
+        evidence_tool._read_serial_status_response(
+            41,
+            role="scanner0",
+            expected_mac="AA:BB:CC:DD:EE:01",
+            expected_boot_id=100,
+            timeout_s=30,
+            buffer=bytearray(),
+            line_sink=lambda _wire, _decoded: None,
+            monotonic=lambda: 0.0,
+            selector=lambda _read, _write, _error, _timeout: ([41], [], []),
+            reader=lambda _fd, _size: b"",
+            writer=lambda _fd, payload: len(payload),
+        )
+
+
 def test_serial_status_rejects_oversized_or_non_utf8_lines():
     for payload, match in (
         (b"x" * (evidence_tool.SERIAL_LINE_MAX_BYTES + 1), "oversized"),
@@ -512,7 +596,10 @@ def test_serial_status_rejects_trailing_partial_line():
     (
         ("mac", "MAC"),
         ("role", "role/profile"),
-        ("target", "identity"),
+        ("identity-target", "identity"),
+        ("identity-project", "identity"),
+        ("identity-hardware", "identity"),
+        ("identity-version", "identity"),
         ("boot", "boot_id"),
         ("secret", "secret"),
     ),
@@ -523,8 +610,11 @@ def test_serial_status_pair_rejects_wrong_binding_or_secret(mutation, match):
         pair["health"]["mac"] = "AA:BB:CC:DD:EE:09"
     elif mutation == "role":
         pair["health"]["role"] = "wifi_primary"
-    elif mutation == "target":
-        pair["boot"]["target"] = "badge-defcon34"
+    elif mutation.startswith("identity-"):
+        field = mutation.removeprefix("identity-")
+        pair["boot"][field] = (
+            "badge-defcon34" if field == "target" else "not-backend"
+        )
     elif mutation == "boot":
         pair["health"]["boot_id"] = 101
         pair["health"]["command_ingress_boot_id"] = 101
@@ -553,6 +643,59 @@ def test_serial_log_rejects_secret_before_write_and_preserves_panic(tmp_path):
     finally:
         os.close(descriptor)
     assert path.read_bytes() == b"Guru Meditation panic\n"
+
+
+@pytest.mark.parametrize(
+    "message",
+    (
+        b"BLE raw",
+        b"raw auth payload",
+        b"characteristic value",
+        b"API key",
+        b"WiFi pass",
+        b"BLE__auth-payload",
+    ),
+)
+def test_serial_log_rejects_whitespace_and_mixed_separator_secret_aliases(
+    tmp_path,
+    message,
+):
+    path = tmp_path / "serial.log"
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT, 0o600)
+    try:
+        with pytest.raises(EvidenceError, match="secret"):
+            evidence_tool._append_received_serial_line(
+                descriptor, message + b"=must-not-survive\n", message.decode(),
+            )
+        assert os.fstat(descriptor).st_size == 0
+    finally:
+        os.close(descriptor)
+
+
+@pytest.mark.parametrize(
+    "message",
+    (
+        b"rollback_failed",
+        b"rollback failed",
+        b"rollback-failed",
+        b"rollback failure",
+        b"rolling back",
+    ),
+)
+def test_serial_log_rejects_and_preserves_negative_rollback_variants(
+    tmp_path,
+    message,
+):
+    path = tmp_path / "serial.log"
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT, 0o600)
+    try:
+        with pytest.raises(EvidenceError, match="rollback"):
+            evidence_tool._append_received_serial_line(
+                descriptor, message + b"\n", message.decode(),
+            )
+    finally:
+        os.close(descriptor)
+    assert path.read_bytes() == message + b"\n"
 
 
 def test_serial_log_cumulative_bound_fails_before_growth(tmp_path):
@@ -671,6 +814,35 @@ def test_serial_capture_rejects_state_bound_boot_drift(tmp_path):
             drainer=lambda _descriptor, **_kwargs: None,
             monotonic=lambda: 0.0,
         )
+
+
+def test_serial_capture_refuses_existing_exact_role_log_without_overwrite(tmp_path):
+    state = write_state(tmp_path / ".canary" / "evidence" / "canary.jsonl")
+    output_dir = tmp_path / ".canary" / "serial-logs"
+    output_dir.mkdir(mode=0o700)
+    existing = output_dir / "scanner0.log"
+    existing.write_bytes(b"keep-existing-evidence\n")
+    existing.chmod(0o600)
+    opened: list[str] = []
+    closed: list[int] = []
+
+    with pytest.raises(EvidenceError, match="already exists"):
+        evidence_tool.capture_serial_status(
+            role="scanner0",
+            port="/dev/cu.scanner0",
+            expected_mac="AA:BB:CC:DD:EE:01",
+            state_path=state,
+            output_dir=output_dir,
+            duration_s=60,
+            interval_s=30,
+            response_timeout_s=10,
+            opener=lambda port: opened.append(port) or 41,
+            closer=lambda descriptor: closed.append(descriptor),
+        )
+
+    assert existing.read_bytes() == b"keep-existing-evidence\n"
+    assert opened == ["/dev/cu.scanner0"]
+    assert closed == [41]
 
 
 def test_serial_capture_rejects_interval_over_sixty_before_open(tmp_path):

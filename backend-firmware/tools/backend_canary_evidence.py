@@ -105,15 +105,17 @@ SERIAL_HEALTH_KEYS = {
     },
 }
 SERIAL_SECRET_CONTENT = re.compile(
-    rb"password|passphrase|pwd|psk|wifi[_-]?pass|ap[_-]?pass|secret|credential|"
-    rb"token|authorization|cookie|set[-_]?cookie|api[_-]?key|value[_-]?hex|"
-    rb"ble[_-]?raw|raw[_-]?ble|characteristic[_-]?value|"
-    rb"ble[_-]?apple[_-]?auth|ble[_-]?auth[_-]?payload|"
-    rb"raw[_-]?auth[_-]?payload|auth(?:entication)?[_-]?value",
+    rb"password|passphrase|pwd|psk|wifi[\s_-]*pass|ap[\s_-]*pass|secret|"
+    rb"credential|token|authorization|cookie|set[\s_-]*cookie|"
+    rb"api[\s_-]*key|value[\s_-]*hex|ble[\s_-]*raw|raw[\s_-]*ble|"
+    rb"characteristic[\s_-]*value|ble[\s_-]*apple[\s_-]*auth|"
+    rb"ble[\s_-]*auth[\s_-]*payload|raw[\s_-]*auth[\s_-]*payload|"
+    rb"auth(?:entication)?[\s_-]*value",
     re.IGNORECASE,
 )
 SERIAL_FAILURE_CONTENT = re.compile(
-    rb"watchdog|guru meditation|panic|rollback_failed",
+    rb"watchdog|guru meditation|panic|"
+    rb"rollback(?:[_ -]?(?:failed|failure))|rolling[_ -]?back",
     re.IGNORECASE,
 )
 HEALTHY_SNAPSHOT_PHASES = frozenset({
@@ -843,11 +845,16 @@ def _select_serial_chunk(
     if not readable:
         return None
     try:
-        return reader(descriptor, 4096)
+        chunk = reader(descriptor, 4096)
     except BlockingIOError:
         return None
     except OSError as exc:
         raise EvidenceError("serial read failed") from exc
+    if not isinstance(chunk, bytes):
+        raise EvidenceError("serial reader returned non-bytes")
+    if chunk == b"":
+        raise EvidenceError("serial port closed")
+    return chunk
 
 
 def _drain_serial_until(
