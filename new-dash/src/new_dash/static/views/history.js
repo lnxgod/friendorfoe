@@ -53,15 +53,20 @@ export function createHistoryController({ getHistory, post = async () => ({}) , 
     onChange(snapshot());
   }
 
-  async function load() {
+  async function load(navigation = null) {
     if (!active || !available) return false;
+    const requestCursor = navigation ? navigation.cursor : cursor;
     const requestGeneration = ++generation;
     phase = "loading";
     message = "Loading history…";
     notify();
     try {
-      const page = await getHistory(buildHistoryParams(filters, cursor, true));
+      const page = await getHistory(buildHistoryParams(filters, requestCursor, true));
       if (requestGeneration !== generation || !active) return false;
+      if (navigation) {
+        cursor = requestCursor;
+        cursorStack = [...navigation.cursorStack];
+      }
       items = Array.isArray(page?.items) ? page.items : [];
       nextCursor = typeof page?.next_cursor === "string" && page.next_cursor
         ? page.next_cursor : null;
@@ -97,13 +102,17 @@ export function createHistoryController({ getHistory, post = async () => ({}) , 
       generation += 1;
     },
     observeAvailability(historyAvailable, unavailableMessage = "") {
+      const wasAvailable = available;
       available = historyAvailable !== false;
       if (!available) {
         generation += 1;
         phase = "unavailable";
         message = unavailableMessage || "History storage is unavailable.";
         notify();
+        return false;
       }
+      if (active && !wasAvailable) return load();
+      return false;
     },
     async applyFilters(nextFilters) {
       filters = { ...nextFilters };
@@ -114,14 +123,14 @@ export function createHistoryController({ getHistory, post = async () => ({}) , 
     },
     async next() {
       if (!nextCursor || phase === "loading") return false;
-      cursorStack.push(cursor);
-      cursor = nextCursor;
-      return load();
+      return load({ cursor: nextCursor, cursorStack: [...cursorStack, cursor] });
     },
     async previous() {
       if (!cursorStack.length || phase === "loading") return false;
-      cursor = cursorStack.pop() ?? null;
-      return load();
+      return load({
+        cursor: cursorStack.at(-1) ?? null,
+        cursorStack: cursorStack.slice(0, -1),
+      });
     },
     exportLinks() {
       return {

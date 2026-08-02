@@ -34,6 +34,21 @@ function state(entities, overrides = {}) {
   };
 }
 
+function completePolicy() {
+  const row = (priority) => ({
+    enabled: true, lane: "lower", min_proximity: "near", priority,
+  });
+  return {
+    version: 1,
+    classes: {
+      drone: row(0), meta: row(1), tracker: row(2), wifi_attack: row(3),
+      skimmer: row(4), camera: row(5), flock: row(6), lock: row(7),
+      hid: row(8), beacon: row(9), event_badge: row(10), auracast: row(11),
+      scanner_status: row(12),
+    },
+  };
+}
+
 function deferred() {
   let resolve;
   let reject;
@@ -354,6 +369,52 @@ test("History uses an opaque cursor stack and exports only active filters", asyn
   }
 });
 
+test("History failed Next keeps the current cursor stack retryable", async () => {
+  let request = 0;
+  const controller = historyView.createHistoryController({
+    getHistory: async () => {
+      request += 1;
+      if (request === 1) return { items: [{ row_id: 30 }], next_cursor: "cursor-a" };
+      if (request === 2) throw new Error("transient next failure");
+      return { items: [{ row_id: 29 }], next_cursor: "cursor-b" };
+    },
+  });
+
+  await controller.activate(true);
+  assert.equal(await controller.next(), false);
+  assert.equal(controller.snapshot().cursor, null);
+  assert.deepEqual(controller.snapshot().cursorStack, []);
+  assert.equal(controller.snapshot().nextCursor, "cursor-a");
+
+  assert.equal(await controller.next(), true);
+  assert.equal(controller.snapshot().cursor, "cursor-a");
+  assert.deepEqual(controller.snapshot().cursorStack, [null]);
+});
+
+test("History failed Previous preserves the current page and back stack", async () => {
+  let request = 0;
+  const controller = historyView.createHistoryController({
+    getHistory: async () => {
+      request += 1;
+      if (request === 1) return { items: [{ row_id: 30 }], next_cursor: "cursor-a" };
+      if (request === 2) return { items: [{ row_id: 29 }], next_cursor: "cursor-b" };
+      if (request === 3) throw new Error("transient previous failure");
+      return { items: [{ row_id: 30 }], next_cursor: "cursor-a" };
+    },
+  });
+
+  await controller.activate(true);
+  await controller.next();
+  assert.equal(await controller.previous(), false);
+  assert.equal(controller.snapshot().cursor, "cursor-a");
+  assert.deepEqual(controller.snapshot().cursorStack, [null]);
+  assert.equal(controller.snapshot().nextCursor, "cursor-b");
+
+  assert.equal(await controller.previous(), true);
+  assert.equal(controller.snapshot().cursor, null);
+  assert.deepEqual(controller.snapshot().cursorStack, []);
+});
+
 test("History clear requires exact typed confirmation and resets pagination", async () => {
   const posts = [];
   let fetches = 0;
@@ -396,6 +457,23 @@ test("History state distinguishes loading, empty, API error, and unavailable", a
   assert.equal(failing.snapshot().phase, "unavailable");
 });
 
+test("History active storage recovery loads exactly once on unavailable to available", async () => {
+  let calls = 0;
+  const controller = historyView.createHistoryController({
+    getHistory: async () => {
+      calls += 1;
+      return { items: [{ row_id: 1 }], next_cursor: null };
+    },
+  });
+
+  await controller.activate(false, "storage unavailable");
+  assert.equal(calls, 0);
+  await controller.observeAvailability(true);
+  await controller.observeAvailability(true);
+  assert.equal(calls, 1);
+  assert.equal(controller.snapshot().phase, "ready");
+});
+
 test("Dialog focus wraps and Escape/cancel never confirms", () => {
   const first = { disabled: false };
   const middle = { disabled: false };
@@ -427,6 +505,88 @@ test("Badge draft polling preserves edits and waits for matching firmware status
   assert.equal(draft.snapshot().dirty, false);
 });
 
+test("Badge restoring reordered exact current settings makes the draft pristine", () => {
+  const current = {
+    version: 1, palette: "night", background: "dark", brightness: 80,
+    accents: { drone: 1, meta: 2, tracker: 3, flock: 4, wifi_attack: 5, clear: 6 },
+  };
+  const reorderedCurrent = {
+    accents: { clear: 6, wifi_attack: 5, flock: 4, tracker: 3, meta: 2, drone: 1 },
+    brightness: 80, background: "dark", palette: "night", version: 1,
+  };
+  const draft = badgeView.createDraftState(badgeView.validateTheme);
+
+  draft.observe(current);
+  draft.edit({ ...current, brightness: 70 });
+  assert.equal(draft.snapshot().dirty, true);
+  draft.edit(reorderedCurrent);
+  assert.equal(draft.snapshot().dirty, false);
+  assert.equal(badgeView.applyAllowed({
+    canMutate: true, pending: false, draft: draft.snapshot(),
+  }), false);
+});
+
+test("Badge policy equality ignores class and field key order", () => {
+  const current = completePolicy();
+  const reordered = {
+    classes: Object.fromEntries(Object.entries(current.classes).reverse().map(([name, policy]) => [
+      name,
+      {
+        priority: policy.priority,
+        min_proximity: policy.min_proximity,
+        lane: policy.lane,
+        enabled: policy.enabled,
+      },
+    ])),
+    version: 1,
+  };
+  const draft = badgeView.createDraftState(badgeView.validatePolicy);
+
+  draft.observe(current);
+  draft.edit(reordered);
+  assert.equal(draft.snapshot().valid, true);
+  assert.equal(draft.snapshot().dirty, false);
+});
+
+test("Badge accepted reordered draft becomes confirmed on schema-equal status", async () => {
+  const current = {
+    version: 1, palette: "night", background: "dark", brightness: 80,
+    accents: { drone: 1, meta: 2, tracker: 3, flock: 4, wifi_attack: 5, clear: 6 },
+  };
+  const submitted = {
+    accents: { clear: 60, wifi_attack: 50, flock: 40, tracker: 30, meta: 20, drone: 10 },
+    brightness: 70, background: "dim", palette: "field", version: 1,
+  };
+  const confirmedStatus = {
+    palette: "field", version: 1,
+    accents: { meta: 20, drone: 10, clear: 60, tracker: 30, wifi_attack: 50, flock: 40 },
+    background: "dim", brightness: 70,
+  };
+  const draft = badgeView.createDraftState(badgeView.validateTheme);
+  const mutations = badgeView.createMutationCoordinator({
+    post: async () => ({ ok: true, ble_sent: true, wifi_sent: true }),
+  });
+
+  draft.observe(current);
+  draft.edit(submitted);
+  const reply = await mutations.submitValidated(
+    "/api/control/theme", draft.snapshot().draft, badgeView.validateTheme,
+  );
+  assert.equal(reply.accepted, true);
+  draft.accept();
+  assert.match(mutations.snapshot().message, /awaiting status/);
+
+  assert.equal(typeof badgeView.observeDraftStatus, "function");
+  const observation = badgeView.observeDraftStatus({
+    draft, mutations, path: "/api/control/theme", label: "Theme", value: confirmedStatus,
+  });
+  assert.equal(observation.confirmed, true);
+  assert.equal(mutations.snapshot().message, "Theme confirmed by firmware status.");
+  assert.equal(mutations.snapshot().awaitingConfirmation, null);
+  assert.equal(draft.snapshot().dirty, false);
+  assert.equal(draft.snapshot().awaiting, null);
+});
+
 test("Badge incomplete objects disable Apply and validation sends no request", async () => {
   const posts = [];
   const mutations = badgeView.createMutationCoordinator({
@@ -439,6 +599,22 @@ test("Badge incomplete objects disable Apply and validation sends no request", a
   );
   assert.equal(result.accepted, false);
   assert.deepEqual(posts, []);
+});
+
+test("Badge DOM numeric reads keep cleared accent and priority fields invalid", () => {
+  assert.equal(typeof badgeView.readRequiredInteger, "function");
+  assert.equal(badgeView.readRequiredInteger({ value: "" }), null);
+  assert.equal(badgeView.readRequiredInteger({ value: "0" }), 0);
+  assert.equal(badgeView.readRequiredInteger({ value: "42" }), 42);
+
+  const theme = {
+    version: 1, palette: "night", background: "dark", brightness: 80,
+    accents: { drone: null, meta: 2, tracker: 3, flock: 4, wifi_attack: 5, clear: 6 },
+  };
+  assert.equal(badgeView.validateTheme(theme).ok, false);
+  const policy = completePolicy();
+  policy.classes.drone.priority = null;
+  assert.equal(badgeView.validatePolicy(policy).ok, false);
 });
 
 test("Badge permits one global pending command and accepted replies stay non-optimistic", async () => {
@@ -473,6 +649,48 @@ test("Badge rejected replies preserve draft and zero diagnostics are not missing
   assert.equal(draft.snapshot().draft.brightness, 26);
   assert.equal(badgeView.presentFact({ commands_failed: 0 }, "commands_failed"), "0");
   assert.equal(badgeView.presentFact({}, "commands_failed"), null);
+});
+
+test("Badge current snapshots stay complete while rejected drafts remain separate", () => {
+  assert.equal(typeof badgeView.themeSnapshotFacts, "function");
+  assert.equal(typeof badgeView.policySnapshotRows, "function");
+  const currentTheme = {
+    version: 1, palette: "night", background: "dark", brightness: 80,
+    accents: { drone: 1, meta: 2, tracker: 3, flock: 4, wifi_attack: 5, clear: 6 },
+  };
+  const themeDraft = badgeView.createDraftState(badgeView.validateTheme);
+  themeDraft.observe(currentTheme);
+  themeDraft.edit({ ...currentTheme, brightness: 70 });
+  assert.deepEqual(badgeView.themeSnapshotFacts(themeDraft.snapshot().current), [
+    ["Version", "1"], ["Palette", "night"], ["Background", "dark"],
+    ["Brightness", "80%"], ["Drone accent", "1"], ["Meta accent", "2"],
+    ["Tracker accent", "3"], ["Flock accent", "4"],
+    ["Wi-Fi attack accent", "5"], ["Clear accent", "6"],
+  ]);
+  assert.equal(themeDraft.snapshot().draft.brightness, 70);
+
+  const currentPolicy = completePolicy();
+  const policyDraft = badgeView.createDraftState(badgeView.validatePolicy);
+  policyDraft.observe(currentPolicy);
+  const editedPolicy = structuredClone(currentPolicy);
+  editedPolicy.classes.drone.priority = 99;
+  policyDraft.edit(editedPolicy);
+  assert.deepEqual(badgeView.policySnapshotRows(policyDraft.snapshot().current), [
+    ["drone", "Yes", "lower", "near", "0"],
+    ["meta", "Yes", "lower", "near", "1"],
+    ["tracker", "Yes", "lower", "near", "2"],
+    ["wifi_attack", "Yes", "lower", "near", "3"],
+    ["skimmer", "Yes", "lower", "near", "4"],
+    ["camera", "Yes", "lower", "near", "5"],
+    ["flock", "Yes", "lower", "near", "6"],
+    ["lock", "Yes", "lower", "near", "7"],
+    ["hid", "Yes", "lower", "near", "8"],
+    ["beacon", "Yes", "lower", "near", "9"],
+    ["event_badge", "Yes", "lower", "near", "10"],
+    ["auracast", "Yes", "lower", "near", "11"],
+    ["scanner_status", "Yes", "lower", "near", "12"],
+  ]);
+  assert.equal(policyDraft.snapshot().draft.classes.drone.priority, 99);
 });
 
 test("Badge emits exact navigation and complete policy payloads", async () => {

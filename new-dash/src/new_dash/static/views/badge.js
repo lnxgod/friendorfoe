@@ -43,7 +43,16 @@ export function validateTheme(value) {
       || value.accents[name] < 0 || value.accents[name] > 65535)) {
     return { ok: false, message: "Theme accents must be RGB565 integers from 0 through 65535." };
   }
-  return { ok: true, value: clone(value) };
+  return {
+    ok: true,
+    value: {
+      version: 1,
+      palette: value.palette,
+      background: value.background,
+      brightness: value.brightness,
+      accents: Object.fromEntries(ACCENTS.map((name) => [name, value.accents[name]])),
+    },
+  };
 }
 
 export function validatePolicy(value) {
@@ -65,7 +74,18 @@ export function validatePolicy(value) {
       return { ok: false, message: `Display policy class ${name} is invalid.` };
     }
   }
-  return { ok: true, value: clone(value) };
+  return {
+    ok: true,
+    value: {
+      version: 1,
+      classes: Object.fromEntries(POLICY_CLASSES.map((name) => [name, {
+        enabled: value.classes[name].enabled,
+        lane: value.classes[name].lane,
+        min_proximity: value.classes[name].min_proximity,
+        priority: value.classes[name].priority,
+      }])),
+    },
+  };
 }
 
 export function navigationPayload(action) {
@@ -81,6 +101,13 @@ export function presentFact(source, key) {
   if (typeof value === "boolean") return value ? "Yes" : "No";
   if (typeof value === "object") return JSON.stringify(value);
   return String(value);
+}
+
+export function readRequiredInteger(input) {
+  const value = input?.value;
+  if (typeof value !== "string" || value.trim() === "") return null;
+  const parsed = Number(value);
+  return Number.isInteger(parsed) ? parsed : null;
 }
 
 export function applyAllowed({ canMutate, pending, draft }) {
@@ -100,20 +127,31 @@ export function createDraftState(validate) {
       const validated = validate(value);
       current = validated.ok ? validated.value : null;
       complete = validated.ok;
-      if (awaiting && validated.ok && equal(validated.value, awaiting)) {
-        dirty = false;
-        awaiting = null;
-        draft = clone(validated.value);
-      } else if (!dirty) {
+      const submitted = awaiting;
+      const confirmed = Boolean(submitted && validated.ok && equal(validated.value, submitted));
+      if (confirmed) awaiting = null;
+      if (draft === null || (!dirty && !submitted)) {
         draft = validated.ok ? clone(validated.value) : null;
+        dirty = false;
+      } else {
+        const validatedDraft = validate(draft);
+        if (confirmed && validatedDraft.ok && equal(validatedDraft.value, submitted)) {
+          draft = clone(validated.value);
+          dirty = false;
+        } else {
+          dirty = !(validatedDraft.ok && current && equal(validatedDraft.value, current));
+        }
       }
+      return { confirmed };
     },
     edit(value) {
       draft = clone(value);
-      dirty = true;
+      const validated = validate(draft);
+      dirty = !(validated.ok && current && equal(validated.value, current));
     },
     accept() {
-      if (dirty && validate(draft).ok) awaiting = clone(draft);
+      const validated = validate(draft);
+      if (dirty && validated.ok) awaiting = clone(validated.value);
     },
     snapshot() {
       return {
@@ -135,15 +173,17 @@ export function createMutationCoordinator({ post, onChange = () => {} }) {
   let pending = false;
   let message = "";
   let accepted = false;
+  let awaitingConfirmation = null;
 
   function snapshot() {
-    return { pending, message, accepted };
+    return { pending, message, accepted, awaitingConfirmation };
   }
   function notify() {
     onChange(snapshot());
   }
   async function submit(path, body) {
     if (pending) return { accepted: false, message: "One command is already pending." };
+    awaitingConfirmation = null;
     pending = true;
     accepted = false;
     message = "Command pending…";
@@ -173,10 +213,29 @@ export function createMutationCoordinator({ post, onChange = () => {} }) {
         notify();
         return { accepted: false, message };
       }
-      return submit(path, result.value);
+      const reply = await submit(path, result.value);
+      if (reply.accepted) {
+        awaitingConfirmation = path;
+        notify();
+      }
+      return reply;
+    },
+    confirm(path, labelText) {
+      if (awaitingConfirmation !== path) return false;
+      awaitingConfirmation = null;
+      accepted = true;
+      message = `${labelText} confirmed by firmware status.`;
+      notify();
+      return true;
     },
     snapshot,
   };
+}
+
+export function observeDraftStatus({ draft, mutations, path, label: labelText, value }) {
+  const observation = draft.observe(value);
+  if (observation.confirmed) mutations.confirm(path, labelText);
+  return observation;
 }
 
 function label(name) {
@@ -285,9 +344,61 @@ function renderDisplayState(root, displayState) {
   replace(root, [definitionList(facts, "diagnostic-facts")]);
 }
 
-function formatTheme(theme) {
-  if (!theme) return "Current firmware theme unavailable.";
-  return `${theme.palette} · ${theme.background} · ${theme.brightness}% · RGB565 accents`;
+export function themeSnapshotFacts(theme) {
+  const validated = validateTheme(theme);
+  if (!validated.ok) return [];
+  const current = validated.value;
+  return [
+    ["Version", String(current.version)],
+    ["Palette", current.palette],
+    ["Background", current.background],
+    ["Brightness", `${current.brightness}%`],
+    ...ACCENTS.map((name) => [`${name === "wifi_attack" ? "Wi-Fi attack" : label(name)} accent`, String(current.accents[name])]),
+  ];
+}
+
+export function policySnapshotRows(policy) {
+  const validated = validatePolicy(policy);
+  if (!validated.ok) return [];
+  return POLICY_CLASSES.map((name) => {
+    const current = validated.value.classes[name];
+    return [
+      name, current.enabled ? "Yes" : "No", current.lane,
+      current.min_proximity, String(current.priority),
+    ];
+  });
+}
+
+function renderCurrentTheme(root, theme) {
+  const facts = themeSnapshotFacts(theme);
+  replace(root, facts.length
+    ? [definitionList(facts, "diagnostic-facts current-theme-facts")]
+    : [element("p", { className: "empty-state", text: "Current firmware theme unavailable." })]);
+}
+
+function renderCurrentPolicy(root, policy) {
+  const rows = policySnapshotRows(policy);
+  if (!rows.length) {
+    replace(root, [element("p", {
+      className: "empty-state", text: "Current firmware display policy unavailable.",
+    })]);
+    return;
+  }
+  const table = element("table", { className: "current-policy-table" });
+  const head = element("thead");
+  const heading = element("tr");
+  for (const text of ["Class", "Enabled", "Lane", "Minimum proximity", "Priority"]) {
+    heading.append(element("th", { text }));
+  }
+  head.append(heading);
+  const body = element("tbody");
+  for (const values of rows) {
+    const row = element("tr");
+    values.forEach((text, index) => row.append(element(index === 0 ? "th" : "td", { text })));
+    body.append(row);
+  }
+  table.append(head, body);
+  replace(root, [element("p", { className: "snapshot-version", text: "Version 1" }), table]);
 }
 
 function setThemeForm(theme) {
@@ -309,9 +420,9 @@ function readThemeForm() {
     version: 1,
     palette: document.querySelector("#theme-palette").value,
     background: document.querySelector("#theme-background").value,
-    brightness: Number(document.querySelector("#theme-brightness").value),
+    brightness: readRequiredInteger(document.querySelector("#theme-brightness")),
     accents: Object.fromEntries(ACCENTS.map((name) => [
-      name, Number(document.querySelector(`#theme-accent-${name}`).value),
+      name, readRequiredInteger(document.querySelector(`#theme-accent-${name}`)),
     ])),
   };
 }
@@ -345,7 +456,7 @@ function readPolicyForm() {
       enabled: row.querySelector("[data-policy-field=enabled]").checked,
       lane: row.querySelector("[data-policy-field=lane]").value,
       min_proximity: row.querySelector("[data-policy-field=min_proximity]").value,
-      priority: Number(row.querySelector("[data-policy-field=priority]").value),
+      priority: readRequiredInteger(row.querySelector("[data-policy-field=priority]")),
     };
   }
   return { version: 1, classes };
@@ -387,6 +498,7 @@ export function createBadgeView({ post }) {
   const statusRoot = document.querySelector("#badge-status-facts");
   const displayRoot = document.querySelector("#badge-display-state");
   const themeCurrent = document.querySelector("#badge-theme-current");
+  const policyCurrent = document.querySelector("#badge-policy-current");
   const themeForm = document.querySelector("#badge-theme-form");
   const policyForm = document.querySelector("#badge-policy-form");
   const themeApply = document.querySelector("#theme-apply");
@@ -470,11 +582,17 @@ export function createBadgeView({ post }) {
       renderScanners(scannerRoot, status.scanners, status.sensing_health);
       renderStatusFacts(statusRoot, status);
       renderDisplayState(displayRoot, status.display_state);
-      themeDraft.observe(status.theme);
-      policyDraft.observe(status.display_policy);
+      observeDraftStatus({
+        draft: themeDraft, mutations, path: "/api/control/theme", label: "Theme", value: status.theme,
+      });
+      observeDraftStatus({
+        draft: policyDraft, mutations, path: "/api/control/display-policy",
+        label: "Display policy", value: status.display_policy,
+      });
       const theme = themeDraft.snapshot();
       const policy = policyDraft.snapshot();
-      themeCurrent.textContent = formatTheme(theme.current);
+      renderCurrentTheme(themeCurrent, theme.current);
+      renderCurrentPolicy(policyCurrent, policy.current);
       setThemeForm(theme.draft);
       setPolicyForm(policy.draft);
       document.querySelector("#theme-unavailable").hidden = theme.complete;

@@ -57,12 +57,30 @@ class DashboardHTMLParser(HTMLParser):
         self.local_urls: list[str] = []
         self.connection_live_regions = 0
         self.main_landmarks = 0
+        self.mutation_controls: list[tuple[str, str]] = []
+        self.policy_controls: list[tuple[str, str, str | None]] = []
+        self._policy_class: str | None = None
         self._in_h1 = False
 
     def handle_starttag(
         self, tag: str, attrs: list[tuple[str, str | None]]
     ) -> None:
         attributes = dict(attrs)
+        if tag == "tr" and "data-policy-class" in attributes:
+            self._policy_class = attributes["data-policy-class"]
+        if self._policy_class and "data-policy-field" in attributes:
+            self.policy_controls.append(
+                (
+                    self._policy_class,
+                    attributes["data-policy-field"] or "",
+                    attributes.get("aria-label"),
+                )
+            )
+        if "data-mutation" in attributes:
+            identity = attributes.get("id") or (
+                "nav:" + (attributes.get("data-nav-action") or "")
+            )
+            self.mutation_controls.append((tag, identity))
         if tag == "h1":
             self._in_h1 = True
         if tag == "button" and "data-view-target" in attributes:
@@ -80,6 +98,8 @@ class DashboardHTMLParser(HTMLParser):
                 self.local_urls.append(value)
 
     def handle_endtag(self, tag: str) -> None:
+        if tag == "tr":
+            self._policy_class = None
         if tag == "h1":
             self._in_h1 = False
 
@@ -453,6 +473,8 @@ class StaticAndStateRouteTest(WebServerTestCase):
 
     def test_history_and_badge_shell_expose_only_exact_safe_controls(self) -> None:
         html = (STATIC_ROOT / "index.html").read_text(encoding="utf-8")
+        parser = DashboardHTMLParser()
+        parser.feed(html)
 
         for control_id in (
             "history-since", "history-until", "history-kind", "history-class",
@@ -460,8 +482,8 @@ class StaticAndStateRouteTest(WebServerTestCase):
             "history-previous", "history-next", "history-export-csv",
             "history-export-json", "history-clear-dialog", "history-clear-word",
             "badge-scanners", "badge-status-facts", "badge-display-state",
-            "badge-theme-form", "badge-policy-form", "theme-reset-dialog",
-            "policy-reset-dialog",
+            "badge-theme-form", "badge-policy-form", "badge-theme-current",
+            "badge-policy-current", "theme-reset-dialog", "policy-reset-dialog",
         ):
             with self.subTest(control_id=control_id):
                 self.assertIn(f'id="{control_id}"', html)
@@ -474,12 +496,44 @@ class StaticAndStateRouteTest(WebServerTestCase):
         ):
             self.assertIn(f'data-policy-class="{class_name}"', html)
         self.assertNotIn("<textarea", html.lower())
-        for prohibited in (
-            'id="firmware-control"', 'id="reboot-control"',
-            'id="bootloader-control"', 'id="safe-mode-control"',
-            'id="raw-command"',
-        ):
-            self.assertNotIn(prohibited, html)
+        self.assertEqual(
+            parser.mutation_controls,
+            [
+                ("button", "nav:next"), ("button", "nav:detail"),
+                ("button", "nav:page"), ("button", "nav:back"),
+                ("button", "theme-reset-open"), ("button", "theme-apply"),
+                ("button", "policy-reset-open"), ("button", "policy-apply"),
+                ("button", "theme-reset-confirm"),
+                ("button", "policy-reset-confirm"),
+            ],
+        )
+
+    def test_policy_controls_have_unique_programmatic_names_and_checkbox_targets(self) -> None:
+        parser = DashboardHTMLParser()
+        parser.feed((STATIC_ROOT / "index.html").read_text(encoding="utf-8"))
+        class_labels = {
+            "drone": "Drone", "meta": "Meta", "tracker": "Tracker",
+            "wifi_attack": "Wi-Fi attack", "skimmer": "Skimmer",
+            "camera": "Camera", "flock": "Flock", "lock": "Lock",
+            "hid": "HID", "beacon": "Beacon", "event_badge": "Event badge",
+            "auracast": "Auracast", "scanner_status": "Scanner status",
+        }
+        field_labels = {
+            "enabled": "enabled", "lane": "lane",
+            "min_proximity": "minimum proximity", "priority": "priority",
+        }
+        expected = [
+            (class_name, field, f"{class_label} {field_label}")
+            for class_name, class_label in class_labels.items()
+            for field, field_label in field_labels.items()
+        ]
+        self.assertEqual(parser.policy_controls, expected)
+        self.assertEqual(len({name for _, _, name in parser.policy_controls}), 52)
+
+        css = (STATIC_ROOT / "styles.css").read_text(encoding="utf-8")
+        checkbox_rule = css.split('.policy-table input[type="checkbox"] {', 1)[1].split("}", 1)[0]
+        self.assertIn("width: 44px", checkbox_rule)
+        self.assertIn("height: 44px", checkbox_rule)
 
     def test_live_and_map_modules_preserve_source_truth_and_budgets(self) -> None:
         live_path = STATIC_ROOT / "views" / "live.js"
