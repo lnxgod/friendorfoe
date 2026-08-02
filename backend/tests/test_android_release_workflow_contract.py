@@ -7,8 +7,8 @@ ANDROID_GRADLE = REPO_ROOT / "android" / "app" / "build.gradle.kts"
 ANDROID_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "android-build.yml"
 ESP32_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "esp32-web-flasher.yml"
 
-VERSION_NAME = "0.67.6-android-about-map-cleanup"
-VERSION_CODE = 115
+VERSION_NAME = "0.67.7-android-ar-overlay-range"
+VERSION_CODE = 116
 SIGNER_SHA256 = (
     "3a1581ba5d10df59fdb28e09987851d6c7d79ce26df4eb69b9f6d262b9b68e95"
 )
