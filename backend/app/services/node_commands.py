@@ -95,15 +95,21 @@ class NodeCommandService:
         *,
         now: float,
     ) -> NodeCommandEnvelope | None:
-        row = await _active_command(db, device_id)
-        if row is None:
-            return None
-        stamp = _utc_from_epoch(now)
-        row.first_delivered_at = row.first_delivered_at or stamp
-        row.last_polled_at = stamp
-        row.state = "delivered" if row.state == "pending" else row.state
-        await db.commit()
-        return _command_envelope(row)
+        try:
+            await _begin_command_transaction(db)
+            row = await _active_command(db, device_id, for_update=True)
+            if row is None:
+                await db.rollback()
+                return None
+            stamp = _utc_from_epoch(now)
+            row.first_delivered_at = row.first_delivered_at or stamp
+            row.last_polled_at = stamp
+            row.state = "delivered" if row.state == "pending" else row.state
+            await db.commit()
+            return _command_envelope(row)
+        except OperationalError as exc:
+            await db.rollback()
+            raise NodeCommandUnavailable("node command store unavailable") from exc
 
     async def request_cancel(
         self,
@@ -113,14 +119,21 @@ class NodeCommandService:
         *,
         now: float,
     ) -> NodeCommandEnvelope:
-        row = await _command_for_update(db, device_id, command_id)
-        if row is None or row.active_key is None:
+        try:
+            await _begin_command_transaction(db)
+            row = await _command_for_update(db, device_id, command_id)
+            if row is None or row.active_key is None:
+                raise NodeCommandNotFound(command_id)
+            row.state = "cancel_pending"
+            row.last_polled_at = _utc_from_epoch(now)
+            await db.commit()
+            return _command_envelope(row)
+        except OperationalError as exc:
             await db.rollback()
-            raise NodeCommandNotFound(command_id)
-        row.state = "cancel_pending"
-        row.last_polled_at = _utc_from_epoch(now)
-        await db.commit()
-        return _command_envelope(row)
+            raise NodeCommandUnavailable("node command store unavailable") from exc
+        except NodeCommandNotFound:
+            await db.rollback()
+            raise
 
     async def record_result(
         self,
@@ -132,8 +145,7 @@ class NodeCommandService:
         now: float,
     ) -> NodeCommandResultAck:
         try:
-            if db.bind is not None and db.bind.dialect.name == "sqlite":
-                await db.execute(text("BEGIN IMMEDIATE"))
+            await _begin_command_transaction(db)
             row = await _command_for_update(db, device_id, command_id)
             if row is None:
                 raise NodeCommandNotFound(command_id)
@@ -221,11 +233,17 @@ def _utc_from_epoch(now: float) -> datetime:
 
 
 async def _active_command(
-    db: AsyncSession, device_id: str,
+    db: AsyncSession, device_id: str, *, for_update: bool = False,
 ) -> NodeCommand | None:
-    return await db.scalar(
-        select(NodeCommand).where(NodeCommand.active_key == device_id)
-    )
+    statement = select(NodeCommand).where(NodeCommand.active_key == device_id)
+    if for_update:
+        statement = statement.with_for_update()
+    return await db.scalar(statement)
+
+
+async def _begin_command_transaction(db: AsyncSession) -> None:
+    if db.bind is not None and db.bind.dialect.name == "sqlite":
+        await db.execute(text("BEGIN IMMEDIATE"))
 
 
 async def _command_for_update(

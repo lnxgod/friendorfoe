@@ -4,6 +4,7 @@ import pytest
 from pydantic import TypeAdapter
 from sqlalchemy import select
 
+import app.services.node_commands as node_commands
 from app.models.db_models import NodeCommand, NodeCommandResultEvent
 from app.models.schemas import BleInvestigationCreateRequest, NodeCommandResultRequest
 from app.services.node_commands import (
@@ -14,6 +15,31 @@ from app.services.node_commands import (
 
 
 RESULT = TypeAdapter(NodeCommandResultRequest)
+
+
+def gate_command_transactions(monkeypatch):
+    """Make two service calls reach their SQLite write starts deterministically."""
+    original = node_commands._begin_command_transaction
+    first_started = asyncio.Event()
+    release_first = asyncio.Event()
+    second_started = asyncio.Event()
+    release_second = asyncio.Event()
+    call_count = 0
+
+    async def gated(db_session):
+        nonlocal call_count
+        call_count += 1
+        position = call_count
+        if position == 2:
+            second_started.set()
+            await release_second.wait()
+        await original(db_session)
+        if position == 1:
+            first_started.set()
+            await release_first.wait()
+
+    monkeypatch.setattr(node_commands, "_begin_command_transaction", gated)
+    return first_started, release_first, second_started, release_second
 
 
 def investigate() -> BleInvestigationCreateRequest:
@@ -382,3 +408,162 @@ async def test_concurrent_different_result_bodies_are_one_ack_one_conflict(
     assert len(sequence_one) == 1
     assert stored.next_sequence == 2
     assert stored.result_state in {"scanning", "connecting"}
+
+
+@pytest.mark.asyncio
+async def test_concurrent_poll_does_not_overwrite_a_cancel(
+    backend_sensor_session_factory, monkeypatch,
+):
+    service = NodeCommandService()
+    async with backend_sensor_session_factory() as setup:
+        command = await service.enqueue_ble_investigation(
+            setup, "uplink_CB77A4", investigate(), now=30.0,
+        )
+
+    first_started, release_first, second_started, release_second = (
+        gate_command_transactions(monkeypatch)
+    )
+    async with backend_sensor_session_factory() as poll_session, \
+            backend_sensor_session_factory() as cancel_session:
+        poll = asyncio.create_task(service.next_for_device(
+            poll_session, "uplink_CB77A4", now=31.0,
+        ))
+        await first_started.wait()
+        cancel = asyncio.create_task(service.request_cancel(
+            cancel_session, "uplink_CB77A4", command.command_id, now=32.0,
+        ))
+        await second_started.wait()
+        release_second.set()
+        release_first.set()
+        poll_envelope, cancel_envelope = await asyncio.gather(poll, cancel)
+
+    assert poll_envelope.type == "ble_investigate"
+    assert cancel_envelope.type == "ble_investigate_cancel"
+    async with backend_sensor_session_factory() as verification:
+        stored = await verification.get(NodeCommand, command.command_id)
+    assert stored.state == "cancel_pending"
+    assert stored.active_key == "uplink_CB77A4"
+
+
+@pytest.mark.asyncio
+async def test_concurrent_poll_does_not_overwrite_a_terminal_result(
+    backend_sensor_session_factory, monkeypatch,
+):
+    service = NodeCommandService()
+    async with backend_sensor_session_factory() as setup:
+        command = await service.enqueue_ble_investigation(
+            setup, "uplink_CB77A4", investigate(), now=35.0,
+        )
+        await service.record_result(
+            setup,
+            "uplink_CB77A4",
+            command.command_id,
+            RESULT.validate_python({
+                "sequence": 0,
+                "type": "ble_inv_begin",
+                "request_id": command.command_id,
+                "mode": "gatt",
+                "target_mac": "AA:BB:CC:DD:EE:FF",
+            }),
+            now=36.0,
+        )
+
+    terminal = RESULT.validate_python({
+        "sequence": 1,
+        "type": "ble_inv_end",
+        "request_id": command.command_id,
+        "state": "complete",
+        "summary": "done",
+        "error": None,
+        "authentication_required": False,
+        "truncated": False,
+    })
+    first_started, release_first, second_started, release_second = (
+        gate_command_transactions(monkeypatch)
+    )
+    async with backend_sensor_session_factory() as poll_session, \
+            backend_sensor_session_factory() as result_session:
+        poll = asyncio.create_task(service.next_for_device(
+            poll_session, "uplink_CB77A4", now=37.0,
+        ))
+        await first_started.wait()
+        record = asyncio.create_task(service.record_result(
+            result_session,
+            "uplink_CB77A4",
+            command.command_id,
+            terminal,
+            now=38.0,
+        ))
+        await second_started.wait()
+        release_second.set()
+        release_first.set()
+        poll_envelope, ack = await asyncio.gather(poll, record)
+
+    assert poll_envelope.type == "ble_investigate"
+    assert ack.terminal is True
+    async with backend_sensor_session_factory() as verification:
+        stored = await verification.get(NodeCommand, command.command_id)
+    assert stored.state == "terminal"
+    assert stored.active_key is None
+
+
+@pytest.mark.asyncio
+async def test_concurrent_cancel_does_not_overwrite_a_terminal_result(
+    backend_sensor_session_factory, monkeypatch,
+):
+    service = NodeCommandService()
+    async with backend_sensor_session_factory() as setup:
+        command = await service.enqueue_ble_investigation(
+            setup, "uplink_CB77A4", investigate(), now=40.0,
+        )
+        await service.record_result(
+            setup,
+            "uplink_CB77A4",
+            command.command_id,
+            RESULT.validate_python({
+                "sequence": 0,
+                "type": "ble_inv_begin",
+                "request_id": command.command_id,
+                "mode": "gatt",
+                "target_mac": "AA:BB:CC:DD:EE:FF",
+            }),
+            now=41.0,
+        )
+
+    terminal = RESULT.validate_python({
+        "sequence": 1,
+        "type": "ble_inv_end",
+        "request_id": command.command_id,
+        "state": "complete",
+        "summary": "done",
+        "error": None,
+        "authentication_required": False,
+        "truncated": False,
+    })
+    first_started, release_first, second_started, release_second = (
+        gate_command_transactions(monkeypatch)
+    )
+    async with backend_sensor_session_factory() as cancel_session, \
+            backend_sensor_session_factory() as result_session:
+        cancel = asyncio.create_task(service.request_cancel(
+            cancel_session, "uplink_CB77A4", command.command_id, now=42.0,
+        ))
+        await first_started.wait()
+        record = asyncio.create_task(service.record_result(
+            result_session,
+            "uplink_CB77A4",
+            command.command_id,
+            terminal,
+            now=43.0,
+        ))
+        await second_started.wait()
+        release_second.set()
+        release_first.set()
+        cancel_envelope, ack = await asyncio.gather(cancel, record)
+
+    assert cancel_envelope.type == "ble_investigate_cancel"
+    assert ack.terminal is True
+    async with backend_sensor_session_factory() as verification:
+        stored = await verification.get(NodeCommand, command.command_id)
+    assert stored.state == "terminal"
+    assert stored.active_key is None
