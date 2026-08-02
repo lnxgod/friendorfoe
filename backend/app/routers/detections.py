@@ -6,6 +6,7 @@ import re
 import secrets as _secrets
 import time
 from collections import defaultdict, deque
+from copy import deepcopy
 from datetime import datetime, timezone, timedelta
 from typing import Annotated
 
@@ -689,6 +690,55 @@ from app.services.identity_correlator import IdentityCorrelator
 _identity_correlator = IdentityCorrelator()
 _entity_tracker.set_identity_correlator(_identity_correlator)
 
+
+_INGEST_RUNTIME_STATE = (
+    "_recent_detections",
+    "_known_drones",
+    "_drone_alerts",
+    "_anomaly_detector",
+    "_ble_enricher",
+    "_rf_anomaly_detector",
+    "_signal_tracker",
+    "_entity_tracker",
+    "_identity_correlator",
+    "_event_detector",
+    "_drone_tracker",
+    "_sensor_tracker",
+    "_spoof_tracker",
+    "_position_dedup",
+    "_bssid_to_ap",
+    "_node_source_fixup_events",
+)
+
+
+def _snapshot_ingest_runtime_state() -> dict[str, object]:
+    """Capture mutable in-memory ingest state for primary-commit rollback."""
+    snapshot = {name: deepcopy(globals()[name]) for name in _INGEST_RUNTIME_STATE}
+    snapshot["_drone_tracker_sensor_ref"] = _drone_tracker._sensor_tracker
+    snapshot["_entity_tracker_ble_ref"] = _entity_tracker._ble_enricher
+    snapshot["_entity_tracker_identity_ref"] = _entity_tracker._identity_correlator
+    return snapshot
+
+
+def _restore_ingest_runtime_state(snapshot: dict[str, object]) -> None:
+    """Restore a failed ingest without replacing singleton object identities."""
+    for name in _INGEST_RUNTIME_STATE:
+        saved = snapshot[name]
+        current = globals()[name]
+        if isinstance(current, dict):
+            current.clear()
+            current.update(saved)
+        elif isinstance(current, (list, deque)):
+            current.clear()
+            current.extend(saved)
+        else:
+            current.__dict__.clear()
+            current.__dict__.update(saved.__dict__)
+
+    _drone_tracker._sensor_tracker = snapshot["_drone_tracker_sensor_ref"]
+    _entity_tracker.set_ble_enricher(snapshot["_entity_tracker_ble_ref"])
+    _entity_tracker.set_identity_correlator(snapshot["_entity_tracker_identity_ref"])
+
 # v0.63: phone-driven walk calibration. The Android app advertises BLE
 # from known GPS positions; backend joins the trace × sensor sightings
 # and fits a per-listener log-distance model.
@@ -964,6 +1014,9 @@ async def ingest_drone_detections(
         batch.device_id, len(batch.detections), sensor_lat, sensor_lon, position_mode, geometry_enabled,
     )
 
+    ingest_runtime_state = (
+        _snapshot_ingest_runtime_state() if batch.detections else None
+    )
     processed = 0
     db_detections = []
 
@@ -1526,6 +1579,8 @@ async def ingest_drone_detections(
 
             await db.commit()
         except Exception as exc:
+            if ingest_runtime_state is not None:
+                _restore_ingest_runtime_state(ingest_runtime_state)
             await db.rollback()
             logger.warning("Primary detection persistence failed: %s", exc)
             raise HTTPException(

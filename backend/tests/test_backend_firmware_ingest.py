@@ -1,14 +1,16 @@
 import time
 import uuid
+from collections import deque
 
 import pytest
 from sqlalchemy import func, select
 
 from app.main import app
-from app.models.db_models import DroneDetection
+from app.models.db_models import DroneDetection, TriangulatedPosition
 from app.models.schemas import DroneDetectionBatch, DroneDetectionItem
 from app.routers import detections
 from app.services.database import get_db
+from app.services.triangulation import SensorTracker
 
 
 PORTABLE_EVIDENCE = {
@@ -118,14 +120,25 @@ async def test_primary_db_outage_returns_503_without_consuming_retry(
 ):
     drone_id = f"BLE:{uuid.uuid4().hex}"
     now = int(time.time())
+    monkeypatch.setattr(detections, "_sensor_tracker", SensorTracker())
+    monkeypatch.setattr(detections, "_recent_detections", deque(maxlen=50000))
+    monkeypatch.setattr(detections, "_known_drones", {})
+    monkeypatch.setattr(detections, "_drone_alerts", [])
+    drone_tracker_sensor_before = detections._drone_tracker._sensor_tracker
     body = {
         "device_id": "uplink_CB77A4",
+        "device_lat": 37.3340,
+        "device_lon": -122.4450,
+        "device_alt": 12.0,
         "timestamp": now,
         "detections": [{
             "drone_id": drone_id,
             "source": "ble_fingerprint",
             "confidence": 0.8,
             "bssid": "AA:BB:CC:DD:EE:FF",
+            "latitude": 37.3345,
+            "longitude": -122.4455,
+            "altitude_m": 42.0,
         }],
     }
     normal_override = app.dependency_overrides[get_db]
@@ -146,14 +159,29 @@ async def test_primary_db_outage_returns_503_without_consuming_retry(
 
     assert first.status_code == 503
     assert not any(key[0] == drone_id for key in detections._ingest_dedup)
+    assert not detections._recent_detections
+    assert not detections._sensor_tracker.observations
+    assert not detections._position_dedup
+    assert detections._drone_tracker._sensor_tracker is drone_tracker_sensor_before
 
     retry = await client.post("/detections/drones", json=body)
     assert retry.status_code == 200
     assert retry.json()["processed"] == 1
+    assert len(detections._recent_detections) == 1
+    assert len(detections._sensor_tracker.observations[drone_id]) == 1
+    assert detections._position_dedup[f"_last_pos_{drone_id}"] == (
+        37.3345, -122.4455,
+    )
     async with backend_sensor_session_factory() as verification_session:
-        count = await verification_session.scalar(
+        detection_count = await verification_session.scalar(
             select(func.count(DroneDetection.id)).where(
                 DroneDetection.drone_id == drone_id,
             )
         )
-    assert count == 1
+        position_count = await verification_session.scalar(
+            select(func.count(TriangulatedPosition.id)).where(
+                TriangulatedPosition.drone_id == drone_id,
+            )
+        )
+    assert detection_count == 1
+    assert position_count == 1
