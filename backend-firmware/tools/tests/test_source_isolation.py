@@ -172,6 +172,44 @@ def test_fails_closed_on_unresolved_build_path_expression(tmp_path: Path) -> Non
     )
 
 
+def test_accepts_standard_idf_project_include_from_explicit_tool_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = make_backend_tree(tmp_path)
+    idf_root = tmp_path.parent / f"{tmp_path.name}-idf"
+    project_cmake = idf_root / "tools/cmake/project.cmake"
+    project_cmake.parent.mkdir(parents=True)
+    project_cmake.write_text("# toolchain entrypoint\n", encoding="utf-8")
+    (root / "CMakeLists.txt").write_text(
+        "include($ENV{IDF_PATH}/tools/cmake/project.cmake)\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("IDF_PATH", str(idf_root))
+
+    assert _auditor().audit_tree(root, allowed_tool_roots=[idf_root]) == []
+
+
+def test_rejects_idf_project_include_when_environment_points_into_repository(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = make_backend_tree(tmp_path)
+    protected_idf = root.parent / "esp32/fake-idf"
+    project_cmake = protected_idf / "tools/cmake/project.cmake"
+    project_cmake.parent.mkdir(parents=True)
+    project_cmake.write_text("# protected fake\n", encoding="utf-8")
+    (root / "CMakeLists.txt").write_text(
+        "include($ENV{IDF_PATH}/tools/cmake/project.cmake)\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("IDF_PATH", str(protected_idf))
+
+    findings = "\n".join(_auditor().audit_tree(root, allowed_tool_roots=[]))
+    assert "protected or escaping build path" in findings
+    assert "$ENV{IDF_PATH}/tools/cmake/project.cmake" in findings
+
+
 def test_expands_known_local_build_variables_without_escaping(tmp_path: Path) -> None:
     root = make_backend_tree(tmp_path)
     (root / "CMakeLists.txt").write_text(

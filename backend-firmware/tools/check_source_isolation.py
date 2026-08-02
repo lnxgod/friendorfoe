@@ -36,6 +36,11 @@ VARIABLE_EXPRESSION = re.compile(
     r"(\$ENV\{[^}\r\n]+\}|\$\{[^}\r\n]+\}|"
     r"\$[A-Za-z_][A-Za-z0-9_]*|%[A-Za-z_][A-Za-z0-9_]*%)"
 )
+VARIABLE_PATH = re.compile(
+    r"(?:\$ENV\{[^}\r\n]+\}|\$\{[^}\r\n]+\}|"
+    r"\$[A-Za-z_][A-Za-z0-9_]*|%[A-Za-z_][A-Za-z0-9_]*%)"
+    r"(?:/[A-Za-z0-9_.*?@+~-]+)+"
+)
 KNOWN_ROOT_VARIABLES = (
     "${CMAKE_SOURCE_DIR}",
     "${PROJECT_SOURCE_DIR}",
@@ -114,6 +119,13 @@ def _expand_known_variables(
     expanded = expanded.replace(KNOWN_LIST_VARIABLE, str(base_directory))
     if Path(display_file).name == "CMakeLists.txt":
         expanded = expanded.replace(KNOWN_SOURCE_VARIABLE, str(base_directory))
+    idf_path = os.environ.get("IDF_PATH")
+    if not idf_path:
+        platformio_idf = Path.home() / ".platformio/packages/framework-espidf"
+        if platformio_idf.parent.exists():
+            idf_path = str(platformio_idf)
+    if idf_path:
+        expanded = expanded.replace("$ENV{IDF_PATH}", idf_path)
     return expanded
 
 
@@ -167,7 +179,16 @@ def _config_candidates(path: Path, text: str) -> Iterable[str]:
     yield from UNQUOTED_PATH.findall(text)
     yield from BARE_PATH.findall(text)
     yield from SINGLE_SEGMENT_VENDOR.findall(text)
-    yield from VARIABLE_EXPRESSION.findall(text)
+    variable_paths = list(VARIABLE_PATH.finditer(text))
+    yield from (match.group(0) for match in variable_paths)
+    for match in VARIABLE_EXPRESSION.finditer(text):
+        if any(
+            path_match.start() <= match.start()
+            and match.end() <= path_match.end()
+            for path_match in variable_paths
+        ):
+            continue
+        yield match.group(0)
 
 
 def _build_files(root: Path) -> Iterable[Path]:
