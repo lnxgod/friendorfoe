@@ -224,6 +224,22 @@ class ObservationStoreTest(unittest.TestCase):
                 with self.assertRaises(sqlite3.ProgrammingError):
                     connection.execute("SELECT 1")
 
+    def test_partially_consumed_export_keeps_no_sqlite_connection_open(self) -> None:
+        store = TrackingObservationStore(self.path)
+        store.add_event(self._event("one"), 10.0)
+        store.add_event(self._event("two"), 20.0)
+        connection_count = len(store.opened_connections)
+
+        export = store.iter_export(HistoryQuery())
+        self.assertEqual(next(export).display_id, "two")
+
+        export_connections = store.opened_connections[connection_count:]
+        self.assertTrue(export_connections)
+        for connection in export_connections:
+            with self.subTest(connection=connection):
+                with self.assertRaises(sqlite3.ProgrammingError):
+                    connection.execute("SELECT 1")
+
     def test_query_rejects_cursor_with_huge_received_at_integer(self) -> None:
         store = ObservationStore(self.path)
         cursor = urlsafe_b64encode(json.dumps({"received_at": 10 ** 1_000, "id": 1}).encode()).decode()

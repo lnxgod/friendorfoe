@@ -9,7 +9,7 @@ import time
 from base64 import b64decode, urlsafe_b64encode
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from math import isfinite
 from pathlib import Path
 from typing import Any
@@ -75,6 +75,7 @@ CREATE INDEX IF NOT EXISTS observations_stable_key_idx
 CREATE INDEX IF NOT EXISTS observations_source_idx ON observations (source);
 CREATE INDEX IF NOT EXISTS observations_threat_class_idx ON observations (threat_class);
 """
+_EXPORT_BATCH_SIZE = 500
 
 
 class ObservationStore:
@@ -187,15 +188,25 @@ class ObservationStore:
                 return _insert_observation(connection, values)
 
     def iter_export(self, query: HistoryQuery) -> Iterator[Observation]:
-        """Yield all matching observations, optionally continuing from a cursor."""
-        where, parameters = _where_clause(query, include_cursor=True)
-        with self._connection() as connection:
-            cursor = connection.execute(
-                f"SELECT * FROM observations{where} ORDER BY received_at DESC, id DESC",
-                parameters,
+        """Yield filtered observations without retaining a connection across yields."""
+        cursor = query.cursor
+        while True:
+            where, parameters = _where_clause(
+                replace(query, cursor=cursor), include_cursor=True
             )
-            for row in cursor:
-                yield _observation_from_row(row)
+            with self._connection() as connection:
+                rows = connection.execute(
+                    f"SELECT * FROM observations{where} "
+                    "ORDER BY received_at DESC, id DESC LIMIT ?",
+                    (*parameters, _EXPORT_BATCH_SIZE),
+                ).fetchall()
+            items = tuple(_observation_from_row(row) for row in rows)
+            if not items:
+                return
+            cursor = _encode_cursor(items[-1])
+            yield from items
+            if len(items) < _EXPORT_BATCH_SIZE:
+                return
 
     def prune(self, now: float | None = None) -> int:
         """Delete expired rows and then the oldest IDs over the row limit."""
