@@ -383,6 +383,7 @@ class _LoopIndependentAsyncLock:
         self._state_lock = threading.Lock()
         self._locked = False
         self._waiters: deque[_AsyncLockWaiter] = deque()
+        self._handoff: _AsyncLockWaiter | None = None
 
     def locked(self) -> bool:
         with self._state_lock:
@@ -390,65 +391,157 @@ class _LoopIndependentAsyncLock:
 
     async def acquire(self) -> bool:
         loop = asyncio.get_running_loop()
-        with self._state_lock:
-            if not self._locked:
-                self._locked = True
-                return True
-            waiter = _AsyncLockWaiter(loop=loop, future=loop.create_future())
-            self._waiters.append(waiter)
-
-        try:
-            await waiter.future
-            return True
-        except BaseException:
-            release_grant = False
-            with self._state_lock:
-                if waiter.state == "queued":
-                    waiter.state = "cancelled"
-                    self._waiters.remove(waiter)
-                elif waiter.state == "granted":
-                    waiter.state = "cancelled"
-                    release_grant = True
-            if release_grant:
-                self.release()
-            raise
-
-    def release(self) -> None:
         while True:
+            retry_waiters: list[_AsyncLockWaiter] = []
+            grant_waiter = None
+            owns_lock = False
             with self._state_lock:
-                if not self._locked:
-                    raise RuntimeError("cannot release an unlocked lock")
-                waiter = None
-                while self._waiters:
-                    candidate = self._waiters.popleft()
-                    if candidate.state != "queued" or candidate.future.done():
-                        candidate.state = "cancelled"
-                        continue
-                    candidate.state = "granted"
-                    waiter = candidate
-                    break
-                if waiter is None:
-                    self._locked = False
-                    return
+                stranded = self._handoff
+                if (
+                    stranded is not None
+                    and stranded.state == "granted"
+                    and not stranded.loop.is_running()
+                ):
+                    # The previous owner released, but this target never
+                    # acknowledged its grant. Revoke it before claiming or
+                    # forwarding ownership; a queued callback validates the
+                    # state and therefore cannot resurrect the stale grant.
+                    stranded.state = "revoked"
+                    self._handoff = None
+                    retry_waiters.append(stranded)
+                    waiter = _AsyncLockWaiter(
+                        loop=loop, future=loop.create_future(),
+                    )
+                    self._waiters.append(waiter)
+                    grant_waiter, stopped = self._take_next_waiter_locked(
+                        live_only=True,
+                    )
+                    retry_waiters.extend(stopped)
+                    if grant_waiter is waiter:
+                        waiter.state = "owned"
+                        self._handoff = None
+                        owns_lock = True
+                elif not self._locked:
+                    self._locked = True
+                    return True
+                else:
+                    waiter = _AsyncLockWaiter(
+                        loop=loop, future=loop.create_future(),
+                    )
+                    self._waiters.append(waiter)
+
+            for retry_waiter in retry_waiters:
+                self._schedule_retry(retry_waiter)
+            if owns_lock:
+                return True
+            if grant_waiter is not None:
+                self._dispatch_grant(grant_waiter)
 
             try:
+                await waiter.future
+            except BaseException:
+                release_grant = False
+                with self._state_lock:
+                    if waiter.state == "queued":
+                        waiter.state = "cancelled"
+                        self._waiters.remove(waiter)
+                    elif waiter.state == "granted":
+                        waiter.state = "cancelled"
+                        if self._handoff is waiter:
+                            self._handoff = None
+                        release_grant = True
+                if release_grant:
+                    self.release()
+                raise
+
+            with self._state_lock:
+                if (
+                    waiter.state == "granted"
+                    and self._handoff is waiter
+                ):
+                    waiter.state = "owned"
+                    self._handoff = None
+                    return True
+                if waiter.state != "revoked":
+                    raise RuntimeError("lock waiter woke without a grant")
+
+    def release(self) -> None:
+        with self._state_lock:
+            if not self._locked:
+                raise RuntimeError("cannot release an unlocked lock")
+            waiter, stopped = self._take_next_waiter_locked(live_only=True)
+            if waiter is None:
+                self._locked = False
+        for stopped_waiter in stopped:
+            self._schedule_retry(stopped_waiter)
+        if waiter is None:
+            return
+        self._dispatch_grant(waiter)
+
+    def _take_next_waiter_locked(
+        self, *, live_only: bool = False,
+    ) -> tuple[_AsyncLockWaiter | None, list[_AsyncLockWaiter]]:
+        stopped: list[_AsyncLockWaiter] = []
+        while self._waiters:
+            candidate = self._waiters.popleft()
+            if candidate.state != "queued" or candidate.future.done():
+                candidate.state = "cancelled"
+                continue
+            if live_only and not candidate.loop.is_running():
+                candidate.state = "revoked"
+                stopped.append(candidate)
+                continue
+            candidate.state = "granted"
+            self._handoff = candidate
+            return candidate, stopped
+        return None, stopped
+
+    def _dispatch_grant(self, waiter: _AsyncLockWaiter) -> None:
+        while True:
+            try:
                 waiter.loop.call_soon_threadsafe(
-                    self._wake_waiter, waiter.future,
+                    self._wake_waiter, waiter,
                 )
             except RuntimeError:
-                # Its loop closed before accepting the grant. Keep ownership
-                # in transit and hand it to the next live waiter.
+                retry_waiters: list[_AsyncLockWaiter] = []
                 with self._state_lock:
-                    if waiter.state != "granted":
+                    if (
+                        waiter.state != "granted"
+                        or self._handoff is not waiter
+                    ):
                         return
                     waiter.state = "abandoned"
+                    self._handoff = None
+                    waiter, retry_waiters = self._take_next_waiter_locked(
+                        live_only=True,
+                    )
+                    if waiter is None:
+                        self._locked = False
+                for retry_waiter in retry_waiters:
+                    self._schedule_retry(retry_waiter)
+                if waiter is None:
+                    return
                 continue
             return
 
+    def _wake_waiter(self, waiter: _AsyncLockWaiter) -> None:
+        with self._state_lock:
+            grant_is_current = (
+                waiter.state == "granted" and self._handoff is waiter
+            )
+        if grant_is_current and not waiter.future.done():
+            waiter.future.set_result(None)
+
+    def _schedule_retry(self, waiter: _AsyncLockWaiter) -> None:
+        try:
+            waiter.loop.call_soon_threadsafe(self._wake_retry, waiter)
+        except RuntimeError:
+            pass
+
     @staticmethod
-    def _wake_waiter(future: asyncio.Future[None]) -> None:
-        if not future.done():
-            future.set_result(None)
+    def _wake_retry(waiter: _AsyncLockWaiter) -> None:
+        if not waiter.future.done():
+            waiter.future.set_result(None)
 
     async def __aenter__(self) -> "_LoopIndependentAsyncLock":
         await self.acquire()

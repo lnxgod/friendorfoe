@@ -358,6 +358,135 @@ async def test_secondary_position_commit_and_rollback_failure_stays_acknowledged
     assert position_count == 0
 
 
+@pytest.mark.parametrize(
+    "wake_completed",
+    (False, True),
+    ids=("wake-callback-pending", "future-completed-task-stopped"),
+)
+def test_loop_independent_lock_reclaims_stopped_loop_handoff(wake_completed):
+    """An unacknowledged grant on a stopped loop cannot strand the mutex."""
+    lock = detections._LoopIndependentAsyncLock()
+    owner_loop = asyncio.new_event_loop()
+    target_loop = asyncio.new_event_loop()
+    later_loop = asyncio.new_event_loop()
+    target_acquired = False
+    target_task = None
+    later_task = None
+
+    async def target_waiter():
+        nonlocal target_acquired
+        await lock.acquire()
+        target_acquired = True
+        lock.release()
+
+    async def later_acquirer_after_one_turn():
+        task = asyncio.create_task(lock.acquire())
+        turn_complete = asyncio.get_running_loop().create_future()
+        asyncio.get_running_loop().call_soon(
+            turn_complete.set_result, None,
+        )
+        await turn_complete
+        return task
+
+    try:
+        owner_loop.run_until_complete(lock.acquire())
+
+        target_task = target_loop.create_task(target_waiter())
+        target_loop.call_soon(target_loop.stop)
+        target_loop.run_forever()
+        assert not target_task.done()
+
+        # The regression implementation called call_soon_threadsafe() here:
+        # a stopped-but-open loop accepted the grant and queued its callback.
+        # A lifecycle-aware implementation may revoke before scheduling it.
+        lock.release()
+        if wake_completed:
+            # Run exactly the queued wake callback and stop in the same loop
+            # turn. The Future completes, but target_waiter cannot resume.
+            target_loop.call_soon(target_loop.stop)
+            target_loop.run_forever()
+            assert not target_task.done()
+
+        later_task = later_loop.run_until_complete(
+            later_acquirer_after_one_turn(),
+        )
+        assert later_task.done(), {
+            "later_request": "timed_out",
+            "lock_still_locked": lock.locked(),
+        }
+        assert later_task.result() is True
+
+        # Restart the target loop while the later acquirer owns the lock. A
+        # stale wake may make the old waiter retry, but cannot grant a second
+        # owner. Two explicit loop turns let that retry reach the mutex.
+        def stop_after_next_turn():
+            target_loop.call_soon(target_loop.stop)
+
+        target_loop.call_soon(stop_after_next_turn)
+        target_loop.run_forever()
+        assert not target_task.done()
+        assert not target_acquired
+
+        lock.release()
+        target_loop.run_until_complete(target_task)
+        assert target_acquired
+        assert not lock.locked()
+    finally:
+        later_acquired = bool(
+            later_task is not None
+            and later_task.done()
+            and not later_task.cancelled()
+            and later_task.exception() is None
+        )
+        if later_task is not None and not later_task.done():
+            later_task.cancel()
+            later_loop.run_until_complete(
+                asyncio.gather(later_task, return_exceptions=True),
+            )
+        if later_acquired and lock.locked():
+            lock.release()
+        if target_task is not None and not target_task.done():
+            try:
+                target_loop.run_until_complete(target_task)
+            except BaseException:
+                pass
+        owner_loop.close()
+        target_loop.close()
+        later_loop.close()
+
+
+@pytest.mark.parametrize(
+    "cancel_after_grant",
+    (False, True),
+    ids=("queued", "grant-in-transit"),
+)
+@pytest.mark.asyncio
+async def test_loop_independent_lock_cancellation_does_not_leak(
+    cancel_after_grant,
+):
+    lock = detections._LoopIndependentAsyncLock()
+    await lock.acquire()
+    contender_started = asyncio.Event()
+
+    async def contend():
+        contender_started.set()
+        await lock.acquire()
+
+    contender = asyncio.create_task(contend())
+    await contender_started.wait()
+    if cancel_after_grant:
+        lock.release()
+    contender.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await contender
+    if not cancel_after_grant:
+        lock.release()
+
+    assert not lock.locked()
+    assert await lock.acquire() is True
+    lock.release()
+
+
 @pytest.mark.asyncio
 async def test_position_persistence_serializes_across_event_loops(
     client, backend_sensor_session_factory, monkeypatch,
