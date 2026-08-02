@@ -136,18 +136,65 @@ class ControlValidationTest(unittest.TestCase):
             ({"cmd": "badge_display_policy_reset", "persist": True}, "display policy reset"),
         )
 
+    def test_direct_construction_rejects_prohibited_control_payloads(self) -> None:
+        with self.assertRaises(ControlValidationError):
+            BadgeControlCommand(
+                {"cmd": "reboot", "persist": True},
+                "rebooted",
+            )
+
+    def test_direct_construction_requires_exact_payload_message_pairing(self) -> None:
+        with self.assertRaises(ControlValidationError):
+            BadgeControlCommand(
+                {"cmd": "display_nav", "action": "next"},
+                "badge theme updated",
+            )
+
+    def test_builder_result_rejects_top_level_mutation(self) -> None:
+        command = build_display_nav("next")
+        with self.assertRaises(TypeError):
+            command.payload["cmd"] = "reboot"
+        self.assertEqual(command.to_wire(), b'FOF_CTL:{"cmd":"display_nav","action":"next"}\n')
+
+    def test_builder_result_rejects_nested_mutation(self) -> None:
+        command = build_theme(THEME)
+        with self.assertRaises(TypeError):
+            command.payload["theme"]["accents"]["drone"] = 0  # type: ignore[index]
+        self.assertEqual(command.payload["theme"]["accents"]["drone"], 65184)  # type: ignore[index]
+
 
 class ControlWireTest(unittest.TestCase):
-    def test_wire_uses_ascii_compact_finite_json(self) -> None:
-        command = BadgeControlCommand({"message": "caf\u00e9"}, "unused")
-        self.assertEqual(command.to_wire(), b'FOF_CTL:{"message":"caf\\u00e9"}\n')
-        with self.assertRaises(ControlValidationError):
-            BadgeControlCommand({"value": float("nan")}, "unused").to_wire()
-
-    def test_wire_accepts_2047_bytes_before_newline_and_rejects_2048(self) -> None:
-        prefix_size = len(BadgeControlCommand({"x": ""}, "unused").to_wire()) - 1
-        accepted = BadgeControlCommand({"x": "a" * (2047 - prefix_size)}, "unused")
-        rejected = BadgeControlCommand({"x": "a" * (2048 - prefix_size)}, "unused")
-        self.assertEqual(len(accepted.to_wire()) - 1, 2047)
-        with self.assertRaises(ControlValidationError):
-            rejected.to_wire()
+    def test_each_approved_builder_produces_its_exact_wire_and_message(self) -> None:
+        policy = complete_policy()
+        commands = (
+            (
+                build_display_nav("next"),
+                b'FOF_CTL:{"cmd":"display_nav","action":"next"}\n',
+                "display nav updated",
+            ),
+            (
+                build_theme(THEME),
+                b'FOF_CTL:{"cmd":"badge_theme","persist":true,"theme":{"version":1,"palette":"night","background":"dark","brightness":80,"accents":{"drone":65184,"meta":63539,"tracker":63519,"flock":43039,"wifi_attack":2047,"clear":12133}}}\n',
+                "badge theme updated",
+            ),
+            (
+                build_theme_reset(),
+                b'FOF_CTL:{"cmd":"badge_theme_reset","persist":true}\n',
+                "badge theme reset",
+            ),
+            (
+                build_display_policy(policy),
+                b'FOF_CTL:{"cmd":"badge_display_policy","persist":true,"policy":{"version":1,"classes":{"drone":{"enabled":true,"lane":"lower","min_proximity":"near","priority":50},"meta":{"enabled":true,"lane":"lower","min_proximity":"near","priority":50},"tracker":{"enabled":true,"lane":"lower","min_proximity":"near","priority":50},"wifi_attack":{"enabled":true,"lane":"lower","min_proximity":"near","priority":50},"skimmer":{"enabled":true,"lane":"lower","min_proximity":"near","priority":50},"camera":{"enabled":true,"lane":"lower","min_proximity":"near","priority":50},"flock":{"enabled":true,"lane":"lower","min_proximity":"near","priority":50},"lock":{"enabled":true,"lane":"lower","min_proximity":"near","priority":50},"hid":{"enabled":true,"lane":"lower","min_proximity":"near","priority":50},"beacon":{"enabled":true,"lane":"lower","min_proximity":"near","priority":50},"event_badge":{"enabled":true,"lane":"lower","min_proximity":"near","priority":50},"auracast":{"enabled":true,"lane":"lower","min_proximity":"near","priority":50},"scanner_status":{"enabled":true,"lane":"lower","min_proximity":"near","priority":50}}}}\n',
+                "display policy updated",
+            ),
+            (
+                build_display_policy_reset(),
+                b'FOF_CTL:{"cmd":"badge_display_policy_reset","persist":true}\n',
+                "display policy reset",
+            ),
+        )
+        for command, wire, expected_message in commands:
+            with self.subTest(expected_message=expected_message):
+                self.assertEqual(command.to_wire(), wire)
+                self.assertEqual(command.expected_message, expected_message)
+                self.assertLessEqual(len(command.to_wire()) - 1, 2047)

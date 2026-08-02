@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import json
+from types import MappingProxyType
+from typing import Mapping
 
 
 NAV_ACTIONS = frozenset({"next", "detail", "page", "back"})
@@ -37,27 +39,22 @@ class ControlValidationError(ValueError):
 
 @dataclass(frozen=True)
 class BadgeControlCommand:
-    """A validated command and the precise acknowledgement it expects."""
+    """A sealed approved command and the precise acknowledgement it expects."""
 
-    payload: dict[str, object]
+    payload: Mapping[str, object]
     expected_message: str
+    _wire: bytes = field(init=False, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        payload = _validate_control_command(self.payload, self.expected_message)
+        wire = _encode_wire(payload)
+        object.__setattr__(self, "payload", _freeze_mapping(payload))
+        object.__setattr__(self, "_wire", wire)
 
     def to_wire(self) -> bytes:
         """Return the newline-terminated, firmware control record."""
 
-        try:
-            encoded = json.dumps(
-                self.payload,
-                separators=(",", ":"),
-                ensure_ascii=True,
-                allow_nan=False,
-            ).encode("ascii")
-        except (TypeError, ValueError) as error:
-            raise ControlValidationError("control payload is not finite JSON") from error
-        wire = b"FOF_CTL:" + encoded
-        if len(wire) > 2047:
-            raise ControlValidationError("control command exceeds 2047 bytes")
-        return wire + b"\n"
+        return self._wire
 
 
 def build_display_nav(action: str) -> BadgeControlCommand:
@@ -106,6 +103,80 @@ def build_display_policy_reset() -> BadgeControlCommand:
     return BadgeControlCommand(
         payload={"cmd": "badge_display_policy_reset", "persist": True},
         expected_message="display policy reset",
+    )
+
+
+def _validate_control_command(payload: object, expected_message: object) -> dict[str, object]:
+    """Fail closed unless construction matches one approved command exactly."""
+
+    if type(payload) is not dict or type(expected_message) is not str:
+        raise ControlValidationError("control command is not an approved payload")
+    command = payload.get("cmd")
+    if command == "display_nav":
+        _require_exact_keys(payload, {"cmd", "action"})
+        action = payload["action"]
+        if type(action) is not str or action not in NAV_ACTIONS:
+            raise ControlValidationError("invalid display navigation action")
+        _require_expected_message(expected_message, "display nav updated")
+        return {"cmd": "display_nav", "action": action}
+    if command == "badge_theme":
+        _require_exact_keys(payload, {"cmd", "persist", "theme"})
+        if payload["persist"] is not True:
+            raise ControlValidationError("badge theme must persist")
+        _require_expected_message(expected_message, "badge theme updated")
+        return {"cmd": "badge_theme", "persist": True, "theme": _validate_theme(payload["theme"])}
+    if command == "badge_theme_reset":
+        _require_exact_keys(payload, {"cmd", "persist"})
+        if payload["persist"] is not True:
+            raise ControlValidationError("badge theme reset must persist")
+        _require_expected_message(expected_message, "badge theme reset")
+        return {"cmd": "badge_theme_reset", "persist": True}
+    if command == "badge_display_policy":
+        _require_exact_keys(payload, {"cmd", "persist", "policy"})
+        if payload["persist"] is not True:
+            raise ControlValidationError("display policy must persist")
+        _require_expected_message(expected_message, "display policy updated")
+        return {
+            "cmd": "badge_display_policy",
+            "persist": True,
+            "policy": _validate_policy(payload["policy"]),
+        }
+    if command == "badge_display_policy_reset":
+        _require_exact_keys(payload, {"cmd", "persist"})
+        if payload["persist"] is not True:
+            raise ControlValidationError("display policy reset must persist")
+        _require_expected_message(expected_message, "display policy reset")
+        return {"cmd": "badge_display_policy_reset", "persist": True}
+    raise ControlValidationError("control command is not approved")
+
+
+def _require_expected_message(actual: str, expected: str) -> None:
+    if actual != expected:
+        raise ControlValidationError("control acknowledgement does not match its payload")
+
+
+def _encode_wire(payload: dict[str, object]) -> bytes:
+    try:
+        encoded = json.dumps(
+            payload,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            allow_nan=False,
+        ).encode("ascii")
+    except (TypeError, ValueError) as error:
+        raise ControlValidationError("control payload is not finite JSON") from error
+    wire = b"FOF_CTL:" + encoded
+    if len(wire) > 2047:
+        raise ControlValidationError("control command exceeds 2047 bytes")
+    return wire + b"\n"
+
+
+def _freeze_mapping(payload: dict[str, object]) -> Mapping[str, object]:
+    return MappingProxyType(
+        {
+            key: _freeze_mapping(value) if type(value) is dict else value
+            for key, value in payload.items()
+        }
     )
 
 
