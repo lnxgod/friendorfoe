@@ -368,6 +368,9 @@ class Observation:
     operator_id: str
     extras: Mapping[str, Any]
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "extras", _freeze_json(dict(self.extras)))
+
     def to_dict(self) -> dict[str, object]:
         return _json_safe({
             "row_id": self.row_id,

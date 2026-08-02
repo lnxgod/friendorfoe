@@ -1,0 +1,206 @@
+import json
+import tempfile
+import unittest
+from dataclasses import replace
+from pathlib import Path
+
+from new_dash.models import BadgeEntity, DetectionEvent
+from new_dash.storage import HistoryQuery, ObservationStore
+
+
+class ObservationStoreTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.path = Path(self.temp.name) / "new-dash.sqlite3"
+
+    def tearDown(self) -> None:
+        self.temp.cleanup()
+
+    def test_event_survives_store_restart(self) -> None:
+        store = ObservationStore(self.path, retention_days=30, max_observations=50_000)
+        event = DetectionEvent(
+            detection_id="RID-7", manufacturer="DJI", badge_label="REMOTE ID",
+            badge_class="drone", badge_entity_key="rid:7", source_id=0,
+            source="ble_rid", confidence=0.95, threat_score=80.0, rssi=-48,
+        )
+        row_id = store.add_event(event, received_at=1_700_000_000.0)
+        store.close()
+
+        reopened = ObservationStore(self.path, retention_days=30, max_observations=50_000)
+        page = reopened.query(HistoryQuery(limit=10))
+        self.assertEqual(page.items[0].row_id, row_id)
+        self.assertEqual(page.items[0].stable_key, "rid:7")
+        reopened.close()
+
+    def test_tracks_deduplicate_only_identical_positioned_remote_id_snapshots(self) -> None:
+        entity = self._positioned_entity()
+        store = ObservationStore(self.path, retention_days=30, max_observations=50_000)
+
+        first = store.add_track(entity, received_at=1_700_000_010.0)
+        duplicate = store.add_track(entity, received_at=1_700_000_012.0)
+        moved = store.add_track(replace(entity, latitude=37.7750), received_at=1_700_000_014.0)
+
+        self.assertIsNotNone(first)
+        self.assertIsNone(duplicate)
+        self.assertIsNotNone(moved)
+        page = store.query(HistoryQuery(limit=10))
+        self.assertEqual([item.latitude for item in page.items], [37.7750, 37.7749])
+        self.assertEqual(page.items[0].observed_at, 1_700_000_013.0)
+
+    def test_track_counter_change_persists_without_coordinate_change(self) -> None:
+        entity = self._positioned_entity()
+        store = ObservationStore(self.path, retention_days=30, max_observations=50_000)
+
+        store.add_track(entity, received_at=1_700_000_010.0)
+        row_id = store.add_track(replace(entity, events=8), received_at=1_700_000_012.0)
+
+        self.assertIsNotNone(row_id)
+        self.assertEqual(store.query(HistoryQuery(limit=1)).items[0].events, 8)
+
+    def test_rejects_stale_non_remote_id_and_unpositioned_tracks(self) -> None:
+        entity = self._positioned_entity()
+        store = ObservationStore(self.path, retention_days=30, max_observations=50_000)
+
+        self.assertIsNone(store.add_track(replace(entity, stale=True), received_at=1_700_000_010.0))
+        self.assertIsNone(store.add_track(replace(entity, source="wifi_dji_ie"), received_at=1_700_000_010.0))
+        self.assertIsNone(store.add_track(replace(entity, latitude=None), received_at=1_700_000_010.0))
+        self.assertEqual(store.query(HistoryQuery()).items, ())
+
+    def test_query_filters_and_clamps_newest_first_limit(self) -> None:
+        store = ObservationStore(self.path, retention_days=30, max_observations=50_000)
+        oldest = store.add_event(self._event("old", source="ble_rid", threat_class="drone"), 10.0)
+        store.add_event(self._event("middle", source="wifi_dji_ie", threat_class="privacy"), 20.0)
+        newest = store.add_event(self._event("new", source="ble_rid", threat_class="drone"), 30.0)
+
+        self.assertEqual(store.query(HistoryQuery(limit=0)).items[0].row_id, newest)
+        self.assertEqual(len(store.query(HistoryQuery(limit=999)).items), 3)
+        self.assertEqual(
+            [
+                item.row_id
+                for item in store.query(
+                    HistoryQuery(kind="event", source="ble_rid", threat_class="drone")
+                ).items
+            ],
+            [newest, oldest],
+        )
+
+    def test_cursor_continues_equal_timestamp_rows_deterministically(self) -> None:
+        store = ObservationStore(self.path, retention_days=30, max_observations=50_000)
+        first = store.add_event(self._event("one"), 10.0)
+        second = store.add_event(self._event("two"), 10.0)
+        third = store.add_event(self._event("three"), 10.0)
+
+        page_one = store.query(HistoryQuery(limit=2))
+        page_two = store.query(HistoryQuery(limit=2, cursor=page_one.next_cursor))
+
+        self.assertEqual([item.row_id for item in page_one.items], [third, second])
+        self.assertEqual([item.row_id for item in page_two.items], [first])
+        self.assertIsNone(page_two.next_cursor)
+
+    def test_query_rejects_malformed_cursor(self) -> None:
+        store = ObservationStore(self.path, retention_days=30, max_observations=50_000)
+        for cursor in ("not-base64", "eyJyZWNlaXZlZF9hdCI6MX0", "eyJyZWNlaXZlZF9hdCI6MSwiaWQiOiIxIn0="):
+            with self.subTest(cursor=cursor):
+                with self.assertRaises(ValueError):
+                    store.query(HistoryQuery(cursor=cursor))
+
+    def test_identity_search_and_positioned_filter_match_only_requested_rows(self) -> None:
+        store = ObservationStore(self.path, retention_days=30, max_observations=50_000)
+        event_id = store.add_event(self._event("ignored", manufacturer="Acme Flight"), 10.0)
+        track_id = store.add_track(self._positioned_entity(), 20.0)
+
+        self.assertEqual(
+            [item.row_id for item in store.query(HistoryQuery(text="ACME")).items], [event_id]
+        )
+        self.assertEqual(
+            [
+                item.row_id
+                for item in store.query(HistoryQuery(text="abc123", positioned=True)).items
+            ],
+            [track_id],
+        )
+        self.assertEqual(store.query(HistoryQuery(positioned=True, source="wifi_rid")).items, ())
+
+    def test_export_uses_filters_without_page_limit_and_rows_have_stable_json_fields(self) -> None:
+        store = ObservationStore(self.path, retention_days=30, max_observations=50_000)
+        store.add_event(self._event("one", source="ble_rid"), 10.0)
+        store.add_event(self._event("two", source="ble_rid"), 20.0)
+        store.add_event(self._event("three", source="wifi_rid"), 30.0)
+
+        exported = list(store.iter_export(HistoryQuery(source="ble_rid", limit=1)))
+
+        self.assertEqual([item.display_id for item in exported], ["two", "one"])
+        self.assertEqual(list(exported[0].to_dict()), [
+            "row_id", "kind", "received_at", "observed_at", "stable_key", "source_id",
+            "source", "threat_class", "category", "label", "display_id", "manufacturer",
+            "confidence", "score", "rssi", "events", "seen_count", "latitude", "longitude",
+            "altitude_m", "operator_latitude", "operator_longitude", "operator_id", "extras",
+        ])
+        self.assertIsInstance(json.loads(json.dumps(exported[0].to_dict())), dict)
+
+    def test_rehydrated_observation_extras_remain_immutable(self) -> None:
+        store = ObservationStore(self.path, retention_days=30, max_observations=50_000)
+        store.add_event(self._event("one"), 10.0)
+        observation = store.query(HistoryQuery()).items[0]
+
+        with self.assertRaises(TypeError):
+            observation.extras["tamper"] = True
+
+    def test_clear_returns_deleted_row_count(self) -> None:
+        store = ObservationStore(self.path, retention_days=30, max_observations=50_000)
+        store.add_event(self._event("one"), 10.0)
+        store.add_event(self._event("two"), 20.0)
+
+        self.assertEqual(store.clear(), 2)
+        self.assertEqual(store.query(HistoryQuery()).items, ())
+
+    def test_prune_keeps_exact_retention_boundary_and_removes_older_row(self) -> None:
+        now = 1_700_000_000.0
+        store = ObservationStore(self.path, retention_days=30, max_observations=50_000)
+        store.add_event(self._event("boundary"), now - 30 * 86_400)
+        store.add_event(self._event("expired"), now - 30 * 86_400 - 0.1)
+
+        self.assertEqual(store.prune(now), 1)
+        self.assertEqual([item.display_id for item in store.query(HistoryQuery()).items], ["boundary"])
+
+    def test_prune_keeps_newest_fifty_thousand_rows(self) -> None:
+        now = 1_700_000_000.0
+        store = ObservationStore(self.path, retention_days=30, max_observations=50_000)
+        with store._connect() as connection:
+            connection.executemany(
+                """INSERT INTO observations (
+                kind, received_at, observed_at, stable_key, source, extras_json
+                ) VALUES ('event', ?, ?, ?, 'ble_rid', '{}')""",
+                [(now - 1, now - 1, f"event:{index}") for index in range(50_003)],
+            )
+
+        self.assertEqual(store.prune(now), 3)
+        with store._connect() as connection:
+            count = connection.execute("SELECT COUNT(*) FROM observations").fetchone()[0]
+            oldest = connection.execute("SELECT MIN(id) FROM observations").fetchone()[0]
+        self.assertEqual(count, 50_000)
+        self.assertEqual(oldest, 4)
+
+    def test_constructor_rejects_non_positive_bounds(self) -> None:
+        with self.assertRaises(ValueError):
+            ObservationStore(self.path, retention_days=0, max_observations=1)
+        with self.assertRaises(ValueError):
+            ObservationStore(self.path, retention_days=1, max_observations=0)
+
+    def _positioned_entity(self) -> BadgeEntity:
+        fixture = Path(__file__).parent / "fixtures" / "badge_status_remote_id.json"
+        return BadgeEntity.from_payload(json.loads(fixture.read_text())["entities"][0])
+
+    @staticmethod
+    def _event(
+        detection_id: str,
+        *,
+        source: str = "ble_rid",
+        threat_class: str = "drone",
+        manufacturer: str = "DJI",
+    ) -> DetectionEvent:
+        return DetectionEvent(
+            detection_id=detection_id, manufacturer=manufacturer, badge_label=f"Label {detection_id}",
+            badge_class=threat_class, badge_entity_key=f"{source}:{detection_id}", source_id=0,
+            source=source, confidence=0.95, threat_score=80.0, rssi=-48,
+        )
