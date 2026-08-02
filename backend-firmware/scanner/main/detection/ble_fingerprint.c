@@ -1,0 +1,952 @@
+/**
+ * Friend or Foe -- BLE Advertisement Fingerprinting
+ *
+ * JA3-style approach: extract invariant features from BLE advertisements
+ * and hash them into a compact fingerprint. These features persist across
+ * MAC address rotations, allowing device TYPE identification without
+ * needing to resolve the identity.
+ *
+ * Invariant features:
+ *   - AD structure type sequence (which AD types, in order)
+ *   - Company ID from manufacturer-specific data
+ *   - Apple Continuity sub-type byte
+ *   - Service UUID list
+ *   - Advertisement properties (BLE4/ext, connectable/scannable)
+ *   - Payload length class
+ *
+ * Known device signatures:
+ *   Apple:    Company 0x004C, Continuity types: 0x12=FindMy, 0x07=AirPods,
+ *             0x0F=NearbyAction, 0x10=NearbyInfo, 0x05=AirDrop, 0x09=AirPlay
+ *   Samsung:  Company 0x0075
+ *   Tile:     Company 0x067C, service UUID 0xFEED or 0xFEEC
+ *   Chipolo:  Company 0x08C3, service UUID 0xFE33 or 0xFE65
+ *   Google:   Company 0x00E0 (Google), FastPair service 0xFE2C
+ *   DJI:      Company 0x2CA5
+ */
+
+#include "ble_fingerprint.h"
+#include <string.h>
+#include <strings.h>
+#include <stdio.h>
+#include <ctype.h>
+
+/* ── Apple Continuity sub-types ─────────────────────────────────────────── */
+
+#define APPLE_COMPANY_ID        0x004C
+#define APPLE_TYPE_IBEACON      0x02
+#define APPLE_TYPE_AIRDROP      0x05
+#define APPLE_TYPE_HOMEKIT      0x06
+#define APPLE_TYPE_AIRPODS      0x07
+#define APPLE_TYPE_AIRPLAY      0x09
+#define APPLE_TYPE_NEARBY_ACT   0x0F
+#define APPLE_TYPE_NEARBY_INFO  0x10
+#define APPLE_TYPE_FINDMY       0x12  /* AirTag + Find My accessories */
+#define APPLE_TYPE_HANDOFF      0x0C
+
+/* ── Other company IDs ──────────────────────────────────────────────────── */
+
+#define SAMSUNG_COMPANY_ID      0x0075
+#define SAMSUNG_SDS_COMPANY_ID  0x02DE  /* Samsung SDS (secondary Samsung CID) */
+#define GOOGLE_COMPANY_ID       0x00E0
+#define MICROSOFT_COMPANY_ID    0x0006
+#define DJI_COMPANY_ID          0x2CA5  /* Observed on-air (NOT a BT SIG assignment) */
+#define DJI_SIG_COMPANY_ID      0x08AA  /* SZ DJI Technology — registered BT SIG CID */
+#define ZEROZERO_COMPANY_ID     0x09F3  /* Beijing Zero Zero Infinity (HoverAir) */
+#define MOTOROLA_COMPANY_ID     0x0008  /* Motorola — moto tag tracker */
+#define ANKER_EUFY_COMPANY_ID   0x0CC2  /* Anker Innovations — eufy SmartTrack */
+#define FILO_COMPANY_ID         0x0E45  /* Filo Srl — Tile-class item finder */
+#define CUBE_COMPANY_ID         0x03EE  /* Cube Technologies — item tracker */
+#define TILE_COMPANY_ID         0x067C  /* Tile, Inc. */
+#define CHIPOLO_COMPANY_ID      0x08C3  /* CHIPOLO d.o.o. */
+#define META_COMPANY_ID         0x01AB  /* Meta Platforms, Inc. */
+#define META_TECH_COMPANY_ID    0x058E  /* Meta Platforms Technologies */
+#define META_LUXOTTICA_CID      0x0D53  /* Luxottica — Ray-Ban / Oakley Meta frames */
+#define FLIPPER_COMPANY_ID      0x0E29  /* Flipper Devices Inc. */
+#define BOSE_COMPANY_ID         0x009E  /* Bose Corporation */
+#define JBL_COMPANY_ID          0x0057  /* Harman International (JBL) */
+#define SONY_COMPANY_ID         0x012D  /* Sony Group Corporation */
+#define FITBIT_COMPANY_ID       0x0108  /* Fitbit, Inc. */
+#define GARMIN_COMPANY_ID       0x0087  /* Garmin International */
+#define XIAOMI_COMPANY_ID       0x038F  /* Anhui Huami (Xiaomi wearables) */
+#define HUAWEI_COMPANY_ID       0x027D  /* Huawei Technologies */
+#define AMAZON_COMPANY_ID       0x0171  /* Amazon.com Services */
+#define SONOS_COMPANY_ID        0x0236  /* Sonos, Inc. */
+#define IKEA_COMPANY_ID         0x0311  /* IKEA of Sweden */
+/* Vehicles */
+#define TESLA_COMPANY_ID        0x04F6  /* Tesla, Inc. */
+/* Cameras & Drones */
+#define GOPRO_COMPANY_ID        0x02DF  /* GoPro */
+#define WYZE_COMPANY_ID         0x0870  /* Wyze Labs */
+#define SEVENTYMAI_COMPANY_ID   0x0909  /* 70mai */
+#define LYTX_COMPANY_ID         0x0A65  /* Lytx fleet cameras */
+#define SAMSARA_COMPANY_ID      0x0B6B  /* Samsara fleet cameras */
+#define ARLO_COMPANY_ID         0x0C19  /* Arlo */
+#define AXIS_COMPANY_ID         0x0D5B  /* Axis Communications */
+#define HIKVISION_COMPANY_ID    0x0E25  /* Hikvision */
+#define MOTIVE_COMPANY_ID       0x036E  /* Motive Technologies (fleet dashcams) */
+#define RHOMBUS_COMPANY_ID      0x075D  /* Rhombus Systems (cloud cameras) */
+#define PARROT_COMPANY_ID       0x0289  /* Parrot Drones SAS */
+/* Gaming */
+#define NINTENDO_COMPANY_ID     0x0578  /* Nintendo Co., Ltd. */
+/* Security. Real Axon CID is 0x034D (TASER International); 0x04D8 is FUJIFILM. */
+#define AXON_COMPANY_ID         0x034D  /* Axon / TASER International (body cams) */
+/* E-Scooters */
+#define SEGWAY_COMPANY_ID       0x06A1  /* Segway-Ninebot */
+/* Medical */
+#define DEXCOM_COMPANY_ID       0x0267  /* Dexcom, Inc. */
+
+static bool reason_is_serial_only(const char *reason)
+{
+    return strcmp(reason, "uuid16:0xFFE0") == 0 ||
+           strcmp(reason, "uuid16:0xFFF0") == 0 ||
+           strcmp(reason, "svc_data:0xFFE0") == 0 ||
+           strcmp(reason, "svc_data:0xFFF0") == 0;
+}
+
+bool ble_fingerprint_has_trusted_product_identity(const ble_fingerprint_t *fp)
+{
+    if (!fp || fp->class_reason[0] == '\0' ||
+        fp->device_type <= BLE_DEV_UNKNOWN ||
+        fp->device_type >= BLE_DEV_COUNT ||
+        fp->device_type == BLE_DEV_CARD_SKIMMER ||
+        fp->device_type == BLE_DEV_PAIRING_SPAM ||
+        fp->device_type == BLE_DEV_SERIAL_SKIMMER) {
+        return false;
+    }
+
+    return !reason_is_serial_only(fp->class_reason);
+}
+
+/* ── Service UUIDs for known trackers ───────────────────────────────────── */
+
+#define TILE_SVC_UUID           0xFEED
+#define TILE_SVC_UUID2          0xFEEC
+#define CHIPOLO_SVC_UUID1       0xFE33
+#define CHIPOLO_SVC_UUID2       0xFE65
+#define GOOGLE_FASTPAIR_UUID    0xFE2C
+#define GOOGLE_FMDN_UUID        0xFE2C  /* Google Find My Device Network */
+#define EDDYSTONE_SVC_UUID      0xFEAA
+#define BLE_HID_SVC_UUID        0x1812
+#define BLE_AUDIO_BASS_UUID     0x184F  /* Broadcast Audio Scan Service */
+#define BLE_AUDIO_PACS_UUID     0x1850  /* Published Audio Capabilities */
+#define APPLE_FINDMY_SVC        0xFD44  /* Apple Find My network */
+#define APPLE_FINDMY_FW_SVC     0xFD43  /* Apple Find My firmware update */
+#define EXPOSURE_NOTIFY_SVC     0xFD6F  /* GAEN/contact-tracing, not Find My */
+#define DULT_TRACKER_SVC_UUID   0xFCB2  /* Detecting Unwanted Location Trackers */
+#define SAMSUNG_SMARTTAG_SVC1   0xFD59  /* SmartTag factory/non-registered */
+#define SAMSUNG_SMARTTAG_SVC2   0xFD5A  /* SmartTag registered */
+#define SAMSUNG_SMARTTAG_LOST   0xFD69  /* SmartTag offline finding / lost mode */
+#define META_RAYBANGEN2_SVC     0xFD5F  /* Meta Ray-Ban Gen 2 */
+#define META_SVC_UUID1          0xFEB7  /* Meta Platforms, Inc. */
+#define META_SVC_UUID2          0xFEB8  /* Meta Platforms, Inc. */
+#define AXON_SVC_UUID           0xFC81  /* Axon Enterprise */
+#define SAMSARA_SVC_UUID1       0xFC86  /* Samsara Networks */
+#define SAMSARA_SVC_UUID2       0xFC87  /* Samsara Networks */
+#define SAMSARA_SVC_UUID3       0xFE9B  /* Samsara Networks */
+#define MOTIVE_SVC_UUID1        0xFC6D  /* Motive Technologies */
+#define MOTIVE_SVC_UUID2        0xFC70  /* Motive Technologies */
+#define VERKADA_SVC_UUID1       0xFD3A  /* Verkada */
+#define VERKADA_SVC_UUID2       0xFD3B  /* Verkada */
+#define SEVENTYMAI_SVC_UUID1    0xFD4D  /* 70mai */
+#define SEVENTYMAI_SVC_UUID2    0xFD4E  /* 70mai */
+#define WYZE_SVC_UUID           0xFD7B  /* Wyze Labs */
+#define MOTOROLA_SOLUTIONS_SVC  0xFD8E  /* Motorola Solutions */
+#define RHOMBUS_SVC_UUID        0xFDA9  /* Rhombus Systems */
+
+/* ── FNV-1a hash ────────────────────────────────────────────────────────── */
+
+static uint32_t fnv1a_init(void) { return 0x811c9dc5; }
+
+static uint32_t fnv1a_byte(uint32_t h, uint8_t b)
+{
+    h ^= b;
+    h *= 0x01000193;
+    return h;
+}
+
+static uint32_t fnv1a_u16(uint32_t h, uint16_t v)
+{
+    h = fnv1a_byte(h, (uint8_t)(v & 0xFF));
+    h = fnv1a_byte(h, (uint8_t)(v >> 8));
+    return h;
+}
+
+/* ── Device type names ──────────────────────────────────────────────────── */
+
+static const char *s_type_names[] = {
+    [BLE_DEV_UNKNOWN]          = "Unknown",
+    [BLE_DEV_APPLE_IPHONE]     = "iPhone",
+    [BLE_DEV_APPLE_IPAD]       = "iPad",
+    [BLE_DEV_APPLE_MACBOOK]    = "MacBook",
+    [BLE_DEV_APPLE_GENERIC]    = "Apple Device",
+    [BLE_DEV_APPLE_WATCH]      = "Apple Watch",
+    [BLE_DEV_APPLE_AIRPODS]    = "AirPods",
+    [BLE_DEV_APPLE_AIRTAG]     = "AirTag",
+    [BLE_DEV_APPLE_FINDMY]     = "FindMy Accessory",
+    [BLE_DEV_SAMSUNG_PHONE]    = "Samsung Phone",
+    [BLE_DEV_SAMSUNG_SMARTTAG] = "SmartTag",
+    [BLE_DEV_TILE_TRACKER]     = "Tile Tracker",
+    [BLE_DEV_GOOGLE_FINDMY]    = "Google Tracker",
+    [BLE_DEV_DRONE_CONTROLLER] = "Drone Controller",
+    [BLE_DEV_FITNESS_TRACKER]  = "Fitness Tracker",
+    [BLE_DEV_SMARTWATCH]       = "Smartwatch",
+    [BLE_DEV_BEACON]           = "Beacon",
+    [BLE_DEV_VENUE_BEACON]     = "Venue Beacon",
+    [BLE_DEV_EVENT_BADGE]      = "Event Badge",
+    [BLE_DEV_MOBILE_KEY_LOCK]  = "Mobile Key Lock",
+    [BLE_DEV_BLE_HID]          = "BLE HID",
+    [BLE_DEV_AURACAST_AUDIO]   = "Auracast",
+    [BLE_DEV_TRACKER_GENERIC]  = "Tracker (Generic)",
+    [BLE_DEV_PEBBLEBEE]        = "Pebblebee",
+    [BLE_DEV_CHIPOLO]          = "Chipolo",
+    [BLE_DEV_CARD_SKIMMER]     = "Card Skimmer (suspect)",
+    [BLE_DEV_HIDDEN_CAMERA]    = "Hidden Camera (suspect)",
+    [BLE_DEV_FLOCK_SAFETY]     = "Reserved",
+    [BLE_DEV_META_GLASSES]    = "Meta Glasses",
+    [BLE_DEV_META_DEVICE]     = "Meta Device",
+    [BLE_DEV_FLIPPER_ZERO]    = "Flipper Zero",
+    [BLE_DEV_AUDIO_DEVICE]    = "Audio Device",
+    [BLE_DEV_SMART_HOME]      = "Smart Home",
+    [BLE_DEV_VEHICLE]         = "Vehicle",
+    [BLE_DEV_CAMERA]          = "Camera",
+    [BLE_DEV_ESCOOTER]        = "E-Scooter",
+    [BLE_DEV_MEDICAL]         = "Medical",
+    [BLE_DEV_GAMING]          = "Gaming",
+    [BLE_DEV_DRONE_OTHER]     = "Drone",
+    [BLE_DEV_PAIRING_SPAM]    = "BLE Spam",
+    [BLE_DEV_SERIAL_SKIMMER]  = "Possible Skimmer",
+};
+
+const char *ble_device_type_name(ble_device_type_t type)
+{
+    if (type < BLE_DEV_COUNT) return s_type_names[type];
+    return "Unknown";
+}
+
+/* ── Classify Apple device from Continuity sub-type ─────────────────────── */
+
+static ble_device_type_t classify_apple(uint8_t continuity_type,
+                                        const uint8_t *mfr_data, int mfr_len)
+{
+    switch (continuity_type) {
+    case APPLE_TYPE_FINDMY:
+        /* Find My — distinguish AirTag from other FindMy accessories.
+         *
+         * Marauder uses the tighter signature: after the company_id (4C 00)
+         * and type byte (0x12), AirTags broadcast a length/status byte of
+         * 0x19 (25 bytes of opaque payload). Other FindMy accessories
+         * (AirPods case, branded tags) use a different length. This is
+         * more reliable than the old `mfr_len <= 8` heuristic, which was
+         * wrong — AirTag advertisements are ~30 bytes, not short.
+         *
+         * Buffer layout when we get here:
+         *   mfr_data[0..1] = 0x4C 0x00 (Apple company ID)
+         *   mfr_data[2]    = 0x12 (FindMy continuity type)
+         *   mfr_data[3]    = 0x19 for AirTag, other values for non-AirTag FindMy
+         */
+        if (mfr_len >= 4 && mfr_data[3] == 0x19) return BLE_DEV_APPLE_AIRTAG;
+        /* Very short FindMy payload is almost always AirTag. */
+        if (mfr_len <= 8) return BLE_DEV_APPLE_AIRTAG;
+        return BLE_DEV_APPLE_FINDMY;
+
+    case APPLE_TYPE_AIRPODS:
+        return BLE_DEV_APPLE_AIRPODS;
+
+    case APPLE_TYPE_IBEACON:
+        return BLE_DEV_VENUE_BEACON;
+
+    case APPLE_TYPE_NEARBY_INFO:
+    case APPLE_TYPE_NEARBY_ACT:
+        /* Nearby Info (0x10) / Nearby Action (0x0F) — the device MODEL is
+         * NOT broadcast (iPhone, iPad, and Mac all use these). Previous
+         * v0.57 default of IPHONE invented ~22 phantom iPhones on a typical
+         * home fleet. Emit the honest "Apple Device" and let the backend
+         * enrich via the data-flags byte (apple_flags). */
+        return BLE_DEV_APPLE_GENERIC;
+
+    case APPLE_TYPE_HANDOFF:
+        /* Handoff advertises from the currently-foregrounded device when
+         * the user is actively using something — reliably Mac / iPhone
+         * while the user is interacting. We keep the MacBook label because
+         * Handoff-as-source is more commonly Mac/Mac-mini. */
+        return BLE_DEV_APPLE_MACBOOK;
+
+    case APPLE_TYPE_AIRDROP:
+        /* AirDrop requires unlocked screen but doesn't reveal device kind. */
+        return BLE_DEV_APPLE_GENERIC;
+
+    case APPLE_TYPE_AIRPLAY:
+        /* AirPlay source is almost always a Mac / Apple TV. */
+        return BLE_DEV_APPLE_MACBOOK;
+
+    default:
+        return BLE_DEV_APPLE_GENERIC;
+    }
+}
+
+static bool contains_case_insensitive(const char *haystack, const char *needle)
+{
+    if (!haystack || !needle || needle[0] == '\0') {
+        return false;
+    }
+    for (const char *h = haystack; *h; h++) {
+        const char *a = h;
+        const char *b = needle;
+        while (*a && *b &&
+               tolower((unsigned char)*a) == tolower((unsigned char)*b)) {
+            a++;
+            b++;
+        }
+        if (*b == '\0') {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool name_mentions_meta_glasses(const char *name)
+{
+    if (!name || name[0] == '\0') {
+        return false;
+    }
+    return contains_case_insensitive(name, "meta") ||
+           contains_case_insensitive(name, "ray-ban") ||
+           contains_case_insensitive(name, "rayban") ||
+           contains_case_insensitive(name, "oakley") ||
+           contains_case_insensitive(name, "wayfarer") ||
+           strncasecmp(name, "RB-", 3) == 0 ||
+           strncasecmp(name, "RB ", 3) == 0 ||
+           strncasecmp(name, "OAK", 3) == 0;
+}
+
+static bool name_mentions_venue_beacon(const char *name)
+{
+    return contains_case_insensitive(name, "ibeacon") ||
+           contains_case_insensitive(name, "eddystone") ||
+           contains_case_insensitive(name, "estimote") ||
+           contains_case_insensitive(name, "kontakt") ||
+           contains_case_insensitive(name, "gimbal") ||
+           contains_case_insensitive(name, "retailnext") ||
+           contains_case_insensitive(name, "vergesense") ||
+           contains_case_insensitive(name, "beaconstac") ||
+           contains_case_insensitive(name, "radiusnetworks") ||
+           contains_case_insensitive(name, "location beacon");
+}
+
+static bool name_mentions_event_badge(const char *name)
+{
+    return contains_case_insensitive(name, "event badge") ||
+           contains_case_insensitive(name, "smart badge") ||
+           contains_case_insensitive(name, "attendee badge") ||
+           contains_case_insensitive(name, "conference badge") ||
+           contains_case_insensitive(name, "expo badge") ||
+           contains_case_insensitive(name, "klik") ||
+           contains_case_insensitive(name, "bizzabo") ||
+           contains_case_insensitive(name, "cvent") ||
+           contains_case_insensitive(name, "wristband");
+}
+
+static bool name_mentions_mobile_key_lock(const char *name)
+{
+    return contains_case_insensitive(name, "dormakaba") ||
+           contains_case_insensitive(name, "saflok") ||
+           contains_case_insensitive(name, "vingcard") ||
+           contains_case_insensitive(name, "assa") ||
+           contains_case_insensitive(name, "abloy") ||
+           contains_case_insensitive(name, "salto") ||
+           contains_case_insensitive(name, "onity") ||
+           contains_case_insensitive(name, "kaba") ||
+           contains_case_insensitive(name, "august") ||
+           contains_case_insensitive(name, "schlage") ||
+           contains_case_insensitive(name, "yale") ||
+           contains_case_insensitive(name, "level lock") ||
+           contains_case_insensitive(name, "mobile key") ||
+           contains_case_insensitive(name, "mobile access");
+}
+
+static bool name_mentions_ble_hid(const char *name)
+{
+    return contains_case_insensitive(name, "ble keyboard") ||
+           contains_case_insensitive(name, "keyboard") ||
+           contains_case_insensitive(name, "ble mouse") ||
+           contains_case_insensitive(name, "mouse") ||
+           contains_case_insensitive(name, "presenter") ||
+           strcasecmp(name ? name : "", "hid") == 0 ||
+           strncasecmp(name ? name : "", "HID-", 4) == 0;
+}
+
+static bool name_mentions_auracast(const char *name)
+{
+    return contains_case_insensitive(name, "auracast") ||
+           contains_case_insensitive(name, "le audio") ||
+           contains_case_insensitive(name, "broadcast audio");
+}
+
+static bool name_mentions_chipolo(const char *name)
+{
+    return contains_case_insensitive(name, "chipolo");
+}
+
+static bool name_mentions_pebblebee(const char *name)
+{
+    return contains_case_insensitive(name, "pebblebee");
+}
+
+static bool name_mentions_ble_tracker(const char *name)
+{
+    if (!name || name[0] == '\0') {
+        return false;
+    }
+    return strncasecmp(name, "Tile", 4) == 0 ||
+           contains_case_insensitive(name, "airtag") ||
+           contains_case_insensitive(name, "smarttag") ||
+           contains_case_insensitive(name, "smarttrack") ||
+           contains_case_insensitive(name, "moto tag") ||
+           contains_case_insensitive(name, "trackr") ||
+           contains_case_insensitive(name, "nutale");
+}
+
+static bool uuid_is_privacy_camera_service(uint16_t uuid)
+{
+    switch (uuid) {
+    case AXON_SVC_UUID:
+    case SAMSARA_SVC_UUID1:
+    case SAMSARA_SVC_UUID2:
+    case SAMSARA_SVC_UUID3:
+    case MOTIVE_SVC_UUID1:
+    case MOTIVE_SVC_UUID2:
+    case VERKADA_SVC_UUID1:
+    case VERKADA_SVC_UUID2:
+    case SEVENTYMAI_SVC_UUID1:
+    case SEVENTYMAI_SVC_UUID2:
+    case WYZE_SVC_UUID:
+    case MOTOROLA_SOLUTIONS_SVC:
+    case RHOMBUS_SVC_UUID:
+        return true;
+    default:
+        return false;
+    }
+}
+
+static bool company_is_privacy_camera_vendor(uint16_t company_id)
+{
+    switch (company_id) {
+    case GOPRO_COMPANY_ID:
+    case WYZE_COMPANY_ID:
+    case SEVENTYMAI_COMPANY_ID:
+    case LYTX_COMPANY_ID:
+    case SAMSARA_COMPANY_ID:
+    case ARLO_COMPANY_ID:
+    case AXIS_COMPANY_ID:
+    case HIKVISION_COMPANY_ID:
+    case MOTIVE_COMPANY_ID:
+    case RHOMBUS_COMPANY_ID:
+        return true;
+    default:
+        return false;
+    }
+}
+
+/* ── Main fingerprint computation ───────────────────────────────────────── */
+
+void ble_fingerprint_compute(const uint8_t *data, int length,
+                             uint8_t addr_type, uint8_t props,
+                             ble_fingerprint_t *fp)
+{
+    memset(fp, 0, sizeof(*fp));
+    fp->payload_len = (uint8_t)length;
+
+    if (!data || length < 2) {
+        fp->device_type = BLE_DEV_UNKNOWN;
+        fp->type_name = "Unknown";
+        return;
+    }
+
+    uint32_t hash = fnv1a_init();
+
+    /* Hash: address type + properties (invariant across rotations) */
+    hash = fnv1a_byte(hash, addr_type);
+    hash = fnv1a_byte(hash, props);
+
+    /* Walk AD structures */
+    uint16_t company_id = 0;
+    uint8_t  apple_type = 0;
+    const uint8_t *mfr_data = NULL;
+    int mfr_data_len = 0;
+    bool has_findmy_svc = false;
+    bool has_dult_svc = false;
+    bool has_tile_svc = false;
+    bool has_chipolo_svc = false;
+    bool has_fastpair_svc = false;
+    bool has_smarttag_svc = false;
+    bool has_meta_svc = false;
+    bool has_meta_rayban_svc = false;  /* 0xFD5F = Ray-Ban specific */
+    bool has_eddystone_svc = false;
+    bool has_hid_svc = false;
+    bool has_ble_audio_svc = false;
+    uint16_t first_findmy_svc = 0;
+    uint16_t first_chipolo_svc = 0;
+    uint16_t first_meta_svc = 0;
+    uint16_t first_privacy_camera_svc = 0;
+
+    /* Local name capture for spooky-device pattern matching (v0.62+) */
+    char    local_name[32]   = {0};
+    int     local_name_len   = 0;
+
+    int pos = 0;
+    while (pos + 1 < length) {
+        uint8_t ad_len = data[pos];
+        if (ad_len == 0 || pos + 1 + ad_len > length) break;
+
+        uint8_t ad_type = data[pos + 1];
+        const uint8_t *ad_data = &data[pos + 2];
+        int ad_data_len = ad_len - 1;
+
+        /* Hash: AD type (ordering-dependent fingerprint) */
+        hash = fnv1a_byte(hash, ad_type);
+        fp->ad_type_count++;
+
+        switch (ad_type) {
+        case 0xFF:  /* Manufacturer Specific Data */
+            if (ad_data_len >= 2) {
+                company_id = (uint16_t)ad_data[0] | ((uint16_t)ad_data[1] << 8);
+                mfr_data = ad_data;
+                mfr_data_len = ad_data_len;
+                fp->company_id = company_id;
+
+                /* Hash: company ID */
+                hash = fnv1a_u16(hash, company_id);
+
+                /* Apple Continuity: deep field extraction */
+                if (company_id == APPLE_COMPANY_ID && ad_data_len >= 3) {
+                    apple_type = ad_data[2];
+                    fp->apple_type = apple_type;
+                    hash = fnv1a_byte(hash, apple_type);
+
+                    /* Hash the Continuity sub-length too (varies by type) */
+                    if (ad_data_len >= 4) {
+                        hash = fnv1a_byte(hash, ad_data[3]);
+                    }
+
+                    /* Auth tag: bytes +3..+5 for Nearby Info (0x10) and Nearby Action (0x0F)
+                     * This tag rotates SLOWER than the MAC address — key for entity resolution */
+                    if ((apple_type == 0x10 || apple_type == 0x0F) && ad_data_len >= 6) {
+                        fp->apple_auth[0] = ad_data[3];
+                        fp->apple_auth[1] = ad_data[4];
+                        fp->apple_auth[2] = ad_data[5];
+                    }
+
+                    /* Activity byte: offset varies by type but typically at +6 for 0x10/0x0F */
+                    if ((apple_type == 0x10 || apple_type == 0x0F) && ad_data_len >= 7) {
+                        fp->apple_activity = ad_data[6];
+                    }
+
+                    /* Data-flags byte (renamed from apple_info in v0.58).
+                     * Nearby Info (0x10) and Nearby Action (0x0F) share the
+                     * same data-flags layout at offset +7. Previously we
+                     * only read it for 0x10. Bit semantics documented in
+                     * shared/uart_protocol.h next to JSON_KEY_BLE_APPLE_FLAGS. */
+                    if ((apple_type == 0x10 || apple_type == 0x0F) && ad_data_len >= 8) {
+                        fp->apple_flags = ad_data[7];
+                    }
+                }
+
+                /* Capture raw manufacturer data (first 20 bytes) for any device */
+                {
+                    int copy_len = ad_data_len > 20 ? 20 : ad_data_len;
+                    memcpy(fp->raw_mfr, ad_data, copy_len);
+                    fp->raw_mfr_len = (uint8_t)copy_len;
+                }
+
+                /* DJI: hash first few bytes of manufacturer data */
+                if (company_id == DJI_COMPANY_ID && ad_data_len >= 4) {
+                    hash = fnv1a_byte(hash, ad_data[2]);
+                    hash = fnv1a_byte(hash, ad_data[3]);
+                }
+            }
+            break;
+
+        case 0x03:  /* Complete 16-bit Service UUIDs */
+        case 0x02:  /* Incomplete 16-bit Service UUIDs */
+            for (int i = 0; i + 1 < ad_data_len; i += 2) {
+                uint16_t uuid = (uint16_t)ad_data[i] | ((uint16_t)ad_data[i + 1] << 8);
+                hash = fnv1a_u16(hash, uuid);
+
+                if (uuid == APPLE_FINDMY_SVC || uuid == APPLE_FINDMY_FW_SVC) {
+                    has_findmy_svc = true;
+                    if (first_findmy_svc == 0) first_findmy_svc = uuid;
+                }
+                if (uuid == DULT_TRACKER_SVC_UUID) has_dult_svc = true;
+                if (uuid == TILE_SVC_UUID || uuid == TILE_SVC_UUID2) has_tile_svc = true;
+                if (uuid == CHIPOLO_SVC_UUID1 || uuid == CHIPOLO_SVC_UUID2) {
+                    has_chipolo_svc = true;
+                    if (first_chipolo_svc == 0) first_chipolo_svc = uuid;
+                }
+                if (uuid == GOOGLE_FASTPAIR_UUID || uuid == GOOGLE_FMDN_UUID) has_fastpair_svc = true;
+                if (uuid == EDDYSTONE_SVC_UUID) has_eddystone_svc = true;
+                if (uuid == BLE_HID_SVC_UUID) has_hid_svc = true;
+                if (uuid == BLE_AUDIO_BASS_UUID || uuid == BLE_AUDIO_PACS_UUID) has_ble_audio_svc = true;
+                if (uuid == SAMSUNG_SMARTTAG_SVC1 || uuid == SAMSUNG_SMARTTAG_SVC2 || uuid == SAMSUNG_SMARTTAG_LOST) has_smarttag_svc = true;
+                if (uuid == META_RAYBANGEN2_SVC || uuid == META_SVC_UUID1 || uuid == META_SVC_UUID2) has_meta_svc = true;
+                if ((uuid == META_RAYBANGEN2_SVC || uuid == META_SVC_UUID1 || uuid == META_SVC_UUID2) &&
+                    first_meta_svc == 0) {
+                    first_meta_svc = uuid;
+                }
+                if (uuid == META_RAYBANGEN2_SVC) has_meta_rayban_svc = true;
+                if (uuid_is_privacy_camera_service(uuid) &&
+                    first_privacy_camera_svc == 0) {
+                    first_privacy_camera_svc = uuid;
+                }
+
+                /* Collect service UUIDs for UART serialization */
+                if (fp->svc_uuid_count < 4) {
+                    fp->service_uuids[fp->svc_uuid_count++] = uuid;
+                }
+            }
+            break;
+
+        case 0x06:  /* Incomplete List of 128-bit Service UUIDs */
+        case 0x07:  /* Complete List of 128-bit Service UUIDs */
+            /* v0.63: capture custom 128-bit service UUIDs so the backend
+             * can detect BLE peripherals that don't use SIG-assigned
+             * 16-bit IDs — including the phone calibration walk beacon
+             * (cafe…-…) and plenty of future surveillance / IoT device
+             * classes. Each UUID is 16 bytes in LE transmission order;
+             * uart_tx reverses to the canonical big-endian hyphenated
+             * string on emit. */
+            {
+                int off = 0;
+                while (ad_data_len - off >= 16 &&
+                       fp->svc_uuid_128_count < 2) {
+                    memcpy(fp->service_uuids_128[fp->svc_uuid_128_count],
+                           ad_data + off, 16);
+                    fp->svc_uuid_128_count++;
+                    /* Hash the UUID bytes for fingerprint stability —
+                     * a device rotating RPAs but keeping the same
+                     * custom service UUID stays identifiable. */
+                    for (int b = 0; b < 16; b++) {
+                        hash = fnv1a_byte(hash, ad_data[off + b]);
+                    }
+                    off += 16;
+                }
+            }
+            break;
+
+        case 0x16:  /* Service Data - 16-bit UUID */
+            if (ad_data_len >= 2) {
+                uint16_t svc_uuid = (uint16_t)ad_data[0] | ((uint16_t)ad_data[1] << 8);
+                hash = fnv1a_u16(hash, svc_uuid);
+
+                if (svc_uuid == APPLE_FINDMY_SVC || svc_uuid == APPLE_FINDMY_FW_SVC) {
+                    has_findmy_svc = true;
+                    if (first_findmy_svc == 0) first_findmy_svc = svc_uuid;
+                }
+                if (svc_uuid == DULT_TRACKER_SVC_UUID) has_dult_svc = true;
+                if (svc_uuid == TILE_SVC_UUID || svc_uuid == TILE_SVC_UUID2) has_tile_svc = true;
+                if (svc_uuid == CHIPOLO_SVC_UUID1 || svc_uuid == CHIPOLO_SVC_UUID2) {
+                    has_chipolo_svc = true;
+                    if (first_chipolo_svc == 0) first_chipolo_svc = svc_uuid;
+                }
+                if (svc_uuid == GOOGLE_FASTPAIR_UUID || svc_uuid == GOOGLE_FMDN_UUID) has_fastpair_svc = true;
+                if (svc_uuid == EDDYSTONE_SVC_UUID) has_eddystone_svc = true;
+                if (svc_uuid == BLE_HID_SVC_UUID) has_hid_svc = true;
+                if (svc_uuid == BLE_AUDIO_BASS_UUID || svc_uuid == BLE_AUDIO_PACS_UUID) has_ble_audio_svc = true;
+                if (svc_uuid == SAMSUNG_SMARTTAG_SVC1 || svc_uuid == SAMSUNG_SMARTTAG_SVC2 || svc_uuid == SAMSUNG_SMARTTAG_LOST) has_smarttag_svc = true;
+                if (svc_uuid == META_RAYBANGEN2_SVC || svc_uuid == META_SVC_UUID1 || svc_uuid == META_SVC_UUID2) has_meta_svc = true;
+                if ((svc_uuid == META_RAYBANGEN2_SVC || svc_uuid == META_SVC_UUID1 || svc_uuid == META_SVC_UUID2) &&
+                    first_meta_svc == 0) {
+                    first_meta_svc = svc_uuid;
+                }
+                if (svc_uuid == META_RAYBANGEN2_SVC) has_meta_rayban_svc = true;
+                if (uuid_is_privacy_camera_service(svc_uuid) &&
+                    first_privacy_camera_svc == 0) {
+                    first_privacy_camera_svc = svc_uuid;
+                }
+
+                if (fp->svc_uuid_count < 4) {
+                    fp->service_uuids[fp->svc_uuid_count++] = svc_uuid;
+                }
+            }
+            break;
+
+        case 0x01:  /* Flags */
+            if (ad_data_len >= 1) {
+                hash = fnv1a_byte(hash, ad_data[0]);
+            }
+            break;
+
+        case 0x0A:  /* TX Power Level */
+            if (ad_data_len >= 1) {
+                hash = fnv1a_byte(hash, ad_data[0]);
+            }
+            break;
+
+        case 0x08:  /* Shortened Local Name */
+        case 0x09:  /* Complete Local Name */
+            /* Capture name for spooky-device pattern matching below.
+             * Cap at 31 chars (BLE name max is technically 248 but most fit < 32). */
+            if (ad_data_len > 0) {
+                int n = ad_data_len > 31 ? 31 : ad_data_len;
+                memcpy(local_name, ad_data, n);
+                local_name[n] = '\0';
+                local_name_len = n;
+                strncpy(fp->local_name, local_name, sizeof(fp->local_name) - 1);
+                fp->local_name[sizeof(fp->local_name) - 1] = '\0';
+            }
+            /* Fall through to default hashing — name length matters but not exact bytes
+             * (since random parts in some product names rotate). */
+            hash = fnv1a_byte(hash, (uint8_t)(ad_data_len & 0xF0));
+            break;
+
+        default:
+            /* Hash the AD type length class (not exact data, which may contain rotating keys) */
+            hash = fnv1a_byte(hash, (uint8_t)(ad_data_len & 0xF0));
+            break;
+        }
+
+        pos += 1 + ad_len;
+    }
+
+    /* Hash: total payload length class (rounds to nearest 4) */
+    hash = fnv1a_byte(hash, (uint8_t)((length >> 2) << 2));
+
+    fp->hash = hash;
+
+    /* ── Classify device type ──────────────────────────────────────────── */
+
+    if (company_id == APPLE_COMPANY_ID) {
+        fp->device_type = classify_apple(apple_type, mfr_data, mfr_data_len);
+        fp->is_tracker = (apple_type == APPLE_TYPE_FINDMY);
+        if (apple_type == APPLE_TYPE_IBEACON) {
+            strncpy(fp->class_reason, "ibeacon:0x02", sizeof(fp->class_reason) - 1);
+        }
+    } else if (has_findmy_svc) {
+        fp->device_type = BLE_DEV_APPLE_FINDMY;
+        fp->is_tracker = true;
+        if (first_findmy_svc != 0) {
+            snprintf(fp->class_reason, sizeof(fp->class_reason),
+                     "uuid16:0x%04X", first_findmy_svc);
+        }
+    } else if (has_tile_svc || company_id == TILE_COMPANY_ID) {
+        fp->device_type = BLE_DEV_TILE_TRACKER;
+        fp->is_tracker = true;
+    } else if (has_chipolo_svc || company_id == CHIPOLO_COMPANY_ID) {
+        fp->device_type = BLE_DEV_CHIPOLO;
+        fp->is_tracker = true;
+        if (first_chipolo_svc != 0) {
+            snprintf(fp->class_reason, sizeof(fp->class_reason),
+                     "uuid16:0x%04X", first_chipolo_svc);
+        }
+    } else if (has_smarttag_svc) {
+        fp->device_type = BLE_DEV_SAMSUNG_SMARTTAG;
+        fp->is_tracker = true;
+    } else if (has_dult_svc) {
+        fp->device_type = BLE_DEV_TRACKER_GENERIC;
+        fp->is_tracker = true;
+        strncpy(fp->class_reason, "uuid16:0xFCB2", sizeof(fp->class_reason) - 1);
+    } else if (company_id == SAMSUNG_COMPANY_ID) {
+        /* Samsung device without SmartTag service UUIDs = phone */
+        fp->device_type = BLE_DEV_SAMSUNG_PHONE;
+    } else if (has_fastpair_svc) {
+        fp->device_type = BLE_DEV_UNKNOWN;
+        fp->is_tracker = false;
+        strncpy(fp->class_reason, "uuid16:0xFE2C", sizeof(fp->class_reason) - 1);
+    } else if (has_hid_svc) {
+        fp->device_type = BLE_DEV_BLE_HID;
+        strncpy(fp->class_reason, "uuid16:0x1812", sizeof(fp->class_reason) - 1);
+    } else if (has_eddystone_svc) {
+        fp->device_type = BLE_DEV_VENUE_BEACON;
+        strncpy(fp->class_reason, "uuid16:0xFEAA", sizeof(fp->class_reason) - 1);
+    } else if (has_ble_audio_svc) {
+        fp->device_type = BLE_DEV_AURACAST_AUDIO;
+        strncpy(fp->class_reason, "uuid16:ble_audio", sizeof(fp->class_reason) - 1);
+    } else if (first_privacy_camera_svc != 0) {
+        fp->device_type = BLE_DEV_CAMERA;
+        snprintf(fp->class_reason, sizeof(fp->class_reason),
+                 "camera_service_uuid:0x%04X", first_privacy_camera_svc);
+    } else if (company_id == META_COMPANY_ID || company_id == META_TECH_COMPANY_ID
+               || company_id == META_LUXOTTICA_CID || has_meta_svc ||
+               name_mentions_meta_glasses(local_name)) {
+        /* Meta device classification. Luxottica (0x0D53) is the *frame*
+         * manufacturer for Ray-Ban Meta + Oakley Meta glasses and is the
+         * signal Marauder's Meta scanner relies on most (not Meta's own
+         * 0x01AB/0x058E which many beacons don't carry). So we treat it
+         * as a Meta Glasses CID with the same weight as 0xFD5F svc UUID.
+         *
+         * - Ray-Ban / Oakley frames: Luxottica CID, 0xFD5F svc UUID, or
+         *   local name contains "Ray-Ban" / "RB Meta" / "Oakley Meta"
+         * - Quest headset: 0xFEB8 without 0xFD5F, or name contains "Quest"
+         * - Other Meta: portals, controllers, Neural Band, etc. */
+        if (has_meta_rayban_svc ||
+            company_id == META_LUXOTTICA_CID ||
+            name_mentions_meta_glasses(local_name)) {
+            fp->device_type = BLE_DEV_META_GLASSES;
+            if (has_meta_rayban_svc) {
+                strncpy(fp->class_reason, "uuid16:0xFD5F", sizeof(fp->class_reason) - 1);
+            } else if (company_id == META_LUXOTTICA_CID) {
+                strncpy(fp->class_reason, "mfr_cid:0x0D53", sizeof(fp->class_reason) - 1);
+            } else {
+                strncpy(fp->class_reason, "name:meta_glasses", sizeof(fp->class_reason) - 1);
+            }
+        } else {
+            fp->device_type = BLE_DEV_META_DEVICE;
+            if (has_meta_svc && first_meta_svc != 0) {
+                snprintf(fp->class_reason, sizeof(fp->class_reason),
+                         "uuid16:0x%04X", first_meta_svc);
+            } else {
+                strncpy(fp->class_reason, "mfr_cid:meta", sizeof(fp->class_reason) - 1);
+            }
+        }
+    } else if (company_id == FLIPPER_COMPANY_ID) {
+        fp->device_type = BLE_DEV_FLIPPER_ZERO;
+    } else if (company_id == DJI_COMPANY_ID || company_id == DJI_SIG_COMPANY_ID) {
+        fp->device_type = BLE_DEV_DRONE_CONTROLLER;
+        fp->is_tracker = false;
+    } else if (company_id == BOSE_COMPANY_ID || company_id == JBL_COMPANY_ID ||
+               company_id == SONY_COMPANY_ID) {
+        fp->device_type = BLE_DEV_AUDIO_DEVICE;
+    } else if (company_id == AMAZON_COMPANY_ID || company_id == SONOS_COMPANY_ID ||
+               company_id == IKEA_COMPANY_ID) {
+        fp->device_type = BLE_DEV_SMART_HOME;
+    } else if (company_id == TESLA_COMPANY_ID) {
+        fp->device_type = BLE_DEV_VEHICLE;
+    } else if (company_is_privacy_camera_vendor(company_id)) {
+        fp->device_type = BLE_DEV_CAMERA;
+        snprintf(fp->class_reason, sizeof(fp->class_reason),
+                 "camera_company_id:0x%04X", company_id);
+    } else if (company_id == PARROT_COMPANY_ID || company_id == ZEROZERO_COMPANY_ID) {
+        fp->device_type = BLE_DEV_DRONE_OTHER;
+    } else if (company_id == NINTENDO_COMPANY_ID) {
+        fp->device_type = BLE_DEV_GAMING;
+    } else if (company_id == AXON_COMPANY_ID) {
+        fp->device_type = BLE_DEV_CAMERA;  /* Body camera */
+    } else if (company_id == SEGWAY_COMPANY_ID) {
+        fp->device_type = BLE_DEV_ESCOOTER;
+    } else if (company_id == DEXCOM_COMPANY_ID) {
+        fp->device_type = BLE_DEV_MEDICAL;
+    } else if (company_id == FITBIT_COMPANY_ID || company_id == GARMIN_COMPANY_ID) {
+        fp->device_type = BLE_DEV_FITNESS_TRACKER;
+    } else if (company_id == ANKER_EUFY_COMPANY_ID || company_id == MOTOROLA_COMPANY_ID ||
+               company_id == SAMSUNG_SDS_COMPANY_ID || company_id == FILO_COMPANY_ID ||
+               company_id == CUBE_COMPANY_ID) {
+        /* eufy SmartTrack, Motorola moto tag, Samsung SDS, Filo, Cube trackers */
+        fp->device_type = BLE_DEV_TRACKER_GENERIC;
+        fp->is_tracker = true;
+    } else if (company_id == XIAOMI_COMPANY_ID || company_id == HUAWEI_COMPANY_ID) {
+        fp->device_type = BLE_DEV_SMARTWATCH;
+    } else if (company_id == MICROSOFT_COMPANY_ID) {
+        fp->device_type = BLE_DEV_UNKNOWN;  /* Could be Xbox controller, etc */
+    } else {
+        fp->device_type = BLE_DEV_UNKNOWN;
+    }
+
+    /* ── Spooky-device name-pattern OVERRIDE (v0.62+) ─────────────────────
+     * Run after CID/UUID classification so well-known classes win on tie.
+     * Only flips device_type when current classification is UNKNOWN or
+     * generic — never overrides a confident Apple/Meta/etc classification.
+     * Patterns sourced from ESP32Marauder + public skimmer/spy-cam research.
+     */
+    if (local_name_len > 0 &&
+        (fp->device_type == BLE_DEV_UNKNOWN ||
+         fp->device_type == BLE_DEV_BEACON ||
+         fp->device_type == BLE_DEV_TRACKER_GENERIC)) {
+
+        /* Card skimmers: cheap UART-bridge BLE chipsets used in gas-pump and
+         * ATM skimmers. Names are factory-default and rarely changed by the
+         * skimmer operator. Marauder's "Detect Card Skimmers" matches these. */
+        if (strncmp(local_name, "HC-03", 5) == 0 ||
+            strncmp(local_name, "HC-05", 5) == 0 ||
+            strncmp(local_name, "HC-06", 5) == 0 ||
+            strncmp(local_name, "HC-08", 5) == 0 ||
+            strncmp(local_name, "BT-HC05", 7) == 0 ||
+            strncmp(local_name, "BT05",  4) == 0 ||
+            strncmp(local_name, "JDY-08", 6) == 0 ||
+            strncmp(local_name, "JDY-10", 6) == 0 ||
+            strncmp(local_name, "JDY-31", 6) == 0 ||
+            strncmp(local_name, "HM-10", 5) == 0 ||
+            strncmp(local_name, "HM-11", 5) == 0 ||
+            strncmp(local_name, "HMSoft", 6) == 0 ||
+            strncmp(local_name, "MLT-BT05", 8) == 0 ||
+            strncmp(local_name, "AT-09", 5) == 0 ||
+            strncmp(local_name, "CC41-A", 6) == 0 ||
+            strncmp(local_name, "BOLUTEK", 7) == 0 ||
+            strncmp(local_name, "SPP-CA", 6) == 0 ||
+            strncmp(local_name, "RNBT-", 5) == 0 ||
+            strncmp(local_name, "FREE2MOVE", 9) == 0) {
+            fp->device_type = BLE_DEV_CARD_SKIMMER;
+            fp->is_tracker = true;
+            strncpy(fp->class_reason, "default_uart_ble_name", sizeof(fp->class_reason) - 1);
+        }
+        else if (name_mentions_mobile_key_lock(local_name)) {
+            fp->device_type = BLE_DEV_MOBILE_KEY_LOCK;
+            fp->is_tracker = false;
+            strncpy(fp->class_reason, "name:mobile_key_lock", sizeof(fp->class_reason) - 1);
+        }
+        else if (name_mentions_event_badge(local_name)) {
+            fp->device_type = BLE_DEV_EVENT_BADGE;
+            fp->is_tracker = false;
+            strncpy(fp->class_reason, "name:event_badge", sizeof(fp->class_reason) - 1);
+        }
+        else if (name_mentions_ble_hid(local_name)) {
+            fp->device_type = BLE_DEV_BLE_HID;
+            fp->is_tracker = false;
+            strncpy(fp->class_reason, "name:ble_hid", sizeof(fp->class_reason) - 1);
+        }
+        else if (name_mentions_auracast(local_name)) {
+            fp->device_type = BLE_DEV_AURACAST_AUDIO;
+            fp->is_tracker = false;
+            strncpy(fp->class_reason, "name:auracast", sizeof(fp->class_reason) - 1);
+        }
+        else if (name_mentions_venue_beacon(local_name)) {
+            fp->device_type = BLE_DEV_VENUE_BEACON;
+            fp->is_tracker = false;
+            strncpy(fp->class_reason, "name:venue_beacon", sizeof(fp->class_reason) - 1);
+        }
+        else if (name_mentions_chipolo(local_name)) {
+            fp->device_type = BLE_DEV_CHIPOLO;
+            fp->is_tracker = true;
+            strncpy(fp->class_reason, "name:chipolo", sizeof(fp->class_reason) - 1);
+        }
+        else if (name_mentions_pebblebee(local_name)) {
+            fp->device_type = BLE_DEV_PEBBLEBEE;
+            fp->is_tracker = true;
+            strncpy(fp->class_reason, "name:pebblebee", sizeof(fp->class_reason) - 1);
+        }
+        else if (name_mentions_ble_tracker(local_name)) {
+            fp->device_type = BLE_DEV_TRACKER_GENERIC;
+            fp->is_tracker = true;
+            strncpy(fp->class_reason, "name:ble_tracker", sizeof(fp->class_reason) - 1);
+        }
+        /* Explicit camera-like names remain suspect camera evidence. */
+        else if (strncmp(local_name, "HIDVCAM", 6) == 0 ||
+                 strncmp(local_name, "HDWiFiCam", 8) == 0 ||
+                 strncmp(local_name, "V380", 4) == 0 ||
+                 strncmp(local_name, "LookCam", 7) == 0 ||
+                 strncmp(local_name, "YCC365", 6) == 0 ||
+                 strncmp(local_name, "ICSee", 5) == 0 ||
+                 strncmp(local_name, "UBox", 4) == 0 ||
+                 strncmp(local_name, "CamHi", 5) == 0 ||
+                 strncmp(local_name, "VStarcam", 8) == 0 ||
+                 strncmp(local_name, "FREDI", 5) == 0 ||
+                 strncmp(local_name, "MiniCam", 7) == 0 ||
+                 strncmp(local_name, "P2PLiveCam", 10) == 0 ||
+                 strncmp(local_name, "Hidden", 6) == 0 ||
+                 strncmp(local_name, "Spy",    3) == 0) {
+            fp->device_type = BLE_DEV_HIDDEN_CAMERA;
+            fp->is_tracker = true;
+            strncpy(fp->class_reason, "explicit_camera_ble_name", sizeof(fp->class_reason) - 1);
+        }
+        /* ELK/QHM/MELK/BT_BPM are cheap BLE/IoT name families, not enough
+         * evidence to call a hidden camera by themselves. */
+        else if (strncmp(local_name, "ELK-BLEDOM", 10) == 0 ||
+                 strncmp(local_name, "BT_BPM", 6) == 0 ||
+                 strncmp(local_name, "MELK-",  5) == 0 ||
+                 strncmp(local_name, "QHM-",   4) == 0) {
+            fp->device_type = BLE_DEV_SMART_HOME;
+            fp->is_tracker = false;
+            strncpy(fp->class_reason, "ambiguous_iot_ble_name", sizeof(fp->class_reason) - 1);
+        }
+    }
+
+    fp->type_name = ble_device_type_name(fp->device_type);
+}

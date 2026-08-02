@@ -483,3 +483,81 @@ def test_vendor_tool_rejects_symlink_in_requested_output_ancestors(tmp_path: Pat
     with pytest.raises(ValueError, match="symlink"):
         tool.snapshot(ROOT.parent, _minimal_manifest(tmp_path), requested)
     assert not (outside / "snapshot").exists()
+
+
+def _minimal_snapshot(tmp_path: Path) -> tuple[object, Path, Path]:
+    tool = _vendor_tool()
+    manifest_path = _minimal_manifest(tmp_path)
+    output = tmp_path / "snapshot"
+    tool.snapshot(ROOT.parent, manifest_path, output)
+    (output / "VENDOR_BASE").write_text(EXPECTED_BASE + "\n", encoding="ascii")
+    return tool, manifest_path, output
+
+
+def test_vendor_tool_check_accepts_an_exact_snapshot_without_writing(
+    tmp_path: Path,
+) -> None:
+    tool, manifest_path, output = _minimal_snapshot(tmp_path)
+    provenance = output / "VENDORED_SHA256.json"
+    before = {
+        path.relative_to(output).as_posix(): (path.read_bytes(), path.stat().st_mtime_ns)
+        for path in output.rglob("*")
+        if path.is_file()
+    }
+
+    hashes = tool.check_snapshot(ROOT.parent, manifest_path, output)
+
+    assert hashes == json.loads(provenance.read_text(encoding="utf-8"))
+    after = {
+        path.relative_to(output).as_posix(): (path.read_bytes(), path.stat().st_mtime_ns)
+        for path in output.rglob("*")
+        if path.is_file()
+    }
+    assert after == before
+
+
+@pytest.mark.parametrize(
+    ("mutation", "error"),
+    [
+        ("base", "VENDOR_BASE"),
+        ("blob", "vendored blob"),
+        ("digest", "VENDORED_SHA256"),
+        ("extra", "undeclared vendor file"),
+    ],
+)
+def test_vendor_tool_check_rejects_snapshot_drift(
+    tmp_path: Path, mutation: str, error: str
+) -> None:
+    tool, manifest_path, output = _minimal_snapshot(tmp_path)
+    if mutation == "base":
+        (output / "VENDOR_BASE").write_text("0" * 40 + "\n", encoding="ascii")
+    elif mutation == "blob":
+        (output / "vendor/shared/constants.h").write_bytes(b"changed\n")
+    elif mutation == "digest":
+        (output / "VENDORED_SHA256.json").write_text("{}\n", encoding="utf-8")
+    else:
+        (output / "vendor/shared/undeclared.h").write_text(
+            "undeclared\n", encoding="utf-8"
+        )
+
+    with pytest.raises(ValueError, match=error):
+        tool.check_snapshot(ROOT.parent, manifest_path, output)
+
+
+def test_vendor_tool_cli_accepts_repo_root_alias_and_check(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    tool, manifest_path, output = _minimal_snapshot(tmp_path)
+
+    assert tool.main(
+        [
+            "--repo-root",
+            str(ROOT.parent),
+            "--manifest",
+            str(manifest_path),
+            "--output-root",
+            str(output),
+            "--check",
+        ]
+    ) == 0
+    assert "verified 1 pinned donor files" in capsys.readouterr().out

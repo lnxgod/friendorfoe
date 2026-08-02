@@ -11,7 +11,7 @@ from pathlib import Path, PurePosixPath
 import re
 import subprocess
 import tempfile
-from typing import Any
+from typing import Any, Sequence
 
 
 GROUP_SOURCE_ROOTS = {
@@ -169,21 +169,113 @@ def snapshot(
     return dict(sorted(hashes.items()))
 
 
-def main() -> int:
+def check_snapshot(
+    repository: Path,
+    manifest_path: Path,
+    output_root: Path,
+) -> dict[str, str]:
+    """Verify the pinned snapshot without modifying any local file."""
+    repository = repository.resolve(strict=True)
+    manifest_path = manifest_path.resolve(strict=True)
+    requested_output_root = output_root.expanduser()
+    _reject_existing_path_symlinks(requested_output_root)
+    output_root = requested_output_root.resolve(strict=True)
+    manifest = load_manifest(manifest_path)
+    base = manifest["base"]
+
+    try:
+        _git(repository, "cat-file", "-e", f"{base}^{{commit}}")
+    except subprocess.CalledProcessError as exc:
+        raise ValueError(f"vendor base is not an available commit: {base}") from exc
+
+    vendor_base_path = output_root / "VENDOR_BASE"
+    _reject_symlink_components(vendor_base_path, output_root)
+    try:
+        vendor_base = vendor_base_path.read_bytes()
+    except OSError as exc:
+        raise ValueError("VENDOR_BASE is missing or unreadable") from exc
+    if vendor_base != (base + "\n").encode("ascii"):
+        raise ValueError("VENDOR_BASE does not exactly match manifest base")
+
+    expected_hashes: dict[str, str] = {}
+    declared_files: set[Path] = set()
+    for group, source_root in GROUP_SOURCE_ROOTS.items():
+        for entry in manifest[group]:
+            source = source_root / PurePosixPath(entry)
+            expected_data = _blob_at_commit(repository, base, source)
+            relative = Path("vendor") / group / Path(entry)
+            destination = output_root / relative
+            _reject_symlink_components(destination, output_root)
+            try:
+                actual_data = destination.read_bytes()
+            except OSError as exc:
+                raise ValueError(
+                    f"vendored blob is missing or unreadable: {relative.as_posix()}"
+                ) from exc
+            if actual_data != expected_data:
+                raise ValueError(f"vendored blob differs from donor: {relative.as_posix()}")
+            expected_hashes[relative.as_posix()] = hashlib.sha256(
+                expected_data
+            ).hexdigest()
+            declared_files.add(relative)
+
+    expected_hashes = dict(sorted(expected_hashes.items()))
+    provenance_path = output_root / "VENDORED_SHA256.json"
+    _reject_symlink_components(provenance_path, output_root)
+    try:
+        provenance = json.loads(provenance_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError("VENDORED_SHA256.json is missing or invalid") from exc
+    if provenance != expected_hashes:
+        raise ValueError("VENDORED_SHA256.json does not exactly match the snapshot")
+
+    vendor_root = output_root / "vendor"
+    _reject_symlink_components(vendor_root, output_root)
+    try:
+        vendor_entries = list(vendor_root.rglob("*"))
+    except OSError as exc:
+        raise ValueError("vendor snapshot is unreadable") from exc
+    for path in vendor_entries:
+        if path.is_symlink():
+            raise ValueError(f"unsafe vendor destination symlink: {path}")
+        if path.is_file():
+            relative = path.relative_to(output_root)
+            if relative not in declared_files:
+                raise ValueError(
+                    f"undeclared vendor file: {relative.as_posix()}"
+                )
+
+    return expected_hashes
+
+
+def main(argv: Sequence[str] | None = None) -> int:
     firmware_root = Path(__file__).resolve().parents[1]
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--repository", type=Path, default=firmware_root.parent,
+        "--repo-root", "--repository", dest="repository", type=Path,
+        default=firmware_root.parent,
         help="repository containing the pinned donor commit",
     )
     parser.add_argument(
         "--manifest", type=Path, default=firmware_root / "VENDOR_MANIFEST.json"
     )
     parser.add_argument("--output-root", type=Path, default=firmware_root)
-    arguments = parser.parse_args()
+    parser.add_argument(
+        "--check", action="store_true",
+        help="verify the existing snapshot without modifying it",
+    )
+    arguments = parser.parse_args(argv)
 
-    hashes = snapshot(arguments.repository, arguments.manifest, arguments.output_root)
-    print(f"snapshotted {len(hashes)} pinned donor files")
+    if arguments.check:
+        hashes = check_snapshot(
+            arguments.repository, arguments.manifest, arguments.output_root
+        )
+        print(f"verified {len(hashes)} pinned donor files")
+    else:
+        hashes = snapshot(
+            arguments.repository, arguments.manifest, arguments.output_root
+        )
+        print(f"snapshotted {len(hashes)} pinned donor files")
     return 0
 
 

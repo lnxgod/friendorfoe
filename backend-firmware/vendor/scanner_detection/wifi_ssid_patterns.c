@@ -1,0 +1,346 @@
+/**
+ * Friend or Foe -- WiFi SSID Pattern Matching
+ *
+ * Known drone SSID prefix patterns, kept in parity with Android
+ * WifiDroneScanner.kt and backend drone_signature_reference.py.
+ * Each entry maps an SSID prefix to its manufacturer name.
+ * Matching is case-insensitive prefix comparison using strncasecmp.
+ */
+
+#include "wifi_ssid_patterns.h"
+#include <string.h>
+#include <strings.h>  /* strncasecmp */
+
+static const drone_ssid_pattern_t PATTERNS[] = {
+    /* ── Test / Debug ──────────────────────────────────────────────────────── */
+    { "FOF-Drone-", "FriendOrFoe" },
+    { "FOF-Drone",  "FriendOrFoe" },
+    { "FOF_Drone_", "FriendOrFoe" },
+    { "FOF_Drone",  "FriendOrFoe" },
+    { "FOF Drone",  "FriendOrFoe" },
+    { "FOFDrone",   "FriendOrFoe" },
+    { "FriendOrFoe Drone", "FriendOrFoe" },
+    { "Friend or Foe Drone", "FriendOrFoe" },
+
+    /* ── DJI ───────────────────────────────────────────────────────────────── */
+    { "DJI-",       "DJI" },
+    { "TELLO-",     "Ryze/DJI" },
+    { "MAVIC-",     "DJI" },
+    { "PHANTOM-",   "DJI" },
+    { "INSPIRE-",   "DJI" },
+    { "MINI SE-",   "DJI" },
+    { "MINI2-",     "DJI" },
+    { "MINI3-",     "DJI" },
+    { "MINI4-",     "DJI" },
+    { "SPARK-",     "DJI" },
+    { "FPV-",       "DJI" },
+    { "AVATA-",     "DJI" },
+    { "AGRAS-",     "DJI" },
+    { "MATRICE-",   "DJI" },
+    { "AIR 2S-",    "DJI" },
+    { "AIR2-",      "DJI" },
+    { "FLIP-",      "DJI" },
+    { "DJI NEO-",   "DJI" },
+
+    /* ── Skydio / Parrot / Autel ───────────────────────────────────────────── */
+    { "SKYDIO-",    "Skydio" },
+    { "PARROT-",    "Parrot" },
+    { "ANAFI-",     "Parrot" },
+    { "BEBOP-",     "Parrot" },
+    { "DISCO-",     "Parrot" },
+    { "ARDRONE-",   "Parrot" },
+    { "AUTEL-",     "Autel" },
+    { "EVO-",       "Autel" },
+
+    /* ── HOVERAir (Zero Zero Robotics) ─────────────────────────────────────── */
+    { "HOVERAIR",   "HOVERAir" },
+    { "HOVER AIR",  "HOVERAir" },
+    { "HOVER_AIR",  "HOVERAir" },
+    { "HOVER-AIR",  "HOVERAir" },
+    { "HOVERAir",   "HOVERAir" },
+    { "HOVER X1",   "HOVERAir" },
+    { "HOVER-X1",   "HOVERAir" },
+    { "HOVER_X1",   "HOVERAir" },
+    { "X1PRO",      "HOVERAir" },
+    { "X1-PRO",     "HOVERAir" },
+    { "X1 PRO",     "HOVERAir" },
+    { "HoverX1_",   "HOVERAir" },   /* Official AP name HoverX1_xxxx (X1/Pro/ProMax/Aqua) */
+
+    /* ── Holy Stone ────────────────────────────────────────────────────────── */
+    /* "HOLY" alone was too broad — caught SSIDs like "HolyCow", "Holyfield",
+     * etc. The specific Holy Stone prefixes "HS-", "HolyStoneEIS-", and
+     * "HolyStoneFPV_" (further below) cover real devices without the noise. */
+    { "HS-",           "Holy Stone" },
+    { "HolyStoneFPV-", "Holy Stone" },  /* HS175D V5 / HS720 manual AP-name variant */
+
+    /* ── Hubsan Zino line (official AP name Hubsan-Zino-XXXXXX) ─────────────── */
+    { "Hubsan-Zino-",  "Hubsan" },
+
+    /* ── Other known brands ────────────────────────────────────────────────── */
+    { "SIMREX-",    "SIMREX" },
+    { "NEHEME-",    "Neheme" },
+    { "AOVO-",      "AOVO" },
+    { "TENSSENX-",  "TENSSENX" },
+    { "SNAPTAIN-",  "Snaptain" },
+    { "POTENSIC-",  "Potensic" },
+    { "RUKO-",      "Ruko" },
+    { "SYMA-",      "Syma" },
+    { "HUBSAN-",    "Hubsan" },
+    { "EACHINE-",   "Eachine" },
+    { "FIMI-",      "Fimi" },
+    { "XIAOMI-",    "Xiaomi" },
+    { "YUNEEC-",    "Yuneec" },
+    { "TYPHOON-",   "Yuneec" },
+    { "MANTIS-",    "Yuneec" },
+    { "WINGSLAND-", "Wingsland" },
+    { "BETAFPV-",   "BetaFPV" },
+    { "GEPRC-",     "GEPRC" },
+    { "EMAX-",      "EMAX" },
+
+    /* ── Other brands ──────────────────────────────────────────────────────── */
+    { "POWEREGG-",     "PowerVision" },
+    { "DOBBY-",        "ZEROTECH" },
+    { "SPLASHDRONE-",  "Swellpro" },
+    { "CONTIXO-",      "Contixo" },
+    { "SKYVIPER-",     "Sky Viper" },
+    { "DROCON-",       "Drocon" },
+
+    /* ── Enterprise / commercial ───────────────────────────────────────────── */
+    { "FREEFLY-",      "Freefly" },
+    { "SENSEFLY-",     "senseFly" },
+    { "WINGCOPTER-",   "Wingcopter" },
+    { "FLYABILITY-",   "Flyability" },
+
+    /* ── FPV and hobby brands ──────────────────────────────────────────────── */
+    { "IFLIGHT-",      "iFlight" },
+    { "FLYWOO-",       "Flywoo" },
+    { "WALKERA-",      "Walkera" },
+    { "BLADE-",        "Blade" },
+    { "CADDX-",        "Caddx" },
+    { "WALKSNAIL-",    "Walksnail" },
+    { "AVATAR-",       "Walksnail" },
+    { "RUNCAM-",       "RunCam" },
+
+    /* ── Budget Chinese drones / generic WiFi FPV ──────────────────────────── */
+    { "WIFI-UAV",      "Generic" },
+    { "WIFI_UAV",      "Generic" },
+    { "WIFIUAV",       "Generic" },
+    { "WiFi-720P",     "Generic" },
+    { "WiFi-1080P",    "Generic" },
+    { "WiFi-4K",       "Generic" },
+    { "WIFI_CAMERA",   "Generic" },
+    { "WiFi_FPV",      "Generic" },
+    { "WiFi-FPV",      "Generic" },
+    { "RCDrone",       "Generic" },
+    { "RC-DRONE",      "Generic" },
+    { "RCTOY",         "Generic" },
+    /* "UFO-" alone tripped on commercial electronics and nightclub SSIDs;
+     * drone-specific WiFi UFO SSIDs are covered by the more-specific
+     * "WiFiUFO-", "Wi-Fi UFO-", "WIFI UFO-", "GM-WiFiUFO" below. */
+
+    /* ── Chinese brands using WiFi UAV-type apps ───────────────────────────── */
+    { "JJRC-",         "JJRC" },
+    { "MJX-",          "MJX" },
+    { "VISUO-",        "Visuo" },
+    { "SJRC-",         "SJRC" },
+    { "4DRC-",         "4DRC" },
+    { "FLYHAL-",       "Flyhal" },
+    { "LYZRC-",        "LYZRC" },
+    { "XINLIN-",       "Xinlin" },
+    { "E58-",          "Eachine" },
+    { "E88-",          "Eachine" },
+    { "E99-",          "Eachine" },
+    { "V2PRO",         "Generic" },
+
+    /* ── Additional budget brands ────────────────────────────────────────── */
+    { "WLTOYS-",       "WLtoys" },
+    { "ATTOP-",        "Attop" },
+    { "BUGS-",         "MJX" },
+    { "EHANG-",        "EHang" },
+
+    /* ── Generic drone SSIDs ───────────────────────────────────────────────── */
+    { "DRONE-",        "Unknown" },
+    { "UAV-",          "Unknown" },
+    { "QUADCOPTER-",   "Unknown" },
+
+    /* ── Cheap Chinese / Temu drones (generic WiFi FPV) ─────────────────── */
+    { "FPV_WIFI",      "Generic" },
+    { "FPV-WIFI",      "Generic" },
+    { "WIFI FPV",      "Generic" },
+    /* ── DJI newer model SSIDs (QuickTransfer / direct connect) ─────────── */
+    { "DJI-Mini4Pro-", "DJI" },
+    { "DJI-Air3-",     "DJI" },
+    { "DJI-Mavic3Classic-", "DJI" },
+    { "DJI-Avata2-",   "DJI" },
+    { "DJI-Neo-",      "DJI" },
+    { "DJI_FPV_",      "DJI" },
+    { "DJI_Goggles_",  "DJI" },
+    { "DJI-Goggles3-", "DJI" },
+    { "RID-",          "DJI" },
+    /* ── FPV video systems ──────────────────────────────────────────────── */
+    { "avatarx_",      "Walksnail" },
+    { "avatar_rx_",    "Walksnail" },
+    { "hd0",           "HDZero" },
+    { "HDZero",        "HDZero" },
+    /* ── Budget drone generic WiFi modules ──────────────────────────────── */
+    { "WiFiUFO-",      "Generic" },
+    { "Wi-Fi UFO-",    "Generic" },
+    { "WIFI UFO-",     "Generic" },
+    { "GM-WiFiUFO",    "Generic" },
+    { "Wifi_Drone_",   "Generic" },
+    { "DEERC-",        "DEERC" },
+    { "DeercFPV-",     "DEERC" },
+    { "4DRC",          "4DRC" },
+    { "Bwine-F7-",     "Ruko/Bwine" },
+    { "LW FPV-",       "Eachine" },
+    { "SJ-GPS",        "SJRC" },
+    { "SJF Pro_",      "SJRC" },
+    { "SG906",         "ZLRC" },
+    { "Beast-",        "ZLRC" },
+    { "CSJ-GPS-",      "CSJ" },
+    { "HolyStoneEIS-", "Holy Stone" },
+    { "Potensic D_",   "Potensic" },
+    { "RUKO-F11-",     "Ruko" },
+    { "RUKO-PRO-",     "Ruko" },
+    { "Controller-",   "Generic" },
+    /* ── Camera payloads (enterprise) ───────────────────────────────────── */
+    { "rededge",       "MicaSense" },
+    { "Sequoia_",      "Parrot" },
+    /* ── Toy drones (Walmart/Target/Amazon) ─────────────────────────────── */
+    { "SKYVIPERGPS_",  "Sky Viper" },
+    { "SKYVIPER17_",   "Sky Viper" },
+    { "SKY VIPER_",    "Sky Viper" },
+    { "Force1_",       "Force1" },
+    { "RMTT-",         "Ryze/DJI" },
+    /* ── Budget WiFi FPV app SSIDs ──────────────────────────────────────── */
+    { "iFly-",         "Generic" },
+    { "FH8610UFO-",    "Generic" },
+    { "FH8610-",       "Generic" },
+    { "ht-ufo_",       "Generic" },
+    { "HolyStoneFPV_", "Holy Stone" },
+    { "Potensic_",     "Potensic" },
+    { "Eachine_",      "Eachine" },
+    { "EggX_",         "PowerVision" },
+    { "Solo_",         "3DR" },
+    { "sololink_",     "3DR" },
+    /* ── Military/tactical radio datalinks ───────────────────────────────── */
+    { "Silvus-",       "Silvus Technologies" },
+    { "Silvus_",       "Silvus Technologies" },
+    { "MPU5-",         "Persistent Systems" },
+    /* ── Selfie / hover camera drones ───────────────────────────────────── */
+    { "HoverCamera_",  "Zero Zero Robotics" },
+    { "PowerUp-",      "PowerUp Toys" },
+    /* ── Underwater drones / ROVs ───────────────────────────────────────── */
+    { "PRA_Station_",  "PowerVision" },
+    { "PSE_",          "PowerVision" },
+    { "Gladius_5G_",   "CHASING" },
+    { "Gladius_2.4G_", "CHASING" },
+    { "Chasing_",      "CHASING" },
+    { "M2_",           "CHASING" },
+    { "FIFISHRC_",     "QYSEA" },
+    { "FIFISH RC_",    "QYSEA" },
+    /* ── Open-source FPV / radio systems ────────────────────────────────── */
+    { "Open.HD",       "OpenHD" },
+    { "ExpressLRS TX", "ELRS" },
+    { "ExpressLRS RX", "ELRS" },
+    /* ── TBS radio modules ──────────────────────────────────────────────── */
+    { "TBS_XF_AP_",    "TBS" },
+    { "TBS_TR_AP_",    "TBS" },
+    { "TBS_Fusion_AP_","TBS" },
+    /* ── RunCam ─────────────────────────────────────────────────────────── */
+    { "RunCam_",       "RunCam" },
+    { "RunCam2_",      "RunCam" },
+    /* ── Ground control stations ────────────────────────────────────────── */
+    { "Herelink",      "CubePilot" },
+    { "PixRacer",      "ArduPilot" },
+    { "DJI_Smart_Controller_", "DJI" },
+    { "DJI-RC-",       "DJI" },
+    /* ── Skydio dock/drone ──────────────────────────────────────────────── */
+    { "Skydio2-",      "Skydio" },
+    { "Skydio2+-",     "Skydio" },
+    { "SkydioX10-",    "Skydio" },
+    /* ── Counter-UAS ────────────────────────────────────────────────────── */
+    { "DT_",           "Dedrone" },
+    /* ── Agricultural ───────────────────────────────────────────────────── */
+    { "ACS2",          "XAG" },
+};
+
+#define PATTERN_COUNT  (sizeof(PATTERNS) / sizeof(PATTERNS[0]))
+
+/* ── Soft-match helpers ───────────────────────────────────────────────────── */
+
+/**
+ * Return true if every character in s[0..len-1] is alphanumeric.
+ */
+static bool all_alnum(const char *s, size_t len)
+{
+    for (size_t i = 0; i < len; i++) {
+        char c = s[i];
+        if (!((c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') ||
+              (c >= 'a' && c <= 'z'))) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/**
+ * Check whether the SSID starts with `prefix` (case-insensitive) and is
+ * followed by 1-8 alphanumeric characters and nothing else.
+ */
+static bool soft_prefix_match(const char *ssid, const char *prefix)
+{
+    size_t plen = strlen(prefix);
+    if (strncasecmp(ssid, prefix, plen) != 0) {
+        return false;
+    }
+    size_t tail = strlen(ssid) - plen;
+    return tail >= 1 && tail <= 8 && all_alnum(ssid + plen, tail);
+}
+
+bool wifi_ssid_match_soft(const char *ssid)
+{
+    if (!ssid || ssid[0] == '\0') {
+        return false;
+    }
+
+    /* Reject long SSIDs — enterprise names like "WIFI_OFFICE_3RD_FLOOR" */
+    if (strlen(ssid) > 16) {
+        return false;
+    }
+
+    if (soft_prefix_match(ssid, "WIFI_"))   return true;
+    if (soft_prefix_match(ssid, "FPV_"))    return true;
+    if (soft_prefix_match(ssid, "CAMERA_")) return true;
+
+    /* Exact-prefix patterns (case-insensitive) */
+    if (strncasecmp(ssid, "4K_CAM", 6) == 0) return true;
+    if (strncasecmp(ssid, "4KCAM",  5) == 0) return true;
+    if (strncasecmp(ssid, "RCFPV",  5) == 0) return true;
+
+    return false;
+}
+
+const drone_ssid_pattern_t *wifi_ssid_match(const char *ssid)
+{
+    if (!ssid || ssid[0] == '\0') {
+        return NULL;
+    }
+
+    for (int i = 0; i < (int)PATTERN_COUNT; i++) {
+        size_t prefix_len = strlen(PATTERNS[i].prefix);
+        if (strncasecmp(ssid, PATTERNS[i].prefix, prefix_len) == 0) {
+            return &PATTERNS[i];
+        }
+    }
+
+    return NULL;
+}
+
+const drone_ssid_pattern_t *wifi_ssid_get_patterns(int *count)
+{
+    if (count) {
+        *count = (int)PATTERN_COUNT;
+    }
+    return PATTERNS;
+}
