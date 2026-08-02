@@ -159,6 +159,10 @@ fun ArViewScreen(
     val gpsStatus by viewModel.gpsStatus.collectAsStateWithLifecycle()
     val arCoreStatus by viewModel.arCoreStatus.collectAsStateWithLifecycle()
     val selectedObjectId by viewModel.selectedObjectId.collectAsStateWithLifecycle()
+    val displayedSelectedObjectId = usableRadioInteractionObjectId(
+        selectedObjectId,
+        locationPermissionState,
+    )
     val detailState by detailViewModel.detailState.collectAsStateWithLifecycle()
     val nearbyCandidates by detailViewModel.nearbyCandidates.collectAsStateWithLifecycle()
     val positionTrail by detailViewModel.positionTrail.collectAsStateWithLifecycle()
@@ -192,7 +196,10 @@ fun ArViewScreen(
         listOfNotNull(lockedScreenPosition),
         locationPermissionState,
     ).firstOrNull()
-    val displayedLockedObjectId = if (locationPermissionState.isUsable()) lockedObjectId else null
+    val displayedLockedObjectId = usableRadioInteractionObjectId(
+        lockedObjectId,
+        locationPermissionState,
+    )
     val snapTarget by viewModel.snapTarget.collectAsStateWithLifecycle()
     val proximityDrones by viewModel.proximityDrones.collectAsStateWithLifecycle()
     val objectPeek by viewModel.objectPeek.collectAsStateWithLifecycle()
@@ -258,8 +265,8 @@ fun ArViewScreen(
     }
 
     // Load detail when an object is selected
-    LaunchedEffect(selectedObjectId) {
-        selectedObjectId?.let { detailViewModel.loadDetail(it) }
+    LaunchedEffect(displayedSelectedObjectId) {
+        displayedSelectedObjectId?.let { detailViewModel.loadDetail(it) }
     }
 
     LaunchedEffect(locationPermissionState) {
@@ -307,7 +314,9 @@ fun ArViewScreen(
                 viewModel.snapToObject(objectId)
             },
             onVisualTapped = { detection -> viewModel.showZoom(detection) },
-            onEmptySpaceTapped = { viewModel.showUnidentifiedSheet() },
+            onEmptySpaceTapped = {
+                if (locationPermissionState.isUsable()) viewModel.showUnidentifiedSheet()
+            },
             onReticleTapped = { viewModel.unlockObject() },
             modifier = Modifier.fillMaxSize()
         )
@@ -461,7 +470,12 @@ fun ArViewScreen(
                             color = bannerColor.copy(alpha = pulseAlpha * 0.85f),
                             shape = RoundedCornerShape(24.dp)
                         )
-                        .clickable { viewModel.selectObject(topDrone.id) }
+                        .clickable {
+                            usableRadioInteractionObjectId(
+                                topDrone.id,
+                                locationPermissionState,
+                            )?.let(viewModel::selectObject)
+                        }
                         .padding(horizontal = 16.dp, vertical = 10.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -524,9 +538,11 @@ fun ArViewScreen(
     }
 
     // Auto-zoom when detail bottom sheet opens
-    LaunchedEffect(selectedObjectId) {
-        if (selectedObjectId != null) {
-            val sp = displayedScreenPositions.firstOrNull { it.skyObject.id == selectedObjectId }
+    LaunchedEffect(displayedSelectedObjectId) {
+        if (displayedSelectedObjectId != null) {
+            val sp = displayedScreenPositions.firstOrNull {
+                it.skyObject.id == displayedSelectedObjectId
+            }
             if (sp != null) {
                 viewModel.zoomToObject(sp.distanceMeters)
             }
@@ -536,7 +552,7 @@ fun ArViewScreen(
     }
 
     // Bottom sheet for detail card
-    if (selectedObjectId != null) {
+    if (displayedSelectedObjectId != null) {
         val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = false)
 
         ModalBottomSheet(
@@ -580,8 +596,13 @@ fun ArViewScreen(
                             }
                         },
                         onLockOn = {
-                            viewModel.selectObject(null)
-                            viewModel.lockOnObject(state.aircraft.id)
+                            usableRadioInteractionObjectId(
+                                state.aircraft.id,
+                                locationPermissionState,
+                            )?.let { objectId ->
+                                viewModel.selectObject(null)
+                                viewModel.lockOnObject(objectId)
+                            }
                         }
                     )
                 }
@@ -609,8 +630,13 @@ fun ArViewScreen(
                             }
                         },
                         onLockOn = {
-                            viewModel.selectObject(null)
-                            viewModel.lockOnObject(state.drone.id)
+                            usableRadioInteractionObjectId(
+                                state.drone.id,
+                                locationPermissionState,
+                            )?.let { objectId ->
+                                viewModel.selectObject(null)
+                                viewModel.lockOnObject(objectId)
+                            }
                         }
                     )
                 }
@@ -696,7 +722,7 @@ fun ArViewScreen(
     }
 
     // Bottom sheet for unidentified tap (empty space)
-    if (showUnidentifiedSheet) {
+    if (showUnidentifiedSheet && locationPermissionState.isUsable()) {
         val unidentifiedSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = false)
 
         ModalBottomSheet(
@@ -707,7 +733,10 @@ fun ArViewScreen(
                 drones = detectedDrones,
                 onDroneSelected = { droneId ->
                     viewModel.dismissUnidentifiedSheet()
-                    viewModel.selectObject(droneId)
+                    usableRadioInteractionObjectId(
+                        droneId,
+                        locationPermissionState,
+                    )?.let(viewModel::selectObject)
                 }
             )
         }
@@ -825,6 +854,12 @@ internal fun displayedRadioPositions(
     locationState: PermissionUiState,
 ): List<ScreenPosition> =
     if (locationState.isUsable()) screenPositions else emptyList()
+
+internal fun usableRadioInteractionObjectId(
+    objectId: String?,
+    locationState: PermissionUiState,
+): String? =
+    objectId?.takeIf { locationState.isUsable() }
 
 /**
  * Transparent Canvas overlay that draws floating labels at screen positions.

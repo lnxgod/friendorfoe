@@ -32,6 +32,16 @@ class ArOverlayPolicyTest {
     }
 
     @Test
+    fun `denied location rejects an interaction target created after initial cleanup`() {
+        val droneId = "DRONE"
+
+        assertEquals(
+            null,
+            usableRadioInteractionObjectId(droneId, PermissionUiState.Denied),
+        )
+    }
+
+    @Test
     fun `off-screen arrows include nearby aircraft but exclude farther aircraft and drones`() {
         val positions = listOf(
             offScreenPosition(aircraft("INSIDE"), 19_200.0),
