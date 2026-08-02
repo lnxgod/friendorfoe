@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import json
+from pathlib import Path
 import struct
 import time
 import uuid
@@ -692,6 +693,79 @@ async def test_backend_evidence_survives_history_persistence(client):
     )
     for field in PERSISTED_BACKEND_FIELDS:
         assert node_row[field] == item[field]
+
+
+@pytest.mark.asyncio
+async def test_real_backend_firmware_serializer_contract(
+    client,
+    backend_sensor_session_factory,
+):
+    fixture = (
+        Path(__file__).parent
+        / "fixtures/backend_firmware_detection_batch.json"
+    )
+    body = json.loads(fixture.read_text(encoding="utf-8"))
+
+    response = await client.post("/detections/drones", json=body)
+
+    assert response.status_code == 200, response.text
+    ack = response.json()
+    assert set(ack) == {
+        "status",
+        "accepted",
+        "processed",
+        "deduplicated",
+        "filtered",
+        "device_id",
+    }
+    assert ack["status"] == "ok"
+    assert ack["device_id"] == "uplink_CB77A4"
+    assert ack["accepted"] == 2
+    assert (
+        ack["processed"] + ack["deduplicated"] + ack["filtered"]
+        == ack["accepted"]
+    )
+
+    history = await client.get(
+        "/detections/drones/history",
+        params={"hours": 1, "limit": 20},
+    )
+    assert history.status_code == 200, history.text
+    rows = {
+        row["drone_id"]: row
+        for row in history.json()["detections"]
+    }
+    drone = rows["RID-CANON-001"]
+    meta = rows["META-AA:BB:CC:DD:EE:02"]
+
+    assert drone["device_id"] == "uplink_CB77A4"
+    assert drone["freq_mhz"] == 2437
+    assert drone["channel"] == 6
+    assert drone["vertical_speed_mps"] == -1.5
+    assert drone["fused_confidence"] == 0.9375
+    assert drone["h_accuracy_m"] == 1.75
+    assert drone["v_accuracy_m"] == 2.5
+    assert drone["area_count"] == 17
+    assert drone["area_radius"] == 250
+    assert drone["area_ceiling"] == 160.25
+    assert drone["area_floor"] == 15.5
+    assert drone["wifi_generation"] == 6
+
+    assert meta["device_id"] == "uplink_CB77A4"
+    assert meta["fused_confidence"] == 0.90625
+    assert meta["ble_svc_uuids"] == "180f,ffe0"
+    assert meta["ble_threat_kind"] == 2
+    assert meta["ble_prompt_family_mask"] == 19
+    assert meta["ble_unique_macs"] == 12
+    assert meta["ble_observation_count"] == 23
+    assert meta["ble_serial_service_uuid"] == 0xFFE0
+    assert meta["ble_threat_evidence_mask"] == 49
+
+    async with backend_sensor_session_factory() as session:
+        sensor_ids = list((await session.execute(
+            select(SensorNode.device_id),
+        )).scalars())
+    assert sensor_ids == ["uplink_CB77A4"]
 
 
 @pytest.mark.asyncio
