@@ -23,8 +23,8 @@ android {
         applicationId = "com.friendorfoe"
         minSdk = 26
         targetSdk = 34
-        versionCode = 114
-        versionName = "0.67.5-android-privacy-repair"
+        versionCode = 115
+        versionName = "0.67.6-android-about-map-cleanup"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
