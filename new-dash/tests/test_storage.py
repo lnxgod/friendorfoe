@@ -1,6 +1,8 @@
 import json
 import sqlite3
 import tempfile
+import threading
+import time
 import unittest
 from base64 import urlsafe_b64encode
 from dataclasses import replace
@@ -21,6 +23,21 @@ class TrackingObservationStore(ObservationStore):
         connection = super()._connect()
         self.opened_connections.append(connection)
         return connection
+
+
+class SignalingObservationStore(ObservationStore):
+    """Signals connection attempts made after schema initialization."""
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        self.connection_attempted = threading.Event()
+        self._signal_connections = False
+        super().__init__(*args, **kwargs)
+        self._signal_connections = True
+
+    def _connect(self) -> sqlite3.Connection:
+        if self._signal_connections:
+            self.connection_attempted.set()
+        return super()._connect()
 
 
 class ObservationStoreTest(unittest.TestCase):
@@ -223,6 +240,94 @@ class ObservationStoreTest(unittest.TestCase):
             with self.subTest(connection=connection):
                 with self.assertRaises(sqlite3.ProgrammingError):
                     connection.execute("SELECT 1")
+
+    def test_close_tracks_connection_attempt_blocked_in_wal_negotiation(self) -> None:
+        store = SignalingObservationStore(self.path)
+        setup = sqlite3.connect(self.path)
+        self.assertEqual(setup.execute("PRAGMA journal_mode=DELETE").fetchone()[0], "delete")
+        setup.close()
+        blocker = sqlite3.connect(
+            self.path,
+            isolation_level=None,
+            check_same_thread=False,
+        )
+        blocker.execute("BEGIN EXCLUSIVE")
+        errors: list[BaseException] = []
+
+        def prune() -> None:
+            try:
+                store.prune()
+            except BaseException as error:
+                errors.append(error)
+
+        worker = threading.Thread(target=prune)
+        worker.start()
+        try:
+            self.assertTrue(store.connection_attempted.wait(1.0))
+            time.sleep(0.02)
+            self.assertTrue(worker.is_alive())
+
+            started = time.monotonic()
+            close_error: BaseException | None = None
+            try:
+                store.close(timeout=0.2)
+            except BaseException as error:
+                close_error = error
+            elapsed = time.monotonic() - started
+
+            self.assertIsNone(close_error)
+            self.assertLess(elapsed, 0.35)
+            self.assertFalse(worker.is_alive())
+            self.assertEqual(len(errors), 1)
+        finally:
+            blocker.execute("ROLLBACK")
+            blocker.close()
+            worker.join(1.0)
+
+    def test_close_interrupts_registered_sqlite_busy_wait(self) -> None:
+        store = ObservationStore(self.path)
+        blocker = sqlite3.connect(
+            self.path,
+            isolation_level=None,
+            check_same_thread=False,
+        )
+        blocker.execute("BEGIN IMMEDIATE")
+        errors: list[BaseException] = []
+
+        def prune() -> None:
+            try:
+                store.prune()
+            except BaseException as error:
+                errors.append(error)
+
+        worker = threading.Thread(target=prune)
+        worker.start()
+        try:
+            deadline = time.monotonic() + 1.0
+            while time.monotonic() < deadline:
+                with store._connection_condition:
+                    if store._active_connections:
+                        break
+                time.sleep(0.005)
+            with store._connection_condition:
+                self.assertTrue(store._active_connections)
+
+            started = time.monotonic()
+            close_error: BaseException | None = None
+            try:
+                store.close(timeout=0.2)
+            except BaseException as error:
+                close_error = error
+            elapsed = time.monotonic() - started
+
+            self.assertIsNone(close_error)
+            self.assertLess(elapsed, 0.35)
+            self.assertFalse(worker.is_alive())
+            self.assertEqual(len(errors), 1)
+        finally:
+            blocker.execute("ROLLBACK")
+            blocker.close()
+            worker.join(1.0)
 
     def test_partially_consumed_export_keeps_no_sqlite_connection_open(self) -> None:
         store = TrackingObservationStore(self.path)

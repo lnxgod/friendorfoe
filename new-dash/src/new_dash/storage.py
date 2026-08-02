@@ -12,7 +12,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from math import isfinite
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, TypeVar
 
 from new_dash.models import BadgeEntity, DetectionEvent, Observation
 
@@ -79,6 +79,9 @@ _EXPORT_BATCH_SIZE = 500
 _MAX_SQLITE_ROW_ID = 9_223_372_036_854_775_807
 _PROGRESS_INSTRUCTIONS = 1_000
 _WRITE_LOCK_POLL_SECONDS = 0.05
+_SQLITE_LOCK_POLL_SECONDS = 0.01
+_SQLITE_LOCK_TIMEOUT_SECONDS = 2.0
+_Result = TypeVar("_Result")
 
 
 class ObservationStoreClosed(RuntimeError):
@@ -106,51 +109,95 @@ class ObservationStore:
         self._closing = threading.Event()
         self._connection_condition = threading.Condition()
         self._active_connections: set[sqlite3.Connection] = set()
+        self._active_connection_operations = 0
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self._write_access():
             with self._connection() as connection:
-                connection.executescript(_SCHEMA)
-                connection.execute(
-                    "INSERT INTO schema_meta (version) "
-                    "SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM schema_meta)"
+                self._run_sqlite_operation(
+                    lambda: connection.executescript(_SCHEMA)
+                )
+                self._run_sqlite_operation(
+                    lambda: connection.execute(
+                        "INSERT INTO schema_meta (version) "
+                        "SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM schema_meta)"
+                    )
                 )
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.path)
-        connection.execute("PRAGMA journal_mode=WAL")
-        connection.execute("PRAGMA busy_timeout=2000")
+        connection = sqlite3.connect(self.path, timeout=0.0)
         connection.row_factory = sqlite3.Row
         return connection
 
     @contextmanager
     def _connection(self) -> Iterator[sqlite3.Connection]:
         """Commit or roll back one operation, then always close its connection."""
-        self._ensure_open()
-        connection = self._connect()
         with self._connection_condition:
             if self._closing.is_set():
-                connection.close()
                 raise ObservationStoreClosed("observation store is closed")
-            self._active_connections.add(connection)
-        connection.set_progress_handler(
-            lambda: 1 if self._closing.is_set() else 0,
-            _PROGRESS_INSTRUCTIONS,
-        )
+            self._active_connection_operations += 1
+        connection: sqlite3.Connection | None = None
         try:
-            yield connection
-        except BaseException:
-            connection.rollback()
-            raise
-        else:
-            self._ensure_open()
-            connection.commit()
+            connection = self._connect()
+            with self._connection_condition:
+                if self._closing.is_set():
+                    raise ObservationStoreClosed("observation store is closed")
+                self._active_connections.add(connection)
+            connection.set_progress_handler(
+                lambda: 1 if self._closing.is_set() else 0,
+                _PROGRESS_INSTRUCTIONS,
+            )
+            connection.execute("PRAGMA busy_timeout=0")
+            self._run_sqlite_operation(
+                lambda: connection.execute("PRAGMA journal_mode=WAL").fetchone()
+            )
+            try:
+                yield connection
+            except BaseException:
+                connection.rollback()
+                raise
+            else:
+                self._ensure_open()
+                self._run_sqlite_operation(connection.commit)
         finally:
             try:
-                connection.close()
+                if connection is not None:
+                    connection.close()
             finally:
                 with self._connection_condition:
-                    self._active_connections.discard(connection)
+                    if connection is not None:
+                        self._active_connections.discard(connection)
+                    self._active_connection_operations -= 1
                     self._connection_condition.notify_all()
+
+    def _run_sqlite_operation(
+        self,
+        operation: Callable[[], _Result],
+    ) -> _Result:
+        """Retry only SQLite lock conflicts while remaining cancellable."""
+
+        deadline = time.monotonic() + _SQLITE_LOCK_TIMEOUT_SECONDS
+        while True:
+            self._ensure_open()
+            try:
+                return operation()
+            except sqlite3.OperationalError as error:
+                if not self._is_lock_conflict(error):
+                    raise
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise
+                if self._closing.wait(
+                    min(_SQLITE_LOCK_POLL_SECONDS, remaining)
+                ):
+                    self._ensure_open()
+
+    @staticmethod
+    def _is_lock_conflict(error: sqlite3.OperationalError) -> bool:
+        error_code = getattr(error, "sqlite_errorcode", None)
+        return isinstance(error_code, int) and (error_code & 0xFF) in {
+            sqlite3.SQLITE_BUSY,
+            sqlite3.SQLITE_LOCKED,
+        }
 
     @contextmanager
     def _write_access(self) -> Iterator[None]:
@@ -182,17 +229,19 @@ class ObservationStore:
         )
         with self._write_access():
             with self._connection() as connection:
-                return _insert_observation(connection, values)
+                return self._insert_observation(connection, values)
 
     def query(self, query: HistoryQuery) -> HistoryPage:
         limit = min(max(query.limit, 1), 500)
         where, parameters = _where_clause(query, include_cursor=True)
         with self._connection() as connection:
-            rows = connection.execute(
-                f"SELECT * FROM observations{where} "
-                "ORDER BY received_at DESC, id DESC LIMIT ?",
-                (*parameters, limit + 1),
-            ).fetchall()
+            rows = self._run_sqlite_operation(
+                lambda: connection.execute(
+                    f"SELECT * FROM observations{where} "
+                    "ORDER BY received_at DESC, id DESC LIMIT ?",
+                    (*parameters, limit + 1),
+                ).fetchall()
+            )
         items = tuple(_observation_from_row(row) for row in rows[:limit])
         next_cursor = _encode_cursor(items[-1]) if len(rows) > limit else None
         return HistoryPage(items=items, next_cursor=next_cursor)
@@ -215,12 +264,14 @@ class ObservationStore:
         )
         with self._write_access():
             with self._connection() as connection:
-                previous = connection.execute(
-                    """SELECT latitude, longitude, altitude_m, events, seen_count
-                    FROM observations WHERE stable_key = ? AND kind = 'track'
-                    ORDER BY id DESC LIMIT 1""",
-                    (entity.stable_key,),
-                ).fetchone()
+                previous = self._run_sqlite_operation(
+                    lambda: connection.execute(
+                        """SELECT latitude, longitude, altitude_m, events, seen_count
+                        FROM observations WHERE stable_key = ? AND kind = 'track'
+                        ORDER BY id DESC LIMIT 1""",
+                        (entity.stable_key,),
+                    ).fetchone()
+                )
                 if previous is not None and (
                     previous["latitude"], previous["longitude"], previous["altitude_m"],
                     previous["events"], previous["seen_count"],
@@ -229,7 +280,7 @@ class ObservationStore:
                     entity.events, entity.seen_count,
                 ):
                     return None
-                return _insert_observation(connection, values)
+                return self._insert_observation(connection, values)
 
     def iter_export(self, query: HistoryQuery) -> Iterator[Observation]:
         """Yield filtered observations without retaining a connection across yields."""
@@ -239,11 +290,13 @@ class ObservationStore:
                 replace(query, cursor=cursor), include_cursor=True
             )
             with self._connection() as connection:
-                rows = connection.execute(
-                    f"SELECT * FROM observations{where} "
-                    "ORDER BY received_at DESC, id DESC LIMIT ?",
-                    (*parameters, _EXPORT_BATCH_SIZE),
-                ).fetchall()
+                rows = self._run_sqlite_operation(
+                    lambda: connection.execute(
+                        f"SELECT * FROM observations{where} "
+                        "ORDER BY received_at DESC, id DESC LIMIT ?",
+                        (*parameters, _EXPORT_BATCH_SIZE),
+                    ).fetchall()
+                )
             items = tuple(_observation_from_row(row) for row in rows)
             if not items:
                 return
@@ -258,25 +311,53 @@ class ObservationStore:
         cutoff = cutoff_now - self.retention_days * 86_400
         with self._write_access():
             with self._connection() as connection:
-                deleted = connection.execute(
-                    "DELETE FROM observations WHERE received_at < ?", (cutoff,)
-                ).rowcount
-                count = connection.execute("SELECT COUNT(*) FROM observations").fetchone()[0]
+                deleted = self._run_sqlite_operation(
+                    lambda: connection.execute(
+                        "DELETE FROM observations WHERE received_at < ?", (cutoff,)
+                    ).rowcount
+                )
+                count = self._run_sqlite_operation(
+                    lambda: connection.execute(
+                        "SELECT COUNT(*) FROM observations"
+                    ).fetchone()[0]
+                )
                 excess = max(count - self.max_observations, 0)
                 if excess:
-                    deleted += connection.execute(
-                        """DELETE FROM observations WHERE id IN (
-                        SELECT id FROM observations ORDER BY id ASC LIMIT ?
-                        )""",
-                        (excess,),
-                    ).rowcount
+                    deleted += self._run_sqlite_operation(
+                        lambda: connection.execute(
+                            """DELETE FROM observations WHERE id IN (
+                            SELECT id FROM observations ORDER BY id ASC LIMIT ?
+                            )""",
+                            (excess,),
+                        ).rowcount
+                    )
                 return deleted
 
     def clear(self) -> int:
         """Delete all retained observations and return their number."""
         with self._write_access():
             with self._connection() as connection:
-                return connection.execute("DELETE FROM observations").rowcount
+                return self._run_sqlite_operation(
+                    lambda: connection.execute("DELETE FROM observations").rowcount
+                )
+
+    def _insert_observation(
+        self,
+        connection: sqlite3.Connection,
+        values: tuple[Any, ...],
+    ) -> int:
+        cursor = self._run_sqlite_operation(
+            lambda: connection.execute(
+                """INSERT INTO observations (
+                kind, received_at, observed_at, stable_key, source_id, source,
+                threat_class, category, label, display_id, manufacturer, confidence, score,
+                rssi, events, seen_count, latitude, longitude, altitude_m,
+                operator_latitude, operator_longitude, operator_id, extras_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                values,
+            )
+        )
+        return int(cursor.lastrowid)
 
     def cancel_pending(self) -> None:
         """Reject new work and interrupt every active SQLite operation."""
@@ -298,7 +379,7 @@ class ObservationStore:
         deadline = time.monotonic() + timeout
         self.cancel_pending()
         with self._connection_condition:
-            while self._active_connections:
+            while self._active_connection_operations:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise TimeoutError("observation store did not close in time")
@@ -318,19 +399,6 @@ def _observation_from_row(row: sqlite3.Row) -> Observation:
         operator_latitude=row["operator_latitude"], operator_longitude=row["operator_longitude"],
         operator_id=row["operator_id"], extras=extras if isinstance(extras, dict) else {},
     )
-
-
-def _insert_observation(connection: sqlite3.Connection, values: tuple[Any, ...]) -> int:
-    cursor = connection.execute(
-        """INSERT INTO observations (
-        kind, received_at, observed_at, stable_key, source_id, source,
-        threat_class, category, label, display_id, manufacturer, confidence, score,
-        rssi, events, seen_count, latitude, longitude, altitude_m,
-        operator_latitude, operator_longitude, operator_id, extras_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-        values,
-    )
-    return int(cursor.lastrowid)
 
 
 def _where_clause(query: HistoryQuery, *, include_cursor: bool) -> tuple[str, tuple[Any, ...]]:

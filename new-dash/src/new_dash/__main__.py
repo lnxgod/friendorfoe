@@ -91,6 +91,28 @@ def _wait_for_shutdown(stop_event: threading.Event) -> None:
     stop_event.wait()
 
 
+def _bounded_server_shutdown(server: Any, deadline: float) -> None:
+    """Request BaseServer shutdown without letting its internal wait escape."""
+
+    errors: list[BaseException] = []
+
+    def request_shutdown() -> None:
+        try:
+            server.shutdown()
+        except BaseException as error:
+            errors.append(error)
+
+    shutdown_thread = threading.Thread(
+        target=request_shutdown,
+        name="new-dash-http-shutdown",
+        daemon=True,
+    )
+    shutdown_thread.start()
+    shutdown_thread.join(max(0.0, deadline - time.monotonic()))
+    if not shutdown_thread.is_alive() and errors:
+        raise errors[0]
+
+
 def _load_runtime_components() -> None:
     global NewDashApplication
     global BadgeSerialTransport
@@ -173,7 +195,7 @@ def run(arguments: argparse.Namespace) -> None:
             if server is not None:
                 if server_thread is not None:
                     try:
-                        server.shutdown()
+                        _bounded_server_shutdown(server, shutdown_deadline)
                     finally:
                         try:
                             server.server_close()

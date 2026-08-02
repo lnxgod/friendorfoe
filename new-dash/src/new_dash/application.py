@@ -87,8 +87,8 @@ class NewDashApplication:
         self._persistence_drops = 0
         self._accepting = True
         self._closed = False
-        self._close_complete = threading.Event()
-        self._close_error: ApplicationError | None = None
+        self._close_attempt_lock = threading.Lock()
+        self._store_closed = False
         self._last_prune_queued_at: float | None = None
         self._transport: BadgeTransportLike | None = None
         self._persistence_queue: Queue[_PersistenceAction] = Queue(
@@ -294,47 +294,57 @@ class NewDashApplication:
             raise ValueError("timeout must be nonnegative")
         deadline = time.monotonic() + timeout
         with self._lock:
-            if self._closed:
-                owns_close = False
-            else:
-                self._closed = True
-                self._accepting = False
-                owns_close = True
+            self._closed = True
+            self._accepting = False
 
-        if not owns_close:
-            if not self._close_complete.wait(self._remaining(deadline)):
+        if not self._close_attempt_lock.acquire(timeout=self._remaining(deadline)):
+            if self._worker.is_alive():
                 raise ApplicationError("stop_timeout", _STOP_TIMEOUT_MESSAGE)
-            with self._lock:
-                close_error = self._close_error
-            if close_error is not None:
-                raise ApplicationError(close_error.code, close_error.message)
-            return
-
-        cancellation_reserve = min(_CANCELLATION_RESERVE_SECONDS, timeout / 2.0)
-        drain_deadline = deadline - cancellation_reserve
-        barrier = _PersistenceAction("barrier", completion=threading.Event())
-        store_closed = False
+            raise ApplicationError(
+                "history_unavailable",
+                "History store shutdown is still in progress.",
+            )
         try:
-            try:
-                self._persistence_queue.put(
-                    barrier, timeout=self._remaining(drain_deadline)
-                )
-            except Full:
-                pass
-            except Exception as error:
-                self._record_history_error(error)
-            else:
-                barrier.completion.wait(self._remaining(drain_deadline))
+            if not self._worker.is_alive() and self._store_closed:
+                return
 
-            drain_completed = barrier.completion.is_set() and barrier.error is None
-            if not drain_completed:
+            if not self._worker_stop.is_set():
+                remaining = self._remaining(deadline)
+                cancellation_reserve = min(
+                    _CANCELLATION_RESERVE_SECONDS,
+                    remaining / 2.0,
+                )
+                drain_deadline = deadline - cancellation_reserve
+                barrier = _PersistenceAction(
+                    "barrier", completion=threading.Event()
+                )
                 try:
-                    self._discard_queued_actions()
+                    self._persistence_queue.put(
+                        barrier, timeout=self._remaining(drain_deadline)
+                    )
+                except Full:
+                    pass
                 except Exception as error:
                     self._record_history_error(error)
-            self._worker_stop.set()
+                else:
+                    barrier.completion.wait(self._remaining(drain_deadline))
 
-            if not drain_completed:
+                drain_completed = (
+                    barrier.completion.is_set() and barrier.error is None
+                )
+                if not drain_completed:
+                    try:
+                        self._discard_queued_actions()
+                    except Exception as error:
+                        self._record_history_error(error)
+                self._worker_stop.set()
+
+                if not drain_completed:
+                    try:
+                        self._store.cancel_pending()
+                    except Exception as error:
+                        self._record_history_error(error)
+            elif self._worker.is_alive():
                 try:
                     self._store.cancel_pending()
                 except Exception as error:
@@ -351,24 +361,25 @@ class NewDashApplication:
                 except Exception as error:
                     self._record_history_error(error)
 
-            try:
-                self._store.close(timeout=self._remaining(deadline))
-            except Exception as error:
-                self._record_history_error(error)
-            else:
-                store_closed = True
-        finally:
-            close_error = (
-                ApplicationError("stop_timeout", _STOP_TIMEOUT_MESSAGE)
-                if self._worker.is_alive() or not store_closed
-                else None
-            )
-            with self._lock:
-                self._close_error = close_error
-            self._close_complete.set()
+            store_error: Exception | None = None
+            if not self._store_closed:
+                try:
+                    self._store.close(timeout=self._remaining(deadline))
+                except Exception as error:
+                    store_error = error
+                    self._record_history_error(error)
+                else:
+                    self._store_closed = True
 
-        if close_error is not None:
-            raise close_error
+            if self._worker.is_alive():
+                raise ApplicationError("stop_timeout", _STOP_TIMEOUT_MESSAGE)
+            if store_error is not None:
+                raise ApplicationError(
+                    "history_unavailable",
+                    self._bounded_error(store_error),
+                )
+        finally:
+            self._close_attempt_lock.release()
 
     def _discard_queued_actions(self) -> None:
         dropped_records = 0

@@ -5,6 +5,7 @@ import importlib
 import io
 from pathlib import Path
 import signal
+import threading
 import time
 import unittest
 from unittest.mock import patch
@@ -128,6 +129,20 @@ class _Server:
 
     def server_close(self) -> None:
         self.lifecycle.events.append("server.close")
+
+
+class _BlockingShutdownServer(_Server):
+    def __init__(self, lifecycle: _Lifecycle) -> None:
+        super().__init__(lifecycle)
+        self.shutdown_started = threading.Event()
+        self.release_shutdown = threading.Event()
+        self.shutdown_finished = threading.Event()
+
+    def shutdown(self) -> None:
+        self.lifecycle.events.append("server.shutdown")
+        self.shutdown_started.set()
+        self.release_shutdown.wait(0.3)
+        self.shutdown_finished.set()
 
 
 class LauncherArgumentTest(unittest.TestCase):
@@ -357,6 +372,29 @@ class LauncherLifecycleTest(unittest.TestCase):
             self.lifecycle.application.close_timeout,
             self.lifecycle.transport.stop_timeout,
         )
+
+    def test_blocked_http_shutdown_cannot_skip_later_cleanup(self) -> None:
+        args = launcher.parse_args(["--no-browser"])
+        server = _BlockingShutdownServer(self.lifecycle)
+
+        try:
+            started = time.monotonic()
+            with patch.object(launcher, "create_http_server", return_value=server):
+                with patch.object(launcher, "_SHUTDOWN_TIMEOUT_SECONDS", 0.05):
+                    with patch.object(launcher, "_wait_for_shutdown", return_value=None):
+                        with redirect_stdout(io.StringIO()):
+                            launcher.run(args)
+            elapsed = time.monotonic() - started
+
+            self.assertTrue(server.shutdown_started.is_set())
+            self.assertFalse(server.shutdown_finished.is_set())
+            self.assertLess(elapsed, 0.2)
+            self.assertIn("server.close", self.lifecycle.events)
+            self.assertIn("transport.stop", self.lifecycle.events)
+            self.assertIn("application.close", self.lifecycle.events)
+            self.assertIn("store.close", self.lifecycle.events)
+        finally:
+            server.release_shutdown.set()
 
     def test_no_browser_suppresses_browser_open(self) -> None:
         args = launcher.parse_args(["--no-browser"])

@@ -190,6 +190,25 @@ class CloseTrackingStore(ObservationStore):
         super().close(timeout=timeout)
 
 
+class FailingCloseStore(ObservationStore):
+    def __init__(
+        self,
+        *args: object,
+        failures: int,
+        **kwargs: object,
+    ) -> None:
+        self.failures_remaining = failures
+        self.close_calls = 0
+        super().__init__(*args, **kwargs)
+
+    def close(self, timeout: float = 3.0) -> None:
+        self.close_calls += 1
+        if self.failures_remaining:
+            self.failures_remaining -= 1
+            raise RuntimeError("disk close failed")
+        super().close(timeout=timeout)
+
+
 class PausingRecordQueue(Queue[object]):
     """Pause the first record insertion while allowing a racing barrier."""
 
@@ -801,6 +820,52 @@ class NewDashApplicationPersistenceTest(unittest.TestCase):
                         application._closed = True
                         application._accepting = False
                     store.close()
+
+    def test_later_close_succeeds_after_timed_out_worker_exits(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            store = UncooperativeBlockingPruneStore(Path(temp) / "retry-worker.sqlite3")
+            application = NewDashApplication(store)
+            self.assertTrue(store.prune_started.wait(1.0))
+
+            with self.assertRaises(ApplicationError) as raised:
+                application.close(timeout=0.05)
+            self.assertEqual(raised.exception.code, "stop_timeout")
+            store.release_prune.set()
+            application._worker.join(1.0)
+            self.assertFalse(application._worker.is_alive())
+
+            application.close(timeout=0.5)
+            application.close(timeout=0.1)
+
+    def test_worker_dead_store_close_failure_is_not_reported_as_timeout(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            store = FailingCloseStore(Path(temp) / "close-error.sqlite3", failures=2)
+            application = NewDashApplication(store)
+            self.assertTrue(application._persistence_barrier())
+
+            try:
+                with self.assertRaises(ApplicationError) as raised:
+                    application.close(timeout=0.5)
+
+                self.assertFalse(application._worker.is_alive())
+                self.assertEqual(raised.exception.code, "history_unavailable")
+                self.assertIn("RuntimeError: disk close failed", raised.exception.message)
+            finally:
+                ObservationStore.close(store)
+
+    def test_later_close_retries_store_close_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            store = FailingCloseStore(Path(temp) / "retry-close.sqlite3", failures=1)
+            application = NewDashApplication(store)
+            self.assertTrue(application._persistence_barrier())
+
+            with self.assertRaises(ApplicationError):
+                application.close(timeout=0.5)
+            self.assertEqual(store.close_calls, 1)
+
+            application.close(timeout=0.5)
+            application.close(timeout=0.1)
+            self.assertEqual(store.close_calls, 2)
 
     def test_concurrent_and_repeated_close_share_one_completion(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
