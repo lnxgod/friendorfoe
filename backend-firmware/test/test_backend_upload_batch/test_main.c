@@ -61,7 +61,7 @@ static backend_scanner_status_t fixture_scanner(
     strcpy(status.target, FOF_BACKEND_SCANNER_TARGET);
     strcpy(status.project, FOF_BACKEND_SCANNER_PROJECT);
     strcpy(status.hardware, FOF_BACKEND_HARDWARE);
-    strcpy(status.version, FOF_VERSION_BACKEND);
+    strcpy(status.version, "0.1.0-scanner-skew");
     strcpy(status.ota_state, "idle");
     strcpy(status.rollback_state, "valid");
     return status;
@@ -532,7 +532,7 @@ void test_empty_batch_has_exact_identity_health_and_scanner_bridge(void)
     assert_string_key(scanner_json, scanner_tokens, scanner_count, 0U,
                       "hardware_type", FOF_BACKEND_HARDWARE);
     assert_string_key(scanner_json, scanner_tokens, scanner_count, 0U,
-                      "firmware_version", FOF_VERSION_BACKEND);
+                      "firmware_version", "0.1.0-scanner-skew");
     assert_string_key(scanner_json, scanner_tokens, scanner_count, 0U,
                       "mac", "AA:BB:CC:DD:EE:01");
     assert_i64_key(scanner_json, scanner_tokens, scanner_count, 0U,

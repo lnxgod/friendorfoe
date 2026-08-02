@@ -708,7 +708,7 @@ static bool append_scanner(backend_json_writer_t *writer,
            append_string(writer, "firmware_target", identity->target) &&
            append_string(writer, "app_project", identity->project) &&
            append_string(writer, "hardware_type", identity->hardware) &&
-           append_string(writer, "firmware_version", identity->version) &&
+           append_string(writer, "firmware_version", status->version) &&
            append_string(writer, "mac", status->mac) &&
            append_u64(writer, "boot_id", status->boot_id) &&
            append_string(writer, "profile", profile) &&

@@ -108,6 +108,9 @@ typedef struct {
     int64_t scanner_last_seen_ms[2];
     backend_upload_fifo_t upload_fifo;
     backend_upload_batch_t *upload_storage;
+    backend_batch_context_t upload_context_scratch;
+    backend_upload_batch_t upload_batch_scratch;
+    backend_upload_batch_t upload_request_scratch;
     backend_upload_builder_t upload_builder;
     backend_uploader_state_t uploader;
     backend_heartbeat_state_t heartbeat;
@@ -166,6 +169,10 @@ typedef struct {
     bool target_claimed[3];
     char boot_line[UPLINK_STATUS_CAPACITY];
     char health_line[UPLINK_STATUS_CAPACITY];
+    char portal_http_response[UPLINK_HTTP_RESPONSE_CAPACITY];
+    char uploader_http_response[UPLINK_HTTP_RESPONSE_CAPACITY];
+    char time_http_response[UPLINK_HTTP_RESPONSE_CAPACITY];
+    char command_http_response[UPLINK_HTTP_RESPONSE_CAPACITY];
     bool health_line_ready;
     char uart_control_line[2][BACKEND_SCANNER_WIRE_MAX_LINE + 1U];
 } uplink_runtime_t;
@@ -415,21 +422,21 @@ static bool upload_context_locked(
 static bool queue_upload_locked(
     const backend_detection_observation_t *observation)
 {
-    backend_batch_context_t context;
     const uint32_t sequence = s_runtime.next_batch_sequence;
-    if (!upload_context_locked(sequence, &context)) {
+    if (!upload_context_locked(sequence, &s_runtime.upload_context_scratch)) {
         return false;
     }
     backend_upload_builder_init(
-        &s_runtime.upload_builder, &context, monotonic_ms());
+        &s_runtime.upload_builder, &s_runtime.upload_context_scratch,
+        monotonic_ms());
     if (observation != NULL &&
         backend_upload_builder_add(
             &s_runtime.upload_builder, observation, monotonic_ms()) !=
             BACKEND_ENCODE_OK) {
         return false;
     }
-    backend_upload_batch_t batch;
-    if (!backend_upload_builder_finish(&s_runtime.upload_builder, &batch)) {
+    if (!backend_upload_builder_finish(
+            &s_runtime.upload_builder, &s_runtime.upload_batch_scratch)) {
         return false;
     }
     uint32_t dropped_sequence = 0U;
@@ -443,7 +450,7 @@ static bool queue_upload_locked(
     }
     bool dropped = false;
     if (!backend_upload_fifo_push(
-            &s_runtime.upload_fifo, &batch, &dropped)) {
+            &s_runtime.upload_fifo, &s_runtime.upload_batch_scratch, &dropped)) {
         return false;
     }
     (void)backend_uploader_note_enqueued(
@@ -511,10 +518,10 @@ static bool portal_backend_get(
 {
     (void)context;
     (void)timeout_ms;
-    char response[UPLINK_HTTP_RESPONSE_CAPACITY];
     (void)xSemaphoreTake(s_runtime.http_lock, portMAX_DELAY);
     const backend_http_result_t result = backend_http_get_json(
-        base_url, path, response, sizeof(response));
+        base_url, path, s_runtime.portal_http_response,
+        sizeof(s_runtime.portal_http_response));
     (void)xSemaphoreGive(s_runtime.http_lock);
     if (status_code != NULL) {
         *status_code = result.status_code;
@@ -1705,8 +1712,7 @@ static void network_worker(void *argument)
 static void uploader_worker(void *argument)
 {
     (void)argument;
-    char response[UPLINK_HTTP_RESPONSE_CAPACITY];
-    backend_upload_batch_t request;
+    backend_upload_batch_t *request = &s_runtime.upload_request_scratch;
     lock_runtime();
     s_runtime.uploader_worker_live = true;
     unlock_runtime();
@@ -1727,7 +1733,7 @@ static void uploader_worker(void *argument)
                 head,
                 s_runtime.upload_fifo.count,
                 now_ms)) {
-            request = *head;
+            *request = *head;
             copy_text(base_url, sizeof(base_url),
                       s_runtime.config.backend_url);
             copy_text(device_id, sizeof(device_id),
@@ -1744,17 +1750,17 @@ static void uploader_worker(void *argument)
         const backend_http_result_t http_result = backend_http_post_json(
             base_url,
             "/detections/drones",
-            request.json,
-            request.json_len,
-            response,
-            sizeof(response));
+            request->json,
+            request->json_len,
+            s_runtime.uploader_http_response,
+            sizeof(s_runtime.uploader_http_response));
         (void)xSemaphoreGive(s_runtime.http_lock);
         const bool ack_valid = http_result.transport_complete &&
             backend_ingest_ack_validate(
-                response,
+                s_runtime.uploader_http_response,
                 http_result.body_length,
                 device_id,
-                request.item_count);
+                request->item_count);
         const backend_http_disposition_t disposition = backend_http_classify(
             http_result.transport_complete,
             http_result.status_code,
@@ -1765,12 +1771,12 @@ static void uploader_worker(void *argument)
         const backend_upload_batch_t *live_head =
             backend_upload_fifo_peek(&s_runtime.upload_fifo);
         if (live_head != NULL &&
-            live_head->sequence == request.sequence &&
-            live_head->json_crc32 == request.json_crc32 &&
+            live_head->sequence == request->sequence &&
+            live_head->json_crc32 == request->json_crc32 &&
             (disposition == BACKEND_HTTP_ACK ||
              disposition == BACKEND_HTTP_QUARANTINE) &&
             backend_upload_fifo_pop_acked(
-                &s_runtime.upload_fifo, request.sequence)) {
+                &s_runtime.upload_fifo, request->sequence)) {
             queue_result = disposition == BACKEND_HTTP_ACK
                 ? BACKEND_UPLOADER_QUEUE_POPPED
                 : BACKEND_UPLOADER_QUEUE_QUARANTINED;
@@ -1778,8 +1784,8 @@ static void uploader_worker(void *argument)
         const backend_uploader_outcome_t outcome =
             backend_uploader_note_response(
                 &s_runtime.uploader,
-                request.sequence,
-                request.json_crc32,
+                request->sequence,
+                request->json_crc32,
                 disposition,
                 http_result.status_code,
                 queue_result,
@@ -1857,18 +1863,18 @@ static void time_worker(void *argument)
         copy_text(base_url, sizeof(base_url), s_runtime.config.backend_url);
         unlock_runtime();
         if (!sntp_valid && connected) {
-            char response[UPLINK_HTTP_RESPONSE_CAPACITY];
             (void)xSemaphoreTake(s_runtime.http_lock, portMAX_DELAY);
             const backend_http_result_t result = backend_http_get_json(
                 base_url,
                 "/detections/time",
-                response,
-                sizeof(response));
+                s_runtime.time_http_response,
+                sizeof(s_runtime.time_http_response));
             (void)xSemaphoreGive(s_runtime.http_lock);
             backend_valid = result.transport_complete &&
                 result.status_code == 200 &&
                 backend_time_parse_response(
-                    response, result.body_length, &backend_epoch_ms);
+                    s_runtime.time_http_response, result.body_length,
+                    &backend_epoch_ms);
         }
         int64_t selected_epoch_ms = 0;
         const backend_time_source_t source = backend_time_select_source(
@@ -1905,17 +1911,17 @@ static void command_send_result(
     memcpy(body, s_runtime.command_client.post_body, body_length + 1U);
     unlock_runtime();
 
-    char response[UPLINK_HTTP_RESPONSE_CAPACITY];
     (void)xSemaphoreTake(s_runtime.http_lock, portMAX_DELAY);
     const backend_http_result_t http_result = backend_http_post_json(
-        base_url, path, body, body_length, response, sizeof(response));
+        base_url, path, body, body_length, s_runtime.command_http_response,
+        sizeof(s_runtime.command_http_response));
     (void)xSemaphoreGive(s_runtime.http_lock);
     lock_runtime();
     backend_command_result_ack_t ack;
     const bool ack_valid = http_result.transport_complete &&
         backend_command_result_ack_validate(
             &s_runtime.command_client,
-            response,
+            s_runtime.command_http_response,
             http_result.body_length,
             &ack);
     const backend_command_http_action_t action =
@@ -1978,10 +1984,10 @@ static void command_worker(void *argument)
         lock_runtime();
         (void)backend_command_poll_started(&s_runtime.command_http, now_ms);
         unlock_runtime();
-        char response[UPLINK_HTTP_RESPONSE_CAPACITY];
         (void)xSemaphoreTake(s_runtime.http_lock, portMAX_DELAY);
         const backend_http_result_t http_result = backend_http_get_json(
-            base_url, path, response, sizeof(response));
+            base_url, path, s_runtime.command_http_response,
+            sizeof(s_runtime.command_http_response));
         (void)xSemaphoreGive(s_runtime.http_lock);
         const backend_command_http_action_t action =
             backend_command_poll_http_action(
@@ -1992,7 +1998,8 @@ static void command_worker(void *argument)
         if (action == BACKEND_COMMAND_HTTP_BODY) {
             backend_command_envelope_t envelope;
             if (backend_command_envelope_decode(
-                    response, http_result.body_length, &envelope) ==
+                    s_runtime.command_http_response, http_result.body_length,
+                    &envelope) ==
                 BACKEND_COMMAND_DECODE_OK) {
                 const backend_command_intent_t intent =
                     backend_command_select_intent(

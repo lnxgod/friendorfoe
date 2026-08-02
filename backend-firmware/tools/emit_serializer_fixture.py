@@ -83,6 +83,55 @@ def _atomic_write(path: Path, data: bytes) -> None:
             temporary.unlink(missing_ok=True)
 
 
+def _write_temp(path: Path, data: bytes, label: str) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(
+        mode="wb", dir=path.parent, prefix=f".{path.name}.{label}-",
+        delete=False,
+    ) as handle:
+        temporary = Path(handle.name)
+        handle.write(data)
+        handle.flush()
+        os.fsync(handle.fileno())
+    temporary.chmod(0o644)
+    return temporary
+
+
+def write_fixture_pair(
+    lite_path: Path,
+    lite_data: bytes,
+    fullsize_path: Path,
+    fullsize_data: bytes,
+) -> None:
+    """Publish a fixture pair with rollback if either replacement fails."""
+    new_lite = _write_temp(lite_path, lite_data, "new")
+    new_fullsize = _write_temp(fullsize_path, fullsize_data, "new")
+    backups: list[tuple[Path, Path]] = []
+    published: list[tuple[Path, Path]] = []
+    try:
+        for destination in (lite_path, fullsize_path):
+            if destination.exists():
+                backup = _write_temp(destination, destination.read_bytes(), "backup")
+                backups.append((destination, backup))
+        for destination, temporary in ((lite_path, new_lite),
+                                       (fullsize_path, new_fullsize)):
+            os.replace(temporary, destination)
+            published.append((destination, temporary))
+    except Exception:
+        for destination, backup in backups:
+            os.replace(backup, destination)
+        for destination, temporary in published:
+            if not any(saved == destination for saved, _ in backups):
+                destination.unlink(missing_ok=True)
+            temporary.unlink(missing_ok=True)
+        raise
+    finally:
+        new_lite.unlink(missing_ok=True)
+        new_fullsize.unlink(missing_ok=True)
+        for _destination, backup in backups:
+            backup.unlink(missing_ok=True)
+
+
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Emit or verify the canonical backend serializer fixture.",
@@ -123,9 +172,11 @@ def main(argv: list[str] | None = None) -> int:
                     build_dir=Path(raw),
                     profile=PROFILE_S3_FULLSIZE,
                 ) + b"\n"
-        _atomic_write(args.output, canonical)
-        if fullsize_canonical is not None:
-            _atomic_write(args.fullsize_output, fullsize_canonical)
+        if fullsize_canonical is None:
+            _atomic_write(args.output, canonical)
+        else:
+            write_fixture_pair(args.output, canonical,
+                               args.fullsize_output, fullsize_canonical)
         return 0
 
     try:

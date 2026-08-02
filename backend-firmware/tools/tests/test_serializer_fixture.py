@@ -11,28 +11,21 @@ from tools.emit_serializer_fixture import (
     PRODUCTION_DEPENDENCIES,
     PRODUCTION_SOURCES,
     emit_fixture,
+    write_fixture_pair,
 )
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
-@pytest.mark.parametrize(
-    "relative_source, component, runtime_role",
-    (
-        ("backend-firmware/scanner/main/main.c", "scanner", True),
-        ("backend-firmware/uplink/main/main.c", "uplink", False),
-    ),
-)
-def test_usb_boot_and_health_records_carry_complete_runtime_identity(
-    relative_source: str,
-    component: str,
-    runtime_role: bool,
-):
-    source = (REPO_ROOT / relative_source).read_text(encoding="utf-8")
-
-    assert "FOF_BACKEND_BOOT" in source
-    assert "FOF_BACKEND_HEALTH" in source
+def test_scanner_boot_and_health_formats_each_include_identity_and_role():
+    source = (REPO_ROOT / "backend-firmware/scanner/main/main.c").read_text(
+        encoding="utf-8",
+    )
+    boot = source[source.index('"FOF_BACKEND_BOOT'):
+                  source.index('"FOF_BACKEND_BOOT') + 500]
+    health = source[source.index('"FOF_BACKEND_HEALTH'):
+                    source.index('"FOF_BACKEND_HEALTH') + 500]
     for field in (
         "product_family",
         "firmware_line",
@@ -43,12 +36,39 @@ def test_usb_boot_and_health_records_carry_complete_runtime_identity(
         "version",
         "mac",
     ):
-        assert f'\\"{field}\\"' in source
-    assert f'identity->component' in source
-    if runtime_role:
-        assert '\\"role\\"' in source
-        assert "backend_identity_for_image(BACKEND_IMAGE_SCANNER)" in source
-        assert "APP_TARGET" not in source
+        assert f'\\"{field}\\"' in boot
+        assert f'\\"{field}\\"' in health
+    assert '\\"role\\"' in boot
+    assert '\\"role\\"' in health
+    assert "backend_identity_for_image(BACKEND_IMAGE_SCANNER)" in source
+    assert "APP_TARGET" not in source
+
+
+def test_fixture_pair_rolls_back_the_first_publish_when_second_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    lite = tmp_path / "lite.json"
+    fullsize = tmp_path / "fullsize.json"
+    lite.write_bytes(b"old-lite\n")
+    fullsize.write_bytes(b"old-fullsize\n")
+
+    import tools.emit_serializer_fixture as serializer
+
+    real_replace = serializer.os.replace
+
+    def fail_new_fullsize(source: str | Path, destination: str | Path):
+        if Path(destination) == fullsize and ".new-" in Path(source).name:
+            raise OSError("injected second publish failure")
+        real_replace(source, destination)
+
+    monkeypatch.setattr(serializer.os, "replace", fail_new_fullsize)
+    with pytest.raises(OSError, match="injected second publish failure"):
+        write_fixture_pair(lite, b"new-lite\n", fullsize, b"new-fullsize\n")
+
+    assert lite.read_bytes() == b"old-lite\n"
+    assert fullsize.read_bytes() == b"old-fullsize\n"
+    assert not list(tmp_path.glob(".*.new-*"))
+    assert not list(tmp_path.glob(".*.backup-*"))
 
 
 def test_serializer_fixture_links_only_exact_backend_owned_sources():

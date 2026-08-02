@@ -1370,11 +1370,12 @@ void app_main(void)
         "\"target\":\"%s\",\"project\":\"%s\","
         "\"hardware\":\"%s\",\"version\":\"%s\",\"mac\":\"%s\","
         "\"boot_id\":%" PRIu32 ",\"nvs_erased\":%s,"
-        "\"uart_ingress\":true,\"ota_state\":\"%s\"}",
+        "\"role\":\"%s\",\"uart_ingress\":true,\"ota_state\":\"%s\"}",
         identity->product_family, identity->firmware_line,
         identity->component, identity->target, identity->project,
         identity->hardware, identity->version, s_app.mac,
         s_app.boot_id, s_app.nvs_erased ? "true" : "false",
+        profile_name(backend_scanner_runtime_profile(&s_app.runtime)),
         s_app.running_pending_verify ? "pending_verify" : "valid");
     if (boot_written <= 0 ||
         (size_t)boot_written >= sizeof(s_app.boot_record)) {
