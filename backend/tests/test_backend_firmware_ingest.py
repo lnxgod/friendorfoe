@@ -4,6 +4,7 @@ import uuid
 from collections import deque
 
 import pytest
+from httpx import ASGITransport, AsyncClient
 from sqlalchemy import func, select
 
 from app.main import app
@@ -355,6 +356,205 @@ async def test_secondary_position_commit_and_rollback_failure_stays_acknowledged
         )
     assert detection_count == 1
     assert position_count == 0
+
+
+@pytest.mark.asyncio
+async def test_position_persistence_serializes_across_event_loops(
+    client, backend_sensor_session_factory, monkeypatch,
+):
+    """A contended serializer remains usable by a later event loop."""
+    device_id = f"fixed-{uuid.uuid4().hex}"
+    drone_id = f"BLE:{uuid.uuid4().hex}"
+    position = (37.3345, -122.4455)
+    async with backend_sensor_session_factory() as setup_session:
+        setup_session.add(SensorNode(
+            device_id=device_id,
+            name=device_id,
+            lat=37.3340,
+            lon=-122.4450,
+            alt=12.0,
+            is_fixed=True,
+        ))
+        await setup_session.commit()
+
+    serializer = type(detections._position_persistence_lock)()
+    monkeypatch.setattr(
+        detections, "_position_persistence_lock", serializer,
+    )
+
+    async def contend_on_first_loop():
+        await serializer.acquire()
+        contender_started = asyncio.Event()
+
+        async def contend():
+            contender_started.set()
+            await serializer.acquire()
+            serializer.release()
+
+        contender = asyncio.create_task(contend())
+        await contender_started.wait()
+        serializer.release()
+        await contender
+
+    await asyncio.to_thread(lambda: asyncio.run(contend_on_first_loop()))
+
+    body = {
+        "device_id": device_id,
+        "timestamp": int(time.time()),
+        "detections": [{
+            "drone_id": drone_id,
+            "source": "ble_fingerprint",
+            "confidence": 0.8,
+            "bssid": "AA:BB:CC:DD:EE:FF",
+            "rssi": -48,
+            "latitude": position[0],
+            "longitude": position[1],
+            "altitude_m": 42.0,
+        }],
+    }
+
+    async def ingest_while_contended_on_second_loop():
+        tracker = SensorTracker()
+        persistence_reached = asyncio.Event()
+        real_get_located_drones = tracker.get_located_drones
+
+        def get_located_drones():
+            located = real_get_located_drones()
+            persistence_reached.set()
+            return located
+
+        monkeypatch.setattr(tracker, "get_located_drones", get_located_drones)
+        monkeypatch.setattr(detections, "_sensor_tracker", tracker)
+
+        await serializer.acquire()
+        try:
+            transport = ASGITransport(app=app, raise_app_exceptions=False)
+            async with AsyncClient(
+                transport=transport, base_url="http://test",
+            ) as loop_client:
+                response_task = asyncio.create_task(
+                    loop_client.post("/detections/drones", json=body),
+                )
+                await persistence_reached.wait()
+                serializer.release()
+                return await response_task
+        finally:
+            if serializer.locked():
+                serializer.release()
+
+    response = await asyncio.to_thread(
+        lambda: asyncio.run(ingest_while_contended_on_second_loop()),
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "ok",
+        "accepted": 1,
+        "device_id": device_id,
+        "processed": 1,
+        "deduplicated": 0,
+        "filtered": 0,
+    }
+    async with backend_sensor_session_factory() as verification_session:
+        detection_count = await verification_session.scalar(
+            select(func.count(DroneDetection.id)).where(
+                DroneDetection.drone_id == drone_id,
+            )
+        )
+        position_count = await verification_session.scalar(
+            select(func.count(TriangulatedPosition.id)).where(
+                TriangulatedPosition.drone_id == drone_id,
+            )
+        )
+    assert detection_count == 1
+    assert position_count == 1
+    assert detections._position_dedup[f"_last_pos_{drone_id}"] == position
+
+
+@pytest.mark.parametrize(
+    ("failure", "expected_position_count"),
+    (("acquire", 0), ("release", 1)),
+)
+@pytest.mark.asyncio
+async def test_position_serializer_failure_stays_acknowledged(
+    client, backend_sensor_session_factory, monkeypatch,
+    failure, expected_position_count,
+):
+    device_id = f"fixed-{uuid.uuid4().hex}"
+    drone_id = f"BLE:{uuid.uuid4().hex}"
+    position = (37.3345, -122.4455)
+    monkeypatch.setattr(detections, "_sensor_tracker", SensorTracker())
+    serializer = type(detections._position_persistence_lock)()
+    monkeypatch.setattr(
+        detections, "_position_persistence_lock", serializer,
+    )
+    async with backend_sensor_session_factory() as setup_session:
+        setup_session.add(SensorNode(
+            device_id=device_id,
+            name=device_id,
+            lat=37.3340,
+            lon=-122.4450,
+            alt=12.0,
+            is_fixed=True,
+        ))
+        await setup_session.commit()
+
+    real_release = serializer.release
+    if failure == "acquire":
+        async def fail_acquire():
+            raise RuntimeError("forced serializer acquire failure")
+
+        monkeypatch.setattr(serializer, "acquire", fail_acquire)
+    else:
+        def fail_release():
+            raise RuntimeError("forced serializer release failure")
+
+        monkeypatch.setattr(serializer, "release", fail_release)
+
+    body = {
+        "device_id": device_id,
+        "timestamp": int(time.time()),
+        "detections": [{
+            "drone_id": drone_id,
+            "source": "ble_fingerprint",
+            "confidence": 0.8,
+            "bssid": "AA:BB:CC:DD:EE:FF",
+            "rssi": -48,
+            "latitude": position[0],
+            "longitude": position[1],
+            "altitude_m": 42.0,
+        }],
+    }
+    try:
+        transport = ASGITransport(app=app, raise_app_exceptions=False)
+        async with AsyncClient(
+            transport=transport, base_url="http://test",
+        ) as loop_client:
+            response = await loop_client.post("/detections/drones", json=body)
+    finally:
+        monkeypatch.setattr(serializer, "release", real_release)
+        if serializer.locked():
+            serializer.release()
+
+    assert response.status_code == 200
+    assert response.json()["accepted"] == 1
+    assert response.json()["processed"] == 1
+    async with backend_sensor_session_factory() as verification_session:
+        detection_count = await verification_session.scalar(
+            select(func.count(DroneDetection.id)).where(
+                DroneDetection.drone_id == drone_id,
+            )
+        )
+        position_count = await verification_session.scalar(
+            select(func.count(TriangulatedPosition.id)).where(
+                TriangulatedPosition.drone_id == drone_id,
+            )
+        )
+    assert detection_count == 1
+    assert position_count == expected_position_count
+    assert (f"_last_pos_{drone_id}" in detections._position_dedup) is bool(
+        expected_position_count,
+    )
 
 
 @pytest.mark.asyncio

@@ -5,6 +5,7 @@ import json
 import logging
 import re
 import secrets as _secrets
+import threading
 import time
 from collections import defaultdict, deque
 from dataclasses import dataclass
@@ -366,7 +367,209 @@ _ingest_rejection_events: deque[tuple[float, str, int]] = deque(maxlen=1024)
 
 # Position dedup cache: drone_id → (lat, lon) of last logged position
 _position_dedup: dict[str, tuple[float, float]] = {}
-_position_persistence_lock = asyncio.Lock()
+
+
+@dataclass
+class _AsyncLockWaiter:
+    loop: asyncio.AbstractEventLoop
+    future: asyncio.Future[None]
+    state: str = "queued"
+
+
+class _LoopIndependentAsyncLock:
+    """A process-local async mutex whose waiters may use different loops."""
+
+    def __init__(self) -> None:
+        self._state_lock = threading.Lock()
+        self._locked = False
+        self._waiters: deque[_AsyncLockWaiter] = deque()
+
+    def locked(self) -> bool:
+        with self._state_lock:
+            return self._locked
+
+    async def acquire(self) -> bool:
+        loop = asyncio.get_running_loop()
+        with self._state_lock:
+            if not self._locked:
+                self._locked = True
+                return True
+            waiter = _AsyncLockWaiter(loop=loop, future=loop.create_future())
+            self._waiters.append(waiter)
+
+        try:
+            await waiter.future
+            return True
+        except BaseException:
+            release_grant = False
+            with self._state_lock:
+                if waiter.state == "queued":
+                    waiter.state = "cancelled"
+                    self._waiters.remove(waiter)
+                elif waiter.state == "granted":
+                    waiter.state = "cancelled"
+                    release_grant = True
+            if release_grant:
+                self.release()
+            raise
+
+    def release(self) -> None:
+        while True:
+            with self._state_lock:
+                if not self._locked:
+                    raise RuntimeError("cannot release an unlocked lock")
+                waiter = None
+                while self._waiters:
+                    candidate = self._waiters.popleft()
+                    if candidate.state != "queued" or candidate.future.done():
+                        candidate.state = "cancelled"
+                        continue
+                    candidate.state = "granted"
+                    waiter = candidate
+                    break
+                if waiter is None:
+                    self._locked = False
+                    return
+
+            try:
+                waiter.loop.call_soon_threadsafe(
+                    self._wake_waiter, waiter.future,
+                )
+            except RuntimeError:
+                # Its loop closed before accepting the grant. Keep ownership
+                # in transit and hand it to the next live waiter.
+                with self._state_lock:
+                    if waiter.state != "granted":
+                        return
+                    waiter.state = "abandoned"
+                continue
+            return
+
+    @staticmethod
+    def _wake_waiter(future: asyncio.Future[None]) -> None:
+        if not future.done():
+            future.set_result(None)
+
+    async def __aenter__(self) -> "_LoopIndependentAsyncLock":
+        await self.acquire()
+        return self
+
+    async def __aexit__(self, *_exc_info: object) -> None:
+        self.release()
+
+
+_position_persistence_lock = _LoopIndependentAsyncLock()
+
+
+async def _persist_triangulated_positions(
+    db: AsyncSession, located: list[Any],
+) -> None:
+    """Best-effort serialized publication of derived position state."""
+    try:
+        # The cache check, secondary commit, and cache publication form one
+        # critical section. Otherwise concurrent requests can both observe a
+        # missing key, commit duplicate rows, and publish in reverse order.
+        async with _position_persistence_lock:
+            triangulated_rows: list[TriangulatedPosition] = []
+            staged_positions: dict[str, tuple[float, float]] = {}
+            for located_drone in located:
+                if _is_calibration_tracking_id(located_drone.drone_id):
+                    continue
+                if located_drone.position_source == "range_only":
+                    continue
+                last_key = f"_last_pos_{located_drone.drone_id}"
+                last_pos = staged_positions.get(
+                    last_key, _position_dedup.get(last_key),
+                )
+                if last_pos:
+                    dlat = (located_drone.lat - last_pos[0]) * 111320
+                    dlon = (located_drone.lon - last_pos[1]) * 111320 * 0.78
+                    if (dlat**2 + dlon**2) ** 0.5 < 1.0:
+                        continue
+                staged_positions[last_key] = (
+                    located_drone.lat, located_drone.lon,
+                )
+                best_obs = (
+                    max(
+                        located_drone.observations,
+                        key=lambda obs: obs.confidence,
+                    )
+                    if located_drone.observations else None
+                )
+                triangulated_rows.append(TriangulatedPosition(
+                    drone_id=located_drone.drone_id,
+                    lat=located_drone.lat,
+                    lon=located_drone.lon,
+                    alt=located_drone.alt,
+                    accuracy_m=located_drone.accuracy_m,
+                    position_source=located_drone.position_source,
+                    sensor_count=located_drone.sensor_count,
+                    confidence=located_drone.confidence,
+                    manufacturer=located_drone.manufacturer,
+                    model=located_drone.model,
+                    ssid=best_obs.ssid if best_obs else None,
+                    classification=classify_detection(
+                        source=best_obs.source if best_obs else "",
+                        confidence=located_drone.confidence,
+                        ssid=best_obs.ssid if best_obs else None,
+                        manufacturer=located_drone.manufacturer,
+                        drone_id=located_drone.drone_id,
+                        model=located_drone.model,
+                        bssid=(
+                            best_obs.bssid
+                            if best_obs and hasattr(best_obs, "bssid") else None
+                        ),
+                        latitude=located_drone.lat,
+                        longitude=located_drone.lon,
+                    )[0] if best_obs else None,
+                    observations_json=json.dumps([{
+                        "device_id": obs.device_id,
+                        "rssi": obs.rssi,
+                        "distance_m": obs.estimated_distance_m,
+                        "scanner_distance_m": obs.scanner_estimated_distance_m,
+                        "backend_distance_m": obs.backend_estimated_distance_m,
+                        "distance_source": obs.distance_source,
+                        "range_model": obs.range_model,
+                        "sensor_lat": obs.sensor_lat,
+                        "sensor_lon": obs.sensor_lon,
+                        "ssid": obs.ssid,
+                    } for obs in located_drone.observations]),
+                ))
+
+            if triangulated_rows:
+                try:
+                    db.add_all(triangulated_rows)
+                    await db.commit()
+                except Exception as exc:
+                    try:
+                        await db.rollback()
+                    except Exception as rollback_exc:
+                        logger.warning(
+                            "Secondary triangulated-position commit and "
+                            "rollback failed after primary durability: "
+                            "commit=%s rollback=%s",
+                            exc,
+                            rollback_exc,
+                        )
+                    else:
+                        logger.warning(
+                            "Secondary triangulated-position persistence "
+                            "failed after primary durability: %s",
+                            exc,
+                        )
+                else:
+                    _position_dedup.update(staged_positions)
+    except asyncio.CancelledError:
+        # Cancellation still propagates, but __aexit__ first releases any
+        # ownership so another loop or request cannot be stranded.
+        raise
+    except Exception as exc:
+        logger.warning(
+            "Secondary position serialization failed after primary "
+            "durability: %s",
+            exc,
+        )
+
 
 # Ingest dedup: (drone_id, source, bssid, bucket_10s) -> first_seen_ts
 # Scanners can re-enqueue the same beacon every scan; uplinks can replay
@@ -1598,99 +1801,7 @@ async def ingest_drone_detections(
             logger.debug("Post-commit position calculation skipped: %s", exc)
 
     if located:
-        # The cache check, secondary commit, and cache publication form one
-        # critical section. Otherwise concurrent requests can both observe a
-        # missing key, commit duplicate rows, and publish in reverse order.
-        async with _position_persistence_lock:
-            triangulated_rows: list[TriangulatedPosition] = []
-            staged_positions: dict[str, tuple[float, float]] = {}
-            for located_drone in located:
-                if _is_calibration_tracking_id(located_drone.drone_id):
-                    continue
-                if located_drone.position_source == "range_only":
-                    continue
-                last_key = f"_last_pos_{located_drone.drone_id}"
-                last_pos = staged_positions.get(
-                    last_key, _position_dedup.get(last_key),
-                )
-                if last_pos:
-                    dlat = (located_drone.lat - last_pos[0]) * 111320
-                    dlon = (located_drone.lon - last_pos[1]) * 111320 * 0.78
-                    if (dlat**2 + dlon**2) ** 0.5 < 1.0:
-                        continue
-                staged_positions[last_key] = (
-                    located_drone.lat, located_drone.lon,
-                )
-                best_obs = (
-                    max(
-                        located_drone.observations,
-                        key=lambda obs: obs.confidence,
-                    )
-                    if located_drone.observations else None
-                )
-                triangulated_rows.append(TriangulatedPosition(
-                    drone_id=located_drone.drone_id,
-                    lat=located_drone.lat,
-                    lon=located_drone.lon,
-                    alt=located_drone.alt,
-                    accuracy_m=located_drone.accuracy_m,
-                    position_source=located_drone.position_source,
-                    sensor_count=located_drone.sensor_count,
-                    confidence=located_drone.confidence,
-                    manufacturer=located_drone.manufacturer,
-                    model=located_drone.model,
-                    ssid=best_obs.ssid if best_obs else None,
-                    classification=classify_detection(
-                        source=best_obs.source if best_obs else "",
-                        confidence=located_drone.confidence,
-                        ssid=best_obs.ssid if best_obs else None,
-                        manufacturer=located_drone.manufacturer,
-                        drone_id=located_drone.drone_id,
-                        model=located_drone.model,
-                        bssid=(
-                            best_obs.bssid
-                            if best_obs and hasattr(best_obs, "bssid") else None
-                        ),
-                        latitude=located_drone.lat,
-                        longitude=located_drone.lon,
-                    )[0] if best_obs else None,
-                    observations_json=json.dumps([{
-                        "device_id": obs.device_id,
-                        "rssi": obs.rssi,
-                        "distance_m": obs.estimated_distance_m,
-                        "scanner_distance_m": obs.scanner_estimated_distance_m,
-                        "backend_distance_m": obs.backend_estimated_distance_m,
-                        "distance_source": obs.distance_source,
-                        "range_model": obs.range_model,
-                        "sensor_lat": obs.sensor_lat,
-                        "sensor_lon": obs.sensor_lon,
-                        "ssid": obs.ssid,
-                    } for obs in located_drone.observations]),
-                ))
-
-            if triangulated_rows:
-                try:
-                    db.add_all(triangulated_rows)
-                    await db.commit()
-                except Exception as exc:
-                    try:
-                        await db.rollback()
-                    except Exception as rollback_exc:
-                        logger.warning(
-                            "Secondary triangulated-position commit and "
-                            "rollback failed after primary durability: "
-                            "commit=%s rollback=%s",
-                            exc,
-                            rollback_exc,
-                        )
-                    else:
-                        logger.warning(
-                            "Secondary triangulated-position persistence "
-                            "failed after primary durability: %s",
-                            exc,
-                        )
-                else:
-                    _position_dedup.update(staged_positions)
+        await _persist_triangulated_positions(db, located)
 
     # Debounced entity checkpoint — persists dirty entities roughly every 30 s
     # so the dashboard entity count survives a backend restart. Runs on its
