@@ -128,6 +128,56 @@ def _ota_target_snapshot(device_id: str, uart: str | None = None) -> dict:
     }
 
 
+def _normalized_hardware_mac(value: object) -> str:
+    return str(value or "").strip().lower().replace("-", ":")
+
+
+def _ota_identity_binding(snapshot: dict, firmware_name: str, uart: str | None) -> tuple:
+    """Stable hardware/firmware identity that must survive an awaited fetch."""
+    heartbeat = snapshot["heartbeat"]
+    if firmware_name.startswith("scanner-") and firmware_name.endswith("-backend"):
+        scanners = []
+        for scanner in snapshot["scanners"]:
+            mac = _normalized_hardware_mac(scanner.get("mac") or scanner.get("hardware_mac"))
+            boot_id = scanner.get("boot_id")
+            if not mac or boot_id is None or str(boot_id).strip() == "":
+                raise HTTPException(status_code=409, detail="backend scanner identity is incomplete")
+            scanners.append((
+                str(scanner.get("uart") or ""), mac, str(boot_id),
+                scanner.get("firmware_target") or scanner.get("firmware_name"),
+                scanner.get("app_project"), scanner.get("hardware_type"),
+            ))
+        return tuple(sorted(scanners))
+    if firmware_name.startswith("uplink-") and firmware_name.endswith("-backend"):
+        return (
+            _normalized_hardware_mac(heartbeat.get("hardware_mac")),
+            heartbeat.get("firmware_target") or heartbeat.get("firmware_name"),
+            heartbeat.get("app_project"), heartbeat.get("hardware_type"),
+        )
+    return ()
+
+
+def _require_same_ota_identity(
+    initial: dict,
+    current: dict,
+    firmware_name: str,
+    uart: str | None,
+) -> dict:
+    if _ota_identity_binding(initial, firmware_name, uart) != _ota_identity_binding(
+        current, firmware_name, uart,
+    ):
+        raise HTTPException(status_code=409, detail="OTA identity changed during firmware fetch")
+    return current
+
+
+def _ota_snapshot_blocker(exc: HTTPException) -> str:
+    if exc.status_code == 404:
+        return "missing_uplink_ip"
+    if "stale" in str(exc.detail):
+        return "stale_heartbeat"
+    return "identity_mismatch"
+
+
 def _reported_identities(device_id: str, uart: str | None, *, snapshot: dict | None = None) -> list[dict]:
     if snapshot is None:
         snapshot = _ota_target_snapshot(device_id, uart)
@@ -174,6 +224,7 @@ def _require_named_family_preflight(
             status_code=409,
             detail=f"running firmware identity is incompatible with {firmware_name}",
         )
+    _ota_identity_binding(snapshot, firmware_name, uart)
     return snapshot
 
 
@@ -433,21 +484,33 @@ async def _scanner_targets(
 
 
 async def _stage_scanner_firmware_on_uplink(
-    device_id: str, firmware_name: str, uart: str = "both",
+    device_id: str,
+    firmware_name: str,
+    uart: str = "both",
+    *,
+    fw_data: bytes | None = None,
+    fw_version: str | None = None,
+    snapshot: dict | None = None,
 ) -> dict:
-    _require_named_family_preflight(device_id, firmware_name, uart)
-    fw_data = await _firmware_mgr.get_firmware_binary(firmware_name)
-    if not fw_data:
-        return {
-            "ok": False,
-            "device_id": device_id,
-            "firmware": firmware_name,
-            "state": "blocked",
-            "error": "firmware_not_available",
-        }
-    fw_version = await _firmware_mgr.get_firmware_version(firmware_name) or firmware_name
-    snapshot = _require_named_family_preflight(device_id, firmware_name, uart)
-    _require_ota_compatibility(device_id, firmware_name, fw_data, uart, snapshot=snapshot)
+    if fw_data is None or fw_version is None or snapshot is None:
+        initial_snapshot = _require_named_family_preflight(device_id, firmware_name, uart)
+        fw_data = await _firmware_mgr.get_firmware_binary(firmware_name)
+        if not fw_data:
+            return {
+                "ok": False,
+                "device_id": device_id,
+                "firmware": firmware_name,
+                "state": "blocked",
+                "error": "firmware_not_available",
+            }
+        fw_version = await _firmware_mgr.get_firmware_version(firmware_name) or firmware_name
+        snapshot = _require_same_ota_identity(
+            initial_snapshot,
+            _require_named_family_preflight(device_id, firmware_name, uart),
+            firmware_name,
+            uart,
+        )
+        _require_ota_compatibility(device_id, firmware_name, fw_data, uart, snapshot=snapshot)
     ip = snapshot["ip"]
     checksum = zlib.crc32(fw_data) & 0xFFFFFFFF
     try:
@@ -1189,12 +1252,17 @@ async def push_firmware_by_name(device_id: str, firmware_name: str):
             detail=f"Firmware '{firmware_name}' is not an uplink image",
         )
 
-    _require_named_family_preflight(device_id, firmware_name)
+    initial_snapshot = _require_named_family_preflight(device_id, firmware_name)
 
     fw_data = await _firmware_mgr.get_firmware_binary(firmware_name)
     if not fw_data:
         raise HTTPException(status_code=404, detail=f"Firmware '{firmware_name}' not available")
-    snapshot = _require_named_family_preflight(device_id, firmware_name)
+    snapshot = _require_same_ota_identity(
+        initial_snapshot,
+        _require_named_family_preflight(device_id, firmware_name),
+        firmware_name,
+        None,
+    )
     _require_ota_compatibility(device_id, firmware_name, fw_data, snapshot=snapshot)
     ip = snapshot["ip"]
     logger.warning("OTA push %s to %s (%s): %d bytes", firmware_name, device_id, ip, len(fw_data))
@@ -1265,13 +1333,18 @@ async def push_scanner_firmware(
     if legacy and relay_mode in {"auto", "staged"}:
         relay_mode = "staged_legacy"
 
-    _require_named_family_preflight(device_id, firmware_name, uart)
+    initial_snapshot = _require_named_family_preflight(device_id, firmware_name, uart)
 
     fw_data = await _firmware_mgr.get_firmware_binary(firmware_name)
     if not fw_data:
         raise HTTPException(status_code=404, detail=f"Firmware '{firmware_name}' not available")
     fw_version = await _firmware_mgr.get_firmware_version(firmware_name) or firmware_name
-    snapshot = _require_named_family_preflight(device_id, firmware_name, uart)
+    snapshot = _require_same_ota_identity(
+        initial_snapshot,
+        _require_named_family_preflight(device_id, firmware_name, uart),
+        firmware_name,
+        uart,
+    )
     _require_ota_compatibility(device_id, firmware_name, fw_data, uart, snapshot=snapshot)
     ip = snapshot["ip"]
     size = len(fw_data)
@@ -1517,13 +1590,18 @@ async def stage_scanner_firmware(
     import json
     from urllib.parse import quote
 
-    _require_named_family_preflight(device_id, firmware_name, "both")
+    initial_snapshot = _require_named_family_preflight(device_id, firmware_name, "both")
 
     fw_data = await _firmware_mgr.get_firmware_binary(firmware_name)
     if not fw_data:
         raise HTTPException(status_code=404, detail=f"Firmware '{firmware_name}' not available")
     fw_version = await _firmware_mgr.get_firmware_version(firmware_name) or firmware_name
-    snapshot = _require_named_family_preflight(device_id, firmware_name, "both")
+    snapshot = _require_same_ota_identity(
+        initial_snapshot,
+        _require_named_family_preflight(device_id, firmware_name, "both"),
+        firmware_name,
+        "both",
+    )
     _require_ota_compatibility(device_id, firmware_name, fw_data, "both", snapshot=snapshot)
     ip = snapshot["ip"]
     try:
@@ -1647,10 +1725,10 @@ async def stage_scanner_firmware_fleet(
         group = stage_groups.setdefault(key, {"target": target, "uarts": set()})
         group["uarts"].add(target["uart"])
 
-    # Validate every destination before the first transfer. A mixed or stale
-    # fleet must not partially stage firmware on otherwise valid uplinks.
+    # Validate every destination, fetch every unique image, then take one final
+    # identity snapshot of the whole fleet before its first transfer.
     results = []
-    ready: list[tuple[dict, str]] = []
+    ready: list[dict] = []
     for group in stage_groups.values():
         target = group["target"]
         uart = "both" if group["uarts"] == {"ble", "wifi"} else next(iter(group["uarts"]))
@@ -1664,10 +1742,10 @@ async def stage_scanner_firmware_fleet(
                 "device_id": target["device_id"],
                 "firmware": target["target_firmware"],
                 "state": "blocked",
-                "error": "stale_heartbeat" if "stale" in str(exc.detail) else "identity_mismatch",
+                "error": _ota_snapshot_blocker(exc),
             })
             continue
-        ready.append((target, uart))
+        ready.append({"target": target, "uart": uart, "initial_snapshot": snapshot})
 
     if results:
         return {
@@ -1676,11 +1754,93 @@ async def stage_scanner_firmware_fleet(
             "results": results,
         }
 
-    for target, uart in ready:
+    prepared: dict[str, tuple[bytes, str]] = {}
+    for firmware in sorted({item["target"]["target_firmware"] for item in ready}):
+        fw_data = await _firmware_mgr.get_firmware_binary(firmware)
+        if not fw_data:
+            return {
+                "ok": False,
+                "count": 1,
+                "results": [{
+                    "ok": False,
+                    "firmware": firmware,
+                    "state": "blocked",
+                    "error": "firmware_not_available",
+                }],
+            }
+        prepared[firmware] = (
+            fw_data,
+            await _firmware_mgr.get_firmware_version(firmware) or firmware,
+        )
+
+    for item in ready:
+        target = item["target"]
+        firmware = target["target_firmware"]
+        try:
+            _require_ota_compatibility(
+                target["device_id"], firmware, prepared[firmware][0], item["uart"],
+                snapshot=item["initial_snapshot"],
+            )
+        except HTTPException as exc:
+            results.append({
+                "ok": False,
+                "device_id": target["device_id"],
+                "firmware": firmware,
+                "state": "blocked",
+                "error": _ota_snapshot_blocker(exc),
+            })
+
+    if results:
+        return {
+            "ok": False,
+            "count": len(results),
+            "results": results,
+        }
+
+    final_ready: list[dict] = []
+    for item in ready:
+        target = item["target"]
+        firmware = target["target_firmware"]
+        fw_data, _ = prepared[firmware]
+        try:
+            snapshot = _require_same_ota_identity(
+                item["initial_snapshot"],
+                _require_named_family_preflight(target["device_id"], firmware, item["uart"]),
+                firmware,
+                item["uart"],
+            )
+            _require_ota_compatibility(
+                target["device_id"], firmware, fw_data, item["uart"], snapshot=snapshot,
+            )
+        except HTTPException as exc:
+            results.append({
+                "ok": False,
+                "device_id": target["device_id"],
+                "firmware": firmware,
+                "state": "blocked",
+                "error": _ota_snapshot_blocker(exc),
+            })
+            continue
+        final_ready.append({**item, "snapshot": snapshot})
+
+    if results:
+        return {
+            "ok": False,
+            "count": len(results),
+            "results": results,
+        }
+
+    for item in final_ready:
+        target = item["target"]
+        firmware = target["target_firmware"]
+        fw_data, fw_version = prepared[firmware]
         results.append(await _stage_scanner_firmware_on_uplink(
             target["device_id"],
-            target["target_firmware"],
-            uart,
+            firmware,
+            item["uart"],
+            fw_data=fw_data,
+            fw_version=fw_version,
+            snapshot=item["snapshot"],
         ))
     return {
         "ok": bool(results) and all(row.get("ok") for row in results),

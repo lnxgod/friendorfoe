@@ -139,6 +139,51 @@ async def test_backend_scanner_ota_requires_exact_running_family(monkeypatch: py
 
 
 @pytest.mark.asyncio
+async def test_backend_scanner_ota_rejects_same_family_scanner_replacement_during_fetch(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    now = time.time()
+    detections._node_heartbeats["uplink_TEST"] = {
+        "device_id": "uplink_TEST", "ip": "192.168.1.10", "last_seen": now,
+        "scanners": [{
+            "uart": "ble", "mac": "AA:BB:CC:DD:EE:01", "boot_id": 1,
+            "firmware_target": "scanner-s3-combo-backend",
+            "app_project": "fof_backend_scanner", "hardware_type": "seeed_xiao_esp32s3",
+            "ver": "0.1.0-backend", "cmd_rx": 1,
+        }],
+    }
+    transfers: list[str] = []
+
+    async def replace_scanner(name: str) -> bytes:
+        assert name == "scanner-s3-combo-backend"
+        detections._node_heartbeats["uplink_TEST"]["scanners"][0]["boot_id"] = 2
+        return _backend_scanner_image()
+
+    async def backend_version(name: str) -> str:
+        assert name == "scanner-s3-combo-backend"
+        return "0.1.0-backend"
+
+    async def must_not_transfer(cmd, **kwargs):
+        transfers.append(next(part for part in cmd if isinstance(part, str) and part.startswith("http://")))
+        raise AssertionError("scanner replacement must stop OTA before transfer")
+
+    monkeypatch.setattr(nodes._firmware_mgr, "get_firmware_binary", replace_scanner)
+    monkeypatch.setattr(nodes._firmware_mgr, "get_firmware_version", backend_version)
+    monkeypatch.setattr(nodes, "_run_subprocess", must_not_transfer)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/nodes/uplink_TEST/ota/scanner/scanner-s3-combo-backend"
+            "?uart=ble&relay_mode=direct_legacy"
+        )
+
+    assert response.status_code == 409
+    assert "identity changed" in response.json()["detail"]
+    assert transfers == []
+
+
+@pytest.mark.asyncio
 async def test_scanner_ota_both_rejects_duplicate_ble_identity(monkeypatch: pytest.MonkeyPatch):
     now = time.time()
     detections._node_heartbeats["uplink_TEST"] = {

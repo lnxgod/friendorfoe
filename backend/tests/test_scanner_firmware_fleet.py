@@ -216,7 +216,8 @@ async def test_backend_scanner_identity_mismatch_is_blocked_from_fleet_execution
                 "firmware_target": "uplink-s3-backend",
                 "app_project": "fof_backend_uplink", "hardware_type": "seeed_xiao_esp32s3",
                 "scanners": [
-                    {"uart": "ble", "firmware_target": "scanner-s3-combo-backend",
+                    {"uart": "ble", "mac": "AA:BB:CC:DD:EE:21", "boot_id": 21,
+                     "firmware_target": "scanner-s3-combo-backend",
                      "app_project": "fof_backend_scanner", "hardware_type": "seeed_xiao_esp32s3",
                      "ver": "0.1.0-backend", "cmd_rx": 1, "fw_check_count": 1},
                     {"uart": "wifi", "firmware_target": "scanner-s3-combo-fof_badge",
@@ -331,6 +332,40 @@ async def test_stage_fleet_preflights_every_target_before_any_upload(
     assert {row["error"] for row in response.json()["results"]} == {
         "identity_mismatch", "stale_heartbeat",
     }
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_stage_fleet_final_revalidation_blocks_later_target_changed_during_prefetch(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    calls: list[str] = []
+
+    async def mutate_later_target(name: str) -> bytes:
+        assert name == "scanner-s3-combo"
+        detections._node_heartbeats["uplink_B"]["last_seen"] = time.time() - 120
+        return b"fake fleet firmware"
+
+    async def must_not_transfer(cmd, **kwargs):
+        calls.append(next(part for part in cmd if isinstance(part, str) and part.startswith("http://")))
+        raise AssertionError("fleet must revalidate every target before the first transfer")
+
+    monkeypatch.setattr(nodes._firmware_mgr, "get_firmware_binary", mutate_later_target)
+    monkeypatch.setattr(nodes, "_run_subprocess", must_not_transfer)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post("/nodes/firmware/scanner/stage-fleet")
+
+    assert response.status_code == 200, response.text
+    assert response.json()["ok"] is False
+    assert response.json()["results"] == [{
+        "ok": False,
+        "device_id": "uplink_B",
+        "firmware": "scanner-s3-combo",
+        "state": "blocked",
+        "error": "stale_heartbeat",
+    }]
     assert calls == []
 
 
