@@ -3371,6 +3371,28 @@ function closeOtaModal() {
   pausedFeeds.delete('nodes');
 }
 
+// BEGIN LEGACY OTA CONTROL STATE
+function applyLegacyOtaControlState(node, firmware, requestedComponent, submit) {
+  const fullsize = (!!node && node.product_family === 's3_fullsize') ||
+    (!!firmware && firmware.product_family === 's3_fullsize');
+  const eligible = !fullsize && !!node && !!firmware &&
+    !!node.remote_update_eligible && !!firmware.remote_update_eligible &&
+    firmware.product_family === (node.product_family || '') &&
+    firmware.component === requestedComponent;
+  const reason = fullsize
+    ? 'S3 Fullsize requires the dedicated /backend-ota channel'
+    : eligible ? '' : 'Server management blockers or family/component mismatch prevent this update';
+  const nextAction = fullsize && firmware
+    ? 'Keep ' + firmware.name + ' selected for visibility; use the dedicated /backend-ota channel when available'
+    : '';
+  submit.disabled = !eligible;
+  submit.style.opacity = eligible ? '1' : '0.45';
+  submit.style.cursor = eligible ? 'pointer' : 'not-allowed';
+  submit.title = reason;
+  return {eligible: eligible, reason: reason, next_action: nextAction};
+}
+// END LEGACY OTA CONTROL STATE
+
 async function showOtaDialog(deviceId) {
   otaDeviceId = deviceId;
   pausedFeeds.add('nodes');
@@ -3410,9 +3432,11 @@ async function showOtaDialog(deviceId) {
     });
     if (!rows.length) return '';
     return '<optgroup label="'+group[0]+'">' + rows.map(function(fw) {
-      const disabled = !fw.remote_update_eligible;
-      const suffix = fw.migration_required ? ', migration required' : disabled ? ', remote ineligible' : '';
-      return '<option value="'+fw.name+'" data-family="'+htmlEsc(fw.product_family||'')+'" data-component="'+htmlEsc(fw.component||'')+'" data-eligible="'+(fw.remote_update_eligible?'1':'0')+'"'+(disabled?' disabled':'')+'>'+htmlEsc(fw.component||'?')+' · '+htmlEsc(fw.name)+' ('+htmlEsc(fw.source)+', '+(fw.size/1024).toFixed(0)+'KB'+(fw.version?' '+htmlEsc(fw.version):'')+suffix+')</option>';
+      const fullsize = fw.product_family === 's3_fullsize';
+      const legacyEligible = !!fw.remote_update_eligible && !fullsize;
+      const suffix = fw.migration_required ? ', migration required' : fullsize
+        ? ', dedicated /backend-ota required' : !legacyEligible ? ', remote ineligible' : '';
+      return '<option value="'+fw.name+'" data-family="'+htmlEsc(fw.product_family||'')+'" data-component="'+htmlEsc(fw.component||'')+'" data-remote-eligible="'+(fw.remote_update_eligible?'1':'0')+'" data-eligible="'+(legacyEligible?'1':'0')+'"'+(!legacyEligible?' disabled':'')+'>'+htmlEsc(fw.component||'?')+' · '+htmlEsc(fw.name)+' ('+htmlEsc(fw.source)+', '+(fw.size/1024).toFixed(0)+'KB'+(fw.version?' '+htmlEsc(fw.version):'')+suffix+')</option>';
     }).join('') + '</optgroup>';
   }).join('');
 
@@ -3446,6 +3470,11 @@ async function showOtaDialog(deviceId) {
     scannerHtml += '</div>';
   }
 
+  const nodeUsesDedicatedChannel = !!node && node.product_family === 's3_fullsize';
+  const nodeLegacyEligible = !!node && !!node.remote_update_eligible && !nodeUsesDedicatedChannel;
+  const fullsizeNextAction = nodeUsesDedicatedChannel
+    ? '<div style="margin-top:6px;color:#d29922;font-size:11px">Next action: keep exact target <b>'+htmlEsc(node.firmware_target||'S3 Fullsize')+'</b> visible; the old Flash control is disabled. Use the dedicated <b>/backend-ota</b> channel when available.</div>'
+    : '';
   body.innerHTML =
     '<div style="margin-bottom:10px">' +
       '<div class="metric"><span>Uplink firmware</span><span class="val" style="color:#e040fb">'+currentFw+'</span></div>' +
@@ -3453,8 +3482,9 @@ async function showOtaDialog(deviceId) {
       '<div class="metric"><span>IP</span><span class="val" style="color:#484f58">'+(node?node.ip:'?')+'</span></div>' +
       '<div class="metric"><span>Backend Fixups</span><span class="val '+(((node && node.source_fixups_recent) || 0)>0?'warn':'')+'">'+((node && node.source_fixups_recent) || 0)+'</span></div>' +
       '<div class="metric"><span>Management family</span><span class="val">'+htmlEsc((node&&node.product_family)||'legacy / unknown')+'</span></div>' +
-      '<div class="metric"><span>Remote readiness</span><span class="val '+((node&&node.remote_update_eligible)?'ok':'warn')+'">'+((node&&node.remote_update_eligible)?'eligible':'blocked')+'</span></div>' +
+      '<div class="metric"><span>Remote readiness</span><span class="val '+(nodeLegacyEligible?'ok':'warn')+'">'+(nodeUsesDedicatedChannel?'dedicated channel only':nodeLegacyEligible?'eligible':'blocked')+'</span></div>' +
       '<div style="font-size:10px;color:#d29922">'+htmlEsc(((node&&node.management_blockers)||[]).join(', '))+'</div>' +
+      fullsizeNextAction +
       scannerHtml +
     '</div>' +
     '<div style="margin-bottom:8px">' +
@@ -3492,14 +3522,14 @@ async function showOtaDialog(deviceId) {
   const updateOtaEligibility = function() {
     const selected = fwSel.options[fwSel.selectedIndex];
     const requestedComponent = targetSel.value === 'uplink' ? 'uplink' : 'scanner';
-    const eligible = !!selected && selected.dataset.eligible === '1' &&
-      !!node && !!node.remote_update_eligible &&
-      selected.dataset.family === (node.product_family||'') &&
-      selected.dataset.component === requestedComponent;
     const submit = document.getElementById('ota-submit');
-    submit.disabled = !eligible;
-    submit.style.opacity = eligible ? '1' : '0.45';
-    submit.title = eligible ? '' : 'Server management blockers or family/component mismatch prevent this update';
+    const firmware = selected ? {
+      name: selected.value,
+      product_family: selected.dataset.family || '',
+      component: selected.dataset.component || '',
+      remote_update_eligible: selected.dataset.remoteEligible === '1',
+    } : null;
+    applyLegacyOtaControlState(node, firmware, requestedComponent, submit);
   };
   targetSel.addEventListener('change', pickFirmwareForTarget);
   fwSel.addEventListener('change', updateOtaEligibility);

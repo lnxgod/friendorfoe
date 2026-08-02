@@ -901,6 +901,44 @@ async def test_trigger_check_rejects_non_authoritative_nodes_without_mutation(
 
 
 @pytest.mark.asyncio
+async def test_trigger_helper_rejects_fullsize_before_preflight_or_subprocess(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(
+        detections,
+        "_node_heartbeats",
+        {"uplink_FULL": _fullsize_fleet_heartbeat()},
+    )
+    preflights: list[str] = []
+    calls: list[str] = []
+
+    real_preflight = nodes._require_named_family_preflight
+
+    def track_preflight(device_id: str, firmware_name: str, uart: str):
+        preflights.append(firmware_name)
+        return real_preflight(device_id, firmware_name, uart)
+
+    async def must_not_transfer(cmd, **kwargs):
+        calls.append(str(cmd))
+        raise AssertionError("direct trigger helper must not mutate Fullsize")
+
+    monkeypatch.setattr(nodes, "_require_named_family_preflight", track_preflight)
+    monkeypatch.setattr(nodes, "_run_subprocess", must_not_transfer)
+
+    with pytest.raises(nodes.HTTPException) as error:
+        await nodes._trigger_scanner_firmware_check(
+            "uplink_FULL",
+            "scanner-s3-combo-fullsize-backend",
+            "ble",
+        )
+
+    assert error.value.status_code == 409
+    assert "backend-ota" in str(error.value.detail)
+    assert preflights == []
+    assert calls == []
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("stage_first", [True, False], ids=["stage", "trigger"])
 async def test_rollout_worker_revalidates_bound_identity_before_each_mutation(
     monkeypatch: pytest.MonkeyPatch,
@@ -955,6 +993,70 @@ async def test_rollout_worker_revalidates_bound_identity_before_each_mutation(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "stage_error",
+    [
+        "firmware_not_available",
+        "stage_timeout",
+        "stage_curl:connection refused",
+        "stage_rejected",
+    ],
+)
+async def test_rollout_worker_never_triggers_after_returned_stage_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    stage_error: str,
+):
+    heartbeat = detections._node_heartbeats["uplink_A"]
+    firmware = "scanner-s3-combo-backend"
+    initial = nodes._require_named_family_preflight("uplink_A", firmware, "ble")
+    target = {
+        "device_id": "uplink_A",
+        "ip": heartbeat["ip"],
+        "uart": "ble",
+        "scanner": copy.deepcopy(heartbeat["scanners"][0]),
+        "target_firmware": firmware,
+        "target_version": "0.2.0-backend",
+        "self_update_capable": True,
+        "identity_snapshot": initial,
+    }
+    rollout_id = f"returned-stage-failure-{stage_error}"
+    nodes._firmware_rollouts[rollout_id] = {
+        "rollout_id": rollout_id,
+        "status": "queued",
+        "stage_results": [],
+        "targets": {
+            "uplink_A/ble": {
+                "device_id": "uplink_A", "uart": "ble", "state": "pending",
+            },
+        },
+    }
+    trigger_calls: list[str] = []
+
+    async def failed_stage(*args, **kwargs) -> dict:
+        return {
+            "ok": False,
+            "device_id": "uplink_A",
+            "firmware": firmware,
+            "state": "failed",
+            "error": stage_error,
+        }
+
+    async def must_not_trigger(device_id: str, *args, **kwargs):
+        trigger_calls.append(device_id)
+        raise AssertionError("a failed stage must block its later trigger")
+
+    monkeypatch.setattr(nodes, "_stage_scanner_firmware_on_uplink", failed_stage)
+    monkeypatch.setattr(nodes, "_trigger_scanner_firmware_check", must_not_trigger)
+
+    await nodes._run_scanner_rollout(rollout_id, [target], stage_first=True)
+
+    item = nodes._firmware_rollouts[rollout_id]["targets"]["uplink_A/ble"]
+    assert item["state"] == "blocked"
+    assert item["error"] == stage_error
+    assert trigger_calls == []
+
+
+@pytest.mark.asyncio
 async def test_rollout_start_hands_worker_an_authoritative_identity_snapshot(
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -983,6 +1085,64 @@ async def test_rollout_start_hands_worker_an_authoritative_identity_snapshot(
     assert captured[0]["identity_snapshot"]["scanners"][0]["mac"] == (
         "AA:BB:CC:DD:EE:01"
     )
+
+
+@pytest.mark.asyncio
+async def test_explicit_lite_canary_ignores_unrelated_fullsize_inventory(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    detections._node_heartbeats["uplink_FULL"] = _fullsize_fleet_heartbeat()
+    captured: list[dict] = []
+
+    async def capture_rollout(rollout_id: str, targets: list[dict], *, stage_first: bool):
+        captured.extend(targets)
+
+    monkeypatch.setattr(nodes, "_run_scanner_rollout", capture_rollout)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/nodes/firmware/scanner/rollout",
+            params={
+                "mode": "canary",
+                "firmware_name": "scanner-s3-combo-backend",
+                "canary_device_id": "uplink_A",
+                "canary_uart": "ble",
+            },
+        )
+        await asyncio.sleep(0)
+
+    assert response.status_code == 200, response.text
+    assert [(target["device_id"], target["uart"]) for target in captured] == [
+        ("uplink_A", "ble"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_explicit_fullsize_canary_remains_blocked_with_unrelated_lite_inventory(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    detections._node_heartbeats["uplink_FULL"] = _fullsize_fleet_heartbeat()
+    calls: list[str] = []
+
+    async def must_not_fetch(name: str):
+        calls.append(name)
+        raise AssertionError("selected Fullsize canary must reject before fetch")
+
+    monkeypatch.setattr(nodes._firmware_mgr, "get_firmware_version", must_not_fetch)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/nodes/firmware/scanner/rollout",
+            params={
+                "mode": "canary",
+                "canary_device_id": "uplink_FULL",
+                "canary_uart": "ble",
+            },
+        )
+
+    assert response.status_code == 409, response.text
+    assert "backend-ota" in response.json()["detail"]
+    assert calls == []
 
 
 @pytest.mark.asyncio

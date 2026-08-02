@@ -1,5 +1,8 @@
 import hashlib
+import json
+import re
 import struct
+import subprocess
 import time
 import zipfile
 from pathlib import Path
@@ -46,6 +49,82 @@ BACKEND_IDENTITIES = {
         "fof_backend_scanner_fullsize", "esp32s3_n16r8_fullsize", 1,
     ),
 }
+
+
+def _dashboard_legacy_ota_control_state(
+    node: dict,
+    firmware: dict,
+    requested_component: str,
+) -> dict:
+    html = (
+        Path(__file__).resolve().parents[1] / "app/static/dashboard.html"
+    ).read_text()
+    match = re.search(
+        r"// BEGIN LEGACY OTA CONTROL STATE\n(.*?)"
+        r"// END LEGACY OTA CONTROL STATE",
+        html,
+        re.DOTALL,
+    )
+    assert match is not None, "dashboard legacy OTA control behavior is missing"
+    script = "\n".join((
+        match.group(1),
+        f"const node = {json.dumps(node)};",
+        f"const firmware = {json.dumps(firmware)};",
+        "const submit = {disabled:false, style:{}, title:''};",
+        "const state = applyLegacyOtaControlState(",
+        f"  node, firmware, {json.dumps(requested_component)}, submit",
+        ");",
+        "console.log(JSON.stringify({state, submit}));",
+    ))
+    result = subprocess.run(
+        ["node", "-e", script],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return json.loads(result.stdout)
+
+
+def test_dashboard_legacy_flash_control_is_channel_specific():
+    fullsize = _dashboard_legacy_ota_control_state(
+        {
+            "product_family": "s3_fullsize",
+            "remote_update_eligible": True,
+        },
+        {
+            "name": "uplink-s3-fullsize-backend",
+            "product_family": "s3_fullsize",
+            "component": "uplink",
+            "remote_update_eligible": True,
+        },
+        "uplink",
+    )
+    lite = _dashboard_legacy_ota_control_state(
+        {
+            "product_family": "badge_lite",
+            "remote_update_eligible": True,
+        },
+        {
+            "name": "uplink-s3-backend",
+            "product_family": "badge_lite",
+            "component": "uplink",
+            "remote_update_eligible": True,
+        },
+        "uplink",
+    )
+
+    assert fullsize["state"] == {
+        "eligible": False,
+        "reason": "S3 Fullsize requires the dedicated /backend-ota channel",
+        "next_action": (
+            "Keep uplink-s3-fullsize-backend selected for visibility; use the "
+            "dedicated /backend-ota channel when available"
+        ),
+    }
+    assert fullsize["submit"]["disabled"] is True
+    assert fullsize["submit"]["title"] == fullsize["state"]["reason"]
+    assert lite["state"] == {"eligible": True, "reason": "", "next_action": ""}
+    assert lite["submit"]["disabled"] is False
 
 
 def _esp_firmware_image(

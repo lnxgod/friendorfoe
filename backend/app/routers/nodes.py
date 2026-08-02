@@ -836,6 +836,7 @@ async def _trigger_scanner_firmware_check(
     *,
     initial_snapshot: dict | None = None,
 ) -> dict:
+    _reject_fullsize_legacy_target(firmware_name)
     current = _require_named_family_preflight(device_id, firmware_name, uart)
     if initial_snapshot is not None:
         current = _require_same_ota_identity(
@@ -901,20 +902,22 @@ async def _run_scanner_rollout(rollout_id: str, targets: list[dict], *, stage_fi
 
     if stage_first:
         staged_keys: set[tuple[str, str]] = set()
-        blocked_stage_keys: set[tuple[str, str]] = set()
+        blocked_stage_errors: dict[tuple[str, str], str] = {}
         for target in targets:
             key = (target["device_id"], target["target_firmware"])
             if key in staged_keys:
                 continue
             staged_keys.add(key)
             if not target.get("ip"):
-                rollout["stage_results"].append({
+                stage = {
                     "ok": False,
                     "device_id": target["device_id"],
                     "firmware": target["target_firmware"],
                     "state": "blocked",
                     "error": "missing_uplink_ip",
-                })
+                }
+                blocked_stage_errors[key] = stage["error"]
+                rollout["stage_results"].append(stage)
                 continue
             try:
                 current_firmware, current_snapshot = _require_legacy_trigger_preflight(
@@ -936,7 +939,6 @@ async def _run_scanner_rollout(rollout_id: str, targets: list[dict], *, stage_fi
                     snapshot=current_snapshot,
                 )
             except HTTPException as exc:
-                blocked_stage_keys.add(key)
                 stage = {
                     "ok": False,
                     "device_id": target["device_id"],
@@ -944,18 +946,23 @@ async def _run_scanner_rollout(rollout_id: str, targets: list[dict], *, stage_fi
                     "state": "blocked",
                     "error": _ota_snapshot_blocker(exc),
                 }
+            if not stage.get("ok"):
+                blocked_stage_errors[key] = stage.get("error") or "stage_failed"
             rollout["stage_results"].append(stage)
     else:
-        blocked_stage_keys = set()
+        blocked_stage_errors = {}
 
     for target in targets:
         item = rollout["targets"].get(f"{target['device_id']}/{target['uart']}")
         if not item:
             continue
         item["state"] = "pending"
-        if (target["device_id"], target["target_firmware"]) in blocked_stage_keys:
+        stage_error = blocked_stage_errors.get(
+            (target["device_id"], target["target_firmware"]),
+        )
+        if stage_error:
             item["state"] = "blocked"
-            item["error"] = "identity_mismatch"
+            item["error"] = stage_error
             continue
         if _scanner_is_target_version(target["scanner"], target["target_version"]):
             item["state"] = "verified"
@@ -2304,7 +2311,7 @@ async def start_scanner_firmware_rollout(
     canary_uart_filter = (canary_uart or "").strip().lower()
     if canary_uart_filter and canary_uart_filter not in {"ble", "wifi", "both"}:
         raise HTTPException(status_code=400, detail="canary_uart must be ble, wifi, or both")
-    _reject_fullsize_legacy_selection(firmware_name)
+    _reject_fullsize_legacy_selection(firmware_name, canary_device_id)
 
     targets = await _scanner_targets(firmware_name=firmware_name)
     bound_targets = []
