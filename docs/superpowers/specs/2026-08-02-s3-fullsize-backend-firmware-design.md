@@ -167,6 +167,13 @@ both scanners so all three boards present the same nearby-threat condition.
 Scanning and local threat indication continue while the backend is
 unreachable. The bounded offline queue drains after connectivity returns.
 
+Firmware delivery follows the same network-to-UART topology as the native
+Badge: the uplink receives and validates scanner firmware over its backend
+network connection, stages the exact scanner image locally, and relays it to
+one scanner at a time over that scanner's existing UART link. Scanner boards
+do not require infrastructure Wi-Fi, a configuration AP, or a direct backend
+connection for updates.
+
 The configuration AP exists only on the uplink. It configures up to four
 ordered Wi-Fi networks, backend URL, device ID/display name, optional location,
 AP password, and automatic-update preference. Scanner radio time is reserved
@@ -222,8 +229,17 @@ Operators retain the original backups for disaster recovery.
 Remote OTA becomes available only after the initial conversion has established
 exact S3 Fullsize identities and healthy scanner roles.
 
-The uplink obtains its own image and the scanner image from exact catalog
-names. Before any write, the backend and device validate:
+The uplink obtains its own image and the scanner image from exact backend
+catalog names over the network. Uplink self-updates are written locally.
+Scanner updates use the badge-style staged UART relay: the uplink downloads and
+verifies the complete image, places it in the 3 MB `fw_scanner_be` cache,
+pauses normal traffic for exactly one scanner, completes the guarded UART OTA
+handshake, and streams sequenced chunks with integrity checks and bounded
+retries. The other scanner and the uplink remain available. Scanner 0 and
+scanner 1 are updated serially, never concurrently.
+
+Before any network download, cache write, UART relay, or OTA-slot write, the
+backend and device validate:
 
 - product family and firmware line;
 - component/image kind;
@@ -234,11 +250,13 @@ names. Before any write, the backend and device validate:
 - SHA-256 and CRC32;
 - operation token/generation and idle OTA state.
 
-The uplink writes its inactive OTA slot. Scanner updates are serialized through
-the uplink and written to each scanner's inactive slot. A component must boot,
-report its exact identity, and satisfy health confirmation before its update is
-accepted. Failure triggers ESP-IDF rollback or leaves the previously accepted
-slot active.
+The uplink writes its inactive OTA slot. The UART relay writes each scanner's
+inactive slot and returns progress, retry, completion, and error state through
+the uplink to the backend. A component must boot, report its exact identity,
+rejoin its assigned UART role, and satisfy health confirmation before its
+update is accepted. Failure triggers ESP-IDF rollback or leaves the previously
+accepted slot active. The uplink must restore normal UART detection traffic
+after either success or a bounded failure.
 
 Normal OTA does not capture a new full-flash backup. Its recovery layers are
 the inactive application slot, health-gated rollback, the retained initial USB
@@ -307,8 +325,9 @@ The attended Fullsize hardware canary verifies:
 - real RF drone and Meta detection with the specified RGB patterns on all
   three boards;
 - offline buffering and later upload;
-- serialized same-family remote recovery/update for BLE scanner, Wi-Fi
-  scanner, and uplink;
+- network delivery to the uplink followed by serialized same-family UART
+  recovery/update for the BLE scanner and Wi-Fi scanner;
+- same-family network self-update for the uplink;
 - post-update identity, role, upload, and rollback health.
 
 Remote-update support is not declared ready until the attended canary proves
@@ -326,6 +345,8 @@ Documentation will include:
 - a dedicated S3 Fullsize one-time migration/restore runbook;
 - a routine OTA and rollback runbook that explicitly does not require repeated
   full-flash backups;
+- a network-to-uplink-to-UART scanner-update runbook with staging, progress,
+  retry, interruption, and recovery behavior;
 - management-field and migration-state definitions;
 - unsupported mixed-generation hardware warnings.
 
