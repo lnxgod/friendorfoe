@@ -186,48 +186,73 @@ class BadgeSerialTransport:
         self._monotonic_clock = monotonic_clock
         self._on_frame = on_frame or (lambda _frame, _received_at: None)
         self._on_connection = on_connection or (lambda _update: None)
-        self._stop_event = threading.Event()
         self._write_lock = threading.Lock()
         self._lifecycle_lock = threading.Lock()
         self._worker: threading.Thread | None = None
+        self._worker_stop: threading.Event | None = None
+        self._stopping = False
         self._remembered_identity: PortIdentity | None = None
 
     def start(self) -> None:
         """Start one non-daemon discovery and verified-session worker."""
 
         with self._lifecycle_lock:
+            if self._stopping:
+                raise TransportError(
+                    "lifecycle_busy", "The serial worker is currently stopping."
+                )
             if self._worker is not None and self._worker.is_alive():
                 raise TransportError(
                     "already_started", "The serial worker is already running."
                 )
-            self._stop_event.clear()
-            self._worker = threading.Thread(
+            stop_event = threading.Event()
+            worker = threading.Thread(
                 target=self._run_one_session,
+                args=(stop_event,),
                 name="new-dash-serial",
                 daemon=False,
             )
-            self._worker.start()
+            self._worker_stop = stop_event
+            self._worker = worker
+            try:
+                worker.start()
+            except Exception:
+                self._worker = None
+                self._worker_stop = None
+                raise
 
     def stop(self, timeout: float = 3.0) -> None:
         """Request worker shutdown and wait for the owned handle to close."""
 
         if timeout < 0:
             raise ValueError("timeout must be nonnegative")
-        self._stop_event.set()
         with self._lifecycle_lock:
+            if self._stopping:
+                raise TransportError(
+                    "lifecycle_busy", "The serial worker is currently stopping."
+                )
             worker = self._worker
-        if worker is None:
-            return
-        if worker is threading.current_thread():
-            return
+            stop_event = self._worker_stop
+            if worker is None or stop_event is None:
+                return
+            self._stopping = True
+            stop_event.set()
+            if worker is threading.current_thread():
+                self._stopping = False
+                return
         worker.join(timeout)
         if worker.is_alive():
+            with self._lifecycle_lock:
+                self._stopping = False
             raise TransportError(
                 "stop_timeout", "The serial worker did not stop in time."
             )
         with self._lifecycle_lock:
             if self._worker is worker:
                 self._worker = None
+            if self._worker_stop is stop_event:
+                self._worker_stop = None
+            self._stopping = False
 
     def send_control(
         self,
@@ -242,7 +267,7 @@ class BadgeSerialTransport:
             "Control reply routing is not active for this verified session.",
         )
 
-    def _run_one_session(self) -> None:
+    def _run_one_session(self, stop_event: threading.Event) -> None:
         serial_port: Any | None = None
         identity: PortIdentity | None = None
         try:
@@ -279,9 +304,9 @@ class BadgeSerialTransport:
             with self._write_lock:
                 serial_port.write(b"\nFOF_PING\n")
 
-            firmware_version = self._await_pong(serial_port, framer)
+            firmware_version = self._await_pong(serial_port, framer, stop_event)
             if firmware_version is None:
-                if not self._stop_event.is_set():
+                if not stop_event.is_set():
                     self._emit(
                         ConnectionUpdate(
                             state="error",
@@ -300,9 +325,9 @@ class BadgeSerialTransport:
                     firmware_version=firmware_version,
                 )
             )
-            self._stop_event.wait()
+            stop_event.wait()
         except OSError:
-            if not self._stop_event.is_set():
+            if not stop_event.is_set():
                 self._emit(
                     ConnectionUpdate(
                         state="error",
@@ -311,7 +336,7 @@ class BadgeSerialTransport:
                     )
                 )
         except Exception:
-            if not self._stop_event.is_set():
+            if not stop_event.is_set():
                 self._emit(
                     ConnectionUpdate(
                         state="error",
@@ -331,9 +356,7 @@ class BadgeSerialTransport:
 
     def _choose_for_start(self, ports: tuple[PortIdentity, ...]) -> PortIdentity:
         remembered = self._remembered_identity
-        if remembered is not None and (
-            remembered.serial_number is not None or remembered.location is not None
-        ):
+        if remembered is not None:
             exact = tuple(
                 port
                 for port in ports
@@ -345,9 +368,32 @@ class BadgeSerialTransport:
                     for port in exact
                     if port.serial_number == remembered.serial_number
                 )
-            else:
+            elif remembered.location is not None:
                 matches = tuple(
                     port for port in exact if port.location == remembered.location
+                )
+            else:
+                for port in ports:
+                    if port.device == remembered.device:
+                        return port
+                candidate_paths = _candidate_paths(exact)
+                if self._explicit_port is not None:
+                    raise DiscoveryError(
+                        "explicit_port_missing",
+                        f"The requested serial port is not present: {remembered.device}",
+                        candidate_paths,
+                    )
+                if len(candidate_paths) > 1:
+                    raise DiscoveryError(
+                        "multiple_badges",
+                        "Multiple badge devices were found; the previously verified "
+                        "path is absent.",
+                        candidate_paths,
+                    )
+                raise DiscoveryError(
+                    "no_badge",
+                    "The previously verified badge path is not currently present.",
+                    candidate_paths,
                 )
             if not matches:
                 raise DiscoveryError(
@@ -377,10 +423,17 @@ class BadgeSerialTransport:
             serial_port.close()
             raise
 
-    def _await_pong(self, serial_port: Any, framer: LineFramer) -> str | None:
+    def _await_pong(
+        self,
+        serial_port: Any,
+        framer: LineFramer,
+        stop_event: threading.Event,
+    ) -> str | None:
         deadline = self._monotonic_clock() + 3.0
-        while not self._stop_event.is_set() and self._monotonic_clock() < deadline:
+        while not self._handshake_ended(deadline, stop_event):
             chunk = serial_port.read(4096)
+            if self._handshake_ended(deadline, stop_event):
+                return None
             if not chunk:
                 continue
             for line in framer.feed(chunk):
@@ -389,8 +442,17 @@ class BadgeSerialTransport:
                 except MachineFrameError:
                     continue
                 if frame is not None and frame.kind == "pong":
+                    if self._handshake_ended(deadline, stop_event):
+                        return None
                     return str(frame.value)
         return None
+
+    def _handshake_ended(
+        self,
+        deadline: float,
+        stop_event: threading.Event,
+    ) -> bool:
+        return stop_event.is_set() or self._monotonic_clock() >= deadline
 
     def _emit(self, update: ConnectionUpdate) -> None:
         self._on_connection(update)

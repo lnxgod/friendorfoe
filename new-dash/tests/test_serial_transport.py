@@ -7,6 +7,7 @@ from new_dash.serial_transport import (
     ConnectionUpdate,
     DiscoveryError,
     PortIdentity,
+    TransportError,
     choose_candidate,
     discover_badge_ports,
 )
@@ -307,6 +308,48 @@ class VerifiedSessionTest(unittest.TestCase):
         self.assertEqual(updates[-1].detail, "wrong_device")
         self.assertLessEqual(clock.value, 5.0)
 
+    def test_pong_returned_after_deadline_never_verifies(self) -> None:
+        fake = FakeSerial([b"FOF_PONG:too-late\n"])
+        updates: list[ConnectionUpdate] = []
+        transport = BadgeSerialTransport(
+            enumerate_ports=lambda: [espressif("101")],
+            serial_factory=lambda: fake,
+            monotonic_clock=StepClock(step=2.0),
+            on_connection=updates.append,
+        )
+
+        transport.start()
+        deadline = time.monotonic() + 1.0
+        while not fake.closed.is_set() and not any(
+            update.state == "live" for update in updates
+        ):
+            self.assertLess(time.monotonic(), deadline, updates)
+            time.sleep(0.001)
+        transport.stop()
+
+        self.assertNotIn("live", [update.state for update in updates])
+        self.assertEqual(updates[-1].detail, "wrong_device")
+
+    def test_stop_during_read_rejects_the_returned_pong(self) -> None:
+        fake = FakeSerial([b"FOF_PONG:after-stop\n"], block_reads=True)
+        updates: list[ConnectionUpdate] = []
+        transport = BadgeSerialTransport(
+            enumerate_ports=lambda: [espressif("101")],
+            serial_factory=lambda: fake,
+            on_connection=updates.append,
+        )
+
+        transport.start()
+        self.assertTrue(fake.read_started.wait(1.0), updates)
+        with self.assertRaises(TransportError) as raised:
+            transport.stop(timeout=0.0)
+        self.assertEqual(raised.exception.code, "stop_timeout")
+        fake.read_release.set()
+        self.assertTrue(fake.closed.wait(1.0), updates)
+        transport.stop()
+
+        self.assertNotIn("live", [update.state for update in updates])
+
     def test_explicit_path_still_requires_application_pong(self) -> None:
         explicit = PortIdentity("/dev/cu.manual", None, None, None, None, None, None)
         for incoming, expected_live in (([b"FOF_PONG:manual\n"], True), ([], False)):
@@ -469,6 +512,39 @@ class RememberedIdentityTest(unittest.TestCase):
 
         self.assertEqual(updates[-1].state, "error")
 
+    def test_automatic_mode_without_stable_identity_waits_for_verified_path(self) -> None:
+        first = espressif("101")
+        changed = espressif("202")
+        enumerations = iter(([first], [changed]))
+        first_fake = FakeSerial([b"FOF_PONG:first\n"])
+        factory_calls = 0
+        updates: list[ConnectionUpdate] = []
+
+        def factory() -> FakeSerial:
+            nonlocal factory_calls
+            factory_calls += 1
+            return first_fake
+
+        transport = BadgeSerialTransport(
+            enumerate_ports=lambda: next(enumerations),
+            serial_factory=factory,
+            on_connection=updates.append,
+        )
+
+        transport.start()
+        self._wait_for_live(updates, "first")
+        transport.stop()
+        transport.start()
+        deadline = time.monotonic() + 1.0
+        while updates[-1].detail != "no_badge":
+            self.assertLess(time.monotonic(), deadline, updates)
+            time.sleep(0.001)
+        transport.stop()
+
+        self.assertEqual(factory_calls, 1)
+        self.assertEqual(updates[-1].state, "waiting")
+        self.assertEqual(updates[-1].candidates, ((changed.device,),))
+
     def test_explicit_mode_follows_only_a_learned_stable_identity(self) -> None:
         first = espressif("101", serial_number="ABC")
         moved = espressif("202", serial_number="ABC")
@@ -556,6 +632,90 @@ class RememberedIdentityTest(unittest.TestCase):
                     return update
             self.assertLess(time.monotonic(), deadline, updates)
             time.sleep(0.001)
+
+
+class LifecycleConcurrencyTest(unittest.TestCase):
+    def test_start_racing_a_stop_cannot_leave_a_replacement_worker_live(self) -> None:
+        first_fake = FakeSerial(block_reads=True)
+        second_fake = FakeSerial([b"FOF_PONG:second\n"])
+        fakes = iter((first_fake, second_fake))
+        factory_calls = 0
+        updates: list[ConnectionUpdate] = []
+        clock = StepClock(step=1.0)
+
+        def factory() -> FakeSerial:
+            nonlocal factory_calls
+            factory_calls += 1
+            return next(fakes)
+
+        transport = BadgeSerialTransport(
+            enumerate_ports=lambda: [espressif("101")],
+            serial_factory=factory,
+            monotonic_clock=clock,
+            on_connection=updates.append,
+        )
+        transport.start()
+        self.assertTrue(first_fake.read_started.wait(1.0), updates)
+        old_worker = transport._worker
+        self.assertIsNotNone(old_worker)
+        first_fake.read_release.set()
+        self.assertTrue(first_fake.closed.wait(1.0), updates)
+        old_worker.join(1.0)  # type: ignore[union-attr]
+        self.assertFalse(old_worker.is_alive())  # type: ignore[union-attr]
+
+        original_join = old_worker.join  # type: ignore[union-attr]
+        join_entered = threading.Event()
+        join_release = threading.Event()
+
+        def delayed_join(timeout: float | None = None) -> None:
+            original_join(timeout)
+            join_entered.set()
+            join_release.wait(1.0)
+
+        old_worker.join = delayed_join  # type: ignore[method-assign,union-attr]
+        stop_errors: list[BaseException] = []
+        stop_done = threading.Event()
+
+        def stop_transport() -> None:
+            try:
+                transport.stop()
+            except BaseException as error:
+                stop_errors.append(error)
+            finally:
+                stop_done.set()
+
+        stopper = threading.Thread(target=stop_transport)
+        stopper.start()
+        self.assertTrue(join_entered.wait(1.0))
+
+        raced_start_error: TransportError | None = None
+        try:
+            transport.start()
+        except TransportError as error:
+            raced_start_error = error
+        join_release.set()
+        self.assertTrue(stop_done.wait(1.0), stop_errors)
+        stopper.join(1.0)
+        replacement_was_live = second_fake.is_open
+        if raced_start_error is None:
+            transport.stop()
+
+        self.assertEqual(stop_errors, [])
+        self.assertIsNotNone(raced_start_error)
+        self.assertEqual(
+            raced_start_error.code,  # type: ignore[union-attr]
+            "lifecycle_busy",
+        )
+        self.assertFalse(replacement_was_live)
+        self.assertEqual(factory_calls, 1)
+
+        clock.step = 0.1
+        transport.start()
+        deadline = time.monotonic() + 1.0
+        while not any(update.firmware_version == "second" for update in updates):
+            self.assertLess(time.monotonic(), deadline, updates)
+            time.sleep(0.001)
+        transport.stop()
 
 
 if __name__ == "__main__":

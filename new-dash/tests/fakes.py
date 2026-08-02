@@ -31,6 +31,7 @@ class FakeSerial:
         read_exception: Exception | None = None,
         open_exception: Exception | None = None,
         exclusive_supported: bool = True,
+        block_reads: bool = False,
     ) -> None:
         self.actions: list[tuple[object, ...]] = []
         self.writes: list[bytes] = []
@@ -40,10 +41,13 @@ class FakeSerial:
         self.read_exception = read_exception
         self.open_exception = open_exception
         self.exclusive_supported = exclusive_supported
+        self.block_reads = block_reads
         self.is_open = False
         self.opened = Event()
         self.closed = Event()
         self.written = Event()
+        self.read_started = Event()
+        self.read_release = Event()
         self._port: str | None = None
         self._baudrate: int | None = None
         self._timeout: float | None = None
@@ -152,6 +156,9 @@ class FakeSerial:
     def read(self, size: int = 1) -> bytes:
         if not self.is_open:
             raise RuntimeError("port is closed")
+        self.read_started.set()
+        if self.block_reads:
+            self.read_release.wait(2.0)
         if self._stale_input:
             data = self._stale_input[:size]
             self._stale_input = self._stale_input[size:]
