@@ -6,8 +6,10 @@ and serves them for OTA push to ESP32 nodes.
 
 import hashlib
 import logging
+import re
 import struct
 import time
+import zlib
 from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
@@ -27,6 +29,9 @@ _ESP_IMAGE_MAGIC = 0xE9
 _APP_DESC_OFFSET = 0x20
 _APP_DESC_MAGIC = 0xABCD5432
 _APP_DESC_MIN_SIZE = 112
+_BACKEND_IDENTITY_MAGIC = struct.pack("<I", 0x42464F46)
+_BACKEND_IDENTITY_STRUCT = struct.Struct("<IHH40s40s40s32sI")
+_BACKEND_VERSION_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+-backend$")
 
 # Repo root relative to backend/app/services/firmware_manager.py
 _REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -64,7 +69,117 @@ FIRMWARE_TYPES = {
         "board": "esp32s3",
         "local_bin": _REPO_ROOT / "esp32/scanner/.pio/build/scanner-s3-combo/firmware.bin",
     },
+    "uplink-s3-backend": {
+        "description": "Backend sensor uplink (Seeed XIAO ESP32-S3)",
+        "asset_pattern": "uplink-s3-backend",
+        "board": "esp32s3",
+        "project": "fof_backend_uplink",
+        "hardware": "seeed_xiao_esp32s3",
+        "image_kind": 0,
+        "partition_capacity": 0x200000,
+        "local_bin": _REPO_ROOT / "backend-firmware/uplink/.pio/build/uplink-s3-backend/firmware.bin",
+    },
+    "scanner-s3-combo-backend": {
+        "description": "Backend sensor BLE + Wi-Fi scanner (Seeed XIAO ESP32-S3)",
+        "asset_pattern": "scanner-s3-combo-backend",
+        "board": "esp32s3",
+        "project": "fof_backend_scanner",
+        "hardware": "seeed_xiao_esp32s3",
+        "image_kind": 1,
+        "partition_capacity": 0x200000,
+        "local_bin": _REPO_ROOT / "backend-firmware/scanner/.pio/build/scanner-s3-combo-backend/firmware.bin",
+    },
 }
+
+
+def _decode_identity_string(raw: bytes) -> str | None:
+    nul = raw.find(b"\0")
+    if nul <= 0 or any(raw[nul + 1:]):
+        return None
+    try:
+        value = raw[:nul].decode("ascii")
+    except UnicodeDecodeError:
+        return None
+    if any(ord(char) < 0x21 or ord(char) > 0x7E for char in value):
+        return None
+    return value
+
+
+def _parse_backend_identity_record(image: bytes, offset: int) -> dict | None:
+    end = offset + _BACKEND_IDENTITY_STRUCT.size
+    if end > len(image):
+        return None
+    record = image[offset:end]
+    magic, schema, image_kind, target_raw, project_raw, hardware_raw, version_raw, crc32 = (
+        _BACKEND_IDENTITY_STRUCT.unpack(record)
+    )
+    if magic != 0x42464F46 or schema != 1 or image_kind not in (0, 1):
+        return None
+    if (zlib.crc32(record[:160]) & 0xFFFFFFFF) != crc32:
+        return None
+    target = _decode_identity_string(target_raw)
+    project = _decode_identity_string(project_raw)
+    hardware = _decode_identity_string(hardware_raw)
+    version = _decode_identity_string(version_raw)
+    if None in (target, project, hardware, version):
+        return None
+    return {
+        "offset": offset,
+        "schema": schema,
+        "image_kind": image_kind,
+        "target": target,
+        "project": project,
+        "hardware": hardware,
+        "version": version,
+    }
+
+
+def _parse_backend_identity(image: bytes) -> dict | None:
+    valid: list[dict] = []
+    start = 0
+    while True:
+        offset = image.find(_BACKEND_IDENTITY_MAGIC, start)
+        if offset < 0:
+            break
+        parsed = _parse_backend_identity_record(image, offset)
+        if parsed is not None:
+            valid.append(parsed)
+        start = offset + 1
+    return valid[0] if len(valid) == 1 else None
+
+
+def _validated_backend_image_info(name: str, image: bytes) -> dict | None:
+    info = FIRMWARE_TYPES.get(name)
+    if info is None or not name.endswith("-backend"):
+        return None
+    desc = _parse_app_desc_bytes(image)
+    identity = _parse_backend_identity(image)
+    if desc is None or identity is None:
+        return None
+    expected = {
+        "target": name,
+        "project": info["project"],
+        "hardware": info["hardware"],
+        "image_kind": info["image_kind"],
+    }
+    if any(identity[key] != value for key, value in expected.items()):
+        return None
+    if identity["project"] != desc["project"] or identity["version"] != desc["version"]:
+        return None
+    if _BACKEND_VERSION_RE.fullmatch(identity["version"]) is None:
+        return None
+    if not (0 < len(image) <= info["partition_capacity"]):
+        return None
+    return {**identity, "size": len(image)}
+
+
+def _asset_target(asset_name: str, release_tag: str) -> str | None:
+    ordered = sorted(FIRMWARE_TYPES.items(), key=lambda item: len(item[1]["asset_pattern"]), reverse=True)
+    for target, info in ordered:
+        pattern = info["asset_pattern"]
+        if asset_name in {f"{pattern}.bin", f"{pattern}-{release_tag}.bin"}:
+            return target
+    return None
 
 
 def _decode_app_desc_field(data: bytes) -> str | None:
@@ -171,64 +286,40 @@ class FirmwareManager:
                 # the existing catalog without hammering GitHub until TTL.
                 self.last_check = now
 
-                # GitHub returns releases newest first. APK-only releases must
-                # not replace the firmware catalog with an empty one.
-                data = next(
-                    (
-                        release
-                        for release in releases
-                        if not release.get("draft", False)
-                        and any(
-                            a["name"].lower().endswith(".bin")
-                            and any(
-                                fw_info["asset_pattern"] in a["name"].lower()
-                                for fw_info in FIRMWARE_TYPES.values()
-                            )
-                            for a in release.get("assets", [])
+                # Releases are newest first, but each target may have an
+                # independently published newest release.
+                new_assets: dict[str, FirmwareAsset] = {}
+                selected_tags: list[str] = []
+                for fw_name, fw_info in FIRMWARE_TYPES.items():
+                    for release in releases:
+                        if release.get("draft", False):
+                            continue
+                        tag = release.get("tag_name", "")
+                        asset = next(
+                            (
+                                item for item in release.get("assets", [])
+                                if _asset_target(item.get("name", ""), tag) == fw_name
+                            ),
+                            None,
                         )
-                    ),
-                    None,
-                )
-                if data is None:
+                        if asset is None:
+                            continue
+                        cached = CACHE_DIR / f"{tag}_{fw_name}.bin"
+                        new_assets[fw_name] = FirmwareAsset(
+                            name=fw_name,
+                            description=fw_info["description"],
+                            release_tag=tag,
+                            size=asset["size"],
+                            download_url=asset["browser_download_url"],
+                            cached_path=str(cached) if cached.exists() else None,
+                        )
+                        selected_tags.append(tag)
+                        break
+
+                if not new_assets:
                     logger.warning("No GitHub release with supported firmware found")
                     return
-
-                tag = data.get("tag_name", "")
-                if tag == self.release_tag and self.assets:
-                    return  # No change
-
-                self.release_tag = tag
-                gh_assets = data.get("assets", [])
-
-                logger.info("GitHub release: %s with %d assets", tag, len(gh_assets))
-
-                new_assets = {}
-                used_assets = set()
-                fw_items = sorted(
-                    FIRMWARE_TYPES.items(),
-                    key=lambda item: len(item[1]["asset_pattern"]),
-                    reverse=True,
-                )
-                for fw_name, fw_info in fw_items:
-                    pattern = fw_info["asset_pattern"]
-                    # Find matching asset
-                    for a in gh_assets:
-                        aname = a["name"].lower()
-                        if a["name"] in used_assets:
-                            continue
-                        if pattern in aname and aname.endswith(".bin"):
-                            cached = CACHE_DIR / f"{tag}_{fw_name}.bin"
-                            new_assets[fw_name] = FirmwareAsset(
-                                name=fw_name,
-                                description=fw_info["description"],
-                                release_tag=tag,
-                                size=a["size"],
-                                download_url=a["browser_download_url"],
-                                cached_path=str(cached) if cached.exists() else None,
-                            )
-                            used_assets.add(a["name"])
-                            break
-
+                self.release_tag = selected_tags[0]
                 self.assets = new_assets
                 logger.info("Firmware catalog: %d types available", len(new_assets))
 
@@ -239,7 +330,8 @@ class FirmwareManager:
         """Get firmware binary by name. Prefers custom upload → local build → GitHub."""
         # Custom upload overrides everything
         if name in self._custom_firmware:
-            return self._custom_firmware[name]
+            data = self._custom_firmware[name]
+            return data if self.validate_firmware_image(name, data) else None
 
         # Local .pio build (present when running backend from the repo with fresh builds)
         fw_info = FIRMWARE_TYPES.get(name)
@@ -249,7 +341,7 @@ class FirmwareManager:
                 try:
                     data = local_bin.read_bytes()
                     logger.info("Serving %s from local build (%s, %d bytes)", name, local_bin, len(data))
-                    return data
+                    return data if self.validate_firmware_image(name, data) else None
                 except Exception as e:
                     logger.warning("Failed reading local bin %s: %s", local_bin, e)
 
@@ -264,7 +356,7 @@ class FirmwareManager:
             try:
                 data = cached.read_bytes()
                 asset.cached_path = str(cached)
-                return data
+                return data if self.validate_firmware_image(name, data) else None
             except OSError as e:
                 logger.warning("Failed reading cached firmware %s: %s", cached, e)
                 asset.cached_path = None
@@ -280,6 +372,9 @@ class FirmwareManager:
                 r = await client.get(asset.download_url)
                 if r.status_code == 200:
                     data = r.content
+                    if not self.validate_firmware_image(name, data):
+                        logger.error("Downloaded firmware %s failed validation", name)
+                        return None
                     cached.write_bytes(data)
                     asset.cached_path = str(cached)
                     asset.cached_at = time.time()
@@ -294,11 +389,16 @@ class FirmwareManager:
 
     async def get_firmware_version(self, name: str) -> str | None:
         """Return the version for the firmware image that get_firmware_binary serves."""
-        if name in self._custom_firmware:
+        if name in self._custom_firmware and not name.endswith("-backend"):
             return "custom"
 
         image = await self.get_firmware_binary(name)
         return self._version_from_image(image) if image is not None else None
+
+    def validate_firmware_image(self, name: str, image: bytes) -> bool:
+        if name.endswith("-backend"):
+            return _validated_backend_image_info(name, image) is not None
+        return True
 
     def set_custom_firmware(self, name: str, data: bytes):
         """Upload a custom firmware binary (overrides GitHub for testing)."""
@@ -328,10 +428,16 @@ class FirmwareManager:
             available = False
             source = "unavailable"
             if is_custom:
-                version = "custom"
-                size = len(self._custom_firmware[fw_name])
-                available = True
                 source = "custom"
+                image = await self.get_firmware_binary(fw_name)
+                if image is not None:
+                    version = (
+                        self._version_from_image(image)
+                        if fw_name.endswith("-backend")
+                        else "custom"
+                    )
+                    size = len(image)
+                    available = True
             elif local_present or asset:
                 image = await self.get_firmware_binary(fw_name)
                 source = "local" if local_present else "github"
@@ -348,8 +454,11 @@ class FirmwareManager:
 
             result.append({
                 "name": fw_name,
+                "target": fw_name,
                 "description": fw_info["description"],
                 "board": fw_info["board"],
+                "project": fw_info.get("project"),
+                "hardware": fw_info.get("hardware"),
                 "version": version,
                 "size": size,
                 "available": available,

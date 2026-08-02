@@ -912,6 +912,8 @@ async def upload_custom_firmware(name: str, firmware: UploadFile = File(...)):
     data = await firmware.read()
     if len(data) < 1024 or len(data) > 2 * 1024 * 1024:
         raise HTTPException(status_code=400, detail=f"Invalid size: {len(data)} bytes")
+    if not _firmware_mgr.validate_firmware_image(name, data):
+        raise HTTPException(status_code=400, detail="Firmware identity validation failed")
     _firmware_mgr.set_custom_firmware(name, data)
     return {"ok": True, "name": name, "size": len(data), "source": "custom"}
 
@@ -934,10 +936,6 @@ from fastapi.responses import Response
 from app.services.firmware_manager import FIRMWARE_TYPES
 
 
-_FW_HASH_CACHE: dict[str, tuple[str, int, str]] = {}
-"""name → (version, size, sha256_hex) — recomputed when version changes."""
-
-
 async def _firmware_metadata(name: str) -> dict | None:
     """Common helper: build metadata for /latest/{name}. Returns None if missing."""
     if name not in FIRMWARE_TYPES:
@@ -947,21 +945,20 @@ async def _firmware_metadata(name: str) -> dict | None:
         return None
     version = await _firmware_mgr.get_firmware_version(name) or "unknown"
 
-    cached = _FW_HASH_CACHE.get(name)
-    if not cached or cached[0] != version or cached[1] != len(data):
-        sha = hashlib.sha256(data).hexdigest()
-        _FW_HASH_CACHE[name] = (version, len(data), sha)
-    else:
-        sha = cached[2]
+    sha = hashlib.sha256(data).hexdigest()
 
     catalog_info = FIRMWARE_TYPES[name]
     return {
         "name": name,
+        "target": name,
         "description": catalog_info["description"],
         "board": catalog_info["board"],
+        "project": catalog_info.get("project"),
+        "hardware": catalog_info.get("hardware"),
         "version": version,
         "size": len(data),
         "sha256": sha,
+        "crc32": zlib.crc32(data) & 0xFFFFFFFF,
         "download_url": f"/nodes/firmware/download/{name}",
     }
 
@@ -991,12 +988,7 @@ async def get_firmware_download(name: str, request: Request = None):
     if not data:
         raise HTTPException(status_code=404, detail=f"firmware '{name}' not available")
     version = await _firmware_mgr.get_firmware_version(name) or "unknown"
-    cached = _FW_HASH_CACHE.get(name)
-    if not cached or cached[0] != version or cached[1] != len(data):
-        sha = hashlib.sha256(data).hexdigest()
-        _FW_HASH_CACHE[name] = (version, len(data), sha)
-    else:
-        sha = cached[2]
+    sha = hashlib.sha256(data).hexdigest()
 
     headers = {
         "Content-Type": "application/octet-stream",
@@ -1004,6 +996,9 @@ async def get_firmware_download(name: str, request: Request = None):
         "ETag": f'"{sha}"',
         "X-FoF-Firmware-Version": version,
         "X-FoF-Firmware-SHA256": sha,
+        "X-FoF-Firmware-Target": name,
+        "X-FoF-App-Project": FIRMWARE_TYPES[name].get("project") or "",
+        "X-FoF-Hardware-Type": FIRMWARE_TYPES[name].get("hardware") or "",
     }
     if request is not None:
         inm = request.headers.get("if-none-match")
