@@ -10,6 +10,7 @@ firmware; this recorder accepts only the explicit backend firmware family.
 from __future__ import annotations
 
 import argparse
+import array
 import contextlib
 from dataclasses import asdict, dataclass
 from email.utils import parsedate_to_datetime
@@ -20,8 +21,10 @@ import os
 from pathlib import Path
 import re
 import secrets
+import select
 import stat
 import sys
+import termios
 import time
 from typing import Any, Callable, Mapping, Sequence
 import urllib.error
@@ -65,6 +68,54 @@ HTTP_TIMEOUT_SECONDS = 10
 POLL_INTERVAL_SECONDS = 0.5
 SERIAL_LOG_MAX_AGE_MS = 300_000
 SERIAL_LOG_ROLES = ("scanner0", "scanner1", "uplink")
+SERIAL_STATUS_COMMAND = b"FOF_BACKEND_STATUS\n"
+SERIAL_STATUS_PREFIX = "FOF_BACKEND_HEALTH"
+SERIAL_LINE_MAX_BYTES = 8 * 1024
+SERIAL_RESPONSE_MAX_BYTES = 64 * 1024
+SERIAL_LOG_MAX_BYTES = 16 * 1024 * 1024
+SERIAL_CAPTURE_MAX_INTERVAL_SECONDS = 60
+SERIAL_INITIAL_DRAIN_SECONDS = 0.25
+SERIAL_CAPTURE_QUIET_SECONDS = 0.2
+SERIAL_ROLE_PROFILES = {
+    "scanner0": "ble_primary",
+    "scanner1": "wifi_primary",
+}
+SERIAL_BOOT_KEYS = {
+    "scanner": {
+        "target", "project", "hardware", "version", "mac", "boot_id",
+        "nvs_erased", "uart_ingress", "ota_state",
+    },
+    "uplink": {
+        "target", "project", "hardware", "version", "mac", "boot_id",
+        "device_id", "config_state", "config_generation", "nvs_erased",
+        "auto_update_enabled", "uart0_started", "uart1_started",
+        "network_state", "ota_state",
+    },
+}
+SERIAL_HEALTH_KEYS = {
+    "scanner": {
+        "target", "mac", "boot_id", "nvs_erased", "role",
+        "command_ingress_boot_id", "radio_healthy", "rollback_clear",
+    },
+    "uplink": {
+        "target", "mac", "boot_id", "device_id", "config_state",
+        "config_generation", "nvs_loaded", "nvs_erased",
+        "auto_update_enabled", "uart0_started", "uart1_started",
+        "coordinator_started", "network_state", "rollback_clear",
+    },
+}
+SERIAL_SECRET_CONTENT = re.compile(
+    rb"password|passphrase|pwd|psk|wifi[_-]?pass|ap[_-]?pass|secret|credential|"
+    rb"token|authorization|cookie|set[-_]?cookie|api[_-]?key|value[_-]?hex|"
+    rb"ble[_-]?raw|raw[_-]?ble|characteristic[_-]?value|"
+    rb"ble[_-]?apple[_-]?auth|ble[_-]?auth[_-]?payload|"
+    rb"raw[_-]?auth[_-]?payload|auth(?:entication)?[_-]?value",
+    re.IGNORECASE,
+)
+SERIAL_FAILURE_CONTENT = re.compile(
+    rb"watchdog|guru meditation|panic|rollback_failed",
+    re.IGNORECASE,
+)
 HEALTHY_SNAPSHOT_PHASES = frozenset({
     "baseline", "drone", "meta", "drone-meta", "outage-start",
     "outage-end", "network-recovery", "scanner0-reconnected",
@@ -461,6 +512,611 @@ def _required_mac(value: Any, label: str) -> str:
     if not isinstance(value, str) or not MAC_RE.fullmatch(value.upper()):
         raise EvidenceError(f"{label} must be a canonical MAC")
     return value.upper()
+
+
+def _open_exclusive_status_serial(port: str) -> int:
+    """Open and exclusively retain one raw 921600-baud canary USB port."""
+    if not isinstance(port, str) or not port.startswith("/dev/"):
+        raise EvidenceError("serial port must be an explicit /dev path")
+    flags = os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    try:
+        descriptor = os.open(port, flags)
+    except OSError as exc:
+        raise EvidenceError("serial port could not be opened exclusively") from exc
+    try:
+        details = os.fstat(descriptor)
+        if not stat.S_ISCHR(details.st_mode):
+            raise EvidenceError("serial port is not a character device")
+        exclusive = getattr(termios, "TIOCEXCL", None)
+        if exclusive is None:
+            raise EvidenceError("exclusive serial ownership is unsupported")
+        fcntl.ioctl(descriptor, exclusive)
+
+        attributes = termios.tcgetattr(descriptor)
+        attributes[0] = 0
+        attributes[1] = 0
+        attributes[2] = termios.CS8 | termios.CREAD | termios.CLOCAL
+        attributes[3] = 0
+        attributes[6][termios.VMIN] = 0
+        attributes[6][termios.VTIME] = 0
+        baud = getattr(termios, "B921600", None)
+        if baud is not None:
+            attributes[4] = baud
+            attributes[5] = baud
+            termios.tcsetattr(descriptor, termios.TCSANOW, attributes)
+        elif sys.platform == "darwin":
+            # Darwin exposes arbitrary tty baud rates through IOSSIOSPEED.
+            base_baud = getattr(termios, "B38400", None)
+            if base_baud is None:
+                raise EvidenceError("921600-baud serial is unsupported")
+            attributes[4] = base_baud
+            attributes[5] = base_baud
+            termios.tcsetattr(descriptor, termios.TCSANOW, attributes)
+            speed = array.array("i", [921_600])
+            fcntl.ioctl(descriptor, 0x80045402, speed, True)
+        else:
+            raise EvidenceError("921600-baud serial is unsupported")
+        return descriptor
+    except EvidenceError:
+        os.close(descriptor)
+        raise
+    except (OSError, termios.error) as exc:
+        os.close(descriptor)
+        raise EvidenceError("serial port raw/exclusive setup failed") from exc
+
+
+def _validate_serial_health(
+    role: str,
+    expected_mac: str,
+    value: Any,
+) -> dict[str, Any]:
+    """Validate one exact, role-bound final-health response."""
+    if role not in SERIAL_LOG_ROLES:
+        raise EvidenceError("serial capture role is invalid")
+    expected_mac = _required_mac(expected_mac, "expected serial MAC")
+    health = dict(_required_mapping(value, "serial health response"))
+    if contains_secret_key(health):
+        raise EvidenceError("serial health response contains a secret key")
+    kind = "uplink" if role == "uplink" else "scanner"
+    if set(health) != SERIAL_HEALTH_KEYS[kind]:
+        raise EvidenceError("serial health response fields are not exact")
+    if _required_mac(health.get("mac"), "serial health MAC") != expected_mac:
+        raise EvidenceError("serial health MAC does not match the selected board")
+    boot_id = _required_int(
+        health.get("boot_id"), "serial health boot_id", minimum=1,
+    )
+
+    if kind == "scanner":
+        if health.get("target") != SCANNER_IDENTITY[0]:
+            raise EvidenceError("serial scanner target is not backend firmware")
+        if health.get("role") != SERIAL_ROLE_PROFILES[role]:
+            raise EvidenceError("serial scanner role/profile binding changed")
+        if health.get("command_ingress_boot_id") != boot_id:
+            raise EvidenceError("serial scanner command ingress is stale")
+        if (
+            health.get("nvs_erased") is not False
+            or health.get("radio_healthy") is not True
+            or health.get("rollback_clear") is not True
+        ):
+            raise EvidenceError("serial scanner health is incomplete")
+    else:
+        if health.get("target") != UPLINK_IDENTITY[0]:
+            raise EvidenceError("serial uplink target is not backend firmware")
+        if not isinstance(health.get("device_id"), str) or not health["device_id"]:
+            raise EvidenceError("serial uplink device identity is blank")
+        if health.get("config_state") not in ("loaded", "migrated"):
+            raise EvidenceError("serial uplink configuration is not loaded")
+        _required_int(
+            health.get("config_generation"),
+            "serial uplink config_generation",
+            minimum=1,
+        )
+        required_true = (
+            "nvs_loaded", "uart0_started", "uart1_started",
+            "coordinator_started", "rollback_clear",
+        )
+        if (
+            any(health.get(field) is not True for field in required_true)
+            or health.get("nvs_erased") is not False
+            or health.get("auto_update_enabled") is not False
+            or health.get("network_state") not in ("ap", "sta")
+        ):
+            raise EvidenceError("serial uplink health is incomplete")
+    health["mac"] = expected_mac
+    return health
+
+
+def _validate_serial_boot(
+    role: str,
+    expected_mac: str,
+    value: Any,
+) -> dict[str, Any]:
+    """Validate one exact backend BOOT record for a selected physical board."""
+    if role not in SERIAL_LOG_ROLES:
+        raise EvidenceError("serial capture role is invalid")
+    expected_mac = _required_mac(expected_mac, "expected serial MAC")
+    boot = dict(_required_mapping(value, "serial boot response"))
+    if contains_secret_key(boot):
+        raise EvidenceError("serial boot response contains a secret key")
+    kind = "uplink" if role == "uplink" else "scanner"
+    if set(boot) != SERIAL_BOOT_KEYS[kind]:
+        raise EvidenceError("serial boot response fields are not exact")
+    identity = (
+        boot.get("target"), boot.get("project"), boot.get("hardware"),
+        boot.get("version"),
+    )
+    expected_identity = UPLINK_IDENTITY if kind == "uplink" else SCANNER_IDENTITY
+    if identity != expected_identity:
+        raise EvidenceError("serial boot identity is not exact backend firmware")
+    if _required_mac(boot.get("mac"), "serial boot MAC") != expected_mac:
+        raise EvidenceError("serial boot MAC does not match the selected board")
+    _required_int(boot.get("boot_id"), "serial boot_id", minimum=1)
+    if boot.get("nvs_erased") is not False or boot.get("ota_state") != "valid":
+        raise EvidenceError("serial boot persistence/OTA state is not valid")
+    if kind == "scanner":
+        if boot.get("uart_ingress") is not True:
+            raise EvidenceError("serial scanner command ingress is unavailable")
+    else:
+        if not isinstance(boot.get("device_id"), str) or not boot["device_id"]:
+            raise EvidenceError("serial uplink device identity is blank")
+        if boot.get("config_state") not in ("loaded", "migrated"):
+            raise EvidenceError("serial uplink configuration is not loaded")
+        _required_int(
+            boot.get("config_generation"),
+            "serial boot config_generation",
+            minimum=1,
+        )
+        if (
+            boot.get("auto_update_enabled") is not False
+            or boot.get("uart0_started") is not True
+            or boot.get("uart1_started") is not True
+            or boot.get("network_state") not in ("ap", "sta")
+        ):
+            raise EvidenceError("serial uplink boot health is incomplete")
+    boot["mac"] = expected_mac
+    return boot
+
+
+def _validate_serial_status_pair(
+    role: str,
+    expected_mac: str,
+    expected_boot_id: int,
+    value: Any,
+) -> dict[str, dict[str, Any]]:
+    pair = _required_mapping(value, "serial status pair")
+    if set(pair) != {"boot", "health"}:
+        raise EvidenceError("serial status requires exact BOOT and HEALTH records")
+    boot = _validate_serial_boot(role, expected_mac, pair.get("boot"))
+    health = _validate_serial_health(role, expected_mac, pair.get("health"))
+    if (
+        boot["boot_id"] != health["boot_id"]
+        or boot["boot_id"] != expected_boot_id
+    ):
+        raise EvidenceError("serial boot_id changed from the bound canary state")
+    if role == "uplink" and boot["device_id"] != health["device_id"]:
+        raise EvidenceError("serial uplink device identity changed within status")
+    return {"boot": boot, "health": health}
+
+
+def _read_private_json(path: Path, label: str) -> Mapping[str, Any]:
+    destination = _require_canary_storage(path, label)
+    _private_mode(destination.parent, 0o700, f"{label} directory")
+    flags = os.O_RDONLY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    try:
+        descriptor = os.open(destination, flags)
+    except OSError as exc:
+        raise EvidenceError(f"{label} is unavailable") from exc
+    try:
+        details = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(details.st_mode)
+            or stat.S_IMODE(details.st_mode) != 0o600
+            or details.st_uid != os.getuid()
+            or details.st_nlink != 1
+        ):
+            raise EvidenceError(f"{label} is not a private bound file")
+        chunks: list[bytes] = []
+        total = 0
+        while True:
+            chunk = os.read(descriptor, 65_536)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > MAX_HTTP_JSON:
+                raise EvidenceError(f"{label} is oversized")
+            chunks.append(chunk)
+    finally:
+        os.close(descriptor)
+    return _required_mapping(
+        _decode_json(b"".join(chunks), label), label,
+    )
+
+
+def _load_serial_capture_binding(
+    state_path: Path,
+    *,
+    role: str,
+    port: str,
+    expected_mac: str,
+) -> dict[str, Any]:
+    """Cross-check operator selections against private final canary state."""
+    if role not in SERIAL_LOG_ROLES:
+        raise EvidenceError("serial capture role is invalid")
+    if not isinstance(port, str) or not port.startswith("/dev/"):
+        raise EvidenceError("serial port must be an explicit /dev path")
+    expected_mac = _required_mac(expected_mac, "expected serial MAC")
+    state = _read_private_json(state_path, "canary state")
+    if state.get("schema") != 1:
+        raise EvidenceError("canary state schema is not supported")
+    boards = _required_mapping(state.get("boards"), "canary boards")
+    board = _required_mapping(boards.get(role), f"{role} canary board")
+    inventory = _required_mapping(
+        board.get("inventory"), f"{role} canary inventory",
+    )
+    if inventory.get("role") != role or inventory.get("port") != port:
+        raise EvidenceError("serial role/port does not match canary inventory")
+    inventory_mac = _required_mac(
+        inventory.get("mac"), f"{role} inventory MAC",
+    )
+    if inventory_mac != expected_mac:
+        raise EvidenceError("serial expected MAC does not match canary inventory")
+    final = _validate_serial_health(
+        role,
+        expected_mac,
+        board.get("final_health"),
+    )
+    if final["mac"] != inventory_mac:
+        raise EvidenceError("serial final-health MAC differs from inventory")
+    if role == "uplink":
+        device_id = state.get("captured_device_id")
+        if not isinstance(device_id, str) or final["device_id"] != device_id:
+            raise EvidenceError("serial uplink device ID differs from canary state")
+    return {
+        "role": role,
+        "port": port,
+        "mac": inventory_mac,
+        "boot_id": final["boot_id"],
+        "device_id": final.get("device_id"),
+    }
+
+
+def _consume_serial_chunk(
+    buffer: bytearray,
+    chunk: bytes,
+    line_handler: Callable[[bytes, str], None],
+) -> None:
+    if not isinstance(chunk, bytes):
+        raise EvidenceError("serial reader returned non-bytes")
+    buffer.extend(chunk)
+    while b"\n" in buffer:
+        raw_line, _, tail = buffer.partition(b"\n")
+        buffer[:] = tail
+        if len(raw_line) > SERIAL_LINE_MAX_BYTES:
+            raise EvidenceError("serial line is oversized")
+        text_line = raw_line[:-1] if raw_line.endswith(b"\r") else raw_line
+        try:
+            decoded = text_line.decode("utf-8", "strict")
+        except UnicodeError as exc:
+            raise EvidenceError("serial response is not UTF-8") from exc
+        line_handler(raw_line + b"\n", decoded)
+    if len(buffer) > SERIAL_LINE_MAX_BYTES:
+        raise EvidenceError("serial line is oversized")
+
+
+def _append_received_serial_line(
+    descriptor: int,
+    wire_line: bytes,
+    _decoded: str,
+) -> None:
+    """Persist one received line, but never write secret/raw-auth material."""
+    if SERIAL_SECRET_CONTENT.search(wire_line):
+        raise EvidenceError("serial line contains secret/raw-auth material")
+    if os.fstat(descriptor).st_size + len(wire_line) > SERIAL_LOG_MAX_BYTES:
+        raise EvidenceError("serial log cumulative size limit was exceeded")
+    _write_all(descriptor, wire_line)
+    os.fsync(descriptor)
+    if SERIAL_FAILURE_CONTENT.search(wire_line):
+        raise EvidenceError("serial panic/watchdog/rollback gate failed")
+
+
+def _select_serial_chunk(
+    descriptor: int,
+    timeout_s: float,
+    *,
+    selector: Callable[..., Any],
+    reader: Callable[[int, int], bytes],
+) -> bytes | None:
+    try:
+        readable, _writable, exceptional = selector(
+            [descriptor], [], [descriptor], min(timeout_s, 0.25),
+        )
+    except OSError as exc:
+        raise EvidenceError("serial select failed") from exc
+    if exceptional:
+        raise EvidenceError("serial port reported an error")
+    if not readable:
+        return None
+    try:
+        return reader(descriptor, 4096)
+    except BlockingIOError:
+        return None
+    except OSError as exc:
+        raise EvidenceError("serial read failed") from exc
+
+
+def _drain_serial_until(
+    descriptor: int,
+    *,
+    deadline: float,
+    buffer: bytearray,
+    line_sink: Callable[[bytes, str], None],
+    monotonic: Callable[[], float] = time.monotonic,
+    selector: Callable[..., Any] = select.select,
+    reader: Callable[[int, int], bytes] = os.read,
+) -> None:
+    total_bytes = 0
+    while True:
+        remaining = deadline - monotonic()
+        if remaining <= 0:
+            return
+        chunk = _select_serial_chunk(
+            descriptor, remaining, selector=selector, reader=reader,
+        )
+        if not chunk:
+            continue
+        total_bytes += len(chunk)
+        if total_bytes > SERIAL_RESPONSE_MAX_BYTES:
+            raise EvidenceError("serial drain window is oversized")
+        _consume_serial_chunk(buffer, chunk, line_sink)
+
+
+def _read_serial_status_response(
+    descriptor: int,
+    *,
+    role: str,
+    expected_mac: str,
+    expected_boot_id: int,
+    timeout_s: float,
+    buffer: bytearray,
+    line_sink: Callable[[bytes, str], None],
+    monotonic: Callable[[], float] = time.monotonic,
+    selector: Callable[..., Any] = select.select,
+    reader: Callable[[int, int], bytes] = os.read,
+    writer: Callable[[int, bytes], int] = os.write,
+) -> dict[str, dict[str, Any]]:
+    """Require one fresh, ordered BOOT+HEALTH pair after a status command."""
+    if isinstance(timeout_s, bool) or not isinstance(timeout_s, (int, float)):
+        raise EvidenceError("serial response timeout must be positive")
+    if timeout_s <= 0:
+        raise EvidenceError("serial response timeout must be positive")
+    _required_int(expected_boot_id, "expected serial boot_id", minimum=1)
+    if buffer:
+        raise EvidenceError("serial framing is incomplete before status command")
+    try:
+        written = writer(descriptor, SERIAL_STATUS_COMMAND)
+    except OSError as exc:
+        raise EvidenceError("serial status command write failed") from exc
+    if written != len(SERIAL_STATUS_COMMAND):
+        raise EvidenceError("serial status command was not written atomically")
+
+    deadline = monotonic() + timeout_s
+    quiet_deadline: float | None = None
+    total_bytes = 0
+    boot: dict[str, Any] | None = None
+    health: dict[str, Any] | None = None
+
+    def handle_line(wire_line: bytes, decoded: str) -> None:
+        nonlocal boot, health, quiet_deadline
+        line_sink(wire_line, decoded)
+        for prefix_name in ("FOF_BACKEND_BOOT", SERIAL_STATUS_PREFIX):
+            if decoded.startswith(prefix_name) and not decoded.startswith(
+                prefix_name + " ",
+            ):
+                raise EvidenceError("serial status record prefix is malformed")
+        if decoded.startswith("FOF_BACKEND_BOOT "):
+            if boot is not None or health is not None:
+                raise EvidenceError("serial status BOOT response is duplicated/out of order")
+            raw = decoded[len("FOF_BACKEND_BOOT "):].encode("utf-8")
+            boot = _validate_serial_boot(
+                role, expected_mac, _decode_json(raw, "serial boot response"),
+            )
+            if boot["boot_id"] != expected_boot_id:
+                raise EvidenceError("serial BOOT changed from bound canary state")
+        elif decoded.startswith(SERIAL_STATUS_PREFIX + " "):
+            if boot is None or health is not None:
+                raise EvidenceError("serial status HEALTH response is duplicated/out of order")
+            raw = decoded[len(SERIAL_STATUS_PREFIX) + 1:].encode("utf-8")
+            health = _validate_serial_health(
+                role, expected_mac, _decode_json(raw, "serial health response"),
+            )
+            if health["boot_id"] != boot["boot_id"]:
+                raise EvidenceError("serial BOOT/HEALTH boot_id mismatch")
+            quiet_deadline = monotonic() + SERIAL_CAPTURE_QUIET_SECONDS
+
+    while True:
+        current = monotonic()
+        active_deadline = deadline
+        if quiet_deadline is not None:
+            active_deadline = min(active_deadline, quiet_deadline)
+        remaining = active_deadline - current
+        if remaining <= 0:
+            break
+        chunk = _select_serial_chunk(
+            descriptor, remaining, selector=selector, reader=reader,
+        )
+        if not chunk:
+            continue
+        total_bytes += len(chunk)
+        if total_bytes > SERIAL_RESPONSE_MAX_BYTES:
+            raise EvidenceError("serial status response is oversized")
+        _consume_serial_chunk(buffer, chunk, handle_line)
+    if boot is None or health is None:
+        raise EvidenceError("timed out waiting for exact serial BOOT+HEALTH")
+    if buffer:
+        raise EvidenceError("serial status ended with an incomplete line")
+    return _validate_serial_status_pair(
+        role,
+        expected_mac,
+        expected_boot_id,
+        {"boot": boot, "health": health},
+    )
+
+
+def capture_serial_status(
+    *,
+    role: str,
+    port: str,
+    expected_mac: str,
+    state_path: Path,
+    output_dir: Path,
+    duration_s: int,
+    interval_s: int,
+    response_timeout_s: int,
+    opener: Callable[[str], int] = _open_exclusive_status_serial,
+    closer: Callable[[int], None] = os.close,
+    status_reader: Callable[..., Mapping[str, Any]] = _read_serial_status_response,
+    drainer: Callable[..., None] = _drain_serial_until,
+    monotonic: Callable[[], float] = time.monotonic,
+) -> dict[str, Any]:
+    """Continuously preserve and fsync bounded USB evidence for one board."""
+    if role not in SERIAL_LOG_ROLES:
+        raise EvidenceError("serial capture role is invalid")
+    if (
+        isinstance(duration_s, bool)
+        or not isinstance(duration_s, int)
+        or duration_s <= 0
+        or isinstance(interval_s, bool)
+        or not isinstance(interval_s, int)
+        or interval_s <= 0
+        or interval_s > SERIAL_CAPTURE_MAX_INTERVAL_SECONDS
+        or isinstance(response_timeout_s, bool)
+        or not isinstance(response_timeout_s, int)
+        or response_timeout_s <= 0
+        or response_timeout_s >= interval_s
+    ):
+        raise EvidenceError("serial capture duration/interval/timeout is invalid")
+    binding = _load_serial_capture_binding(
+        state_path,
+        role=role,
+        port=port,
+        expected_mac=expected_mac,
+    )
+    expected_mac = binding["mac"]
+    expected_boot_id = binding["boot_id"]
+
+    root = _secure_directory(
+        _require_canary_storage(output_dir, "serial log directory"),
+    )
+    output = root / f"{role}.log"
+    flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+
+    try:
+        serial_descriptor = opener(port)
+    except EvidenceError:
+        raise
+    except OSError as exc:
+        raise EvidenceError("serial port could not be opened exclusively") from exc
+    log_descriptor = -1
+    samples = 0
+    serial_buffer = bytearray()
+    try:
+        try:
+            log_descriptor = os.open(output, flags, 0o600)
+        except FileExistsError as exc:
+            raise EvidenceError(f"serial log {output.name} already exists") from exc
+        except OSError as exc:
+            raise EvidenceError(f"serial log {output.name} could not be created") from exc
+        os.fchmod(log_descriptor, 0o600)
+        details = os.fstat(log_descriptor)
+        if not stat.S_ISREG(details.st_mode) or details.st_nlink != 1:
+            raise EvidenceError("serial log binding is not a private regular file")
+        _fsync_directory(root)
+
+        def record_received_line(wire_line: bytes, decoded: str) -> None:
+            _append_received_serial_line(log_descriptor, wire_line, decoded)
+
+        drainer(
+            serial_descriptor,
+            deadline=monotonic() + SERIAL_INITIAL_DRAIN_SECONDS,
+            buffer=serial_buffer,
+            line_sink=record_received_line,
+            monotonic=monotonic,
+        )
+        if serial_buffer:
+            raise EvidenceError("serial framing remained incomplete after initial drain")
+        started = monotonic()
+        deadline = started + duration_s
+        next_due = started
+        previous_query: float | None = None
+        while True:
+            current = monotonic()
+            if current < next_due:
+                drainer(
+                    serial_descriptor,
+                    deadline=next_due,
+                    buffer=serial_buffer,
+                    line_sink=record_received_line,
+                    monotonic=monotonic,
+                )
+            if serial_buffer:
+                raise EvidenceError("serial framing remained incomplete at poll time")
+            query_started = monotonic()
+            if (
+                previous_query is not None
+                and query_started - previous_query
+                > SERIAL_CAPTURE_MAX_INTERVAL_SECONDS
+            ):
+                raise EvidenceError("serial status cadence exceeded 60 seconds")
+            previous_query = query_started
+            size_before = os.fstat(log_descriptor).st_size
+            pair = _validate_serial_status_pair(
+                role,
+                expected_mac,
+                expected_boot_id,
+                status_reader(
+                    serial_descriptor,
+                    role=role,
+                    expected_mac=expected_mac,
+                    expected_boot_id=expected_boot_id,
+                    timeout_s=response_timeout_s,
+                    buffer=serial_buffer,
+                    line_sink=record_received_line,
+                    monotonic=monotonic,
+                ),
+            )
+            if serial_buffer:
+                raise EvidenceError("serial status ended with an incomplete line")
+            if pair["boot"]["boot_id"] != expected_boot_id:
+                raise EvidenceError("serial capture boot binding changed")
+            if os.fstat(log_descriptor).st_size <= size_before:
+                raise EvidenceError("serial status bytes were not preserved in the log")
+            samples += 1
+            if next_due >= deadline:
+                break
+            next_due = min(next_due + interval_s, deadline)
+    finally:
+        try:
+            if log_descriptor >= 0:
+                os.close(log_descriptor)
+        finally:
+            closer(serial_descriptor)
+    _private_mode(output, 0o600, "serial log")
+    return {
+        "ok": True,
+        "role": role,
+        "samples": samples,
+        "path": str(output),
+    }
 
 
 def _epoch_seconds_to_ms(value: Any, label: str) -> int:
@@ -1237,15 +1893,6 @@ def _serial_log_receipt(
             "scanner1.log, and uplink.log"
         )
     receipts: list[dict[str, Any]] = []
-    forbidden_content = re.compile(
-        rb"password|passphrase|pwd|psk|wifi[_-]?pass|ap[_-]?pass|secret|credential|token|"
-        rb"authorization|cookie|set[-_]?cookie|api[_-]?key|value[_-]?hex|ble[_-]?raw|"
-        rb"raw[_-]?ble|characteristic[_-]?value|ble[_-]?apple[_-]?auth|"
-        rb"ble[_-]?auth[_-]?payload|raw[_-]?auth[_-]?payload|"
-        rb"auth(?:entication)?[_-]?value|watchdog|guru meditation|panic|"
-        rb"rollback_failed",
-        re.IGNORECASE,
-    )
     for role in SERIAL_LOG_ROLES:
         path = root / f"{role}.log"
         details = path.lstat()
@@ -1253,6 +1900,8 @@ def _serial_log_receipt(
             raise EvidenceError(f"serial log {path.name} is not a regular file")
         if stat.S_IMODE(details.st_mode) != 0o600:
             raise EvidenceError(f"serial log {path.name} must have mode 0600")
+        if details.st_size > SERIAL_LOG_MAX_BYTES:
+            raise EvidenceError(f"serial log {path.name} is oversized")
         raw = path.read_bytes()
         mtime_ms = details.st_mtime_ns // 1_000_000
         if not raw:
@@ -1262,7 +1911,7 @@ def _serial_log_receipt(
             or observed_at_ms - mtime_ms > SERIAL_LOG_MAX_AGE_MS
         ):
             raise EvidenceError(f"serial log {path.name} is not current")
-        if forbidden_content.search(raw):
+        if SERIAL_SECRET_CONTENT.search(raw) or SERIAL_FAILURE_CONTENT.search(raw):
             raise EvidenceError(f"serial log gate failed for {path.name}")
         receipts.append({
             "role": role,
@@ -1670,6 +2319,16 @@ def _build_parser() -> argparse.ArgumentParser:
     monitor.add_argument("--interval-s", type=int, default=30)
     monitor.add_argument("--serial-log-dir", type=Path, required=True)
 
+    capture = commands.add_parser("capture-serial")
+    capture.add_argument("--role", choices=SERIAL_LOG_ROLES, required=True)
+    capture.add_argument("--port", required=True)
+    capture.add_argument("--expected-mac", required=True)
+    capture.add_argument("--state", type=Path, required=True)
+    capture.add_argument("--output-dir", type=Path, required=True)
+    capture.add_argument("--duration-s", type=int, default=86_460)
+    capture.add_argument("--interval-s", type=int, default=30)
+    capture.add_argument("--response-timeout-s", type=int, default=10)
+
     verify = commands.add_parser("verify-soak")
     verify.add_argument("--input", type=Path, required=True)
     verify.add_argument("--duration-s", type=int, default=86_400)
@@ -1729,6 +2388,17 @@ def main(argv: Sequence[str] | None = None) -> int:
                 output=args.output,
             )
             result = {"ok": True, "duration_s": args.duration_s}
+        elif args.command == "capture-serial":
+            result = capture_serial_status(
+                role=args.role,
+                port=args.port,
+                expected_mac=args.expected_mac,
+                state_path=args.state,
+                output_dir=args.output_dir,
+                duration_s=args.duration_s,
+                interval_s=args.interval_s,
+                response_timeout_s=args.response_timeout_s,
+            )
         else:
             result = asdict(verify_soak(
                 args.input,

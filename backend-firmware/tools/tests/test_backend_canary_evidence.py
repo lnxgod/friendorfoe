@@ -193,46 +193,147 @@ def write_state(output: Path, *, continuity: dict | None = None) -> Path:
         "captured_device_id": DEVICE_ID,
         "installed_capture": {"continuity": continuity or CONTINUITY},
         "boards": {
-            "uplink": {"final_health": {
-                "target": "uplink-s3-backend",
-                "mac": "A4:CF:12:CB:77:A4",
-                "boot_id": 9001,
-                "device_id": DEVICE_ID,
-                "config_state": "loaded",
-                "config_generation": 2,
-                "nvs_loaded": True,
-                "nvs_erased": False,
-                "auto_update_enabled": False,
-                "uart0_started": True,
-                "uart1_started": True,
-                "coordinator_started": True,
-                "network_state": "sta",
-                "rollback_clear": True,
-            }},
-            "scanner0": {"final_health": {
-                "target": "scanner-s3-combo-backend",
-                "mac": "AA:BB:CC:DD:EE:01",
-                "boot_id": 100,
-                "role": "ble_primary",
-                "command_ingress_boot_id": 100,
-                "radio_healthy": True,
-                "rollback_clear": True,
-                "nvs_erased": False,
-            }},
-            "scanner1": {"final_health": {
-                "target": "scanner-s3-combo-backend",
-                "mac": "AA:BB:CC:DD:EE:02",
-                "boot_id": 101,
-                "role": "wifi_primary",
-                "command_ingress_boot_id": 101,
-                "radio_healthy": True,
-                "rollback_clear": True,
-                "nvs_erased": False,
-            }},
+            "uplink": {
+                "inventory": {
+                    "role": "uplink",
+                    "port": "/dev/cu.uplink",
+                    "mac": "A4:CF:12:CB:77:A4",
+                },
+                "final_health": {
+                    "target": "uplink-s3-backend",
+                    "mac": "A4:CF:12:CB:77:A4",
+                    "boot_id": 9001,
+                    "device_id": DEVICE_ID,
+                    "config_state": "loaded",
+                    "config_generation": 2,
+                    "nvs_loaded": True,
+                    "nvs_erased": False,
+                    "auto_update_enabled": False,
+                    "uart0_started": True,
+                    "uart1_started": True,
+                    "coordinator_started": True,
+                    "network_state": "sta",
+                    "rollback_clear": True,
+                },
+            },
+            "scanner0": {
+                "inventory": {
+                    "role": "scanner0",
+                    "port": "/dev/cu.scanner0",
+                    "mac": "AA:BB:CC:DD:EE:01",
+                },
+                "final_health": {
+                    "target": "scanner-s3-combo-backend",
+                    "mac": "AA:BB:CC:DD:EE:01",
+                    "boot_id": 100,
+                    "role": "ble_primary",
+                    "command_ingress_boot_id": 100,
+                    "radio_healthy": True,
+                    "rollback_clear": True,
+                    "nvs_erased": False,
+                },
+            },
+            "scanner1": {
+                "inventory": {
+                    "role": "scanner1",
+                    "port": "/dev/cu.scanner1",
+                    "mac": "AA:BB:CC:DD:EE:02",
+                },
+                "final_health": {
+                    "target": "scanner-s3-combo-backend",
+                    "mac": "AA:BB:CC:DD:EE:02",
+                    "boot_id": 101,
+                    "role": "wifi_primary",
+                    "command_ingress_boot_id": 101,
+                    "radio_healthy": True,
+                    "rollback_clear": True,
+                    "nvs_erased": False,
+                },
+            },
         },
     }))
     state.chmod(0o600)
     return state
+
+
+def serial_boot_fixture(role: str, *, boot_id: int | None = None) -> dict:
+    if role == "uplink":
+        return {
+            "target": "uplink-s3-backend",
+            "project": "fof_backend_uplink",
+            "hardware": "seeed_xiao_esp32s3",
+            "version": "0.1.0-backend",
+            "mac": "A4:CF:12:CB:77:A4",
+            "boot_id": 9001 if boot_id is None else boot_id,
+            "device_id": DEVICE_ID,
+            "config_state": "loaded",
+            "config_generation": 2,
+            "nvs_erased": False,
+            "auto_update_enabled": False,
+            "uart0_started": True,
+            "uart1_started": True,
+            "network_state": "sta",
+            "ota_state": "valid",
+        }
+    slot = 0 if role == "scanner0" else 1
+    return {
+        "target": "scanner-s3-combo-backend",
+        "project": "fof_backend_scanner",
+        "hardware": "seeed_xiao_esp32s3",
+        "version": "0.1.0-backend",
+        "mac": f"AA:BB:CC:DD:EE:0{slot + 1}",
+        "boot_id": 100 + slot if boot_id is None else boot_id,
+        "nvs_erased": False,
+        "uart_ingress": True,
+        "ota_state": "valid",
+    }
+
+
+def serial_health_fixture(role: str, *, boot_id: int | None = None) -> dict:
+    if role == "uplink":
+        return {
+            "target": "uplink-s3-backend",
+            "mac": "A4:CF:12:CB:77:A4",
+            "boot_id": 9001 if boot_id is None else boot_id,
+            "device_id": DEVICE_ID,
+            "config_state": "loaded",
+            "config_generation": 2,
+            "nvs_loaded": True,
+            "nvs_erased": False,
+            "auto_update_enabled": False,
+            "uart0_started": True,
+            "uart1_started": True,
+            "coordinator_started": True,
+            "network_state": "sta",
+            "rollback_clear": True,
+        }
+    slot = 0 if role == "scanner0" else 1
+    value = {
+        "target": "scanner-s3-combo-backend",
+        "mac": f"AA:BB:CC:DD:EE:0{slot + 1}",
+        "boot_id": 100 + slot if boot_id is None else boot_id,
+        "nvs_erased": False,
+        "role": "ble_primary" if slot == 0 else "wifi_primary",
+        "command_ingress_boot_id": 100 + slot if boot_id is None else boot_id,
+        "radio_healthy": True,
+        "rollback_clear": True,
+    }
+    return value
+
+
+def serial_status_pair(role: str, *, boot_id: int | None = None) -> dict:
+    return {
+        "boot": serial_boot_fixture(role, boot_id=boot_id),
+        "health": serial_health_fixture(role, boot_id=boot_id),
+    }
+
+
+def serial_wire_line(prefix: str, value: dict) -> bytes:
+    return (
+        prefix.encode("ascii") + b" "
+        + json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+        + b"\n"
+    )
 
 
 def make_recorder(tmp_path: Path, fetcher: FakeBackend) -> CanaryEvidenceRecorder:
@@ -245,6 +346,348 @@ def make_recorder(tmp_path: Path, fetcher: FakeBackend) -> CanaryEvidenceRecorde
         fetch_json=fetcher,
         now=lambda: 1_785_600_000.0,
     )
+
+
+def test_serial_status_reads_and_logs_one_fresh_ordered_boot_health_pair():
+    pair = serial_status_pair("scanner0")
+    boot_line = serial_wire_line("FOF_BACKEND_BOOT", pair["boot"])
+    health_line = serial_wire_line("FOF_BACKEND_HEALTH", pair["health"])
+    chunks = [b"scanner diagnostic ok\r\n" + boot_line[:19], boot_line[19:] + health_line]
+    clock = [0.0]
+    writes: list[bytes] = []
+    received: list[bytes] = []
+
+    def selector(_read, _write, _error, timeout):
+        if chunks:
+            return [41], [], []
+        clock[0] += timeout
+        return [], [], []
+
+    result = evidence_tool._read_serial_status_response(
+        41,
+        role="scanner0",
+        expected_mac="AA:BB:CC:DD:EE:01",
+        expected_boot_id=100,
+        timeout_s=2,
+        buffer=bytearray(),
+        line_sink=lambda wire, _decoded: received.append(wire),
+        monotonic=lambda: clock[0],
+        selector=selector,
+        reader=lambda _fd, _size: chunks.pop(0),
+        writer=lambda _fd, payload: writes.append(payload) or len(payload),
+    )
+
+    assert result == pair
+    assert writes == [b"FOF_BACKEND_STATUS\n"]
+    assert received == [b"scanner diagnostic ok\r\n", boot_line, health_line]
+
+
+def test_serial_opener_uses_exclusive_raw_darwin_921600_fallback(monkeypatch):
+    ioctls: list[tuple[int, int, object | None]] = []
+    applied: list[list] = []
+    attributes = [0, 0, 0, 0, 0, 0, [0] * 32]
+
+    monkeypatch.setattr(evidence_tool.os, "open", lambda _port, _flags: 41)
+    monkeypatch.setattr(
+        evidence_tool.os,
+        "fstat",
+        lambda _descriptor: type("FakeStat", (), {"st_mode": stat.S_IFCHR})(),
+    )
+    monkeypatch.setattr(evidence_tool.sys, "platform", "darwin")
+    monkeypatch.delattr(evidence_tool.termios, "B921600", raising=False)
+    monkeypatch.setattr(
+        evidence_tool.fcntl,
+        "ioctl",
+        lambda descriptor, operation, argument=None, *_rest: ioctls.append(
+            (descriptor, operation, argument)
+        ),
+    )
+    monkeypatch.setattr(
+        evidence_tool.termios, "tcgetattr", lambda _descriptor: attributes,
+    )
+    monkeypatch.setattr(
+        evidence_tool.termios,
+        "tcsetattr",
+        lambda _descriptor, _when, value: applied.append(value),
+    )
+    monkeypatch.setattr(
+        evidence_tool.termios,
+        "tcflush",
+        lambda _descriptor, _queue: pytest.fail("serial evidence must not be flushed"),
+    )
+
+    assert evidence_tool._open_exclusive_status_serial("/dev/cu.scanner0") == 41
+    assert ioctls[0][1] == evidence_tool.termios.TIOCEXCL
+    assert ioctls[1][1] == 0x80045402
+    assert list(ioctls[1][2]) == [921_600]
+    assert applied and applied[0][4] == evidence_tool.termios.B38400
+
+
+def test_serial_status_times_out_without_exact_boot_health():
+    clock = [0.0]
+
+    def selector(_read, _write, _error, timeout):
+        clock[0] += timeout
+        return [], [], []
+
+    with pytest.raises(EvidenceError, match=r"BOOT\+HEALTH"):
+        evidence_tool._read_serial_status_response(
+            41,
+            role="scanner0",
+            expected_mac="AA:BB:CC:DD:EE:01",
+            expected_boot_id=100,
+            timeout_s=1,
+            buffer=bytearray(),
+            line_sink=lambda _wire, _decoded: None,
+            monotonic=lambda: clock[0],
+            selector=selector,
+            reader=lambda _fd, _size: b"",
+            writer=lambda _fd, payload: len(payload),
+        )
+
+
+def test_serial_status_rejects_oversized_or_non_utf8_lines():
+    for payload, match in (
+        (b"x" * (evidence_tool.SERIAL_LINE_MAX_BYTES + 1), "oversized"),
+        (b"\xff\n", "UTF-8"),
+    ):
+        chunks = [payload]
+        clock = [0.0]
+
+        def selector(_read, _write, _error, timeout):
+            if chunks:
+                return [41], [], []
+            clock[0] += timeout
+            return [], [], []
+
+        with pytest.raises(EvidenceError, match=match):
+            evidence_tool._read_serial_status_response(
+                41,
+                role="scanner0",
+                expected_mac="AA:BB:CC:DD:EE:01",
+                expected_boot_id=100,
+                timeout_s=1,
+                buffer=bytearray(),
+                line_sink=lambda _wire, _decoded: None,
+                monotonic=lambda: clock[0],
+                selector=selector,
+                reader=lambda _fd, _size: chunks.pop(0),
+                writer=lambda _fd, payload: len(payload),
+            )
+
+
+def test_serial_status_rejects_trailing_partial_line():
+    pair = serial_status_pair("scanner0")
+    chunks = [
+        serial_wire_line("FOF_BACKEND_BOOT", pair["boot"])
+        + serial_wire_line("FOF_BACKEND_HEALTH", pair["health"])
+        + b"partial",
+    ]
+    clock = [0.0]
+
+    def selector(_read, _write, _error, timeout):
+        if chunks:
+            return [41], [], []
+        clock[0] += timeout
+        return [], [], []
+
+    with pytest.raises(EvidenceError, match="incomplete"):
+        evidence_tool._read_serial_status_response(
+            41,
+            role="scanner0",
+            expected_mac="AA:BB:CC:DD:EE:01",
+            expected_boot_id=100,
+            timeout_s=1,
+            buffer=bytearray(),
+            line_sink=lambda _wire, _decoded: None,
+            monotonic=lambda: clock[0],
+            selector=selector,
+            reader=lambda _fd, _size: chunks.pop(0),
+            writer=lambda _fd, payload: len(payload),
+        )
+
+
+@pytest.mark.parametrize(
+    ("mutation", "match"),
+    (
+        ("mac", "MAC"),
+        ("role", "role/profile"),
+        ("target", "identity"),
+        ("boot", "boot_id"),
+        ("secret", "secret"),
+    ),
+)
+def test_serial_status_pair_rejects_wrong_binding_or_secret(mutation, match):
+    pair = serial_status_pair("scanner0")
+    if mutation == "mac":
+        pair["health"]["mac"] = "AA:BB:CC:DD:EE:09"
+    elif mutation == "role":
+        pair["health"]["role"] = "wifi_primary"
+    elif mutation == "target":
+        pair["boot"]["target"] = "badge-defcon34"
+    elif mutation == "boot":
+        pair["health"]["boot_id"] = 101
+        pair["health"]["command_ingress_boot_id"] = 101
+    else:
+        pair["health"]["psk"] = "must-not-survive"
+
+    with pytest.raises(EvidenceError, match=match):
+        evidence_tool._validate_serial_status_pair(
+            "scanner0", "AA:BB:CC:DD:EE:01", 100, pair,
+        )
+
+
+def test_serial_log_rejects_secret_before_write_and_preserves_panic(tmp_path):
+    path = tmp_path / "serial.log"
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT, 0o600)
+    try:
+        with pytest.raises(EvidenceError, match="secret"):
+            evidence_tool._append_received_serial_line(
+                descriptor, b"wifi-psk=must-not-survive\n", "wifi-psk=redacted",
+            )
+        assert os.fstat(descriptor).st_size == 0
+        with pytest.raises(EvidenceError, match="panic"):
+            evidence_tool._append_received_serial_line(
+                descriptor, b"Guru Meditation panic\n", "Guru Meditation panic",
+            )
+    finally:
+        os.close(descriptor)
+    assert path.read_bytes() == b"Guru Meditation panic\n"
+
+
+def test_serial_log_cumulative_bound_fails_before_growth(tmp_path):
+    path = tmp_path / "serial.log"
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT, 0o600)
+    try:
+        os.ftruncate(descriptor, evidence_tool.SERIAL_LOG_MAX_BYTES - 1)
+        with pytest.raises(EvidenceError, match="cumulative"):
+            evidence_tool._append_received_serial_line(
+                descriptor, b"ok\n", "ok",
+            )
+        assert os.fstat(descriptor).st_size == evidence_tool.SERIAL_LOG_MAX_BYTES - 1
+    finally:
+        os.close(descriptor)
+
+
+def test_serial_capture_state_binding_rejects_operator_port_or_mac(tmp_path):
+    state = write_state(tmp_path / ".canary" / "evidence" / "canary.jsonl")
+    for port, mac in (
+        ("/dev/cu.wrong", "AA:BB:CC:DD:EE:01"),
+        ("/dev/cu.scanner0", "AA:BB:CC:DD:EE:09"),
+    ):
+        with pytest.raises(EvidenceError, match="inventory"):
+            evidence_tool._load_serial_capture_binding(
+                state,
+                role="scanner0",
+                port=port,
+                expected_mac=mac,
+            )
+
+
+def test_serial_capture_owns_one_fd_logs_between_polls_and_fsyncs_role_file(tmp_path):
+    state = write_state(tmp_path / ".canary" / "evidence" / "canary.jsonl")
+    output_dir = tmp_path / ".canary" / "serial-logs"
+    clock = [0.0]
+    opened: list[str] = []
+    closed: list[int] = []
+    status_calls: list[int] = []
+    drain_calls: list[float] = []
+
+    def status_reader(descriptor, **kwargs):
+        assert descriptor == 41
+        status_calls.append(descriptor)
+        pair = serial_status_pair("scanner0")
+        for prefix, key in (
+            ("FOF_BACKEND_BOOT", "boot"),
+            ("FOF_BACKEND_HEALTH", "health"),
+        ):
+            wire = serial_wire_line(prefix, pair[key])
+            kwargs["line_sink"](wire, wire.rstrip(b"\n").decode())
+        return pair
+
+    def drainer(_descriptor, **kwargs):
+        drain_calls.append(kwargs["deadline"])
+        wire = b"background diagnostic ok\n"
+        kwargs["line_sink"](wire, wire.rstrip(b"\n").decode())
+        clock[0] = kwargs["deadline"]
+
+    result = evidence_tool.capture_serial_status(
+        role="scanner0",
+        port="/dev/cu.scanner0",
+        expected_mac="AA:BB:CC:DD:EE:01",
+        state_path=state,
+        output_dir=output_dir,
+        duration_s=60,
+        interval_s=30,
+        response_timeout_s=10,
+        opener=lambda port: opened.append(port) or 41,
+        closer=lambda descriptor: closed.append(descriptor),
+        status_reader=status_reader,
+        drainer=drainer,
+        monotonic=lambda: clock[0],
+    )
+
+    log = output_dir / "scanner0.log"
+    raw = log.read_bytes()
+    assert result["samples"] == 3
+    assert len(status_calls) == 3
+    assert drain_calls == [0.25, 30.25, 60.25]
+    assert raw.count(b"FOF_BACKEND_BOOT ") == 3
+    assert raw.count(b"FOF_BACKEND_HEALTH ") == 3
+    assert raw.count(b"background diagnostic ok\n") == 3
+    assert stat.S_IMODE(output_dir.stat().st_mode) == 0o700
+    assert stat.S_IMODE(log.stat().st_mode) == 0o600
+    assert opened == ["/dev/cu.scanner0"]
+    assert closed == [41]
+
+
+def test_serial_capture_rejects_state_bound_boot_drift(tmp_path):
+    state = write_state(tmp_path / ".canary" / "evidence" / "canary.jsonl")
+    output_dir = tmp_path / ".canary" / "serial-logs"
+
+    def status_reader(_descriptor, **kwargs):
+        pair = serial_status_pair("scanner0", boot_id=101)
+        for prefix, key in (
+            ("FOF_BACKEND_BOOT", "boot"),
+            ("FOF_BACKEND_HEALTH", "health"),
+        ):
+            wire = serial_wire_line(prefix, pair[key])
+            kwargs["line_sink"](wire, wire.rstrip(b"\n").decode())
+        return pair
+
+    with pytest.raises(EvidenceError, match="boot_id|BOOT"):
+        evidence_tool.capture_serial_status(
+            role="scanner0",
+            port="/dev/cu.scanner0",
+            expected_mac="AA:BB:CC:DD:EE:01",
+            state_path=state,
+            output_dir=output_dir,
+            duration_s=1,
+            interval_s=30,
+            response_timeout_s=10,
+            opener=lambda _port: 41,
+            closer=lambda _descriptor: None,
+            status_reader=status_reader,
+            drainer=lambda _descriptor, **_kwargs: None,
+            monotonic=lambda: 0.0,
+        )
+
+
+def test_serial_capture_rejects_interval_over_sixty_before_open(tmp_path):
+    opened: list[str] = []
+    with pytest.raises(EvidenceError, match="duration/interval/timeout"):
+        evidence_tool.capture_serial_status(
+            role="scanner0",
+            port="/dev/cu.scanner0",
+            expected_mac="AA:BB:CC:DD:EE:01",
+            state_path=tmp_path / ".canary" / "missing.json",
+            output_dir=tmp_path / ".canary" / "serial-logs",
+            duration_s=60,
+            interval_s=61,
+            response_timeout_s=10,
+            opener=lambda port: opened.append(port) or 41,
+        )
+    assert opened == []
 
 
 def test_evidence_snapshot_is_canonical_redacted_and_bound_to_device(tmp_path):
