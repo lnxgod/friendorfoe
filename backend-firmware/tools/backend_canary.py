@@ -3164,6 +3164,8 @@ def stage_release_parts(
 def open_verified_staged_release_parts(
     challenge: ApprovalChallenge,
     artifact: VerifiedReleaseArtifact,
+    *,
+    detach_paths: bool = False,
 ) -> Iterator[tuple[tuple[StagedReleasePart, ...], tuple[int, ...]]]:
     """Hold the exact verified part inodes open through the child write."""
     if challenge.staging_directory is None or challenge.staged_parts is None:
@@ -3254,6 +3256,47 @@ def open_verified_staged_release_parts(
             ranges.append((part.offset, size))
         validate_flash_ranges(sorted(ranges))
         ordered = tuple(sorted(opened, key=lambda item: item[0].offset))
+        if detach_paths:
+            for part, descriptor in ordered:
+                descriptor_stat = os.fstat(descriptor)
+                path_stat = os.stat(
+                    part.name,
+                    dir_fd=directory_fd,
+                    follow_symlinks=False,
+                )
+                expected_stat = (
+                    part.device,
+                    part.inode,
+                    part.mode,
+                    part.uid,
+                    part.nlink,
+                    part.mtime_ns,
+                    part.ctime_ns,
+                )
+                for observed in (descriptor_stat, path_stat):
+                    binding = (
+                        observed.st_dev,
+                        observed.st_ino,
+                        stat.S_IMODE(observed.st_mode),
+                        observed.st_uid,
+                        observed.st_nlink,
+                        observed.st_mtime_ns,
+                        observed.st_ctime_ns,
+                    )
+                    if not stat.S_ISREG(observed.st_mode) or binding != expected_stat:
+                        raise CanaryReleaseError(
+                            f"staged release alias changed: {part.name}"
+                        )
+                os.unlink(part.name, dir_fd=directory_fd)
+                if os.fstat(descriptor).st_nlink != 0:
+                    raise CanaryReleaseError(
+                        f"staged release retained a writable alias: {part.name}"
+                    )
+            os.fsync(directory_fd)
+            if os.listdir(directory_fd):
+                raise CanaryReleaseError(
+                    "staged release directory was recreated during detach"
+                )
         yield (
             tuple(item[0] for item in ordered),
             tuple(item[1] for item in ordered),
@@ -3490,7 +3533,7 @@ def execute_initial_flash(
         # inherited /dev/fd handles, so a same-UID pathname replacement cannot
         # change the bytes after this digest check.
         with open_verified_staged_release_parts(
-            challenge, artifact
+            challenge, artifact, detach_paths=True
         ) as (staged_parts, staged_fds):
             partition_index = next(
                 index
@@ -3728,30 +3771,101 @@ class CanaryState:
     ota_probes: dict[str, OtaEvidence] = field(default_factory=dict)
     ota_probe_catalog_sha256: dict[str, str] = field(default_factory=dict)
     post_backup_reboot: dict[str, Any] | None = None
+    _state_parent_device: int | None = field(
+        default=None, repr=False, compare=False
+    )
+    _state_parent_inode: int | None = field(
+        default=None, repr=False, compare=False
+    )
+    _state_file_device: int | None = field(
+        default=None, repr=False, compare=False
+    )
+    _state_file_inode: int | None = field(
+        default=None, repr=False, compare=False
+    )
+    _state_file_mode: int | None = field(
+        default=None, repr=False, compare=False
+    )
+    _state_file_uid: int | None = field(
+        default=None, repr=False, compare=False
+    )
+    _state_file_nlink: int | None = field(
+        default=None, repr=False, compare=False
+    )
 
     @classmethod
     def create(
         cls, path: Path, *, toolchain: ToolchainReceipt | None = None
     ) -> "CanaryState":
-        destination = path.expanduser().resolve()
-        if destination.exists():
+        destination = Path(os.path.abspath(path.expanduser()))
+        if os.path.lexists(destination):
             raise CanarySecurityError("canary state already exists")
+        try:
+            destination.parent.mkdir(parents=True, mode=0o700)
+        except FileExistsError:
+            pass
         state = cls(toolchain=toolchain, state_path=str(destination))
         state.save(initial=True)
         return state
 
     @classmethod
     def load(cls, path: Path, *, now: int | None = None) -> "CanaryState":
-        destination = path.expanduser().resolve()
-        _private_mode(destination.parent, 0o700, "canary state directory")
-        _private_mode(destination, 0o600, "canary state")
+        destination = Path(os.path.abspath(path.expanduser()))
+        nofollow = getattr(os, "O_NOFOLLOW", 0)
+        directory_flag = getattr(os, "O_DIRECTORY", 0)
+        parent_fd = -1
+        state_fd = -1
         try:
-            value = _load_json_no_duplicates(destination.read_text("utf-8"))
-        except OSError as exc:
+            parent_fd = os.open(
+                destination.parent,
+                os.O_RDONLY | directory_flag | nofollow,
+            )
+            parent_stat = os.fstat(parent_fd)
+            if (
+                not stat.S_ISDIR(parent_stat.st_mode)
+                or stat.S_IMODE(parent_stat.st_mode) != 0o700
+            ):
+                raise CanarySecurityError(
+                    "canary state directory must have mode 0700"
+                )
+            state_fd = os.open(
+                destination.name,
+                os.O_RDONLY | nofollow,
+                dir_fd=parent_fd,
+            )
+            state_stat = os.fstat(state_fd)
+            if (
+                not stat.S_ISREG(state_stat.st_mode)
+                or stat.S_IMODE(state_stat.st_mode) != 0o600
+                or state_stat.st_nlink != 1
+            ):
+                raise CanarySecurityError(
+                    "canary state must be a private unique regular file"
+                )
+            raw = bytearray()
+            while True:
+                chunk = os.read(state_fd, 1024 * 1024)
+                if not chunk:
+                    break
+                raw.extend(chunk)
+            value = _load_json_no_duplicates(bytes(raw).decode("utf-8"))
+        except (OSError, UnicodeError) as exc:
             raise CanarySecurityError("unable to read canary state") from exc
+        finally:
+            if state_fd >= 0:
+                os.close(state_fd)
+            if parent_fd >= 0:
+                os.close(parent_fd)
         if not isinstance(value, dict) or value.get("schema") != 1:
             raise CanarySecurityError("canary state schema is not exactly 1")
         state = cls._from_dict(value, destination)
+        state._state_parent_device = parent_stat.st_dev
+        state._state_parent_inode = parent_stat.st_ino
+        state._state_file_device = state_stat.st_dev
+        state._state_file_inode = state_stat.st_ino
+        state._state_file_mode = stat.S_IMODE(state_stat.st_mode)
+        state._state_file_uid = state_stat.st_uid
+        state._state_file_nlink = state_stat.st_nlink
         state._reconcile_challenge_lifecycle(
             int(time.time()) if now is None else now
         )
@@ -3875,26 +3989,160 @@ class CanaryState:
     def save(self, *, initial: bool = False) -> None:
         if self.state_path is None:
             return
-        destination = Path(self.state_path)
-        parent = secure_directory(destination.parent)
-        if not initial and destination.exists():
-            _private_mode(destination, 0o600, "canary state")
-        temporary = parent / f".{destination.name}.{secrets.token_hex(8)}.tmp"
-        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        destination = Path(os.path.abspath(Path(self.state_path).expanduser()))
+        if initial and not os.path.lexists(destination.parent):
+            destination.parent.mkdir(parents=True, mode=0o700)
+        nofollow = getattr(os, "O_NOFOLLOW", 0)
+        directory_flag = getattr(os, "O_DIRECTORY", 0)
+        parent_fd = -1
+        current_fd = -1
+        temporary_fd = -1
+        replacement_fd = -1
+        temporary_name = f".{destination.name}.{secrets.token_hex(8)}.tmp"
+        temporary_exists = False
         try:
+            parent_fd = os.open(
+                destination.parent,
+                os.O_RDONLY | directory_flag | nofollow,
+            )
+            parent_stat = os.fstat(parent_fd)
+            if (
+                not stat.S_ISDIR(parent_stat.st_mode)
+                or stat.S_IMODE(parent_stat.st_mode) != 0o700
+            ):
+                raise CanarySecurityError(
+                    "canary state directory must have mode 0700"
+                )
+            if self._state_parent_device is not None and (
+                parent_stat.st_dev,
+                parent_stat.st_ino,
+            ) != (
+                self._state_parent_device,
+                self._state_parent_inode,
+            ):
+                raise CanarySecurityError("canary state parent binding changed")
+            try:
+                current_fd = os.open(
+                    destination.name,
+                    os.O_RDONLY | nofollow,
+                    dir_fd=parent_fd,
+                )
+            except FileNotFoundError:
+                if not initial or self._state_file_inode is not None:
+                    raise CanarySecurityError("bound canary state disappeared")
+            else:
+                current_stat = os.fstat(current_fd)
+                current_binding = (
+                    current_stat.st_dev,
+                    current_stat.st_ino,
+                    stat.S_IMODE(current_stat.st_mode),
+                    current_stat.st_uid,
+                    current_stat.st_nlink,
+                )
+                expected_binding = (
+                    self._state_file_device,
+                    self._state_file_inode,
+                    self._state_file_mode,
+                    self._state_file_uid,
+                    self._state_file_nlink,
+                )
+                if initial:
+                    raise CanarySecurityError("canary state already exists")
+                if (
+                    not stat.S_ISREG(current_stat.st_mode)
+                    or current_binding != expected_binding
+                ):
+                    raise CanarySecurityError("canary state file binding changed")
+                os.close(current_fd)
+                current_fd = -1
+            temporary_fd = os.open(
+                temporary_name,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | nofollow,
+                0o600,
+                dir_fd=parent_fd,
+            )
+            temporary_exists = True
             payload = json.dumps(self._dict(), sort_keys=True, indent=2).encode("utf-8") + b"\n"
-            _write_all(descriptor, payload)
-            os.fsync(descriptor)
+            _write_all(temporary_fd, payload)
+            os.fsync(temporary_fd)
+            temporary_stat = os.fstat(temporary_fd)
+            if (
+                not stat.S_ISREG(temporary_stat.st_mode)
+                or stat.S_IMODE(temporary_stat.st_mode) != 0o600
+                or temporary_stat.st_nlink != 1
+            ):
+                raise CanarySecurityError(
+                    "canary state temporary is not private and unique"
+                )
+            os.close(temporary_fd)
+            temporary_fd = -1
+            if not initial:
+                current_fd = os.open(
+                    destination.name,
+                    os.O_RDONLY | nofollow,
+                    dir_fd=parent_fd,
+                )
+                current_stat = os.fstat(current_fd)
+                if (
+                    current_stat.st_dev,
+                    current_stat.st_ino,
+                    stat.S_IMODE(current_stat.st_mode),
+                    current_stat.st_uid,
+                    current_stat.st_nlink,
+                ) != (
+                    self._state_file_device,
+                    self._state_file_inode,
+                    self._state_file_mode,
+                    self._state_file_uid,
+                    self._state_file_nlink,
+                ):
+                    raise CanarySecurityError("canary state file binding changed")
+                os.close(current_fd)
+                current_fd = -1
+            os.replace(
+                temporary_name,
+                destination.name,
+                src_dir_fd=parent_fd,
+                dst_dir_fd=parent_fd,
+            )
+            temporary_exists = False
+            os.fsync(parent_fd)
+            replacement_fd = os.open(
+                destination.name,
+                os.O_RDONLY | nofollow,
+                dir_fd=parent_fd,
+            )
+            replacement_stat = os.fstat(replacement_fd)
+            if (
+                not stat.S_ISREG(replacement_stat.st_mode)
+                or stat.S_IMODE(replacement_stat.st_mode) != 0o600
+                or replacement_stat.st_nlink != 1
+            ):
+                raise CanarySecurityError(
+                    "saved canary state is not private and unique"
+                )
+            self._state_parent_device = parent_stat.st_dev
+            self._state_parent_inode = parent_stat.st_ino
+            self._state_file_device = replacement_stat.st_dev
+            self._state_file_inode = replacement_stat.st_ino
+            self._state_file_mode = stat.S_IMODE(replacement_stat.st_mode)
+            self._state_file_uid = replacement_stat.st_uid
+            self._state_file_nlink = replacement_stat.st_nlink
+        except OSError as exc:
+            raise CanarySecurityError("unable to save exact canary state") from exc
         finally:
-            os.close(descriptor)
-        os.chmod(temporary, 0o600)
-        os.replace(temporary, destination)
-        os.chmod(destination, 0o600)
-        directory_fd = os.open(parent, os.O_RDONLY)
-        try:
-            os.fsync(directory_fd)
-        finally:
-            os.close(directory_fd)
+            if replacement_fd >= 0:
+                os.close(replacement_fd)
+            if temporary_fd >= 0:
+                os.close(temporary_fd)
+            if current_fd >= 0:
+                os.close(current_fd)
+            if temporary_exists and parent_fd >= 0:
+                with contextlib.suppress(OSError):
+                    os.unlink(temporary_name, dir_fd=parent_fd)
+                    os.fsync(parent_fd)
+            if parent_fd >= 0:
+                os.close(parent_fd)
 
     def _touch(self) -> None:
         self.generation += 1
@@ -4382,14 +4630,28 @@ class CanaryState:
         """Retire expired/consumed crash remnants before returning loaded state."""
         changed = False
         for challenge_id, challenge in list(self.challenges.items()):
-            if challenge.consumed_at is None and now <= challenge.expires_at:
+            expired = challenge.consumed_at is None and now > challenge.expires_at
+            has_hash = challenge_id in self.challenge_hashes
+            has_receipt = (
+                challenge_id in self.challenge_receipts
+                or challenge_id in self.challenge_receipt_bindings
+            )
+            has_staging = (
+                challenge.staging_directory is not None
+                or challenge.staged_parts is not None
+            )
+            if not expired and (
+                challenge.consumed_at is None
+                or not (has_hash or has_receipt or has_staging)
+            ):
                 continue
-            consumed_at = challenge.consumed_at
-            if consumed_at is None:
-                consumed_at = now
-            self.challenge_hashes.pop(challenge_id, None)
-            self._remove_receipt(challenge_id)
-            self._remove_staging(challenge_id)
+            consumed_at = now if expired else challenge.consumed_at
+            if has_hash:
+                self.challenge_hashes.pop(challenge_id, None)
+            if has_receipt:
+                self._remove_receipt(challenge_id)
+            if has_staging:
+                self._remove_staging(challenge_id)
             self.challenges[challenge_id] = replace(
                 challenge,
                 consumed_at=consumed_at,
@@ -4860,15 +5122,38 @@ CANARY_ROOT = Path(__file__).resolve().parents[1] / ".canary"
 
 
 def _require_canary_path(path: Path, *, directory: bool = False) -> Path:
-    root = CANARY_ROOT.resolve()
-    resolved = path.expanduser().resolve()
-    if resolved != root and root not in resolved.parents:
+    root = Path(os.path.abspath(CANARY_ROOT.expanduser()))
+    candidate = Path(os.path.abspath(path.expanduser()))
+    if candidate != root and root not in candidate.parents:
         raise CanarySecurityError(
             f"sensitive canary path must remain beneath ignored {root}"
         )
-    if resolved == root and not directory:
+    if candidate == root and not directory:
         raise CanarySecurityError("a concrete file beneath .canary is required")
-    return resolved
+    if os.path.lexists(root):
+        nofollow = getattr(os, "O_NOFOLLOW", 0)
+        directory_flag = getattr(os, "O_DIRECTORY", 0)
+        descriptor = -1
+        try:
+            descriptor = os.open(
+                root, os.O_RDONLY | directory_flag | nofollow
+            )
+            observed = os.fstat(descriptor)
+            if (
+                not stat.S_ISDIR(observed.st_mode)
+                or stat.S_IMODE(observed.st_mode) != 0o700
+            ):
+                raise CanarySecurityError(
+                    "lexical .canary root is not an exact private directory"
+                )
+        except OSError as exc:
+            raise CanarySecurityError(
+                "lexical .canary root cannot be opened without following links"
+            ) from exc
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+    return candidate
 
 
 def _load_state(path: str | Path) -> CanaryState:

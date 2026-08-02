@@ -10,6 +10,7 @@ import subprocess
 
 import pytest
 
+import tools.backend_canary as backend_canary
 from tools.backend_canary import (
     BACKEND_PARTITIONS,
     BOARD_ROLES,
@@ -556,6 +557,42 @@ def test_state_persistence_is_private_atomic_and_token_hash_only(tmp_path: Path)
     assert "token_urlsafe" not in path.read_text(encoding="utf-8")
 
 
+def test_state_save_rejects_replaced_parent_symlink_without_touching_target(
+    tmp_path: Path,
+):
+    state_path = tmp_path / ".canary/state.json"
+    state = CanaryState.create(state_path, toolchain=toolchain())
+    bound_parent = tmp_path / ".canary-bound"
+    state_path.parent.rename(bound_parent)
+    outside = tmp_path / "outside-state"
+    outside.mkdir(mode=0o700)
+    sentinel = private_file(outside / state_path.name, b"must survive")
+    state_path.parent.symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(CanarySecurityError, match="exact canary state"):
+        state._touch()
+
+    assert sentinel.read_bytes() == b"must survive"
+    assert (bound_parent / state_path.name).exists()
+
+
+def test_canary_path_rejects_preexisting_lexical_root_symlink(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    root = tmp_path / "backend-firmware/.canary"
+    root.parent.mkdir()
+    outside = tmp_path / "outside-root"
+    outside.mkdir(mode=0o700)
+    root.symlink_to(outside, target_is_directory=True)
+    monkeypatch.setattr(backend_canary, "CANARY_ROOT", root)
+
+    with pytest.raises(CanarySecurityError, match="without following links"):
+        backend_canary._require_canary_path(root / "state.json")
+
+    assert list(outside.iterdir()) == []
+
+
 def test_redaction_removes_secret_keys_recursively():
     payload = {
         "password": "wifi",
@@ -783,7 +820,7 @@ def test_initial_flash_writes_only_frozen_challenge_parts(tmp_path: Path):
             assert challenge is not None
             for part in challenge.staged_parts or ():
                 staged = Path(part.path)
-                staged.unlink()
+                assert not os.path.lexists(staged)
                 staged.write_bytes(b"same-uid-path-replacement")
                 staged.chmod(0o600)
             inherited_bytes.extend(
@@ -840,6 +877,9 @@ def test_initial_flash_writes_only_frozen_challenge_parts(tmp_path: Path):
         calls[write_index - 1].index("--port") + 1
     ] == "/dev/cu.usbmodem-scanner0"
     assert not staged_directory.exists()
+    assert state.boards["scanner0"].status == (
+        "initial-flashed-awaiting-provisional"
+    )
 
 
 def test_staging_cleanup_never_follows_replaced_challenge_symlink(tmp_path: Path):
@@ -1067,6 +1107,13 @@ def test_load_cleans_staging_left_after_consumed_challenge(tmp_path: Path):
     assert retired.staging_directory is None
     assert retired.staged_parts is None
     assert not staging.exists()
+    first_generation = loaded.generation
+    first_bytes = state_path.read_bytes()
+
+    loaded_again = CanaryState.load(state_path, now=103)
+
+    assert loaded_again.generation == first_generation
+    assert state_path.read_bytes() == first_bytes
 
 
 def test_provisional_requires_exact_backend_identity_mac_and_valid_direct_usb_ota():
