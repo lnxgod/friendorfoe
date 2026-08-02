@@ -78,10 +78,27 @@ ZERO_QUEUE_PHASES = frozenset({"baseline", "network-recovery"})
 HEALTHY_LED_PHASES = frozenset({
     "baseline", "network-recovery", "scanner0-reconnected", "fatal-recovered",
 })
+THREAT_SNAPSHOT_LEDS = {
+    "drone": "drone",
+    "meta": "meta",
+    "drone-meta": "drone_meta",
+}
 
 SECRET_KEY = re.compile(
     r"password|secret|credential|token|authorization|cookie|set-cookie|api_key",
     re.IGNORECASE,
+)
+NORMALIZED_SECRET_MARKERS = (
+    "password",
+    "secret",
+    "credential",
+    "token",
+    "authorization",
+    "cookie",
+    "setcookie",
+    "apikey",
+    "wifipass",
+    "appass",
 )
 RAW_BLE_KEY = re.compile(
     r"^(?:value_hex|ble_raw(?:_.*)?|raw_ble(?:_.*)?|characteristic_value|"
@@ -159,7 +176,12 @@ def _decode_json(raw: bytes, label: str) -> Any:
 
 
 def _is_forbidden_key(key: str) -> bool:
-    return bool(SECRET_KEY.search(key) or RAW_BLE_KEY.search(key))
+    normalized = re.sub(r"[^a-z0-9]", "", key.casefold())
+    return bool(
+        SECRET_KEY.search(key)
+        or any(marker in normalized for marker in NORMALIZED_SECRET_MARKERS)
+        or RAW_BLE_KEY.search(key)
+    )
 
 
 def contains_secret_key(value: Any) -> bool:
@@ -296,8 +318,10 @@ def _create_ready_file(
         )
         _write_all(descriptor, _canonical_json_bytes(ready) + b"\n")
         os.fsync(descriptor)
+        prepared_stat = os.fstat(descriptor)
     finally:
         os.close(descriptor)
+    published_binding: tuple[int, int] | None = None
     try:
         if int(now() * 1000) >= ready_cutoff_ms:
             raise EvidenceError("ready cutoff elapsed before atomic publication")
@@ -305,17 +329,32 @@ def _create_ready_file(
             os.link(temporary, destination, follow_symlinks=False)
         except FileExistsError as exc:
             raise EvidenceError("ready file already exists") from exc
+        published_binding = (prepared_stat.st_dev, prepared_stat.st_ino)
         _fsync_directory(parent)
         if int(now() * 1000) >= ready_cutoff_ms:
-            destination.unlink()
-            _fsync_directory(parent)
             raise EvidenceError("ready cutoff elapsed during atomic publication")
         temporary.unlink()
         _fsync_directory(parent)
         return ready_cutoff_ms
     except BaseException:
+        if published_binding is not None:
+            try:
+                destination_stat = destination.lstat()
+            except FileNotFoundError:
+                pass
+            else:
+                if (
+                    not stat.S_ISLNK(destination_stat.st_mode)
+                    and (destination_stat.st_dev, destination_stat.st_ino)
+                    == published_binding
+                ):
+                    destination.unlink()
+                    with contextlib.suppress(OSError):
+                        _fsync_directory(parent)
         with contextlib.suppress(OSError):
             temporary.unlink()
+        with contextlib.suppress(OSError):
+            _fsync_directory(parent)
         raise
     _private_mode(destination, 0o600, "ready file")
 
@@ -909,6 +948,14 @@ class CanaryEvidenceRecorder:
             raise EvidenceError(f"{phase} requires an empty upload queue")
         if phase in HEALTHY_LED_PHASES and backend["led_state"] != "healthy":
             raise EvidenceError(f"{phase} requires exact healthy LED state")
+        expected_threat_led = THREAT_SNAPSHOT_LEDS.get(phase)
+        if (
+            expected_threat_led is not None
+            and backend["led_state"] != expected_threat_led
+        ):
+            raise EvidenceError(
+                f"{phase} requires exact {expected_threat_led} LED state"
+            )
         record = redact_secrets({
             "schema": 1,
             "record_type": "snapshot",
@@ -1188,8 +1235,8 @@ def _serial_log_receipt(
         )
     receipts: list[dict[str, Any]] = []
     forbidden_content = re.compile(
-        rb"password|secret|credential|token|authorization|cookie|"
-        rb"set[-_]?cookie|api[_-]?key|value[_-]?hex|ble[_-]?raw|"
+        rb"password|wifi[_-]?pass|ap[_-]?pass|secret|credential|token|"
+        rb"authorization|cookie|set[-_]?cookie|api[_-]?key|value[_-]?hex|ble[_-]?raw|"
         rb"raw[_-]?ble|characteristic[_-]?value|ble[_-]?apple[_-]?auth|"
         rb"ble[_-]?auth[_-]?payload|raw[_-]?auth[_-]?payload|"
         rb"auth(?:entication)?[_-]?value|watchdog|guru meditation|panic|"
@@ -1385,8 +1432,12 @@ def _validate_soak_backend(value: Any) -> dict[str, Any]:
             raise EvidenceError("soak scanner radio_healthy changed")
         if item.get("rollback_state") != "valid":
             raise EvidenceError("soak scanner rollback state changed")
+        if item.get("ota_state") != "idle":
+            raise EvidenceError("soak scanner OTA state is not idle")
         if item.get("final_health") is not True:
             raise EvidenceError("soak scanner final_health evidence is missing")
+    if backend.get("led_state") != "healthy":
+        raise EvidenceError("soak LED state is not healthy")
     queue = _required_mapping(backend.get("upload_queue"), "soak upload queue")
     for field in (
         "depth_batches", "overflow_dropped_batches", "quarantined_batches",
@@ -1422,16 +1473,39 @@ def verify_soak(
         if contains_secret_key(record):
             raise EvidenceError("soak evidence contains a secret or raw BLE key")
         records.append(record)
-    monitor = [row for row in records if row.get("record_type") == "monitor"]
+    monitor_indices = [
+        index
+        for index, row in enumerate(records)
+        if row.get("record_type") == "monitor"
+    ]
+    monitor = [records[index] for index in monitor_indices]
     if len(monitor) < 2:
         raise EvidenceError("soak requires at least two monitor samples")
-    recovery = [
-        row for row in records
+    recovery_indices = [
+        index
+        for index, row in enumerate(records)
         if row.get("phase") == "network-recovery"
     ]
-    if not recovery:
+    if not recovery_indices:
         raise EvidenceError("network-recovery evidence is required before soak")
-    recovered_backend = _validate_soak_backend(recovery[-1].get("backend"))
+    if any(index >= monitor_indices[0] for index in recovery_indices):
+        raise EvidenceError("network-recovery evidence must precede every monitor")
+    recovery = records[recovery_indices[-1]]
+    if recovery.get("record_type") != "snapshot":
+        raise EvidenceError("network-recovery evidence is not a snapshot")
+    monitor_device_id = monitor[0].get("device_id")
+    if (
+        not isinstance(monitor_device_id, str)
+        or not monitor_device_id
+        or recovery.get("device_id") != monitor_device_id
+    ):
+        raise EvidenceError("network-recovery device ID does not match soak")
+    recovered_at = _required_int(
+        recovery.get("observed_at_ms"),
+        "network-recovery observed time",
+        minimum=MIN_EPOCH_MS,
+    )
+    recovered_backend = _validate_soak_backend(recovery.get("backend"))
     if recovered_backend["upload_queue"]["depth_batches"] != 0:
         raise EvidenceError("network recovery left an unfinished queue")
 
@@ -1439,23 +1513,39 @@ def verify_soak(
     last_ms = _required_int(monitor[-1].get("observed_at_ms"), "soak end time", minimum=MIN_EPOCH_MS)
     if last_ms < first_ms:
         raise EvidenceError("soak timestamps are out of order")
+    if recovered_at > first_ms:
+        raise EvidenceError("network recovery timestamp is after soak start")
     duration_ms = last_ms - first_ms
     if duration_ms < expected_duration_s * 1000:
         raise EvidenceError("soak duration is shorter than required")
 
-    baseline_backend: dict[str, Any] | None = None
     previous_observed = first_ms
     previous_heartbeat: int | None = None
-    previous_fifo = -1
-    previous_uptime = -1
+    previous_fifo = recovered_backend["fifo_sequence"]
+    previous_uptime = recovered_backend["health"]["uptime_ms"]
     observed_max_gap = 0
-    baseline_drops = baseline_quarantines = 0
-    baseline_continuity: dict[str, Any] | None = None
-    baseline_identity: tuple[Any, ...] | None = None
-    baseline_boots: tuple[int, ...] | None = None
-    baseline_scanner_bindings: tuple[tuple[Any, ...], ...] | None = None
+    recovery_queue = recovered_backend["upload_queue"]
+    baseline_drops = recovery_queue["overflow_dropped_batches"]
+    baseline_quarantines = recovery_queue["quarantined_batches"]
+    baseline_continuity: dict[str, Any] | None = dict(
+        recovered_backend["continuity"]
+    )
+    baseline_identity: tuple[Any, ...] | None = tuple(
+        sorted(recovered_backend["identity"].items())
+    )
+    baseline_boots: tuple[int, ...] | None = (
+        recovered_backend["uplink_boot_id"],
+        *(item["boot_id"] for item in recovered_backend["scanners"]),
+    )
+    baseline_scanner_bindings: tuple[tuple[Any, ...], ...] | None = tuple(
+        (
+            item["slot"], item["mac"], item["boot_id"],
+            item["profile"], item["role_generation"],
+        )
+        for item in recovered_backend["scanners"]
+    )
     for row in monitor:
-        if row.get("device_id") != monitor[0].get("device_id"):
+        if row.get("device_id") != monitor_device_id:
             raise EvidenceError("soak device ID changed")
         observed = _required_int(row.get("observed_at_ms"), "soak observed time", minimum=MIN_EPOCH_MS)
         heartbeat = _required_int(row.get("heartbeat_at_ms"), "soak heartbeat time", minimum=MIN_EPOCH_MS)
@@ -1503,15 +1593,7 @@ def verify_soak(
         )
         continuity = dict(backend["continuity"])
         queue = backend["upload_queue"]
-        if baseline_backend is None:
-            baseline_backend = backend
-            baseline_identity = identity_key
-            baseline_boots = boots
-            baseline_scanner_bindings = scanner_bindings
-            baseline_continuity = continuity
-            baseline_drops = queue["overflow_dropped_batches"]
-            baseline_quarantines = queue["quarantined_batches"]
-        elif (
+        if (
             identity_key != baseline_identity
             or boots != baseline_boots
             or continuity != baseline_continuity
@@ -1527,11 +1609,8 @@ def verify_soak(
     final_queue = _validate_soak_backend(monitor[-1]["backend"])["upload_queue"]["depth_batches"]
     if final_queue != 0:
         raise EvidenceError("soak ended with an unfinished queue")
-    device_id = monitor[0].get("device_id")
-    if not isinstance(device_id, str) or not device_id:
-        raise EvidenceError("soak device ID is missing")
     return SoakResult(
-        device_id=device_id,
+        device_id=monitor_device_id,
         duration_s=duration_ms // 1000,
         samples=len(monitor),
         max_heartbeat_gap_s=observed_max_gap,

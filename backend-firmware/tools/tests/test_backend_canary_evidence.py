@@ -7,6 +7,7 @@ import stat
 
 import pytest
 
+import tools.backend_canary_evidence as evidence_tool
 from tools.backend_canary_evidence import (
     CanaryEvidenceRecorder,
     EvidenceError,
@@ -16,6 +17,7 @@ from tools.backend_canary_evidence import (
     find_matching_detection,
     monitor_soak,
     normalize_history_timestamp_ms,
+    redact_secrets,
     validate_command_history,
     verify_soak,
     wait_for_command,
@@ -35,6 +37,16 @@ CONTINUITY = {
     "listener_model_schema": "rssi-ref-path-loss-v1",
     "listener_model_sha256": "a" * 64,
 }
+
+
+@pytest.mark.parametrize(
+    "key",
+    ("wifi_pass", "ap_pass", "api-key", "apiKey"),
+)
+def test_secret_key_aliases_are_normalized_for_rejection_and_redaction(key):
+    value = {key: "must-not-survive", "safe": 7}
+    assert contains_secret_key(value)
+    assert redact_secrets(value) == {"safe": 7}
 
 
 def scanner_fixture(slot: int, profile: str) -> dict:
@@ -233,7 +245,9 @@ def make_recorder(tmp_path: Path, fetcher: FakeBackend) -> CanaryEvidenceRecorde
 
 
 def test_evidence_snapshot_is_canonical_redacted_and_bound_to_device(tmp_path):
-    fetcher = FakeBackend()
+    status = nodes_status_fixture()
+    status["nodes"][0]["led_state"] = "drone"
+    fetcher = FakeBackend(nodes_status=status)
     recorder = make_recorder(tmp_path, fetcher)
 
     returned = recorder.snapshot("drone")
@@ -258,6 +272,27 @@ def test_evidence_snapshot_is_canonical_redacted_and_bound_to_device(tmp_path):
     assert stat.S_IMODE(path.parent.stat().st_mode) == 0o700
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
     assert {timeout for _url, timeout in fetcher.calls} == {10}
+
+
+@pytest.mark.parametrize(
+    ("phase", "expected_led"),
+    (("drone", "drone"), ("meta", "meta"), ("drone-meta", "drone_meta")),
+)
+def test_threat_snapshot_rejects_healthy_and_requires_exact_phase_led(
+    tmp_path,
+    phase,
+    expected_led,
+):
+    with pytest.raises(EvidenceError, match="exact"):
+        make_recorder(
+            tmp_path / "healthy", FakeBackend()
+        ).snapshot(phase)
+    status = nodes_status_fixture()
+    status["nodes"][0]["led_state"] = expected_led
+    record = make_recorder(
+        tmp_path / "exact", FakeBackend(nodes_status=status)
+    ).snapshot(phase)
+    assert record["backend"]["led_state"] == expected_led
 
 
 def test_snapshot_rejects_wrong_device_id(tmp_path):
@@ -687,6 +722,52 @@ def test_ready_file_is_absent_until_atomic_ready_publication(tmp_path):
     }
 
 
+def test_ready_publication_fsync_failure_removes_exact_visible_destination(
+    tmp_path,
+    monkeypatch,
+):
+    ready = tmp_path / ".canary/evidence/source.ready"
+    original_fsync = evidence_tool._fsync_directory
+    calls = 0
+
+    def fail_first_publication_fsync(path):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise OSError("injected publication fsync failure")
+        return original_fsync(path)
+
+    monkeypatch.setattr(
+        evidence_tool, "_fsync_directory", fail_first_publication_fsync
+    )
+    with pytest.raises(OSError, match="injected"):
+        _create_ready_file(
+            ready,
+            {"schema": 1, "kind": "drone"},
+            requested_after_ms=1_785_600_000_000,
+            now=lambda: 1_785_600_001.0,
+        )
+
+    assert not os.path.lexists(ready)
+    assert not list(ready.parent.glob(f".{ready.name}.*.tmp"))
+
+
+def test_ready_publication_elapsed_cutoff_removes_visible_destination(tmp_path):
+    ready = tmp_path / ".canary/evidence/source.ready"
+    ticks = iter((1_785_600_001.0, 1_785_600_001.0, 1_785_600_006.0))
+
+    with pytest.raises(EvidenceError, match="elapsed during"):
+        _create_ready_file(
+            ready,
+            {"schema": 1, "kind": "drone"},
+            requested_after_ms=1_785_600_000_000,
+            now=lambda: next(ticks),
+        )
+
+    assert not os.path.lexists(ready)
+    assert not list(ready.parent.glob(f".{ready.name}.*.tmp"))
+
+
 def test_wait_detection_rejects_source_already_present_before_ready(tmp_path):
     ready = tmp_path / ".canary/evidence/drone.ready"
     with pytest.raises(EvidenceError, match="before ready"):
@@ -731,6 +812,10 @@ def test_serial_log_receipt_requires_exact_private_current_three_roles(tmp_path)
         b"token=backend-value\n",
         b"cookie=session-value\n",
         b"Set-Cookie: session=value\n",
+        b"wifi_pass=network-value\n",
+        b"ap_pass=portal-value\n",
+        b"api-key=backend-value\n",
+        b"apiKey=backend-value\n",
         b"raw_auth_payload=001122\n",
     ),
 )
@@ -797,6 +882,7 @@ def soak_backend(*, queue_depth: int = 0, fifo_sequence: int = 1) -> dict:
             "hardware_mac": "A4:CF:12:CB:77:A4",
         },
         "uplink_boot_id": 9001,
+        "led_state": "healthy",
         "scanner_profiles": ["ble_primary", "wifi_primary"],
         "scanners": [
             {
@@ -903,12 +989,65 @@ def test_soak_rejects_86399_seconds_and_accepts_86400(tmp_path):
     assert result.final_queue_depth == 0
 
 
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "recovery-after-monitor",
+        "wrong-device",
+        "identity",
+        "boot",
+        "topology",
+        "continuity",
+    ),
+)
+def test_soak_binds_preceding_recovery_to_device_and_monitor_baseline(
+    tmp_path,
+    mutation,
+):
+    path = write_soak_fixture(tmp_path)
+    rows = [json.loads(line) for line in path.read_text().splitlines()]
+    recovery = rows[0]
+    if mutation == "recovery-after-monitor":
+        rows.append(rows.pop(0))
+    elif mutation == "wrong-device":
+        recovery["device_id"] = "uplink_OTHER"
+    elif mutation == "identity":
+        recovery["backend"]["identity"]["hardware_mac"] = "AA:00:00:00:00:99"
+    elif mutation == "boot":
+        recovery["backend"]["uplink_boot_id"] += 1
+    elif mutation == "topology":
+        recovery["backend"]["scanners"][0]["role_generation"] += 1
+    else:
+        recovery["backend"]["continuity"]["session_id"] = "fedcba987654"
+    path.write_text("".join(json.dumps(row) + "\n" for row in rows))
+
+    with pytest.raises(EvidenceError, match="recovery|drifted|binding"):
+        verify_soak(path, expected_duration_s=86_400, max_heartbeat_gap_s=90)
+
+
 def test_soak_rejects_missing_scanner_final_health(tmp_path):
     path = write_soak_fixture(tmp_path)
     rows = [json.loads(line) for line in path.read_text().splitlines()]
     rows[-1]["backend"]["scanners"][1].pop("final_health")
     path.write_text("".join(json.dumps(row) + "\n" for row in rows))
     with pytest.raises(EvidenceError, match="final_health"):
+        verify_soak(path, expected_duration_s=86_400, max_heartbeat_gap_s=90)
+
+
+@pytest.mark.parametrize("mutation", ("fatal-led", "scanner-ota"))
+def test_soak_rejects_nonhealthy_led_or_nonidle_scanner_ota(
+    tmp_path,
+    mutation,
+):
+    path = write_soak_fixture(tmp_path)
+    rows = [json.loads(line) for line in path.read_text().splitlines()]
+    if mutation == "fatal-led":
+        rows[-1]["backend"]["led_state"] = "fatal"
+    else:
+        rows[-1]["backend"]["scanners"][0]["ota_state"] = "pending"
+    path.write_text("".join(json.dumps(row) + "\n" for row in rows))
+
+    with pytest.raises(EvidenceError, match="LED|OTA"):
         verify_soak(path, expected_duration_s=86_400, max_heartbeat_gap_s=90)
 
 
