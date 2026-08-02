@@ -57,6 +57,16 @@ _STATIC_FILES = {
         "text/javascript; charset=utf-8",
         False,
     ),
+    "/static/views/history.js": (
+        "views/history.js",
+        "text/javascript; charset=utf-8",
+        False,
+    ),
+    "/static/views/badge.js": (
+        "views/badge.js",
+        "text/javascript; charset=utf-8",
+        False,
+    ),
     "/static/app.js": ("app.js", "text/javascript; charset=utf-8", False),
     "/static/vendor/leaflet/leaflet.css": (
         "vendor/leaflet/leaflet.css",

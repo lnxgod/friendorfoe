@@ -1,11 +1,13 @@
-"""Deterministic standalone browser fixture for New Dash Live and Map QA."""
+"""Deterministic standalone browser fixture for all New Dash browser views."""
 
 from __future__ import annotations
 
 import argparse
 from copy import deepcopy
+import csv
 from html import escape
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import io
 import json
 from pathlib import Path
 import threading
@@ -22,6 +24,8 @@ STATIC_FILES = {
     "/static/ui.js": ("ui.js", "text/javascript; charset=utf-8", False),
     "/static/views/live.js": ("views/live.js", "text/javascript; charset=utf-8", False),
     "/static/views/map.js": ("views/map.js", "text/javascript; charset=utf-8", False),
+    "/static/views/history.js": ("views/history.js", "text/javascript; charset=utf-8", False),
+    "/static/views/badge.js": ("views/badge.js", "text/javascript; charset=utf-8", False),
     "/static/app.js": ("app.js", "text/javascript; charset=utf-8", False),
     "/static/vendor/leaflet/leaflet.css": (
         "vendor/leaflet/leaflet.css",
@@ -46,6 +50,42 @@ CSP = (
 )
 HOSTILE_USB_TEXT = "<script>window.fixturePwned=true</script>"
 
+POLICY_CLASSES = (
+    "drone", "meta", "tracker", "wifi_attack", "skimmer", "camera", "flock",
+    "lock", "hid", "beacon", "event_badge", "auracast", "scanner_status",
+)
+
+
+def complete_policy() -> dict[str, object]:
+    return {
+        "version": 1,
+        "classes": {
+            class_name: {
+                "enabled": class_name != "auracast",
+                "lane": "lower" if class_name != "auracast" else "off",
+                "min_proximity": "near",
+                "priority": index,
+            }
+            for index, class_name in enumerate(POLICY_CLASSES)
+        },
+    }
+
+
+FIXTURE_THEME = {
+    "version": 1,
+    "palette": "night",
+    "background": "dark",
+    "brightness": 80,
+    "accents": {
+        "drone": 65184,
+        "meta": 63539,
+        "tracker": 63519,
+        "flock": 43039,
+        "wifi_attack": 2047,
+        "clear": 12133,
+    },
+}
+
 FIXTURE_STATE = {
     "connection": {
         "phase": "live",
@@ -67,8 +107,20 @@ FIXTURE_STATE = {
         "threat_score": 82.0,
         "counts": {"remote_id": 2, "drone": 3, "meta": 1},
         "scanners": [
-            {"uart": "ble", "role": "BLE", "connected": True, "health": "healthy", "firmware": "1.3.7"},
-            {"uart": "wifi", "role": "Wi-Fi", "connected": True, "health": "healthy", "firmware": "1.2.4"},
+            {
+                "uart": "ble", "role": "BLE", "profile": "remote_id",
+                "connected": True, "health": "healthy", "firmware": "1.3.7",
+                "commands_sent": 0, "commands_accepted": 0, "commands_failed": 0,
+                "radio_events": 18742, "policy_ack": "fixture-policy-v1",
+                "recovery_mode": "normal", "ota_state": "idle",
+                "future_scanner_text": HOSTILE_USB_TEXT,
+            },
+            {
+                "uart": "wifi", "role": "Wi-Fi", "profile": "survey",
+                "connected": True, "health": "healthy", "firmware": "1.2.4",
+                "commands_sent": 4, "commands_accepted": 3, "commands_failed": 1,
+                "radio_packets": 22001, "policy_hash": "abc123", "ota": "ready",
+            },
         ],
         "entities": [
             {
@@ -170,12 +222,16 @@ FIXTURE_STATE = {
             },
         ],
         "remote_id_entities": [],
-        "reporting": {"interval_s": 1.0},
-        "memory": {"heap_free": 186328},
-        "display_state": None,
-        "theme": None,
-        "display_policy": None,
+        "reporting": {"interval_s": 1.0, "sent": 0},
+        "memory": {"heap_free": 186328, "heap_total": 262144, "psram_free": 4892160, "psram_total": 8388608},
+        "stack_free": 4096,
+        "reset_reason": "power_on",
+        "reset_count": 0,
+        "display_state": {"page": "summary", "selection": 0, "detail_open": False},
+        "theme": FIXTURE_THEME,
+        "display_policy": complete_policy(),
         "sensing_health": "healthy",
+        "future_status_text": HOSTILE_USB_TEXT,
     },
     "recent_events": [],
     "diagnostics": {
@@ -204,6 +260,84 @@ TRAILS = {
         (1700000012.0, 37.7620, -122.4290, 103.0),
     ],
 }
+
+
+def make_history() -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    sources = ("ble_rid", "wifi_rid", "wifi_dji_ie", "wifi_ssid")
+    classes = ("drone", "meta", "tracker", "wifi_attack")
+    for index in range(30):
+        positioned = index % 3 != 2
+        source = sources[index % len(sources)]
+        kind = "track" if index % 2 == 0 else "event"
+        rows.append({
+            "row_id": 30 - index,
+            "kind": kind,
+            "received_at": 1_700_100_000.0 - index,
+            "observed_at": 1_700_099_999.5 - index,
+            "stable_key": f"{source}:FIXTURE-{index:02d}",
+            "source_id": (0, 3, 2, 1)[index % 4],
+            "source": source,
+            "threat_class": classes[index % len(classes)],
+            "category": "remote_id" if source in {"ble_rid", "wifi_rid"} else "evidence",
+            "label": HOSTILE_USB_TEXT if index == 0 else f"Fixture observation {index:02d}",
+            "display_id": f"RID-{index:02d}" if source in {"ble_rid", "wifi_rid"} else "",
+            "manufacturer": "Fixture Labs",
+            "confidence": 0.0 if index == 0 else round(0.5 + index / 100, 2),
+            "score": 0.0 if index == 0 else 50 + index,
+            "rssi": -45 - index,
+            "events": 0 if index == 0 else index,
+            "seen_count": index + 1,
+            "latitude": 37.7 + index / 1000 if positioned else None,
+            "longitude": -122.4 - index / 1000 if positioned else None,
+            "altitude_m": 0.0 if index == 0 else 50.0 + index if positioned else None,
+            "operator_latitude": None,
+            "operator_longitude": None,
+            "operator_id": f"OP-{index:02d}" if index % 5 == 0 else "",
+            "extras": {"fixture": True, "hostile": HOSTILE_USB_TEXT if index == 0 else ""},
+        })
+    return rows
+
+
+HISTORY_ROWS = make_history()
+
+
+def filtered_history(params: dict[str, list[str]]) -> list[dict[str, object]]:
+    rows = list(FixtureHandler.history_rows)
+    since = float(params["since"][0]) if "since" in params else None
+    until = float(params["until"][0]) if "until" in params else None
+    text = params.get("text", [""])[0].casefold()
+    positioned = params.get("positioned", [None])[0]
+    result = []
+    for row in rows:
+        if since is not None and float(row["observed_at"]) < since:
+            continue
+        if until is not None and float(row["observed_at"]) > until:
+            continue
+        if "kind" in params and row["kind"] != params["kind"][0]:
+            continue
+        if "class" in params and row["threat_class"] != params["class"][0]:
+            continue
+        if "source" in params and row["source"] != params["source"][0]:
+            continue
+        if text and text not in " ".join(str(row[key]) for key in ("stable_key", "label", "display_id", "manufacturer")).casefold():
+            continue
+        has_position = row["latitude"] is not None and row["longitude"] is not None
+        if positioned == "true" and not has_position:
+            continue
+        if positioned == "false" and has_position:
+            continue
+        result.append(row)
+    return result
+
+
+def history_page(params: dict[str, list[str]]) -> tuple[list[dict[str, object]], str | None]:
+    rows = filtered_history(params)
+    limit = max(1, min(int(params.get("limit", ["25"])[0]), 500))
+    cursor = params.get("cursor", [None])[0]
+    start = int(cursor.removeprefix("fixture-history:")) if cursor else 0
+    stop = min(start + limit, len(rows))
+    return rows[start:stop], f"fixture-history:{stop}" if stop < len(rows) else None
 
 
 def fixture_state(*, stale: bool, safe_usb: bool, keyset: str = "default") -> dict[str, object]:
@@ -262,6 +396,10 @@ class FixtureHandler(BaseHTTPRequestHandler):
     state_delay_ms = 0
     state_requests_started = 0
     state_requests_completed = 0
+    history_requests = 0
+    history_rows = deepcopy(HISTORY_ROWS)
+    received_controls: list[dict[str, object]] = []
+    control_mode = "accept"
     state_lock = threading.Lock()
 
     def log_message(self, format: str, *args: object) -> None:
@@ -294,8 +432,30 @@ class FixtureHandler(BaseHTTPRequestHandler):
             params = parse_qs(split.query)
             stable_key = params.get("text", [""])[0]
             cursor = params.get("cursor", [None])[0]
-            items, next_cursor = trail_items(stable_key, cursor)
+            if params.get("kind") == ["track"] and params.get("positioned") == ["true"] and stable_key in TRAILS:
+                items, next_cursor = trail_items(stable_key, cursor)
+            else:
+                with self.state_lock:
+                    type(self).history_requests += 1
+                    items, next_cursor = history_page(params)
             self.send_json({"ok": True, "data": {"items": items, "next_cursor": next_cursor}})
+            return
+        if split.path in {"/api/history/export.json", "/api/history/export.csv"}:
+            params = parse_qs(split.query)
+            rows = filtered_history(params)
+            if split.path.endswith(".json"):
+                self.send_bytes(
+                    json.dumps(rows, separators=(",", ":"), ensure_ascii=False).encode("utf-8"),
+                    "application/json; charset=utf-8",
+                )
+            else:
+                output = io.StringIO(newline="")
+                fields = list(HISTORY_ROWS[0])
+                writer = csv.DictWriter(output, fieldnames=fields)
+                writer.writeheader()
+                for row in rows:
+                    writer.writerow({**row, "extras": json.dumps(row["extras"], separators=(",", ":"))})
+                self.send_bytes(output.getvalue().encode("utf-8"), "text/csv; charset=utf-8")
             return
         if split.path == "/fixture/stats":
             with self.state_lock:
@@ -304,6 +464,10 @@ class FixtureHandler(BaseHTTPRequestHandler):
                     "state_requests_completed": type(self).state_requests_completed,
                     "keyset": type(self).keyset,
                     "state_delay_ms": type(self).state_delay_ms,
+                    "history_requests": type(self).history_requests,
+                    "history_count": len(type(self).history_rows),
+                    "received_controls": deepcopy(type(self).received_controls),
+                    "control_mode": type(self).control_mode,
                 }
             self.send_json({"ok": True, "data": stats})
             return
@@ -324,10 +488,19 @@ class FixtureHandler(BaseHTTPRequestHandler):
                     return
                 type(self).keyset = keyset
                 type(self).state_delay_ms = delay_ms
+                control_mode = params.get("control_mode", [type(self).control_mode])[0]
+                if control_mode not in {"accept", "reject"}:
+                    self.send_json({"ok": False, "error": {"code": "invalid_control_mode"}}, status=400)
+                    return
+                type(self).control_mode = control_mode
                 if params.get("reset_stats", ["0"])[0] == "1":
                     type(self).state_requests_started = 0
                     type(self).state_requests_completed = 0
-            self.send_json({"ok": True, "data": {"keyset": keyset, "state_delay_ms": delay_ms}})
+                    type(self).history_requests = 0
+                    type(self).received_controls = []
+                if params.get("reset_history", ["0"])[0] == "1":
+                    type(self).history_rows = deepcopy(HISTORY_ROWS)
+            self.send_json({"ok": True, "data": {"keyset": keyset, "state_delay_ms": delay_ms, "control_mode": control_mode}})
             return
         static = STATIC_FILES.get(split.path)
         if static is None or split.query:
@@ -340,6 +513,57 @@ class FixtureHandler(BaseHTTPRequestHandler):
                 "{{CONTROL_TOKEN}}", escape(CONTROL_TOKEN, quote=True)
             ).encode("utf-8")
         self.send_bytes(body, content_type)
+
+    def do_POST(self) -> None:
+        split = urlsplit(self.path)
+        paths = {
+            "/api/history/clear",
+            "/api/control/display-nav",
+            "/api/control/theme",
+            "/api/control/theme/reset",
+            "/api/control/display-policy",
+            "/api/control/display-policy/reset",
+        }
+        if split.path not in paths or split.query:
+            self.send_json({"ok": False, "error": {"code": "not_found", "message": "Route not found."}}, status=404)
+            return
+        if self.headers.get("X-New-Dash-Token") != CONTROL_TOKEN:
+            self.send_json({"ok": False, "error": {"code": "invalid_token", "message": "Invalid control token."}}, status=403)
+            return
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            payload = json.loads(self.rfile.read(length))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            self.send_json({"ok": False, "error": {"code": "invalid_request", "message": "Invalid JSON."}}, status=400)
+            return
+        if split.path == "/api/history/clear":
+            if payload != {"confirm": "clear-history"}:
+                self.send_json({"ok": False, "error": {"code": "invalid_request", "message": "Confirmation required."}}, status=400)
+                return
+            with self.state_lock:
+                deleted = len(type(self).history_rows)
+                type(self).history_rows = []
+            self.send_json({"ok": True, "data": {"deleted": deleted}})
+            return
+        with self.state_lock:
+            type(self).received_controls.append({"path": split.path, "body": deepcopy(payload)})
+            control_mode = type(self).control_mode
+        if control_mode == "reject":
+            self.send_json({
+                "ok": False,
+                "error": {"code": "firmware_rejected", "message": "Fixture firmware rejected the command."},
+            }, status=502)
+            return
+        self.send_json({
+            "ok": True,
+            "data": {
+                "ok": True,
+                "message": "fixture accepted",
+                "error": None,
+                "ble_sent": True,
+                "wifi_sent": split.path != "/api/control/theme",
+            },
+        })
 
     def send_json(self, value: object, status: int = 200) -> None:
         self.send_bytes(

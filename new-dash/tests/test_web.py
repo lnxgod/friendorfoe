@@ -38,6 +38,8 @@ STATIC_ASSETS = {
     "/static/ui.js": "text/javascript; charset=utf-8",
     "/static/views/live.js": "text/javascript; charset=utf-8",
     "/static/views/map.js": "text/javascript; charset=utf-8",
+    "/static/views/history.js": "text/javascript; charset=utf-8",
+    "/static/views/badge.js": "text/javascript; charset=utf-8",
     "/static/app.js": "text/javascript; charset=utf-8",
     "/static/vendor/leaflet/leaflet.css": "text/css; charset=utf-8",
     "/static/vendor/leaflet/leaflet.js": "text/javascript; charset=utf-8",
@@ -432,7 +434,10 @@ class StaticAndStateRouteTest(WebServerTestCase):
 
         self.assertEqual(
             set(sources),
-            {"api.js", "ui.js", "views/live.js", "views/map.js", "app.js"},
+            {
+                "api.js", "ui.js", "views/live.js", "views/map.js",
+                "views/history.js", "views/badge.js", "app.js",
+            },
         )
         self.assertNotIn(".innerHTML", combined)
         self.assertNotIn("insertAdjacentHTML", combined)
@@ -445,6 +450,36 @@ class StaticAndStateRouteTest(WebServerTestCase):
         for key in ("ArrowLeft", "ArrowRight", "Home", "End"):
             self.assertIn(key, sources["ui.js"])
         self.assertIn("newDash.v1.", sources["app.js"])
+
+    def test_history_and_badge_shell_expose_only_exact_safe_controls(self) -> None:
+        html = (STATIC_ROOT / "index.html").read_text(encoding="utf-8")
+
+        for control_id in (
+            "history-since", "history-until", "history-kind", "history-class",
+            "history-source", "history-text", "history-positioned",
+            "history-previous", "history-next", "history-export-csv",
+            "history-export-json", "history-clear-dialog", "history-clear-word",
+            "badge-scanners", "badge-status-facts", "badge-display-state",
+            "badge-theme-form", "badge-policy-form", "theme-reset-dialog",
+            "policy-reset-dialog",
+        ):
+            with self.subTest(control_id=control_id):
+                self.assertIn(f'id="{control_id}"', html)
+        for action in ("next", "detail", "page", "back"):
+            self.assertIn(f'data-nav-action="{action}"', html)
+        for class_name in (
+            "drone", "meta", "tracker", "wifi_attack", "skimmer", "camera",
+            "flock", "lock", "hid", "beacon", "event_badge", "auracast",
+            "scanner_status",
+        ):
+            self.assertIn(f'data-policy-class="{class_name}"', html)
+        self.assertNotIn("<textarea", html.lower())
+        for prohibited in (
+            'id="firmware-control"', 'id="reboot-control"',
+            'id="bootloader-control"', 'id="safe-mode-control"',
+            'id="raw-command"',
+        ):
+            self.assertNotIn(prohibited, html)
 
     def test_live_and_map_modules_preserve_source_truth_and_budgets(self) -> None:
         live_path = STATIC_ROOT / "views" / "live.js"

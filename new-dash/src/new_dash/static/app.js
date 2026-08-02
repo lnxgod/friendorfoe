@@ -1,4 +1,4 @@
-import { createCompletionPoller, getHistory, getState } from "./api.js";
+import { createCompletionPoller, getHistory, getState, post } from "./api.js";
 import { nextTabIndex, scannerSummary, writePreference, readPreference } from "./ui.js";
 import { filteredRemoteIdKeys, renderLive, visibleEntities } from "./views/live.js";
 import {
@@ -8,6 +8,8 @@ import {
   renderActiveEntities,
   renderTrail,
 } from "./views/map.js";
+import { createHistoryView } from "./views/history.js";
+import { createBadgeView } from "./views/badge.js";
 
 const POLL_INTERVAL_MS = 1000;
 const VIEW_KEY = "newDash.v1.selectedView";
@@ -58,6 +60,9 @@ let selectedView = readPreference(VIEW_KEY, (value) => VIEWS.includes(value), "l
 let filters = readPreference(FILTER_KEY, validFilters, DEFAULT_FILTERS);
 let latestState = null;
 let mapCreated = false;
+
+const historyView = createHistoryView({ getHistory, post });
+const badgeView = createBadgeView({ post });
 
 function validFilters(value) {
   return value
@@ -132,6 +137,8 @@ function mapEntities(state) {
 function renderState(state) {
   renderHeader(state);
   renderLive(liveRoot, state, filters);
+  historyView.observeState(state);
+  badgeView.render(state);
   if (mapCreated) {
     renderActiveEntities(mapEntities(state));
   }
@@ -161,6 +168,7 @@ async function ensureMapTrails() {
 
 function activateView(view, { focus = true, replaceHash = false, keyboard = false } = {}) {
   const validView = VIEWS.includes(view) ? view : "live";
+  const previousView = selectedView;
   selectedView = validView;
   writePreference(VIEW_KEY, selectedView);
   for (const tab of tabs) {
@@ -184,6 +192,12 @@ function activateView(view, { focus = true, replaceHash = false, keyboard = fals
   }
   if (selectedView === "map") {
     ensureMap();
+  }
+  if (previousView === "history" && selectedView !== "history") {
+    historyView.deactivate();
+  }
+  if (selectedView === "history") {
+    void historyView.activate(latestState);
   }
   if (focus) {
     sections.get(selectedView).focus({ preventScroll: true });
