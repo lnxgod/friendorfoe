@@ -23,8 +23,8 @@ android {
         applicationId = "com.friendorfoe"
         minSdk = 26
         targetSdk = 34
-        versionCode = 116
-        versionName = "0.67.7-android-ar-overlay-range"
+        versionCode = 117
+        versionName = "0.67.8-android-regression-restoration-rc1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
