@@ -31,6 +31,15 @@ typedef struct {
     backend_detection_observation_t accepted[8];
 } upload_sink_fixture_t;
 
+typedef struct {
+    bool accept;
+    uint32_t upload_calls;
+    uint32_t canonical_calls;
+    uint32_t order_count;
+    uint32_t order[4];
+    backend_detection_observation_t canonical;
+} canonical_sink_fixture_t;
+
 static bool upload_sink_capture(
     void *context,
     const backend_detection_observation_t *observation)
@@ -46,6 +55,34 @@ static bool upload_sink_capture(
     TEST_ASSERT_LESS_THAN_UINT32(8U, fixture->accepted_count);
     fixture->accepted[fixture->accepted_count++] = *observation;
     return true;
+}
+
+static bool ordered_upload_sink(
+    void *context,
+    const backend_detection_observation_t *observation)
+{
+    canonical_sink_fixture_t *fixture = context;
+    TEST_ASSERT_NOT_NULL(fixture);
+    TEST_ASSERT_NOT_NULL(observation);
+    ++fixture->upload_calls;
+    if (fixture->order_count < 4U) {
+        fixture->order[fixture->order_count++] = 1U;
+    }
+    return fixture->accept;
+}
+
+static void ordered_canonical_sink(
+    void *context,
+    const backend_detection_observation_t *observation)
+{
+    canonical_sink_fixture_t *fixture = context;
+    TEST_ASSERT_NOT_NULL(fixture);
+    TEST_ASSERT_NOT_NULL(observation);
+    ++fixture->canonical_calls;
+    fixture->canonical = *observation;
+    if (fixture->order_count < 4U) {
+        fixture->order[fixture->order_count++] = 2U;
+    }
 }
 
 static backend_detection_observation_t coordinator_observation(
@@ -369,6 +406,74 @@ void test_coordinator_tick_uploads_at_exact_boundary_and_sink_refusal_keeps_item
     TEST_ASSERT_TRUE(backend_coordinator_flow_paused(&coordinator));
 }
 
+void test_coordinator_observes_pending_upload_once_after_http_attempt(void)
+{
+    backend_coordinator_t coordinator;
+    backend_coordinator_init(&coordinator);
+    canonical_sink_fixture_t fixture = {.accept = false};
+    backend_coordinator_set_upload_sink(
+        &coordinator, ordered_upload_sink, &fixture);
+    backend_coordinator_set_canonical_sink(
+        &coordinator, ordered_canonical_sink, &fixture);
+    backend_detection_observation_t observation =
+        coordinator_observation("canonical-once", 0U, -61);
+
+    TEST_ASSERT_TRUE(backend_coordinator_ingest_detection(
+        &coordinator, 0U, &observation, 1000).accepted_for_upload);
+    TEST_ASSERT_EQUAL_UINT32(
+        1U, backend_coordinator_tick_detections(&coordinator, 1500));
+    TEST_ASSERT_EQUAL_UINT32(
+        0U, backend_coordinator_tick_detections(&coordinator, 1600));
+    fixture.accept = true;
+    TEST_ASSERT_EQUAL_UINT32(
+        0U, backend_coordinator_tick_detections(&coordinator, 1700));
+
+    TEST_ASSERT_EQUAL_UINT32(3U, fixture.upload_calls);
+    TEST_ASSERT_EQUAL_UINT32(1U, fixture.canonical_calls);
+    TEST_ASSERT_EQUAL_UINT32(1U, fixture.order[0]);
+    TEST_ASSERT_EQUAL_UINT32(2U, fixture.order[1]);
+    TEST_ASSERT_EQUAL_MEMORY(
+        &observation, &fixture.canonical, sizeof(observation));
+    TEST_ASSERT_FALSE(backend_coordinator_flow_paused(&coordinator));
+}
+
+void test_coordinator_observer_presence_does_not_change_backpressure(void)
+{
+    backend_coordinator_t without_observer;
+    backend_coordinator_t with_observer;
+    backend_coordinator_init(&without_observer);
+    backend_coordinator_init(&with_observer);
+    canonical_sink_fixture_t without_fixture = {.accept = false};
+    canonical_sink_fixture_t with_fixture = {.accept = false};
+    backend_coordinator_set_upload_sink(
+        &without_observer, ordered_upload_sink, &without_fixture);
+    backend_coordinator_set_upload_sink(
+        &with_observer, ordered_upload_sink, &with_fixture);
+    backend_coordinator_set_canonical_sink(
+        &with_observer, ordered_canonical_sink, &with_fixture);
+    backend_detection_observation_t observation =
+        coordinator_observation("same-pressure", 0U, -62);
+
+    backend_coordinator_ingest_result_t without_result =
+        backend_coordinator_ingest_detection(
+            &without_observer, 0U, &observation, 1000);
+    backend_coordinator_ingest_result_t with_result =
+        backend_coordinator_ingest_detection(
+            &with_observer, 0U, &observation, 1000);
+    TEST_ASSERT_EQUAL(without_result.flow_paused, with_result.flow_paused);
+
+    TEST_ASSERT_EQUAL_UINT32(
+        backend_coordinator_tick_detections(&without_observer, 1500),
+        backend_coordinator_tick_detections(&with_observer, 1500));
+    TEST_ASSERT_EQUAL(
+        backend_coordinator_flow_paused(&without_observer),
+        backend_coordinator_flow_paused(&with_observer));
+    TEST_ASSERT_EQUAL_UINT32(1U, without_fixture.upload_calls);
+    TEST_ASSERT_EQUAL_UINT32(1U, with_fixture.upload_calls);
+    TEST_ASSERT_EQUAL_UINT32(0U, without_fixture.canonical_calls);
+    TEST_ASSERT_EQUAL_UINT32(1U, with_fixture.canonical_calls);
+}
+
 void test_coordinator_retains_exact_backpressured_item_and_resumes_in_order(void)
 {
     backend_coordinator_t coordinator;
@@ -492,6 +597,10 @@ int main(void)
         test_coordinator_mirrors_on_change_new_connection_and_exact_two_second_refresh);
     BACKEND_RUN_TEST(
         test_coordinator_tick_uploads_at_exact_boundary_and_sink_refusal_keeps_item);
+    BACKEND_RUN_TEST(
+        test_coordinator_observes_pending_upload_once_after_http_attempt);
+    BACKEND_RUN_TEST(
+        test_coordinator_observer_presence_does_not_change_backpressure);
     BACKEND_RUN_TEST(
         test_coordinator_retains_exact_backpressured_item_and_resumes_in_order);
     BACKEND_RUN_TEST(test_coordinator_generation_exhaustion_fails_closed);

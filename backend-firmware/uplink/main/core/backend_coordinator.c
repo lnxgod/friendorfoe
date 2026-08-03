@@ -42,9 +42,18 @@ static bool drain_uploads(backend_coordinator_t *coordinator)
             coordinator->pending_upload_valid = true;
         }
 
-        if (!coordinator->upload_sink(
+        const bool uploaded = coordinator->upload_sink(
                 coordinator->upload_sink_context,
-                &coordinator->pending_upload)) {
+                &coordinator->pending_upload);
+        if (!coordinator->pending_canonical_notified) {
+            if (coordinator->canonical_sink != NULL) {
+                coordinator->canonical_sink(
+                    coordinator->canonical_sink_context,
+                    &coordinator->pending_upload);
+            }
+            coordinator->pending_canonical_notified = true;
+        }
+        if (!uploaded) {
             refresh_flow_paused(coordinator);
             return false;
         }
@@ -52,6 +61,7 @@ static bool drain_uploads(backend_coordinator_t *coordinator)
                0,
                sizeof(coordinator->pending_upload));
         coordinator->pending_upload_valid = false;
+        coordinator->pending_canonical_notified = false;
     }
 }
 
@@ -116,6 +126,17 @@ void backend_coordinator_set_upload_sink(
         coordinator->upload_sink = sink;
         coordinator->upload_sink_context = context;
         refresh_flow_paused(coordinator);
+    }
+}
+
+void backend_coordinator_set_canonical_sink(
+    backend_coordinator_t *coordinator,
+    backend_coordinator_canonical_sink_fn sink,
+    void *context)
+{
+    if (coordinator != NULL) {
+        coordinator->canonical_sink = sink;
+        coordinator->canonical_sink_context = context;
     }
 }
 

@@ -18,6 +18,10 @@ typedef bool (*backend_coordinator_upload_sink_fn)(
     void *context,
     const backend_detection_observation_t *observation);
 
+typedef void (*backend_coordinator_canonical_sink_fn)(
+    void *context,
+    const backend_detection_observation_t *observation);
+
 typedef struct {
     bool valid;
     int64_t arrival_monotonic_ms;
@@ -35,7 +39,10 @@ typedef struct {
     backend_detection_router_t detection_router;
     backend_coordinator_upload_sink_fn upload_sink;
     void *upload_sink_context;
+    backend_coordinator_canonical_sink_fn canonical_sink;
+    void *canonical_sink_context;
     bool pending_upload_valid;
+    bool pending_canonical_notified;
     backend_detection_observation_t pending_upload;
     backend_coordinator_retained_t retained[2];
     uint64_t next_retained_order;
@@ -60,6 +67,11 @@ void backend_coordinator_init(backend_coordinator_t *coordinator);
 void backend_coordinator_set_upload_sink(
     backend_coordinator_t *coordinator,
     backend_coordinator_upload_sink_fn sink,
+    void *context);
+
+void backend_coordinator_set_canonical_sink(
+    backend_coordinator_t *coordinator,
+    backend_coordinator_canonical_sink_fn sink,
     void *context);
 
 backend_coordinator_ingest_result_t backend_coordinator_ingest_detection(
