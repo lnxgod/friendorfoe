@@ -112,6 +112,19 @@ Legacy read/control aliases remain available: `FOF_BACKEND_STATUS`,
 `FOF_BACKEND_OTA_PROBE ...`, and guarded `FOF_BACKEND_OTA_APPLY ...`.
 `FOF_AP_START` cannot override recovery eligibility.
 
+The bounded status snapshot keeps the compact two-entry `scanner` connection
+array and adds two richer `scanner_summaries`. A summary reports the slot,
+connection and identity validity, whether scanner status is available, bounded
+scanner identity, numeric scan profile (`0` through `3`), command/radio/role
+health, RX/TX-drop counters, and uptime. Identity, profile, errors, and uptime
+are `null` when scanner status is unavailable. `threats` reports active flags,
+current counts, and last-seen ages; an age of `-1` means unavailable. The
+upload queue capacity is `512`. Legal `led` values are `healthy`,
+`network_degraded`, `drone`, `meta`, `drone_meta`, `fatal`, and `uart_lost`.
+`backend.last_success_age_s` is `null` until the uploader has received its
+first successful backend acknowledgement; afterward it is the elapsed whole
+seconds, saturated to an unsigned 32-bit value.
+
 ## Acknowledged live delivery
 
 New Dash must not treat an open port, PING, STATUS, configuration traffic, or
@@ -133,10 +146,20 @@ Lite -> New Dash  FOF_LIVE_STOPPED:{"session_id":"<id>"}
 
 The firmware makes a heartbeat acknowledgeable only after the entire frame is
 physically written. An ACK is valid only for the current `LIVE_READY` session
-and a fresh received sequence. Wrong-session, future, duplicate, replayed, or
-expired acknowledgements do not confirm delivery. A new `LIVE_START`, reconnect,
-reboot, or `LIVE_STOP` invalidates prior session state. Never reuse a buffered
-ACK after reconnect.
+and the latest successfully transmitted heartbeat sequence. If that heartbeat
+was completed at monotonic time `last_sent_ms`, the firmware accepts it only
+when `last_sent_ms <= ack_now_ms < last_sent_ms + 15000`; the exact 15000 ms
+boundary is rejected. Deadline arithmetic saturates at signed 64-bit maximum,
+and that exact saturated boundary also fails open. Wrong-session, older,
+future, duplicate, replayed, or expired acknowledgements do not confirm
+delivery. A new `LIVE_START`, reconnect, reboot, or `LIVE_STOP` invalidates
+prior session state. Never reuse a buffered ACK after reconnect.
+
+New Dash does not know the firmware's physical transmit-completion timestamp.
+It must parse a complete current-session heartbeat and emit its ACK
+immediately; firmware remains the freshness authority. The fixture's injected
+`sent_at_ms`/`now_ms` values exist only to model boundary behavior
+deterministically and must not be treated as host-observable wire data.
 
 A matching ACK is also the only USB evidence allowed to suppress an eligible
 recovery AP. If ACKs stop, the lease fails open after 15000 ms and firmware
@@ -196,10 +219,12 @@ No response contains a Wi-Fi password or AP password. Only the
 
 `FOF_CONFIG_SET` accepts a JSON object containing only these optional fields:
 
-- `networks`: one to four objects, each with required `ssid` and optional
+- `networks`: zero to four objects, each with required `ssid` and optional
   `password`. Omitting `password` for an SSID already saved preserves that
   network's existing password. Supplying the array replaces network order and
-  membership atomically.
+  membership atomically. For Lite only, `"networks":[]` clears every saved
+  network and leaves the recovery AP eligible; do not extend this empty-list
+  rule to Fullsize firmware.
 - `backend_url`: HTTP URL used by the existing uplink.
 - `display_name`: human label; this does not imply a display.
 - `ap_password`: 8 to 63 bytes.
@@ -211,7 +236,9 @@ No response contains a Wi-Fi password or AP password. Only the
 The atomic schema intentionally does not accept `device_id`; use the compatible
 staged command for that field if needed. All input is validated before the
 canonical configuration record is committed. A successful commit increments
-`generation` once and starts Wi-Fi reassociation.
+`generation` by exactly one and starts Wi-Fi reassociation. A
+`FOF_CONFIG_ERROR` leaves the generation and active record unchanged; discard
+the failed candidate rather than updating New Dash state from it.
 
 `FOF_CONFIG_OK:{"generation":10,"reconnect":false}` means the configuration
 was committed but the immediate reconnect callback failed. Do not resend the
@@ -265,12 +292,22 @@ reason to stop reading. HTTP ingestion remains independent and authoritative.
 3. ACK each current-session heartbeat once. Do not synthesize ACKs on a timer.
 4. If no heartbeat arrives for slightly more than 5000 ms, keep reading; after
    15000 ms without a valid exchange, assume the firmware lease is no longer
-   confirmed and restart the handshake rather than replaying an ACK.
+   confirmed and send a fresh `LIVE_START` rather than replaying an ACK. The
+   firmware serializes this transition behind its TX gate, increments an
+   internal generation, and purges/skips queued READY/heartbeat controls from
+   the previous generation before publishing the new READY.
 5. On disconnect/reset/OTA, discard the session ID, pending commands, and
    buffered machine lines, rediscover the port, and read STATUS again.
 6. PING, STATUS, CONFIG_GET, and a fresh LIVE_START are safe to retry after a
    transport failure. Reconcile `generation` before retrying CONFIG_SET or
    staged SAVE.
+
+The fixture's `LiveStartAttempt.generation` is a deterministic contract-model
+tag, not a field in `FOF_LIVE_START` or `FOF_LIVE_READY`. A real host cannot
+classify an arbitrarily delayed READY by its JSON content; retry safety comes
+from the firmware TX-gate synchronization and stale-generation purge described
+above. New Dash should still discard its local prior attempt/session whenever
+it sends a fresh START.
 
 ## Unsupported screen controls
 
@@ -331,7 +368,7 @@ line. The host writes LF after each host frame.
 > FOF_PING
 < FOF_PONG:0.2.0-backend
 > FOF_STATUS
-< FOF_STATUS:{"product_family":"badge_lite","target":"uplink-s3-backend","project":"fof_backend_uplink","hardware":"seeed_xiao_esp32s3","version":"0.2.0-backend","mac":"AA:BB:CC:DD:EE:FF","boot_id":305419896,"mode":"headless","mode_label":"Backend Badge Lite","config_generation":9,"capabilities":["display_none","usb_live","usb_live_ack","usb_buffered","usb_config","http_uplink","config_ap","ap_dashboard","remote_ota","uart_relay_ota"],"wifi":{"configured":false,"connected":false,"full_pass_failed":false},"backend":{"reachable":false},"recovery":{"reason":"wifi_unconfigured","ap_running":true},"scanner":[{"slot":0,"connected":true,"identity_valid":true},{"slot":1,"connected":true,"identity_valid":true}],"threats":{"drone_active":false,"meta_active":false},"led":"idle","ota_ready":true,"upload":{"depth":0,"capacity":32,"dropped":0,"ok":0,"failed":0,"retries":0},"usb":{"available":true,"host_connected":true,"required_depth":0,"optional_depth":0,"optional_drops":0,"required_failures":0,"bytes_transmitted":0,"bytes_received":0,"output_poisoned":false},"live":{"started":false,"session_id":"","last_ack_sequence":0,"confirmed":false,"lease_remaining_ms":0},"history":{"available":true,"count":0,"contention_drops":0},"dashboard":{"enabled":true,"degraded_reason":null}}
+< FOF_STATUS:{"product_family":"badge_lite","target":"uplink-s3-backend","project":"fof_backend_uplink","hardware":"seeed_xiao_esp32s3","version":"0.2.0-backend","mac":"AA:BB:CC:DD:EE:FF","boot_id":305419896,"mode":"headless","mode_label":"Backend Badge Lite","config_generation":9,"capabilities":["display_none","usb_live","usb_live_ack","usb_buffered","usb_config","http_uplink","config_ap","ap_dashboard","remote_ota","uart_relay_ota"],"wifi":{"configured":false,"connected":false,"full_pass_failed":false},"recovery":{"reason":"wifi_unconfigured","ap_running":true},"scanner":[{"slot":0,"connected":true,"identity_valid":true},{"slot":1,"connected":false,"identity_valid":false}],"threats":{"drone_active":false,"meta_active":false,"drone_count":0,"meta_count":0,"drone_last_seen_age_ms":-1,"meta_last_seen_age_ms":-1},"led":"network_degraded","ota_ready":true,"upload":{"depth":0,"capacity":512,"dropped":0,"ok":0,"failed":0,"retries":0},"usb":{"available":true,"host_connected":true,"required_depth":0,"optional_depth":0,"optional_drops":0,"required_failures":0,"bytes_transmitted":0,"bytes_received":0,"output_poisoned":false},"live":{"started":false,"session_id":"","last_ack_sequence":0,"confirmed":false,"lease_remaining_ms":0},"history":{"available":true,"count":0,"contention_drops":0},"dashboard":{"enabled":true,"degraded_reason":null},"backend":{"reachable":false,"last_success_age_s":null},"scanner_summaries":[{"slot":0,"connected":true,"identity_valid":true,"status_available":true,"identity":{"target":"scanner-s3-combo-backend","project":"fof_backend_scanner","hardware":"seeed_xiao_esp32s3","version":"0.2.0-backend"},"profile":1,"health":{"command":true,"radio":true,"role_acked":true},"errors":{"rx":0,"tx_drops":0},"uptime_ms":9000},{"slot":1,"connected":false,"identity_valid":false,"status_available":false,"identity":null,"profile":null,"health":{"command":false,"radio":false,"role_acked":false},"errors":null,"uptime_ms":null}]}
 > FOF_CONFIG_GET
 < FOF_CONFIG:{"schema_version":1,"generation":9,"networks":[{"ssid":"Lab","password_set":true}],"backend_url":"http://10.0.0.2:8000","device_id":"uplink_CB77A4","display_name":"Lite Lab","ap_password_set":true,"auto_update_enabled":false,"has_location":false,"latitude":null,"longitude":null,"altitude_m":null}
 > FOF_LIVE_START:{"client":"new_dash","protocol":1}
@@ -351,16 +388,24 @@ open hardware. From the `backend-firmware/` directory:
 
 ```python
 from tools.backend_lite_usb_fixture import (
-    LiveSession,
+    LiveHandshake,
     build_config_set,
     verify_lite_handshake,
 )
 
 device = verify_lite_handshake(pong_line, status_line)
-session = LiveSession.from_ready(live_ready_line)
-ack_line = session.ack(heartbeat_line)
+handshake = LiveHandshake()
+attempt = handshake.start()
+session = handshake.accept_ready(attempt, live_ready_line)
+# Deterministic contract-test inputs, not timestamps carried on the wire:
+session.observe_heartbeat(heartbeat_line, sent_at_ms=1_000)
+ack_line = session.ack(heartbeat_line, now_ms=1_001)
 config_line = build_config_set(device, {"display_name": "Lite Lab"})
 ```
+
+Production New Dash must not invent or estimate `sent_at_ms`; after receiving a
+complete current heartbeat, it emits the matching ACK immediately and lets the
+firmware enforce the physical-send freshness window.
 
 Its tests use literal transcripts and require no serial port:
 
