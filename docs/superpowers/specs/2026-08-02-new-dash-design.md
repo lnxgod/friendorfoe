@@ -284,8 +284,10 @@ separate drone source and is not mislabeled as ASTM Remote ID.
 ### Status snapshots
 
 `FOF_STATUS` is the authoritative current-state and map feed. A parsed status
-requires an object root, nonempty string version, finite numeric non-boolean
-`uptime_s`, and arrays for `entities`/`scanners` when those fields are present.
+requires an object root, a nonempty string version, and arrays for
+`entities`/`scanners` when those fields are present. `uptime_s` is optional so
+the intentional factory startup/recovery envelope remains compatible with the
+working Android path; when present, it must be finite, numeric, and non-Boolean.
 JSON NaN and Infinity are rejected. New Dash consumes:
 
 - top-level firmware version, mode, threat score, counts, reset/recovery facts,
@@ -297,9 +299,12 @@ JSON NaN and Infinity are rejected. New Dash consumes:
   and operator identity.
 
 Unknown status fields are ignored safely and may be retained in a compact
-extras object where useful. Missing optional fields stay absent; they are not
-converted to misleading zero values. Coordinates are accepted only when both
-latitude and longitude are finite and within geographic bounds.
+extras object where useful. Missing optional fields, including `uptime_s`,
+stay absent; they are not converted to misleading zero values. The factory
+`0.67.2-badge-defcon34` `startup_dependency` status omits uptime, entities, and
+scanners but must still update freshness and surface its recovery/USB-health
+diagnostics. Coordinates are accepted only when both latitude and longitude
+are finite and within geographic bounds.
 
 The firmware status list is a ranked, capped processed snapshot rather than a
 raw packet stream. New Dash labels its position history **host-observed** and
@@ -512,6 +517,7 @@ Protocol tests cover:
 - valid `FOF_PONG`, `FOF_DET`, `FOF_STATUS`, control success, and control error;
 - the exact source mapping, including Remote ID versus DJI evidence;
 - Android status fixtures with location and operator fields;
+- the captured factory `0.67.2-badge-defcon34` startup status without uptime;
 - CR, LF, CRLF, chunk boundaries, ordinary ESP-IDF logs, invalid UTF-8,
   malformed JSON, interleaving, and overlong lines;
 - missing optional fields, unknown additive fields, and invalid coordinates.
@@ -595,5 +601,7 @@ New Dash v1 is complete when:
 - browser fixture verification passes at desktop and narrow widths;
 - a read-only factory-badge smoke check receives PONG, repeated status,
   detections, browser-visible live state, and a successful disconnect/reconnect;
+  repeated startup status may be proven by increasing factory USB response
+  counters when `uptime_s` is intentionally absent;
 - documentation enables a contributor to build, run, test, and troubleshoot
   New Dash without consulting the legacy backend.
