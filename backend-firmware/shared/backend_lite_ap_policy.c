@@ -41,3 +41,11 @@ backend_lite_ap_reason_t backend_lite_ap_policy_reason(
 {
     return policy ? policy->reason : BACKEND_LITE_AP_REASON_NONE;
 }
+
+bool backend_lite_network_can_use_sta(
+    uint8_t network_count,
+    bool manager_initialized,
+    bool station_connected)
+{
+    return network_count > 0U && manager_initialized && station_connected;
+}

@@ -210,6 +210,14 @@ static bool apply_action(
     return true;
 }
 
+void backend_wifi_manager_reset(backend_wifi_manager_t *manager)
+{
+    if (!manager) {
+        return;
+    }
+    memset(manager, 0, sizeof(*manager));
+}
+
 bool backend_wifi_manager_init(
     backend_wifi_manager_t *manager,
     const backend_config_record_t *config,
@@ -219,7 +227,7 @@ bool backend_wifi_manager_init(
         backend_config_validate(config) != BACKEND_CONFIG_VALID) {
         return false;
     }
-    memset(manager, 0, sizeof(*manager));
+    backend_wifi_manager_reset(manager);
     manager->config = *config;
     backend_wifi_policy_init(&manager->policy);
     manager->initialized = true;

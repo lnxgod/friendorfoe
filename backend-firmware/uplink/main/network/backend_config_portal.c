@@ -9,6 +9,7 @@
 #ifdef ESP_PLATFORM
 #include "esp_err.h"
 #include "esp_event.h"
+#include "esp_heap_caps.h"
 #include "esp_http_server.h"
 #include "esp_netif.h"
 #include "esp_timer.h"
@@ -568,6 +569,13 @@ static bool request_uses_ap_local_destination(httpd_req_t *request)
 }
 
 #if defined(FOF_BACKEND_PROFILE_BADGE_LITE)
+static char *allocate_dashboard_status_buffer(void)
+{
+    return heap_caps_malloc(
+        BACKEND_CONFIG_PORTAL_DASHBOARD_STATUS_CAPACITY,
+        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+}
+
 static esp_err_t send_dashboard_events(
     httpd_req_t *request,
     backend_config_portal_t *portal)
@@ -685,18 +693,28 @@ static esp_err_t portal_http_handler(httpd_req_t *request)
             HTTPD_RESP_USE_STRLEN);
     }
     if (route == BACKEND_PORTAL_DASHBOARD_STATUS) {
-        char status[2048];
+        char *status = allocate_dashboard_status_buffer();
+        if (status == NULL) {
+            return httpd_resp_send_err(
+                request,
+                HTTPD_500_INTERNAL_SERVER_ERROR,
+                "dashboard status buffer unavailable");
+        }
         size_t status_length = 0U;
         if (!backend_config_portal_dashboard_status(
                 portal,
                 status,
-                sizeof(status),
+                BACKEND_CONFIG_PORTAL_DASHBOARD_STATUS_CAPACITY,
                 &status_length)) {
+            heap_caps_free(status);
             return send_service_unavailable(
                 request, "dashboard status unavailable");
         }
         httpd_resp_set_type(request, "application/json");
-        return httpd_resp_send(request, status, status_length);
+        const esp_err_t result = httpd_resp_send(
+            request, status, status_length);
+        heap_caps_free(status);
+        return result;
     }
     if (route == BACKEND_PORTAL_EVENTS) {
         return send_dashboard_events(request, portal);

@@ -106,6 +106,15 @@ void test_only_confirmed_usb_or_wifi_suppresses_recovery(void)
         backend_lite_ap_policy_tick(&policy, input));
 }
 
+void test_sta_use_requires_saved_network_manager_and_connection(void)
+{
+    TEST_ASSERT_FALSE(backend_lite_network_can_use_sta(0, true, true));
+    TEST_ASSERT_FALSE(backend_lite_network_can_use_sta(1, false, true));
+    TEST_ASSERT_FALSE(backend_lite_network_can_use_sta(1, true, false));
+    TEST_ASSERT_TRUE(backend_lite_network_can_use_sta(1, true, true));
+    TEST_ASSERT_TRUE(backend_lite_network_can_use_sta(4, true, true));
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -114,5 +123,6 @@ int main(void)
     BACKEND_RUN_TEST(test_completed_failed_join_pass_starts_recovery_ap);
     BACKEND_RUN_TEST(test_wifi_connection_stops_recovery_ap_immediately);
     BACKEND_RUN_TEST(test_only_confirmed_usb_or_wifi_suppresses_recovery);
+    BACKEND_RUN_TEST(test_sta_use_requires_saved_network_manager_and_connection);
     return UNITY_END();
 }

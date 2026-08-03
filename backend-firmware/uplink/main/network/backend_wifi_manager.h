@@ -57,6 +57,7 @@ typedef struct {
     bool initialized;
 } backend_wifi_manager_t;
 
+void backend_wifi_manager_reset(backend_wifi_manager_t *manager);
 bool backend_wifi_manager_init(
     backend_wifi_manager_t *manager,
     const backend_config_record_t *config,

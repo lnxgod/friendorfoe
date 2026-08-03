@@ -2,6 +2,7 @@
 #define BACKEND_LITE_AP_POLICY_H
 
 #include <stdbool.h>
+#include <stdint.h>
 
 #include "backend_ap_policy.h"
 
@@ -33,6 +34,10 @@ backend_ap_action_t backend_lite_ap_policy_tick(
     backend_lite_ap_input_t input);
 backend_lite_ap_reason_t backend_lite_ap_policy_reason(
     const backend_lite_ap_policy_t *policy);
+bool backend_lite_network_can_use_sta(
+    uint8_t network_count,
+    bool manager_initialized,
+    bool station_connected);
 
 #ifdef __cplusplus
 }

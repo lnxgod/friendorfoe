@@ -679,6 +679,22 @@ static void end_config_transaction(void *context)
     (void)context;
     (void)xSemaphoreGiveRecursive(s_runtime.config_transaction_lock);
 }
+
+static bool disconnect_lite_station(void)
+{
+    const esp_err_t result = esp_wifi_disconnect();
+    return result == ESP_OK || result == ESP_ERR_WIFI_NOT_CONNECT;
+}
+
+static void reset_lite_wifi_state_locked(void)
+{
+    backend_wifi_manager_reset(&s_runtime.wifi);
+    s_runtime.wifi_initialized = false;
+    s_runtime.wifi_connected = false;
+    s_runtime.backend_reachable = false;
+    s_runtime.wifi_rssi = 0;
+    s_runtime.wifi_ssid[0] = '\0';
+}
 #endif
 
 static bool portal_reconnect(
@@ -687,6 +703,18 @@ static bool portal_reconnect(
     int64_t now_ms)
 {
     (void)context;
+#if defined(FOF_BACKEND_PROFILE_BADGE_LITE)
+    if (committed->network_count == 0U) {
+        /* Lite HTTP and zero-network reconnects share http -> runtime order. */
+        (void)xSemaphoreTake(s_runtime.http_lock, portMAX_DELAY);
+        lock_runtime();
+        const bool result = disconnect_lite_station();
+        reset_lite_wifi_state_locked();
+        unlock_runtime();
+        (void)xSemaphoreGive(s_runtime.http_lock);
+        return result;
+    }
+#endif
     lock_runtime();
     bool result = true;
     if (committed->network_count == 0U) {
@@ -717,22 +745,35 @@ static bool portal_backend_get(
     const backend_http_result_t result = backend_http_get_json(
         base_url, path, s_runtime.portal_http_response,
         sizeof(s_runtime.portal_http_response));
+#if defined(FOF_BACKEND_PROFILE_BADGE_LITE)
+    if (result.transport_complete && result.status_code >= 200 &&
+        result.status_code < 300) {
+        lock_runtime();
+        if (backend_lite_network_can_use_sta(
+                s_runtime.config.network_count,
+                s_runtime.wifi_initialized,
+                s_runtime.wifi_connected)) {
+            s_runtime.backend_reachable = true;
+        }
+        unlock_runtime();
+    }
+#endif
     (void)xSemaphoreGive(s_runtime.http_lock);
     if (status_code != NULL) {
         *status_code = result.status_code;
     }
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
     if (result.transport_complete && result.status_code >= 200 &&
         result.status_code < 300) {
         lock_runtime();
-#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
         backend_ap_policy_note_backend_success(
             &s_runtime.ap_policy,
             s_runtime.config.generation,
             monotonic_ms());
-#endif
         s_runtime.backend_reachable = true;
         unlock_runtime();
     }
+#endif
     return result.transport_complete;
 }
 
@@ -746,11 +787,24 @@ static void wifi_event_handler(
     const int64_t now_ms = monotonic_ms();
     lock_runtime();
     if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
+#if defined(FOF_BACKEND_PROFILE_BADGE_LITE)
+        const bool station_allowed = backend_lite_network_can_use_sta(
+            s_runtime.config.network_count,
+            s_runtime.wifi_initialized,
+            true);
+        if (!station_allowed) {
+            (void)disconnect_lite_station();
+            reset_lite_wifi_state_locked();
+        } else {
+#endif
         s_runtime.wifi_connected = true;
         if (s_runtime.wifi_initialized) {
             (void)backend_wifi_manager_handle_event(
                 &s_runtime.wifi, BACKEND_WIFI_EVENT_CONNECTED, now_ms);
         }
+#if defined(FOF_BACKEND_PROFILE_BADGE_LITE)
+        }
+#endif
     } else if (event_base == WIFI_EVENT &&
                event_id == WIFI_EVENT_STA_DISCONNECTED) {
         backend_wifi_event_t event = BACKEND_WIFI_EVENT_DISCONNECTED;
@@ -2296,14 +2350,51 @@ static void uploader_worker(void *argument)
         char base_url[sizeof(s_runtime.config.backend_url)];
         char device_id[sizeof(s_runtime.config.device_id)];
         lock_runtime();
+#if defined(FOF_BACKEND_PROFILE_BADGE_LITE)
+        const bool heartbeat_due = backend_lite_network_can_use_sta(
+            s_runtime.config.network_count,
+            s_runtime.wifi_initialized,
+            s_runtime.wifi_connected) && backend_heartbeat_due(
+                &s_runtime.heartbeat, now_ms);
+#else
         const bool heartbeat_due = backend_heartbeat_due(
             &s_runtime.heartbeat, now_ms);
+#endif
         unlock_runtime();
         if (heartbeat_due && queue_upload(NULL)) {
             lock_runtime();
             backend_heartbeat_mark_queued(&s_runtime.heartbeat, now_ms);
             unlock_runtime();
         }
+#if defined(FOF_BACKEND_PROFILE_BADGE_LITE)
+        /* Hold HTTP across admission, POST, and response bookkeeping. */
+        (void)xSemaphoreTake(s_runtime.http_lock, portMAX_DELAY);
+        lock_runtime();
+        const bool station_usable = backend_lite_network_can_use_sta(
+            s_runtime.config.network_count,
+            s_runtime.wifi_initialized,
+            s_runtime.wifi_connected);
+        const backend_upload_batch_t *head = station_usable
+            ? backend_upload_fifo_peek(&s_runtime.upload_fifo) : NULL;
+        if (head != NULL && backend_uploader_begin_head(
+                &s_runtime.uploader,
+                head,
+                s_runtime.upload_fifo.count,
+                now_ms)) {
+            *request = *head;
+            copy_text(base_url, sizeof(base_url),
+                      s_runtime.config.backend_url);
+            copy_text(device_id, sizeof(device_id),
+                      s_runtime.config.device_id);
+            have_request = true;
+        }
+        unlock_runtime();
+        if (!have_request) {
+            (void)xSemaphoreGive(s_runtime.http_lock);
+            vTaskDelay(pdMS_TO_TICKS(UPLINK_UPLOAD_PERIOD_MS));
+            continue;
+        }
+#else
         lock_runtime();
         const backend_upload_batch_t *head =
             backend_upload_fifo_peek(&s_runtime.upload_fifo);
@@ -2326,6 +2417,7 @@ static void uploader_worker(void *argument)
         }
 
         (void)xSemaphoreTake(s_runtime.http_lock, portMAX_DELAY);
+#endif
         const backend_http_result_t http_result = backend_http_post_json(
             base_url,
             "/detections/drones",
@@ -2333,7 +2425,9 @@ static void uploader_worker(void *argument)
             request->json_len,
             s_runtime.uploader_http_response,
             sizeof(s_runtime.uploader_http_response));
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
         (void)xSemaphoreGive(s_runtime.http_lock);
+#endif
         const bool ack_valid = http_result.transport_complete &&
             backend_ingest_ack_validate(
                 s_runtime.uploader_http_response,
@@ -2383,6 +2477,9 @@ static void uploader_worker(void *argument)
             s_runtime.backend_reachable = false;
         }
         unlock_runtime();
+#if defined(FOF_BACKEND_PROFILE_BADGE_LITE)
+        (void)xSemaphoreGive(s_runtime.http_lock);
+#endif
     }
 }
 

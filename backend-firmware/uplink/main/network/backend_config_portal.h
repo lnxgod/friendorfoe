@@ -19,6 +19,9 @@ extern "C" {
 #define BACKEND_CONFIG_PORTAL_CHANNEL 1U
 #define BACKEND_CONFIG_PORTAL_MAX_CLIENTS 4U
 #define BACKEND_CONFIG_PORTAL_ROUTE_PATH_CAPACITY 96U
+#if defined(FOF_BACKEND_PROFILE_BADGE_LITE)
+#define BACKEND_CONFIG_PORTAL_DASHBOARD_STATUS_CAPACITY 8192U
+#endif
 
 typedef bool (*backend_config_portal_commit_fn)(
     void *context, const backend_config_record_t *candidate);

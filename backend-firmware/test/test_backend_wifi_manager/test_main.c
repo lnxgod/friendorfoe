@@ -295,6 +295,27 @@ void test_invalid_or_empty_config_does_not_attempt_connection(void)
             &state, NULL, BACKEND_WIFI_EVENT_TICK, 1));
 }
 
+void test_manager_reset_clears_active_network_and_join_state(void)
+{
+    backend_wifi_manager_t manager;
+    const backend_config_record_t config = config_fixture(41, 1);
+
+    TEST_ASSERT_TRUE(backend_wifi_manager_init(&manager, &config, 0));
+    TEST_ASSERT_TRUE(backend_wifi_manager_handle_event(
+        &manager, BACKEND_WIFI_EVENT_NO_AP, 1));
+    TEST_ASSERT_TRUE(backend_wifi_manager_join_failed(&manager));
+    TEST_ASSERT_NOT_NULL(backend_wifi_manager_active_network(&manager));
+
+    backend_wifi_manager_reset(&manager);
+
+    TEST_ASSERT_FALSE(manager.initialized);
+    TEST_ASSERT_EQUAL_UINT8(0, manager.config.network_count);
+    TEST_ASSERT_NULL(backend_wifi_manager_active_network(&manager));
+    TEST_ASSERT_FALSE(backend_wifi_manager_join_failed(&manager));
+    TEST_ASSERT_FALSE(backend_wifi_manager_handle_event(
+        &manager, BACKEND_WIFI_EVENT_TICK, 2));
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -312,5 +333,6 @@ int main(void)
     BACKEND_RUN_TEST(test_manager_status_never_exposes_ssids_or_passwords);
     BACKEND_RUN_TEST(
         test_invalid_or_empty_config_does_not_attempt_connection);
+    BACKEND_RUN_TEST(test_manager_reset_clears_active_network_and_join_state);
     return UNITY_END();
 }

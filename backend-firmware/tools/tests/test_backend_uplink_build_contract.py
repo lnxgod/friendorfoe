@@ -337,6 +337,165 @@ def test_lite_status_has_bounded_scanner_threat_and_backend_freshness_shape() ->
         assert key in status_shape
 
 
+def test_lite_zero_network_clear_disconnects_and_fences_uploader_http() -> None:
+    source = (UPLINK / "main/main.c").read_text(encoding="utf-8")
+    disconnect = _c_function(source, "disconnect_lite_station")
+    reset = _c_function(source, "reset_lite_wifi_state_locked")
+    begin_transaction = _c_function(source, "begin_config_transaction")
+    commit = _c_function(source, "portal_commit")
+    reconnect = _c_function(source, "portal_reconnect")
+    backend_get = _c_function(source, "portal_backend_get")
+    wifi_events = _c_function(source, "wifi_event_handler")
+    uploader = _c_function(source, "uploader_worker")
+
+    assert "esp_wifi_disconnect()" in disconnect
+    assert "result == ESP_OK" in disconnect
+    assert "ESP_ERR_WIFI_NOT_CONNECT" in disconnect
+    for statement in (
+        "backend_wifi_manager_reset(&s_runtime.wifi)",
+        "s_runtime.wifi_initialized = false",
+        "s_runtime.wifi_connected = false",
+        "s_runtime.backend_reachable = false",
+        "s_runtime.wifi_rssi = 0",
+        "s_runtime.wifi_ssid[0] = '\\0'",
+    ):
+        assert statement in reset
+
+    assert "config_transaction_lock" in begin_transaction
+    assert "http_lock" not in begin_transaction
+    assert "lock_runtime()" not in begin_transaction
+    assert "lock_runtime()" in commit
+    assert "unlock_runtime()" in commit
+    assert "http_lock" not in commit
+
+    zero_network = reconnect.index("committed->network_count == 0U")
+    http_lock = reconnect.index(
+        "xSemaphoreTake(s_runtime.http_lock, portMAX_DELAY)", zero_network
+    )
+    runtime_lock = reconnect.index("lock_runtime()", http_lock)
+    physical_disconnect = reconnect.index(
+        "disconnect_lite_station()", runtime_lock
+    )
+    logical_reset = reconnect.index(
+        "reset_lite_wifi_state_locked()", physical_disconnect
+    )
+    runtime_unlock = reconnect.index("unlock_runtime()", logical_reset)
+    http_unlock = reconnect.index(
+        "xSemaphoreGive(s_runtime.http_lock)", runtime_unlock
+    )
+    assert (
+        zero_network
+        < http_lock
+        < runtime_lock
+        < physical_disconnect
+        < logical_reset
+        < runtime_unlock
+        < http_unlock
+    )
+
+    backend_get_http_lock = backend_get.index(
+        "xSemaphoreTake(s_runtime.http_lock, portMAX_DELAY)"
+    )
+    backend_get_request = backend_get.index(
+        "backend_http_get_json(", backend_get_http_lock
+    )
+    backend_get_runtime_lock = backend_get.index(
+        "lock_runtime()", backend_get_request
+    )
+    backend_get_admission = backend_get.index(
+        "backend_lite_network_can_use_sta(", backend_get_runtime_lock
+    )
+    reachable = backend_get.index(
+        "s_runtime.backend_reachable = true", backend_get_admission
+    )
+    backend_get_runtime_unlock = backend_get.index(
+        "unlock_runtime()", reachable
+    )
+    backend_get_http_unlock = backend_get.index(
+        "xSemaphoreGive(s_runtime.http_lock)", backend_get_runtime_unlock
+    )
+    assert (
+        backend_get_http_lock
+        < backend_get_request
+        < backend_get_runtime_lock
+        < backend_get_admission
+        < reachable
+        < backend_get_runtime_unlock
+        < backend_get_http_unlock
+    )
+
+    got_ip = wifi_events.index("IP_EVENT_STA_GOT_IP")
+    admission = wifi_events.index(
+        "backend_lite_network_can_use_sta(", got_ip
+    )
+    stale_disconnect = wifi_events.index(
+        "disconnect_lite_station()", admission
+    )
+    stale_reset = wifi_events.index(
+        "reset_lite_wifi_state_locked()", stale_disconnect
+    )
+    accepted = wifi_events.index("s_runtime.wifi_connected = true", admission)
+    assert admission < stale_disconnect < stale_reset < accepted
+
+    lite_selection = uploader.index(
+        "#if defined(FOF_BACKEND_PROFILE_BADGE_LITE)",
+        uploader.index("backend_heartbeat_due("),
+    )
+    upload_http_lock = uploader.index(
+        "xSemaphoreTake(s_runtime.http_lock, portMAX_DELAY)", lite_selection
+    )
+    upload_runtime_lock = uploader.index("lock_runtime()", upload_http_lock)
+    upload_admission = uploader.index(
+        "backend_lite_network_can_use_sta(", upload_runtime_lock
+    )
+    begin_head = uploader.index("backend_uploader_begin_head(", upload_admission)
+    selection_unlock = uploader.index("unlock_runtime()", begin_head)
+    post = uploader.index("backend_http_post_json(", selection_unlock)
+    response_lock = uploader.index("lock_runtime()", post)
+    response_unlock = uploader.index("unlock_runtime()", response_lock)
+    upload_http_unlock = uploader.index(
+        "xSemaphoreGive(s_runtime.http_lock)", response_unlock
+    )
+    assert (
+        upload_http_lock
+        < upload_runtime_lock
+        < upload_admission
+        < begin_head
+        < selection_unlock
+        < post
+        < response_lock
+        < response_unlock
+        < upload_http_unlock
+    )
+
+
+def test_lite_dashboard_status_uses_bounded_psram_not_task_stack() -> None:
+    header = (UPLINK / "main/network/backend_config_portal.h").read_text(
+        encoding="utf-8"
+    )
+    source = (UPLINK / "main/network/backend_config_portal.c").read_text(
+        encoding="utf-8"
+    )
+    allocator = _c_function(source, "allocate_dashboard_status_buffer")
+    handler = _c_function(source, "portal_http_handler")
+
+    assert (
+        "#define BACKEND_CONFIG_PORTAL_DASHBOARD_STATUS_CAPACITY 8192U"
+        in header
+    )
+    assert "heap_caps_malloc(" in allocator
+    assert "MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT" in allocator
+    assert "char status[2048]" not in handler
+    allocation = handler.index("allocate_dashboard_status_buffer()")
+    render = handler.index("backend_config_portal_dashboard_status(", allocation)
+    send = handler.index(
+        "const esp_err_t result = httpd_resp_send(", render
+    )
+    assert "request, status, status_length" in handler[send:]
+    release = handler.index("heap_caps_free(status)", send)
+    assert allocation < render < send < release
+
+
 def test_lite_investigation_terminal_observer_emits_only_the_new_result() -> None:
     source = (UPLINK / "main/main.c").read_text(encoding="utf-8")
     dispatch = _c_function(source, "dispatch_uart_frame")

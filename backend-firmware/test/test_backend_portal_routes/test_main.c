@@ -762,6 +762,49 @@ void test_dashboard_status_is_redacted_and_event_copy_is_bounded(void)
         &portal, excessive, events, &snapshot));
     TEST_ASSERT_EQUAL_UINT32(1U, fixture.event_snapshot_calls);
 }
+
+void test_dashboard_status_capacity_accepts_exact_rich_two_scanner_payload(void)
+{
+    enum { RICH_TWO_SCANNER_STATUS_LENGTH = 2073U };
+    static const char prefix[] =
+        "{\"scanner_summaries\":["
+        "{\"slot\":0,\"identity\":{\"target\":\"wifi-scanner\"}},"
+        "{\"slot\":1,\"identity\":{\"target\":\"ble-scanner\"}}],"
+        "\"padding\":\"";
+    static const char suffix[] = "\"}";
+    static char rich_status[RICH_TWO_SCANNER_STATUS_LENGTH + 1U];
+    static char output[BACKEND_CONFIG_PORTAL_DASHBOARD_STATUS_CAPACITY];
+    const size_t padding_length = RICH_TWO_SCANNER_STATUS_LENGTH -
+        (sizeof(prefix) - 1U) - (sizeof(suffix) - 1U);
+    memcpy(rich_status, prefix, sizeof(prefix) - 1U);
+    memset(
+        rich_status + sizeof(prefix) - 1U,
+        'x',
+        padding_length);
+    memcpy(
+        rich_status + sizeof(prefix) - 1U + padding_length,
+        suffix,
+        sizeof(suffix));
+    TEST_ASSERT_EQUAL_UINT32(
+        RICH_TWO_SCANNER_STATUS_LENGTH, strlen(rich_status));
+    TEST_ASSERT_GREATER_THAN_UINT32(2047U, strlen(rich_status));
+    TEST_ASSERT_EQUAL_UINT32(
+        8192U, BACKEND_CONFIG_PORTAL_DASHBOARD_STATUS_CAPACITY);
+
+    const backend_config_record_t current = config_fixture(false);
+    portal_fixture_t fixture = {.dashboard_status = rich_status};
+    const backend_config_portal_ops_t ops = fixture_ops(&fixture);
+    backend_config_portal_t portal;
+    TEST_ASSERT_TRUE(backend_config_portal_init(&portal, &current, &ops));
+
+    size_t output_length = 0U;
+    TEST_ASSERT_TRUE(backend_config_portal_dashboard_status(
+        &portal, output, sizeof(output), &output_length));
+    TEST_ASSERT_EQUAL_UINT32(
+        RICH_TWO_SCANNER_STATUS_LENGTH, output_length);
+    TEST_ASSERT_EQUAL_STRING(rich_status, output);
+    TEST_ASSERT_EQUAL_UINT32(1U, fixture.dashboard_status_calls);
+}
 #endif
 
 void test_portal_reconnects_only_after_atomic_commit_succeeds(void)
@@ -1110,6 +1153,8 @@ int main(void)
         test_stale_cursor_metadata_is_serialized_before_events);
     BACKEND_RUN_TEST(
         test_dashboard_status_is_redacted_and_event_copy_is_bounded);
+    BACKEND_RUN_TEST(
+        test_dashboard_status_capacity_accepts_exact_rich_two_scanner_payload);
 #endif
     BACKEND_RUN_TEST(
         test_redacted_config_is_parseable_and_contains_no_secret_values);
