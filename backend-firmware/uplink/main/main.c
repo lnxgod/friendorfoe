@@ -83,6 +83,7 @@
 #define UPLINK_TIME_PERIOD_MS 10000
 #define UPLINK_OTA_PERIOD_MS 1000
 #define UPLINK_RELAY_WAIT_MS 180000
+#define UPLINK_UART_TASK_STACK_DEPTH 12288U
 #define UPLINK_USB_LINE_CAPACITY 512U
 #define UPLINK_STATUS_CAPACITY 768U
 #define UPLINK_HTTP_RESPONSE_CAPACITY (BACKEND_HTTP_MAX_JSON_BODY + 1U)
@@ -4935,10 +4936,10 @@ static void usb_worker(void *argument)
 static bool create_runtime_tasks(void)
 {
     BaseType_t created = xTaskCreate(
-        uart_worker, "uart0_backend", 6144U,
+        uart_worker, "uart0_backend", UPLINK_UART_TASK_STACK_DEPTH,
         (void *)(uintptr_t)0U, 8U, NULL);
     created = created == pdPASS ? xTaskCreate(
-        uart_worker, "uart1_backend", 6144U,
+        uart_worker, "uart1_backend", UPLINK_UART_TASK_STACK_DEPTH,
         (void *)(uintptr_t)1U, 8U, NULL) : created;
     created = created == pdPASS ? xTaskCreate(
         coordinator_worker, "coordinator_backend", 7168U,

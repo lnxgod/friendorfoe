@@ -102,6 +102,22 @@ def test_uplink_environment_drives_one_exact_backend_image() -> None:
         assert resolved.is_file()
 
 
+def test_lite_boot_stack_covers_config_migration_chain() -> None:
+    config = _sdkconfig()
+    assert int(config["CONFIG_ESP_MAIN_TASK_STACK_SIZE"]) >= 8192
+
+
+def test_uart_worker_stack_covers_nested_status_decode_frames() -> None:
+    source = (UPLINK / "main/main.c").read_text(encoding="utf-8")
+    match = re.search(
+        r"#define\s+UPLINK_UART_TASK_STACK_DEPTH\s+(\d+)U", source
+    )
+    assert match is not None
+    assert int(match.group(1)) >= 12288
+    create_tasks = _c_function(source, "create_runtime_tasks")
+    assert create_tasks.count("UPLINK_UART_TASK_STACK_DEPTH") == 2
+
+
 def test_fullsize_uplink_environment_selects_its_16mb_generated_config_input() -> None:
     parser, _ = _load_environment()
     environment = parser["env:uplink-s3-fullsize-backend"]
