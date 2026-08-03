@@ -156,7 +156,7 @@ class NewDashHTTPServer(ThreadingHTTPServer):
     """Thread-per-request server fixed to one application and control token."""
 
     daemon_threads = True
-    allow_reuse_address = False
+    allow_reuse_address = True
 
     def __init__(
         self,

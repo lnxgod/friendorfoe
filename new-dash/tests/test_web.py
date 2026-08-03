@@ -371,6 +371,29 @@ class LoopbackBindingTest(unittest.TestCase):
         finally:
             occupied.close()
 
+    def test_closed_server_can_immediately_rebind_after_a_request(self) -> None:
+        first = create_http_server(
+            FakeApplication(), requested_port=0, token="first-token"
+        )
+        port = first.server_port
+        thread = first.serve_in_thread()
+        connection = http.client.HTTPConnection("127.0.0.1", port, timeout=2.0)
+        try:
+            connection.request("GET", "/", headers={"Connection": "close"})
+            response = connection.getresponse()
+            response.read()
+            self.assertEqual(response.status, 200)
+        finally:
+            connection.close()
+            first.shutdown()
+            first.server_close()
+            thread.join(2.0)
+
+        second = create_http_server(
+            FakeApplication(), requested_port=port, token="second-token"
+        )
+        second.server_close()
+
     def test_default_control_token_is_random_per_server(self) -> None:
         first = create_http_server(FakeApplication(), requested_port=0)
         second = create_http_server(FakeApplication(), requested_port=0)
@@ -432,6 +455,7 @@ class StaticAndStateRouteTest(WebServerTestCase):
         self.assertIn("/static/vendor/leaflet/leaflet.css", parser.local_urls)
         self.assertIn("/static/vendor/leaflet/leaflet.js", parser.local_urls)
         self.assertIn("/static/app.js", parser.local_urls)
+        self.assertIn(b'<link rel="icon" href="data:,">', body)
         self.assertFalse(
             any(url.startswith(("http://", "https://", "//")) for url in parser.local_urls)
         )
