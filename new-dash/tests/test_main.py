@@ -20,6 +20,7 @@ class _Lifecycle:
     def __init__(self) -> None:
         self.events: list[str] = []
         self.store_options: dict[str, object] = {}
+        self.application_options: dict[str, object] = {}
         self.transport_options: dict[str, object] = {}
         self.application: _Application | None = None
         self.transport: _Transport | None = None
@@ -29,8 +30,11 @@ class _Lifecycle:
         self.store_options = {"path": path, **options}
         return _Store(self)
 
-    def application_factory(self, store: "_Store") -> "_Application":
+    def application_factory(
+        self, store: "_Store", **options: object
+    ) -> "_Application":
         self.events.append("application.create")
+        self.application_options = options
         self.application = _Application(self, store)
         return self.application
 
@@ -216,6 +220,8 @@ class LauncherArgumentTest(unittest.TestCase):
         self.assertIsNone(args.data_dir)
         self.assertEqual(args.retention_days, 30)
         self.assertEqual(args.max_observations, 50_000)
+        self.assertEqual(args.remote_id_hold_seconds, 120)
+        self.assertEqual(args.max_remote_id_entities, 512)
 
     def test_default_database_path_uses_the_macos_application_support_folder(self) -> None:
         with patch.object(
@@ -241,6 +247,8 @@ class LauncherArgumentTest(unittest.TestCase):
         invalid_arguments = (
             ("--retention-days", "0"),
             ("--max-observations", "0"),
+            ("--remote-id-hold-seconds", "0"),
+            ("--max-remote-id-entities", "0"),
             ("--http-port", "0"),
             ("--http-port", "65536"),
         )
@@ -373,6 +381,10 @@ class LauncherLifecycleTest(unittest.TestCase):
                 "9",
                 "--max-observations",
                 "1234",
+                "--remote-id-hold-seconds",
+                "90",
+                "--max-remote-id-entities",
+                "300",
             ]
         )
         with patch.object(launcher, "_wait_for_shutdown", return_value=None):
@@ -386,6 +398,13 @@ class LauncherLifecycleTest(unittest.TestCase):
                 "path": Path("/private/tmp/new-dash/new-dash.sqlite3"),
                 "retention_days": 9,
                 "max_observations": 1234,
+            },
+        )
+        self.assertEqual(
+            self.lifecycle.application_options,
+            {
+                "remote_id_hold_seconds": 90,
+                "max_remote_id_entities": 300,
             },
         )
         self.assertEqual(

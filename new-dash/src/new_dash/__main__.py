@@ -14,6 +14,8 @@ import webbrowser
 
 _DATABASE_NAME = "new-dash.sqlite3"
 _SHUTDOWN_TIMEOUT_SECONDS = 3.0
+_DEFAULT_REMOTE_ID_HOLD_SECONDS = 120
+_DEFAULT_MAX_REMOTE_ID_ENTITIES = 512
 
 # Runtime components stay lazy so an unsupported interpreter can print the
 # version error before importing the application and transport implementation.
@@ -45,6 +47,9 @@ class _UnavailableObservationStore:
         self._fail()
 
     def query(self, query: object) -> object:
+        self._fail()
+
+    def latest_positioned_tracks(self, *, since: float, limit: int) -> object:
         self._fail()
 
     def iter_export(self, query: object) -> Any:
@@ -112,6 +117,18 @@ def parse_args(arguments: Sequence[str] | None = None) -> argparse.Namespace:
         type=_positive_integer,
         default=50_000,
         help="maximum local history rows (default: 50000)",
+    )
+    parser.add_argument(
+        "--remote-id-hold-seconds",
+        type=_positive_integer,
+        default=_DEFAULT_REMOTE_ID_HOLD_SECONDS,
+        help="seconds to retain and fade GPS Remote ID positions (default: 120)",
+    )
+    parser.add_argument(
+        "--max-remote-id-entities",
+        type=_positive_integer,
+        default=_DEFAULT_MAX_REMOTE_ID_ENTITIES,
+        help="maximum retained GPS Remote ID identities (default: 512)",
     )
     return parser.parse_args(arguments)
 
@@ -207,7 +224,11 @@ def run(arguments: argparse.Namespace) -> None:
             )
         except Exception as error:
             store = _UnavailableObservationStore(error)
-        application = NewDashApplication(store)
+        application = NewDashApplication(
+            store,
+            remote_id_hold_seconds=arguments.remote_id_hold_seconds,
+            max_remote_id_entities=arguments.max_remote_id_entities,
+        )
         transport = BadgeSerialTransport(
             explicit_port=arguments.port,
             on_frame=application.handle_frame,

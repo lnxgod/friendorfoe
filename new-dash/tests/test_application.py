@@ -302,6 +302,110 @@ class NewDashApplicationStateTest(unittest.TestCase):
         self.assertEqual(len(tracks), 3)
         self.assertEqual((tracks[0].latitude, tracks[0].events), (37.7750, 8))
 
+    def test_positioned_remote_ids_accumulate_across_200_entity_rotation_then_expire(self) -> None:
+        status = self._rich_status()
+        base = status.entities[0]
+        cycle_start = 1_000.0
+        for batch_number, batch_start in enumerate(range(0, 200, 12)):
+            entities = tuple(
+                replace(
+                    base,
+                    display_id=f"SIM-{index:03d}",
+                    latitude=37.0 + index / 100_000,
+                    longitude=-120.0 - index / 100_000,
+                    last_seen_seconds=0,
+                    stale=False,
+                )
+                for index in range(batch_start, min(batch_start + 12, 200))
+            )
+            self.application.handle_frame(
+                MachineFrame("status", replace(status, entities=entities)),
+                cycle_start + batch_number * 2,
+            )
+
+        cycle_end = cycle_start + 32
+        snapshot = self.application.snapshot(now=cycle_end)
+        retained = snapshot["positioned_remote_id_entities"]
+
+        self.assertEqual(len(snapshot["status"]["entities"]), 8)
+        self.assertEqual(len(retained), 200)
+        self.assertEqual(len({entity["stable_key"] for entity in retained}), 200)
+        self.assertTrue(
+            next(entity for entity in retained if entity["display_id"] == "SIM-000")
+            ["host_retained"]
+        )
+        self.assertFalse(
+            next(entity for entity in retained if entity["display_id"] == "SIM-199")
+            ["host_retained"]
+        )
+        self.assertEqual(snapshot["position_retention"], {"seconds": 120.0, "capacity": 512})
+
+        self.assertEqual(
+            len(self.application.snapshot(now=cycle_start + 119.9)["positioned_remote_id_entities"]),
+            200,
+        )
+        self.assertEqual(
+            len(self.application.snapshot(now=cycle_start + 120)["positioned_remote_id_entities"]),
+            188,
+        )
+        self.assertEqual(
+            self.application.snapshot(now=cycle_end + 120)["positioned_remote_id_entities"],
+            [],
+        )
+
+    def test_positioned_remote_id_capacity_evicts_oldest_observation(self) -> None:
+        store = ObservationStore(Path(self.temp.name) / "capacity.sqlite3")
+        application = NewDashApplication(store, max_remote_id_entities=3)
+        status = self._rich_status()
+        base = status.entities[0]
+        try:
+            for index in range(4):
+                entity = replace(
+                    base,
+                    display_id=f"CAP-{index}",
+                    latitude=37.0 + index / 1000,
+                    last_seen_seconds=0,
+                )
+                application.handle_frame(
+                    MachineFrame("status", replace(status, entities=(entity,))),
+                    100.0 + index,
+                )
+
+            retained = application.snapshot(now=103.0)["positioned_remote_id_entities"]
+
+            self.assertEqual(
+                {entity["display_id"] for entity in retained},
+                {"CAP-1", "CAP-2", "CAP-3"},
+            )
+            self.assertLessEqual(len(application._persisted_track_fingerprints), 3)
+        finally:
+            application.close()
+
+    def test_positioned_remote_ids_rehydrate_from_recent_sqlite_tracks(self) -> None:
+        path = Path(self.temp.name) / "rehydrate.sqlite3"
+        initial = ObservationStore(path)
+        entity = replace(
+            self._rich_status().entities[0],
+            display_id="RESTARTED",
+            last_seen_seconds=0,
+        )
+        initial.add_track(entity, received_at=100.0)
+        initial.close()
+
+        application = NewDashApplication(
+            ObservationStore(path),
+            wall_clock=lambda: 150.0,
+        )
+        try:
+            retained = application.snapshot(now=150.0)["positioned_remote_id_entities"]
+
+            self.assertEqual(len(retained), 1)
+            self.assertEqual(retained[0]["display_id"], "RESTARTED")
+            self.assertEqual(retained[0]["host_age_s"], 50.0)
+            self.assertTrue(retained[0]["host_retained"])
+        finally:
+            application.close()
+
     def test_failed_track_write_allows_identical_status_to_retry(self) -> None:
         self.application.close()
         store = FailingOnceTrackStore(Path(self.temp.name) / "track-retry.sqlite3")
@@ -607,7 +711,7 @@ class NewDashApplicationPersistenceTest(unittest.TestCase):
                 self.assertEqual(len(pending), 1)
                 self.assertEqual(
                     pending[0][1],
-                    application._track_fingerprint(original.entities[0]),
+                    application._track_fingerprint(original.entities[0], 10.0),
                 )
                 self.assertEqual(
                     application.snapshot(now=13.0)["diagnostics"]["persistence_drops"],

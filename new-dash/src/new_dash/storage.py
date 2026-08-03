@@ -319,14 +319,46 @@ class ObservationStore:
         next_cursor = _encode_cursor(items[-1]) if len(rows) > limit else None
         return HistoryPage(items=items, next_cursor=next_cursor)
 
+    def latest_positioned_tracks(
+        self, *, since: float, limit: int
+    ) -> tuple[Observation, ...]:
+        """Return one newest positioned Remote ID track per stable identity."""
+        cutoff = _finite_number(since, "since")
+        if limit < 1:
+            raise ValueError("limit must be at least 1")
+        with self._connection() as connection:
+            rows = self._run_sqlite_operation(
+                lambda: connection.execute(
+                    """SELECT * FROM (
+                        SELECT observation.*,
+                               ROW_NUMBER() OVER (
+                                   PARTITION BY stable_key
+                                   ORDER BY observed_at DESC, id DESC
+                               ) AS position_rank
+                        FROM observations AS observation
+                        WHERE kind = 'track'
+                          AND observed_at > ?
+                          AND latitude IS NOT NULL
+                          AND longitude IS NOT NULL
+                          AND source IN ('ble_rid', 'wifi_rid')
+                    ) AS ranked
+                    WHERE position_rank = 1
+                    ORDER BY observed_at DESC, id DESC
+                    LIMIT ?""",
+                    (cutoff, limit),
+                ).fetchall()
+            )
+        return tuple(_observation_from_row(row) for row in rows)
+
     def add_track(self, entity: BadgeEntity, received_at: float) -> int | None:
         """Persist a changed, positioned Remote ID track observation."""
         if entity.stale or not entity.is_remote_id or not entity.has_position:
             return None
 
         age = min(max(entity.last_seen_seconds or 0, 0), 300)
+        observed_at = received_at - age
         values = (
-            "track", received_at, received_at - age, entity.stable_key, entity.source_id,
+            "track", received_at, observed_at, entity.stable_key, entity.source_id,
             entity.source, entity.threat_class or "", entity.category or "", entity.label or "",
             entity.display_id or "", entity.manufacturer or "", entity.confidence_pct,
             entity.score, entity.rssi, entity.events, entity.seen_count, entity.latitude,
@@ -339,7 +371,8 @@ class ObservationStore:
             with self._connection() as connection:
                 previous = self._run_sqlite_operation(
                     lambda: connection.execute(
-                        """SELECT latitude, longitude, altitude_m, events, seen_count
+                        """SELECT id, observed_at, latitude, longitude, altitude_m,
+                                   events, seen_count
                         FROM observations WHERE stable_key = ? AND kind = 'track'
                         ORDER BY id DESC LIMIT 1""",
                         (entity.stable_key,),
@@ -352,6 +385,15 @@ class ObservationStore:
                     entity.latitude, entity.longitude, entity.altitude_m,
                     entity.events, entity.seen_count,
                 ):
+                    if observed_at > previous["observed_at"]:
+                        self._run_sqlite_operation(
+                            lambda: connection.execute(
+                                """UPDATE observations
+                                SET received_at = ?, observed_at = ?
+                                WHERE id = ?""",
+                                (received_at, observed_at, previous["id"]),
+                            )
+                        )
                     return None
                 return self._insert_observation(connection, values)
 

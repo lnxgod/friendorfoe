@@ -18,7 +18,14 @@ from .controls import (
     build_theme,
     build_theme_reset,
 )
-from .models import BadgeEntity, BadgeStatus, ControlReply, DetectionEvent, MachineFrame
+from .models import (
+    BadgeEntity,
+    BadgeStatus,
+    ControlReply,
+    DetectionEvent,
+    MachineFrame,
+    Observation,
+)
 from .serial_transport import ConnectionUpdate, TransportUnavailable
 from .storage import HistoryPage, HistoryQuery, ObservationStore
 
@@ -27,6 +34,8 @@ _PERSISTENCE_CAPACITY = 1_024
 _HISTORY_ERROR_LIMIT = 256
 _PRUNE_INTERVAL_SECONDS = 3_600.0
 _DEFAULT_CLOSE_TIMEOUT_SECONDS = 3.0
+_DEFAULT_REMOTE_ID_HOLD_SECONDS = 120.0
+_DEFAULT_MAX_REMOTE_ID_ENTITIES = 512
 _CANCELLATION_RESERVE_SECONDS = 0.5
 _STOP_TIMEOUT_MESSAGE = "New Dash did not stop within the shutdown timeout."
 
@@ -69,14 +78,25 @@ class NewDashApplication:
         store: ObservationStore,
         *,
         wall_clock: Callable[[], float] = time.time,
+        remote_id_hold_seconds: float = _DEFAULT_REMOTE_ID_HOLD_SECONDS,
+        max_remote_id_entities: int = _DEFAULT_MAX_REMOTE_ID_ENTITIES,
     ) -> None:
+        if remote_id_hold_seconds <= 0:
+            raise ValueError("remote_id_hold_seconds must be positive")
+        if max_remote_id_entities < 1:
+            raise ValueError("max_remote_id_entities must be at least 1")
         self._store = store
         self._wall_clock = wall_clock
+        self._remote_id_hold_seconds = float(remote_id_hold_seconds)
+        self._max_remote_id_entities = max_remote_id_entities
         self._lock = threading.RLock()
         self._status: BadgeStatus | None = None
         self._status_received_at: float | None = None
         self._connection: ConnectionUpdate | None = None
         self._recent_events: deque[tuple[DetectionEvent, float]] = deque(maxlen=20)
+        self._positioned_remote_ids: dict[
+            str, tuple[dict[str, object], float]
+        ] = {}
         self._persisted_track_fingerprints: dict[str, tuple[object, ...]] = {}
         self._pending_track_actions: dict[
             str, deque[tuple[int, tuple[object, ...]]]
@@ -105,6 +125,7 @@ class NewDashApplication:
             name="new-dash-persistence",
             daemon=False,
         )
+        self._hydrate_positioned_remote_ids(self._now())
         self._worker.start()
         self._prune_if_due(self._now())
 
@@ -128,7 +149,8 @@ class NewDashApplication:
                 for entity in frame.value.entities or ():
                     if entity.stale or not entity.is_remote_id or not entity.has_position:
                         continue
-                    fingerprint = self._track_fingerprint(entity)
+                    self._remember_positioned_remote_id_locked(entity, received_at)
+                    fingerprint = self._track_fingerprint(entity, received_at)
                     stable_key = entity.stable_key
                     pending = self._pending_track_actions.get(stable_key)
                     latest_fingerprint = (
@@ -173,6 +195,9 @@ class NewDashApplication:
             status_received_at = self._status_received_at
             connection = self._connection
             recent = tuple(self._recent_events)
+            positioned_remote_ids = self._positioned_remote_id_snapshot_locked(
+                status, current_time
+            )
             history_available = self._history_available
             history_error = self._history_error
             persistence_drops = self._persistence_drops
@@ -191,6 +216,11 @@ class NewDashApplication:
                 {**event.to_dict(), "received_at": received_at}
                 for event, received_at in reversed(recent)
             ],
+            "positioned_remote_id_entities": positioned_remote_ids,
+            "position_retention": {
+                "seconds": self._remote_id_hold_seconds,
+                "capacity": self._max_remote_id_entities,
+            },
             "diagnostics": {
                 "malformed_lines": connection.malformed_frames if connection else None,
                 "overlong_lines": connection.overlong_lines if connection else None,
@@ -499,7 +529,7 @@ class NewDashApplication:
         if stable_key is None or fingerprint is None or action_id is None:
             return
         with self._lock:
-            if succeeded:
+            if succeeded and stable_key in self._positioned_remote_ids:
                 self._persisted_track_fingerprints[stable_key] = fingerprint
             pending = self._pending_track_actions.get(stable_key)
             if pending is None:
@@ -510,6 +540,8 @@ class NewDashApplication:
                     break
             if not pending:
                 del self._pending_track_actions[stable_key]
+                if stable_key not in self._positioned_remote_ids:
+                    self._persisted_track_fingerprints.pop(stable_key, None)
 
     def _record_history_error(self, error: BaseException) -> None:
         message = self._bounded_error(error)
@@ -522,15 +554,172 @@ class NewDashApplication:
             self._history_available = True
             self._history_error = None
 
-    @staticmethod
-    def _track_fingerprint(entity: BadgeEntity) -> tuple[object, ...]:
+    @classmethod
+    def _track_fingerprint(
+        cls, entity: BadgeEntity, received_at: float
+    ) -> tuple[object, ...]:
         return (
             entity.latitude,
             entity.longitude,
             entity.altitude_m,
             entity.events,
             entity.seen_count,
+            cls._position_observed_at(entity, received_at),
         )
+
+    @staticmethod
+    def _position_observed_at(entity: BadgeEntity, received_at: float) -> float:
+        age = min(max(entity.last_seen_seconds or 0.0, 0.0), 300.0)
+        return received_at - age
+
+    def _hydrate_positioned_remote_ids(self, now: float) -> None:
+        loader = getattr(self._store, "latest_positioned_tracks", None)
+        if not self._history_available or not callable(loader):
+            return
+        try:
+            tracks = loader(
+                since=now - self._remote_id_hold_seconds,
+                limit=self._max_remote_id_entities,
+            )
+        except Exception as error:
+            self._record_history_error(error)
+            return
+        with self._lock:
+            for track in reversed(tuple(tracks)):
+                if not isinstance(track, Observation):
+                    continue
+                if now - track.observed_at >= self._remote_id_hold_seconds:
+                    continue
+                self._remember_position_payload_locked(
+                    track.stable_key,
+                    self._position_payload_from_observation(track),
+                    track.observed_at,
+                )
+                self._persisted_track_fingerprints[track.stable_key] = (
+                    track.latitude,
+                    track.longitude,
+                    track.altitude_m,
+                    track.events,
+                    track.seen_count,
+                    track.observed_at,
+                )
+
+    def _remember_positioned_remote_id_locked(
+        self, entity: BadgeEntity, received_at: float
+    ) -> None:
+        observed_at = self._position_observed_at(entity, received_at)
+        payload = entity.to_dict()
+        payload.update({
+            "stable_key": entity.stable_key,
+            "is_remote_id": True,
+            "has_position": True,
+        })
+        self._remember_position_payload_locked(
+            entity.stable_key, payload, observed_at
+        )
+
+    def _remember_position_payload_locked(
+        self,
+        stable_key: str,
+        payload: dict[str, object],
+        observed_at: float,
+    ) -> None:
+        previous = self._positioned_remote_ids.get(stable_key)
+        if previous is not None and observed_at < previous[1]:
+            return
+        self._positioned_remote_ids[stable_key] = (dict(payload), observed_at)
+        while len(self._positioned_remote_ids) > self._max_remote_id_entities:
+            oldest_key = min(
+                self._positioned_remote_ids,
+                key=lambda key: (self._positioned_remote_ids[key][1], key),
+            )
+            del self._positioned_remote_ids[oldest_key]
+            if oldest_key not in self._pending_track_actions:
+                self._persisted_track_fingerprints.pop(oldest_key, None)
+
+    def _positioned_remote_id_snapshot_locked(
+        self, status: BadgeStatus | None, now: float
+    ) -> list[dict[str, object]]:
+        cutoff = now - self._remote_id_hold_seconds
+        expired = [
+            stable_key
+            for stable_key, (_payload, observed_at) in self._positioned_remote_ids.items()
+            if observed_at <= cutoff
+        ]
+        for stable_key in expired:
+            del self._positioned_remote_ids[stable_key]
+            if stable_key not in self._pending_track_actions:
+                self._persisted_track_fingerprints.pop(stable_key, None)
+
+        active_entities = (
+            status.entities
+            if status is not None and status.entities is not None
+            else ()
+        )
+        active_keys = {
+            entity.stable_key
+            for entity in active_entities
+            if not entity.stale and entity.is_remote_id and entity.has_position
+        }
+        rendered: list[dict[str, object]] = []
+        ordered = sorted(
+            self._positioned_remote_ids.items(),
+            key=lambda item: (item[1][1], item[0]),
+            reverse=True,
+        )
+        for stable_key, (payload, observed_at) in ordered:
+            age = max(now - observed_at, 0.0)
+            item = dict(payload)
+            item.update({
+                "stable_key": stable_key,
+                "stale": False,
+                "last_seen_s": round(age, 1),
+                "host_age_s": round(age, 1),
+                "host_observed_at": observed_at,
+                "host_retained": stable_key not in active_keys,
+                "position_retention_s": self._remote_id_hold_seconds,
+                "is_remote_id": True,
+                "has_position": True,
+            })
+            rendered.append(item)
+        return rendered
+
+    @staticmethod
+    def _position_payload_from_observation(
+        observation: Observation,
+    ) -> dict[str, object]:
+        return {
+            "label": observation.label or None,
+            "detail": None,
+            "evidence": "Host-retained GPS position received over USB.",
+            "class": observation.threat_class or None,
+            "category": observation.category or None,
+            "code": None,
+            "display_id": observation.display_id or None,
+            "source_id": observation.source_id,
+            "source": observation.source,
+            "score": observation.score,
+            "confidence_pct": observation.confidence,
+            "last_seen_s": None,
+            "rssi": observation.rssi,
+            "best_rssi": observation.rssi,
+            "events": observation.events,
+            "seen_count": observation.seen_count,
+            "stale": False,
+            "lat": observation.latitude,
+            "lon": observation.longitude,
+            "altitude_m": observation.altitude_m,
+            "operator_lat": observation.operator_latitude,
+            "operator_lon": observation.operator_longitude,
+            "operator_id": observation.operator_id or None,
+            "ssid": None,
+            "bssid": None,
+            "manufacturer": observation.manufacturer or None,
+            "extras": dict(observation.extras),
+            "stable_key": observation.stable_key,
+            "is_remote_id": True,
+            "has_position": True,
+        }
 
     @staticmethod
     def _status_dict(

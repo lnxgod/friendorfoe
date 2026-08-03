@@ -85,6 +85,32 @@ test("Live groups and Map keys derive from the same filtered entity set", () => 
   assert.deepEqual(live.filteredRemoteIdKeys(snapshot, ALL_FILTERS), ["ble_rid:RID-A"]);
 });
 
+test("Map can retain 200 GPS identities while Live stays current and markers fade", () => {
+  const retained = Array.from({ length: 200 }, (_, index) => entity(
+    "ble_rid",
+    `SIM-${String(index).padStart(3, "0")}`,
+    {
+      stable_key: `ble_rid:SIM-${String(index).padStart(3, "0")}`,
+      lat: 37 + index / 100_000,
+      lon: -120 - index / 100_000,
+      host_age_s: index % 120,
+      position_retention_s: 120,
+      host_retained: index !== 199,
+    },
+  ));
+  const snapshot = state([retained.at(-1)], {
+    positioned_remote_id_entities: retained,
+  });
+
+  assert.equal(live.groupVisibleEntities(snapshot, ALL_FILTERS).remoteId.length, 1);
+  assert.equal(live.visiblePositionedRemoteIds(snapshot, ALL_FILTERS).length, 200);
+  assert.deepEqual(live.filteredRemoteIdKeys(snapshot, ALL_FILTERS), ["ble_rid:SIM-199"]);
+  assert.equal(ui.stableEntityKey(retained[0]), "ble_rid:SIM-000");
+  assert.equal(mapView.positionOpacity({ host_age_s: 0, position_retention_s: 120 }), 1);
+  assert.equal(mapView.positionOpacity({ host_age_s: 60, position_retention_s: 120 }), 0.6);
+  assert.equal(mapView.positionOpacity({ host_age_s: 120, position_retention_s: 120 }), 0.2);
+});
+
 test("Live presents deduplicated native USB detections separately when active entities are unavailable", () => {
   const snapshot = {
     freshness: { state: "fresh" },

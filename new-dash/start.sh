@@ -30,6 +30,8 @@ NEW_DASH_PLIST="$HOME/Library/LaunchAgents/$NEW_DASH_LABEL.plist"
 usage() {
     cat <<'EOF'
 Usage: ./start.sh [--http-port PORT] [--port /dev/cu.*]
+                  [--remote-id-hold-seconds SECONDS]
+                  [--max-remote-id-entities COUNT]
 
 Register and start the New Dash overnight macOS service.
 EOF
@@ -58,6 +60,14 @@ valid_badge_port() {
     esac
 }
 
+valid_positive() {
+    case "$1" in
+        ''|*[!0-9]*) return 1 ;;
+    esac
+    NEW_DASH_POSITIVE_NORMALIZED=$(printf '%s' "$1" | sed 's/^0*//')
+    [ -n "$NEW_DASH_POSITIVE_NORMALIZED" ]
+}
+
 xml_escape() {
     printf '%s' "$1" | sed \
         -e 's/&/\&amp;/g' \
@@ -81,6 +91,8 @@ run_service() {
 
     NEW_DASH_HTTP_PORT=
     NEW_DASH_BADGE_PORT=
+    NEW_DASH_REMOTE_ID_HOLD_SECONDS=120
+    NEW_DASH_MAX_REMOTE_ID_ENTITIES=512
     NEW_DASH_EXTRA=
     {
         if ! IFS= read -r NEW_DASH_HTTP_PORT; then
@@ -91,10 +103,13 @@ run_service() {
             echo "Invalid service configuration." >&2
             exit 1
         fi
+        if IFS= read -r NEW_DASH_CONFIG_VALUE; then
+            NEW_DASH_REMOTE_ID_HOLD_SECONDS=$NEW_DASH_CONFIG_VALUE
+        fi
+        if IFS= read -r NEW_DASH_CONFIG_VALUE; then
+            NEW_DASH_MAX_REMOTE_ID_ENTITIES=$NEW_DASH_CONFIG_VALUE
+        fi
         if IFS= read -r NEW_DASH_EXTRA; then
-            echo "Invalid service configuration: unexpected trailing records." >&2
-            exit 1
-        elif [ -n "$NEW_DASH_EXTRA" ]; then
             echo "Invalid service configuration: unexpected trailing records." >&2
             exit 1
         fi
@@ -108,10 +123,20 @@ run_service() {
         echo "Invalid service badge port." >&2
         exit 1
     fi
+    if ! valid_positive "$NEW_DASH_REMOTE_ID_HOLD_SECONDS"; then
+        echo "Invalid Remote ID hold seconds." >&2
+        exit 1
+    fi
+    if ! valid_positive "$NEW_DASH_MAX_REMOTE_ID_ENTITIES"; then
+        echo "Invalid Remote ID entity capacity." >&2
+        exit 1
+    fi
 
     PYTHONUNBUFFERED=1
     export PYTHONUNBUFFERED
-    set -- --no-browser --http-port "$NEW_DASH_HTTP_PORT"
+    set -- --no-browser --http-port "$NEW_DASH_HTTP_PORT" \
+        --remote-id-hold-seconds "$NEW_DASH_REMOTE_ID_HOLD_SECONDS" \
+        --max-remote-id-entities "$NEW_DASH_MAX_REMOTE_ID_ENTITIES"
     if [ -n "$NEW_DASH_BADGE_PORT" ]; then
         set -- "$@" --port "$NEW_DASH_BADGE_PORT"
     fi
@@ -125,6 +150,8 @@ fi
 NEW_DASH_HTTP_PORT=18888
 NEW_DASH_BADGE_PORT=
 NEW_DASH_BADGE_PORT_SET=0
+NEW_DASH_REMOTE_ID_HOLD_SECONDS=120
+NEW_DASH_MAX_REMOTE_ID_ENTITIES=512
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -154,6 +181,22 @@ while [ "$#" -gt 0 ]; do
             NEW_DASH_BADGE_PORT_SET=1
             shift 2
             ;;
+        --remote-id-hold-seconds)
+            if [ "$#" -lt 2 ]; then
+                echo "--remote-id-hold-seconds requires a value." >&2
+                exit 1
+            fi
+            NEW_DASH_REMOTE_ID_HOLD_SECONDS=$2
+            shift 2
+            ;;
+        --max-remote-id-entities)
+            if [ "$#" -lt 2 ]; then
+                echo "--max-remote-id-entities requires a value." >&2
+                exit 1
+            fi
+            NEW_DASH_MAX_REMOTE_ID_ENTITIES=$2
+            shift 2
+            ;;
         *)
             echo "Unknown argument: $1" >&2
             usage >&2
@@ -168,6 +211,14 @@ if ! valid_port "$NEW_DASH_HTTP_PORT"; then
 fi
 if [ "$NEW_DASH_BADGE_PORT_SET" -eq 1 ] && ! valid_badge_port "$NEW_DASH_BADGE_PORT"; then
     echo "Badge port must be under /dev/cu.*." >&2
+    exit 1
+fi
+if ! valid_positive "$NEW_DASH_REMOTE_ID_HOLD_SECONDS"; then
+    echo "Remote ID hold seconds must be a positive decimal value." >&2
+    exit 1
+fi
+if ! valid_positive "$NEW_DASH_MAX_REMOTE_ID_ENTITIES"; then
+    echo "Remote ID entity capacity must be a positive decimal value." >&2
     exit 1
 fi
 
@@ -195,7 +246,11 @@ trap cleanup EXIT HUP INT TERM
 NEW_DASH_CONFIG_TMP=$(mktemp "$NEW_DASH_SUPPORT_DIR/service.conf.XXXXXX")
 NEW_DASH_PLIST_TMP=$(mktemp "$HOME/Library/LaunchAgents/$NEW_DASH_LABEL.plist.XXXXXX")
 
-printf '%s\n%s\n' "$NEW_DASH_HTTP_PORT" "$NEW_DASH_BADGE_PORT" > "$NEW_DASH_CONFIG_TMP"
+printf '%s\n%s\n%s\n%s\n' \
+    "$NEW_DASH_HTTP_PORT" \
+    "$NEW_DASH_BADGE_PORT" \
+    "$NEW_DASH_REMOTE_ID_HOLD_SECONDS" \
+    "$NEW_DASH_MAX_REMOTE_ID_ENTITIES" > "$NEW_DASH_CONFIG_TMP"
 mv -f "$NEW_DASH_CONFIG_TMP" "$NEW_DASH_CONFIG"
 chmod 600 "$NEW_DASH_CONFIG"
 

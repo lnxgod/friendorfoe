@@ -76,6 +76,8 @@ Available launch options are:
 --data-dir PATH
 --retention-days 30
 --max-observations 50000
+--remote-id-hold-seconds 120
+--max-remote-id-entities 512
 ```
 
 `--http-port` still binds only to `127.0.0.1`. An explicitly requested busy
@@ -89,6 +91,7 @@ For unattended overnight capture, register the per-user macOS service from
 ```sh
 ./start.sh
 ./start.sh --http-port 18888 --port /dev/cu.usbmodem1101
+./start.sh --remote-id-hold-seconds 120 --max-remote-id-entities 512
 ./stop.sh
 ```
 
@@ -116,9 +119,13 @@ the foreground developer launcher.
   show Remote ID and Find My events when its active entity snapshot is
   temporarily unavailable; those events are not presented as map tracks.
 - **Map** shows positioned Remote ID drone/operator markers, their connecting
-  line, and locally retained host-observed trails. Public OpenStreetMap tiles
-  provide the optional basemap; markers and coordinates remain available when
-  tiles are offline.
+  line, and locally retained host-observed trails. The host keeps the newest GPS
+  position for up to 512 Remote ID identities, fades each marker as its GPS age
+  approaches two minutes, and removes it after 120 seconds without a newer GPS
+  observation. This lets a rotating status feed accumulate a 200-drone sweep
+  without presenting old positions as indefinitely live. Public OpenStreetMap
+  tiles provide the optional basemap; markers and coordinates remain available
+  when tiles are offline.
 - **History** provides newest-first time, kind, class, source, identity-text,
   and positioned filters, cursor pagination, details, CSV/JSON export, and a
   typed confirmation before local clearing. Clearing history does not stop the
@@ -154,6 +161,13 @@ The default database is:
 History is pruned to 30 days and then to at most 50,000 observations by
 default. Both positive limits can be changed at launch. `--data-dir` selects a
 different directory; New Dash appends `new-dash.sqlite3` within it.
+
+Map position retention is separate from append-only history. By default the
+backend keeps the newest positioned Remote ID observation per identity for 120
+seconds, bounded to 512 identities, and rebuilds that short-lived set from
+SQLite after a restart. `--remote-id-hold-seconds` and
+`--max-remote-id-entities` change those positive bounds for either `run.sh` or
+the macOS `start.sh` service.
 
 New Dash displays the badge firmware's capped, processed status and event
 summaries. Firmware classification remains authoritative. Map trails are

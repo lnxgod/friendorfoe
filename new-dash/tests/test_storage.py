@@ -82,6 +82,36 @@ class ObservationStoreTest(unittest.TestCase):
         page = store.query(HistoryQuery(limit=10))
         self.assertEqual([item.latitude for item in page.items], [37.7750, 37.7749])
         self.assertEqual(page.items[0].observed_at, 1_700_000_013.0)
+        self.assertEqual(page.items[1].received_at, 1_700_000_012.0)
+        self.assertEqual(page.items[1].observed_at, 1_700_000_011.0)
+
+    def test_latest_positioned_tracks_returns_one_newest_row_per_identity(self) -> None:
+        base = self._positioned_entity()
+        first = replace(base, display_id="RID-A", last_seen_seconds=0)
+        second = replace(base, display_id="RID-B", latitude=38.0, last_seen_seconds=0)
+        expired = replace(base, display_id="RID-C", latitude=39.0, last_seen_seconds=0)
+        store = ObservationStore(self.path)
+        store.add_track(expired, received_at=5.0)
+        store.add_track(first, received_at=10.0)
+        store.add_track(second, received_at=15.0)
+        store.add_track(replace(first, latitude=37.9), received_at=20.0)
+        store.add_track(
+            replace(first, latitude=37.8, events=999, last_seen_seconds=15),
+            received_at=30.0,
+        )
+        store.add_event(self._event("event-only"), received_at=25.0)
+        store.close()
+
+        reopened = ObservationStore(self.path)
+        tracks = reopened.latest_positioned_tracks(since=10.0, limit=512)
+
+        self.assertEqual([track.display_id for track in tracks], ["RID-A", "RID-B"])
+        self.assertEqual(tracks[0].latitude, 37.9)
+        self.assertEqual(
+            [track.display_id for track in reopened.latest_positioned_tracks(since=10.0, limit=1)],
+            ["RID-A"],
+        )
+        reopened.close()
 
     def test_track_counter_change_persists_without_coordinate_change(self) -> None:
         entity = self._positioned_entity()

@@ -114,6 +114,13 @@ export function visibleEntities(state, filters) {
   return entities.filter((entity) => matchesFilters(entity, state, filters));
 }
 
+export function visiblePositionedRemoteIds(state, filters) {
+  const retained = Array.isArray(state?.positioned_remote_id_entities)
+    ? state.positioned_remote_id_entities
+    : visibleEntities(state, filters);
+  return retained.filter((entity) => isRemoteId(entity) && matchesFilters(entity, state, filters));
+}
+
 export function groupVisibleEntities(state, filters) {
   const visible = visibleEntities(state, filters);
   const remoteId = visible.filter(isRemoteId);

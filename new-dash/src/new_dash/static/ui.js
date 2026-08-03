@@ -114,6 +114,9 @@ export function nextTabIndex(current, key, count) {
 }
 
 export function stableEntityKey(entity) {
+  if (typeof entity?.stable_key === "string" && entity.stable_key) {
+    return entity.stable_key;
+  }
   const identity = entity?.display_id || entity?.bssid || entity?.ssid || entity?.label || "unknown";
   return `${entity?.source || "unknown"}:${identity}`;
 }

@@ -1,6 +1,10 @@
 import { createCompletionPoller, getHistory, getState, post } from "./api.js";
 import { nextTabIndex, scannerSummary, writePreference, readPreference } from "./ui.js";
-import { filteredRemoteIdKeys, renderLive, visibleEntities } from "./views/live.js";
+import {
+  filteredRemoteIdKeys,
+  renderLive,
+  visiblePositionedRemoteIds,
+} from "./views/live.js";
 import {
   createMap,
   createRequestStatusChannels,
@@ -16,7 +20,6 @@ const POLL_INTERVAL_MS = 1000;
 const VIEW_KEY = "newDash.v1.selectedView";
 const FILTER_KEY = "newDash.v1.presentationFilters";
 const VIEWS = ["live", "map", "history", "badge"];
-const REMOTE_ID_SOURCES = new Set(["ble_rid", "wifi_rid"]);
 const FILTER_VALUES = {
   class: new Set(["all", "drone", "meta", "tracker", "wifi_attack", "other"]),
   source: new Set([
@@ -135,7 +138,7 @@ function renderHeader(state) {
 }
 
 function mapEntities(state) {
-  return visibleEntities(state, filters).filter((entity) => REMOTE_ID_SOURCES.has(entity.source));
+  return visiblePositionedRemoteIds(state, filters);
 }
 
 function renderState(state) {

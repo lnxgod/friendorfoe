@@ -1,5 +1,6 @@
 import {
   element,
+  formatAge,
   formatCoordinates,
   replace,
   stableEntityKey,
@@ -50,6 +51,7 @@ let offlineNotice = null;
 let semanticList = null;
 let selectedLabel = null;
 let markerByKey = new Map();
+let visualsByKey = new Map();
 let activeByKey = new Map();
 let activeFingerprint = "";
 let selectedKey = null;
@@ -125,14 +127,36 @@ function positionedRemoteId(entities) {
   ));
 }
 
+export function positionOpacity(entity) {
+  const age = Number(entity?.host_age_s);
+  const retention = Number(entity?.position_retention_s);
+  if (!Number.isFinite(age) || !Number.isFinite(retention) || retention <= 0) {
+    return 1;
+  }
+  const fraction = Math.min(Math.max(age / retention, 0), 1);
+  return Math.max(0.2, 1 - fraction * 0.8);
+}
+
 function markerButton(entity, key) {
-  const identity = entity.display_id || entity.label || "Identity missing";
   const button = element("button", {
-    text: `${identity} · ${formatCoordinates(entity.lat, entity.lon)}`,
     attributes: { type: "button", "data-stable-key": key },
   });
   button.addEventListener("click", () => focusEntity(key));
   return button;
+}
+
+function updateEntityAppearance(entity, key) {
+  const visual = visualsByKey.get(key);
+  if (!visual) return;
+  const opacity = positionOpacity(entity);
+  const age = Number(entity.host_age_s);
+  const ageLabel = Number.isFinite(age) ? ` · GPS ${formatAge(age)}` : "";
+  const identity = entity.display_id || entity.label || "Identity missing";
+  visual.button.textContent = `${identity} · ${formatCoordinates(entity.lat, entity.lon)}${ageLabel}`;
+  visual.button.style.opacity = String(opacity);
+  visual.drone.setOpacity(opacity);
+  visual.operator?.setOpacity(opacity);
+  visual.link?.setStyle({ opacity: 0.9 * opacity });
 }
 
 function updateSelectionAppearance() {
@@ -163,11 +187,18 @@ export function renderActiveEntities(entities) {
     entity.operator_lon,
   ]));
   if (fingerprint === activeFingerprint) {
+    for (const entity of positioned) {
+      const key = stableEntityKey(entity);
+      activeByKey.set(key, entity);
+      updateEntityAppearance(entity, key);
+    }
+    updateSelectionAppearance();
     return;
   }
   activeFingerprint = fingerprint;
   entityLayer.clearLayers();
   markerByKey = new Map();
+  visualsByKey = new Map();
   activeByKey = new Map();
   const listItems = [];
   const bounds = [];
@@ -183,22 +214,27 @@ export function renderActiveEntities(entities) {
     drone.on("click", () => focusEntity(key));
     markerByKey.set(key, drone);
     bounds.push(dronePosition);
-    listItems.push(markerButton(entity, key));
+    const button = markerButton(entity, key);
+    listItems.push(button);
+    let operator = null;
+    let link = null;
 
     if (validCoordinatePair(entity.operator_lat, entity.operator_lon)) {
       const operatorPosition = [entity.operator_lat, entity.operator_lon];
-      window.L.marker(operatorPosition, {
+      operator = window.L.marker(operatorPosition, {
         icon: markerIcon("operator"),
         keyboard: false,
         alt: "Remote ID operator marker",
       }).addTo(entityLayer);
-      window.L.polyline([dronePosition, operatorPosition], {
+      link = window.L.polyline([dronePosition, operatorPosition], {
         color: "#54d8ec",
         weight: 2,
         opacity: 0.9,
       }).addTo(entityLayer);
       bounds.push(operatorPosition);
     }
+    visualsByKey.set(key, { drone, operator, link, button });
+    updateEntityAppearance(entity, key);
   }
   if (semanticList) {
     replace(
