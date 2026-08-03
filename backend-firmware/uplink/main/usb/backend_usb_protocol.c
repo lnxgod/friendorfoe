@@ -200,6 +200,7 @@ static bool parse_config_set_json(
     const char *json, size_t length, backend_usb_command_t *out)
 {
     backend_json_token_t tokens[BACKEND_JSON_MAX_TOKENS];
+    char decoded[BACKEND_USB_COMMAND_MAX + 1U];
     size_t token_count = 0;
     if (backend_json_parse(
             json, length, tokens,
@@ -207,6 +208,14 @@ static bool parse_config_set_json(
             BACKEND_JSON_OK ||
         token_count == 0 || tokens[0].kind != BACKEND_JSON_OBJECT) {
         return false;
+    }
+    for (size_t index = 0; index < token_count; ++index) {
+        if (tokens[index].kind == BACKEND_JSON_STRING &&
+            (!backend_json_copy_string(
+                 json, &tokens[index], decoded, sizeof(decoded)) ||
+             !safe_text(decoded, strlen(decoded)))) {
+            return false;
+        }
     }
     out->kind = BACKEND_USB_COMMAND_CONFIG_SET;
     out->json = json;
@@ -400,6 +409,7 @@ size_t backend_usb_protocol_encode_investigation(
     size_t token_count = 0;
     if (investigation_json == NULL || json_length == 0 ||
         output == NULL || capacity == 0 ||
+        !safe_text(investigation_json, json_length) ||
         backend_json_parse(
             investigation_json, json_length, tokens,
             sizeof(tokens) / sizeof(tokens[0]), &token_count) !=

@@ -181,6 +181,38 @@ void test_config_set_exposes_bounded_json_only_for_current_dispatch(void)
     assert_invalid("FOF_CONFIG_SET:not-json");
 }
 
+void test_config_set_rejects_decoded_controls_in_every_json_string(void)
+{
+    static const char *const invalid[] = {
+        "FOF_CONFIG_SET:{\"display_name\":\"bad\\bvalue\"}",
+        "FOF_CONFIG_SET:{\"display_name\":\"bad\\fvalue\"}",
+        "FOF_CONFIG_SET:{\"display_name\":\"bad\\nvalue\"}",
+        "FOF_CONFIG_SET:{\"display_name\":\"bad\\rvalue\"}",
+        "FOF_CONFIG_SET:{\"display_name\":\"bad\\tvalue\"}",
+        "FOF_CONFIG_SET:{\"display_name\":\"bad\\u0000value\"}",
+        "FOF_CONFIG_SET:{\"display_name\":\"bad\\u0001value\"}",
+        "FOF_CONFIG_SET:{\"display_name\":\"bad\\u001fvalue\"}",
+        "FOF_CONFIG_SET:{\"display_name\":\"bad\\u007fvalue\"}",
+        "FOF_CONFIG_SET:{\"networks\":[{\"ssid\":\"bad\\nssid\"}]}",
+        "FOF_CONFIG_SET:{\"bad\\u007fkey\":\"value\"}",
+    };
+    for (size_t index = 0; index < sizeof(invalid) / sizeof(invalid[0]);
+         ++index) {
+        assert_invalid(invalid[index]);
+    }
+}
+
+void test_config_set_allows_escaped_punctuation_and_non_control_unicode(void)
+{
+    static const char line[] =
+        "FOF_CONFIG_SET:{\"display_name\":"
+        "\"quote \\\" slash \\\\ caf\xc3\xa9 \\u263a\"}";
+    backend_usb_command_t command = parse_ok(line);
+    TEST_ASSERT_EQUAL(BACKEND_USB_COMMAND_CONFIG_SET, command.kind);
+    TEST_ASSERT_EQUAL_UINT32(sizeof(line) - 1U, command.json_length +
+        strlen("FOF_CONFIG_SET:"));
+}
+
 void test_ready_and_pong_are_complete_truthful_lite_frames(void)
 {
     char output[256];
@@ -247,6 +279,47 @@ void test_investigation_wrapper_enforces_json_and_det_frame_bound(void)
     TEST_ASSERT_EQUAL_CHAR('\0', output[0]);
 }
 
+void test_investigation_wrapper_rejects_physical_controls_and_clears_output(void)
+{
+    static const char pretty_lf[] =
+        "{\n  \"type\": \"ble_inv_end\"\n}";
+    static const char pretty_crlf[] =
+        "{\r\n  \"type\": \"ble_inv_end\"\r\n}";
+    static const char trailing_tab[] =
+        "{\"type\":\"ble_inv_end\"}\t";
+    static const char raw_del[] =
+        "{\"summary\":\"bad\x7fvalue\"}";
+    static const struct {
+        const char *json;
+        size_t length;
+    } invalid[] = {
+        {pretty_lf, sizeof(pretty_lf) - 1U},
+        {pretty_crlf, sizeof(pretty_crlf) - 1U},
+        {trailing_tab, sizeof(trailing_tab) - 1U},
+        {raw_del, sizeof(raw_del) - 1U},
+    };
+    char output[256];
+    for (size_t index = 0; index < sizeof(invalid) / sizeof(invalid[0]);
+         ++index) {
+        memset(output, 'X', sizeof(output));
+        TEST_ASSERT_EQUAL_UINT32(
+            0, backend_usb_protocol_encode_investigation(
+                   invalid[index].json, invalid[index].length,
+                   output, sizeof(output)));
+        TEST_ASSERT_EQUAL_CHAR('\0', output[0]);
+    }
+
+    static const char escaped_newline[] =
+        "{\"summary\":\"still\\none physical line\"}";
+    TEST_ASSERT_GREATER_THAN_UINT32(
+        0, backend_usb_protocol_encode_investigation(
+               escaped_newline, sizeof(escaped_newline) - 1U,
+               output, sizeof(output)));
+    TEST_ASSERT_EQUAL_STRING(
+        "FOF_INV:{\"summary\":\"still\\none physical line\"}\n",
+        output);
+}
+
 void test_all_bounded_encoders_fail_closed_without_partial_frames(void)
 {
     const backend_firmware_identity_t *identity =
@@ -293,9 +366,12 @@ int main(int argc, char **argv)
     BACKEND_RUN_TEST(test_compatibility_set_accepts_only_supported_keys_and_preserves_equals);
     BACKEND_RUN_TEST(test_set_rejects_physical_or_escaped_line_breaks_in_values);
     BACKEND_RUN_TEST(test_config_set_exposes_bounded_json_only_for_current_dispatch);
+    BACKEND_RUN_TEST(test_config_set_rejects_decoded_controls_in_every_json_string);
+    BACKEND_RUN_TEST(test_config_set_allows_escaped_punctuation_and_non_control_unicode);
     BACKEND_RUN_TEST(test_ready_and_pong_are_complete_truthful_lite_frames);
     BACKEND_RUN_TEST(test_live_frame_encoders_emit_exact_newline_delimited_json);
     BACKEND_RUN_TEST(test_investigation_wrapper_enforces_json_and_det_frame_bound);
+    BACKEND_RUN_TEST(test_investigation_wrapper_rejects_physical_controls_and_clears_output);
     BACKEND_RUN_TEST(test_all_bounded_encoders_fail_closed_without_partial_frames);
     return UNITY_END();
 }
