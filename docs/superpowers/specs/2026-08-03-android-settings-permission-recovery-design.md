@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-03
 
-**Status:** Design approved on 2026-08-03; written-spec review pending
+**Status:** Design approved and self-reviewed on 2026-08-03; user written-spec review pending
 
 **Affected surface:** `android/`, Android release workflow metadata, Android tests, and release documentation
 
