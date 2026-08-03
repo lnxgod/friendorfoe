@@ -25,6 +25,7 @@ backend_portal_update_result_t backend_usb_config_stage(
     const char *value);
 backend_portal_update_result_t backend_usb_config_save(
     backend_usb_config_t *state,
+    const backend_config_record_t *current,
     backend_config_portal_commit_fn commit,
     backend_config_portal_reconnect_fn reconnect,
     void *context,

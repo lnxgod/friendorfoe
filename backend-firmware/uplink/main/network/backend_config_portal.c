@@ -142,6 +142,7 @@ bool backend_config_portal_dashboard_status(
     size_t capacity,
     size_t *out_length)
 {
+    backend_config_record_t config;
     if (out_length) {
         *out_length = 0U;
     }
@@ -150,6 +151,7 @@ bool backend_config_portal_dashboard_status(
     }
     if (!portal || !portal->initialized || !output || capacity == 0U ||
         !out_length || !portal->ops.dashboard_status ||
+        !backend_config_portal_snapshot_config(portal, &config) ||
         !portal->ops.dashboard_status(
             portal->ops.context, output, capacity, out_length) ||
         *out_length >= capacity || output[*out_length] != '\0' ||
@@ -163,16 +165,16 @@ bool backend_config_portal_dashboard_status(
         }
         return false;
     }
-    for (uint8_t index = 0U; index < portal->config.network_count;
+    for (uint8_t index = 0U; index < config.network_count;
          ++index) {
         if (output_contains_config_value(
                 output,
-                portal->config.networks[index].ssid,
-                sizeof(portal->config.networks[index].ssid)) ||
+                config.networks[index].ssid,
+                sizeof(config.networks[index].ssid)) ||
             output_contains_config_value(
                 output,
-                portal->config.networks[index].password,
-                sizeof(portal->config.networks[index].password))) {
+                config.networks[index].password,
+                sizeof(config.networks[index].password))) {
             output[0] = '\0';
             *out_length = 0U;
             return false;
@@ -180,12 +182,12 @@ bool backend_config_portal_dashboard_status(
     }
     if (output_contains_config_value(
             output,
-            portal->config.backend_url,
-            sizeof(portal->config.backend_url)) ||
+            config.backend_url,
+            sizeof(config.backend_url)) ||
         output_contains_config_value(
             output,
-            portal->config.ap_password,
-            sizeof(portal->config.ap_password))) {
+            config.ap_password,
+            sizeof(config.ap_password))) {
         output[0] = '\0';
         *out_length = 0U;
         return false;
@@ -249,6 +251,11 @@ const char *backend_config_portal_update_response(
         response =
             "{\"status\":\"reconnect_failed\",\"saved\":true}";
         break;
+    case BACKEND_PORTAL_UPDATE_STALE_GENERATION:
+        status_code = 409;
+        response =
+            "{\"status\":\"stale_generation\",\"saved\":false}";
+        break;
     default:
         break;
     }
@@ -264,7 +271,9 @@ bool backend_config_portal_init(
     const backend_config_portal_ops_t *ops)
 {
     if (!portal || !current || !ops || !ops->commit_config ||
-        !ops->reconnect_wifi) {
+        !ops->reconnect_wifi ||
+        ((ops->begin_config_transaction == NULL) !=
+         (ops->end_config_transaction == NULL))) {
         return false;
     }
     memset(portal, 0, sizeof(*portal));
@@ -283,24 +292,56 @@ backend_portal_update_result_t backend_config_portal_apply_update(
     if (!portal || !portal->initialized) {
         return BACKEND_PORTAL_UPDATE_INVALID_ARGUMENT;
     }
-    backend_config_record_t candidate;
-    const backend_portal_update_result_t parsed =
-        backend_portal_parse_config_update(
-            &portal->config, json, length, &candidate);
-    if (parsed != BACKEND_PORTAL_UPDATE_OK) {
-        return parsed;
-    }
-    if (!portal->ops.commit_config(
-            portal->ops.context, &candidate)) {
+    const bool transactional =
+        portal->ops.begin_config_transaction != NULL;
+    if (transactional &&
+        !portal->ops.begin_config_transaction(portal->ops.context)) {
         return BACKEND_PORTAL_UPDATE_COMMIT_FAILED;
     }
-
-    portal->config = candidate;
-    if (!portal->ops.reconnect_wifi(
-            portal->ops.context, &portal->config, now_ms)) {
-        return BACKEND_PORTAL_UPDATE_RECONNECT_FAILED;
+    backend_config_record_t candidate;
+    backend_portal_update_result_t result =
+        backend_portal_parse_config_update(
+            &portal->config, json, length, &candidate);
+    if (result == BACKEND_PORTAL_UPDATE_OK) {
+        if (!portal->ops.commit_config(
+                portal->ops.context, &candidate)) {
+            result = BACKEND_PORTAL_UPDATE_COMMIT_FAILED;
+        } else {
+            portal->config = candidate;
+            result = portal->ops.reconnect_wifi(
+                portal->ops.context, &portal->config, now_ms)
+                ? BACKEND_PORTAL_UPDATE_OK
+                : BACKEND_PORTAL_UPDATE_RECONNECT_FAILED;
+        }
     }
-    return BACKEND_PORTAL_UPDATE_OK;
+    if (transactional) {
+        portal->ops.end_config_transaction(portal->ops.context);
+    }
+    return result;
+}
+
+bool backend_config_portal_snapshot_config(
+    const backend_config_portal_t *portal,
+    backend_config_record_t *out)
+{
+    if (out == NULL) {
+        return false;
+    }
+    memset(out, 0, sizeof(*out));
+    if (portal == NULL || !portal->initialized) {
+        return false;
+    }
+    const bool transactional =
+        portal->ops.begin_config_transaction != NULL;
+    if (transactional &&
+        !portal->ops.begin_config_transaction(portal->ops.context)) {
+        return false;
+    }
+    *out = portal->config;
+    if (transactional) {
+        portal->ops.end_config_transaction(portal->ops.context);
+    }
+    return true;
 }
 
 bool backend_config_portal_test_backend(
@@ -314,10 +355,14 @@ bool backend_config_portal_test_backend(
     if (!portal || !portal->initialized || !portal->ops.backend_get) {
         return false;
     }
+    backend_config_record_t config;
+    if (!backend_config_portal_snapshot_config(portal, &config)) {
+        return false;
+    }
     int status_code = 0;
     const bool complete = portal->ops.backend_get(
         portal->ops.context,
-        portal->config.backend_url,
+        config.backend_url,
         "/health",
         BACKEND_CONFIG_PORTAL_BACKEND_TEST_TIMEOUT_MS,
         &status_code);
@@ -388,6 +433,10 @@ bool backend_config_portal_build_ap_config(
     if (!portal || !portal->initialized || !sta_mac || !out) {
         return false;
     }
+    backend_config_record_t current;
+    if (!backend_config_portal_snapshot_config(portal, &current)) {
+        return false;
+    }
     backend_config_portal_ap_config_t config;
     memset(&config, 0, sizeof(config));
 #if defined(FOF_BACKEND_PROFILE_BADGE_LITE)
@@ -407,11 +456,11 @@ bool backend_config_portal_build_ap_config(
     if (written < 0 || (size_t)written >= sizeof(config.ssid)) {
         return false;
     }
-    const char *password = portal->config.ap_password[0] != '\0'
-        ? portal->config.ap_password
+    const char *password = current.ap_password[0] != '\0'
+        ? current.ap_password
         : BACKEND_CONFIG_PORTAL_DEFAULT_PASSWORD;
-    const size_t password_capacity = portal->config.ap_password[0] != '\0'
-        ? sizeof(portal->config.ap_password)
+    const size_t password_capacity = current.ap_password[0] != '\0'
+        ? sizeof(current.ap_password)
         : sizeof(BACKEND_CONFIG_PORTAL_DEFAULT_PASSWORD);
     if (!copy_bounded(
             config.password,
@@ -660,6 +709,11 @@ static esp_err_t portal_http_handler(httpd_req_t *request)
     }
     if (route == BACKEND_PORTAL_STATUS) {
         char status[160];
+        backend_config_record_t config;
+        if (!backend_config_portal_snapshot_config(portal, &config)) {
+            return send_service_unavailable(
+                request, "config snapshot unavailable");
+        }
         backend_json_writer_t writer;
         backend_json_writer_init(&writer, status, sizeof(status));
         if (!backend_json_append_format(
@@ -667,7 +721,7 @@ static esp_err_t portal_http_handler(httpd_req_t *request)
                 "{\"status\":\"ok\",\"ap_running\":%s,"
                 "\"config_generation\":%lu}",
                 portal->running ? "true" : "false",
-                (unsigned long)portal->config.generation) ||
+                (unsigned long)config.generation) ||
             backend_json_writer_finish(&writer) == 0) {
             return httpd_resp_send_err(
                 request, HTTPD_500_INTERNAL_SERVER_ERROR, "status error");
@@ -676,8 +730,13 @@ static esp_err_t portal_http_handler(httpd_req_t *request)
     }
     if (route == BACKEND_PORTAL_CONFIG_GET) {
         char config_json[BACKEND_PORTAL_CONFIG_BODY_MAX + 1U];
+        backend_config_record_t config;
+        if (!backend_config_portal_snapshot_config(portal, &config)) {
+            return send_service_unavailable(
+                request, "config snapshot unavailable");
+        }
         if (backend_portal_render_redacted_config(
-                &portal->config,
+                &config,
                 config_json,
                 sizeof(config_json)) == 0) {
             return httpd_resp_send_err(

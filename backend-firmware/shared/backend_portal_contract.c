@@ -494,7 +494,10 @@ backend_portal_update_result_t backend_portal_parse_config_update(
         candidate.altitude_m = 0.0f;
     }
 
-    if (candidate.network_count == 0 ||
+    if (
+#if !defined(FOF_BACKEND_PROFILE_BADGE_LITE)
+        candidate.network_count == 0 ||
+#endif
         backend_config_validate(&candidate) != BACKEND_CONFIG_VALID) {
         return BACKEND_PORTAL_UPDATE_INVALID_CONFIG;
     }

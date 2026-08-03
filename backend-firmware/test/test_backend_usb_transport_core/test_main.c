@@ -55,9 +55,9 @@ void test_required_frames_pop_before_optional_while_each_queue_stays_fifo(void)
     TEST_ASSERT_TRUE(backend_usb_transport_enqueue(
         &s_transport, BACKEND_USB_FRAME_OPTIONAL,
         BACKEND_USB_FRAME_GENERIC, 12, "optional-two\n", 13));
-    TEST_ASSERT_TRUE(backend_usb_transport_enqueue(
+    TEST_ASSERT_TRUE(backend_usb_transport_enqueue_live(
         &s_transport, BACKEND_USB_FRAME_REQUIRED,
-        BACKEND_USB_FRAME_LIVE_HEARTBEAT, 22,
+        BACKEND_USB_FRAME_LIVE_HEARTBEAT, 22, 1U,
         "required-two\n", 13));
 
     backend_usb_frame_t frame;
@@ -201,9 +201,9 @@ void test_enqueue_pop_or_partial_tx_never_makes_heartbeat_acknowledgeable(void)
     uint64_t sequence = 0;
     TEST_ASSERT_TRUE(backend_usb_live_prepare_heartbeat(
         &s_transport.live, 0, &sequence));
-    TEST_ASSERT_TRUE(backend_usb_transport_enqueue(
+    TEST_ASSERT_TRUE(backend_usb_transport_enqueue_live(
         &s_transport, BACKEND_USB_FRAME_REQUIRED,
-        BACKEND_USB_FRAME_LIVE_HEARTBEAT, sequence,
+        BACKEND_USB_FRAME_LIVE_HEARTBEAT, sequence, 1U,
         "FOF_LIVE_HEARTBEAT:{}\n", 22));
     TEST_ASSERT_FALSE(backend_usb_live_acknowledge(
         &s_transport.live, "boot-a1", sequence, 1));
@@ -320,6 +320,150 @@ void test_deadlines_saturate_without_wrapping_and_still_expire_at_boundary(void)
     TEST_ASSERT_FALSE(backend_usb_live_confirmed(&state, INT64_MAX));
 }
 
+void test_partial_heartbeat_failure_blocks_later_frames_until_newline_recovery(void)
+{
+    TEST_ASSERT_TRUE(backend_usb_live_start(
+        &s_transport.live, "session-a", 0));
+    uint64_t sequence = 0;
+    TEST_ASSERT_TRUE(backend_usb_live_prepare_heartbeat(
+        &s_transport.live, 0, &sequence));
+    TEST_ASSERT_TRUE(backend_usb_transport_enqueue_live(
+        &s_transport,
+        BACKEND_USB_FRAME_REQUIRED,
+        BACKEND_USB_FRAME_LIVE_HEARTBEAT,
+        sequence,
+        7U,
+        "FOF_LIVE_HEARTBEAT:{}\n",
+        sizeof("FOF_LIVE_HEARTBEAT:{}\n") - 1U));
+    TEST_ASSERT_TRUE(backend_usb_transport_enqueue(
+        &s_transport,
+        BACKEND_USB_FRAME_REQUIRED,
+        BACKEND_USB_FRAME_GENERIC,
+        0U,
+        "FOF_STATUS:{}\n",
+        14U));
+
+    backend_usb_frame_t frame;
+    TEST_ASSERT_TRUE(backend_usb_transport_pop_current(
+        &s_transport, 7U, &frame));
+    TEST_ASSERT_EQUAL(BACKEND_USB_FRAME_LIVE_HEARTBEAT, frame.kind);
+    backend_usb_transport_note_tx_failed(
+        &s_transport, &frame, 7U, true);
+
+    TEST_ASSERT_TRUE(s_transport.output_poisoned);
+    TEST_ASSERT_FALSE(s_transport.live.heartbeat_pending);
+    TEST_ASSERT_FALSE(backend_usb_transport_pop_current(
+        &s_transport, 7U, &frame));
+
+    backend_usb_transport_note_output_recovered(&s_transport);
+    TEST_ASSERT_FALSE(s_transport.output_poisoned);
+    TEST_ASSERT_TRUE(backend_usb_transport_pop_current(
+        &s_transport, 7U, &frame));
+    TEST_ASSERT_EQUAL(BACKEND_USB_FRAME_GENERIC, frame.kind);
+}
+
+void test_stale_live_ready_is_rejected_for_restart_and_stop_generations(void)
+{
+    TEST_ASSERT_TRUE(backend_usb_transport_enqueue_live(
+        &s_transport,
+        BACKEND_USB_FRAME_REQUIRED,
+        BACKEND_USB_FRAME_LIVE_READY,
+        0U,
+        1U,
+        "FOF_LIVE_READY:{\"session_id\":\"old\"}\n",
+        sizeof("FOF_LIVE_READY:{\"session_id\":\"old\"}\n") - 1U));
+    TEST_ASSERT_TRUE(backend_usb_transport_enqueue_live(
+        &s_transport,
+        BACKEND_USB_FRAME_REQUIRED,
+        BACKEND_USB_FRAME_LIVE_READY,
+        0U,
+        2U,
+        "FOF_LIVE_READY:{\"session_id\":\"new\"}\n",
+        sizeof("FOF_LIVE_READY:{\"session_id\":\"new\"}\n") - 1U));
+
+    backend_usb_frame_t frame;
+    TEST_ASSERT_TRUE(backend_usb_transport_pop_current(
+        &s_transport, 2U, &frame));
+    TEST_ASSERT_EQUAL(BACKEND_USB_FRAME_LIVE_READY, frame.kind);
+    TEST_ASSERT_EQUAL_UINT64(2U, frame.live_generation);
+    TEST_ASSERT_EQUAL_MEMORY(
+        "FOF_LIVE_READY:{\"session_id\":\"new\"}\n",
+        frame.bytes,
+        frame.length);
+
+    TEST_ASSERT_TRUE(backend_usb_transport_enqueue_live(
+        &s_transport,
+        BACKEND_USB_FRAME_REQUIRED,
+        BACKEND_USB_FRAME_LIVE_READY,
+        0U,
+        3U,
+        "FOF_LIVE_READY:{\"session_id\":\"stop\"}\n",
+        sizeof("FOF_LIVE_READY:{\"session_id\":\"stop\"}\n") - 1U));
+    TEST_ASSERT_FALSE(backend_usb_transport_pop_current(
+        &s_transport, 4U, &frame));
+}
+
+void test_forced_lock_contention_is_counted_without_taking_queue_lock(void)
+{
+    backend_usb_transport_note_lock_failure(
+        &s_transport, BACKEND_USB_FRAME_REQUIRED);
+    backend_usb_transport_note_lock_failure(
+        &s_transport, BACKEND_USB_FRAME_REQUIRED);
+    backend_usb_transport_note_lock_failure(
+        &s_transport, BACKEND_USB_FRAME_OPTIONAL);
+
+    TEST_ASSERT_EQUAL_UINT64(
+        2U, backend_usb_transport_required_contention_failures(&s_transport));
+    TEST_ASSERT_EQUAL_UINT64(
+        1U, backend_usb_transport_optional_contention_drops(&s_transport));
+}
+
+void test_delayed_unacked_heartbeat_cannot_mint_a_fresh_lease(void)
+{
+    backend_usb_live_state_t state;
+    TEST_ASSERT_TRUE(backend_usb_live_start(&state, "session-a", 0));
+    const uint64_t sequence = send_heartbeat(&state, 0, 10);
+
+    TEST_ASSERT_FALSE(backend_usb_live_acknowledge(
+        &state, "session-a", sequence, 15011));
+    TEST_ASSERT_FALSE(state.confirmed);
+}
+
+void test_older_sent_sequence_is_rejected_after_a_newer_heartbeat(void)
+{
+    backend_usb_live_state_t state;
+    TEST_ASSERT_TRUE(backend_usb_live_start(&state, "session-a", 0));
+    const uint64_t first = send_heartbeat(&state, 0, 0);
+    const uint64_t second = send_heartbeat(&state, 5000, 5000);
+
+    TEST_ASSERT_FALSE(backend_usb_live_acknowledge(
+        &state, "session-a", first, 5001));
+    TEST_ASSERT_TRUE(backend_usb_live_acknowledge(
+        &state, "session-a", second, 5001));
+}
+
+void test_latest_heartbeat_ack_is_accepted_just_before_freshness_deadline(void)
+{
+    backend_usb_live_state_t state;
+    TEST_ASSERT_TRUE(backend_usb_live_start(&state, "session-a", 0));
+    const uint64_t sequence = send_heartbeat(&state, 0, 100);
+
+    TEST_ASSERT_TRUE(backend_usb_live_acknowledge(
+        &state, "session-a", sequence, 15099));
+    TEST_ASSERT_TRUE(state.confirmed);
+}
+
+void test_latest_heartbeat_ack_fails_open_at_exact_freshness_deadline(void)
+{
+    backend_usb_live_state_t state;
+    TEST_ASSERT_TRUE(backend_usb_live_start(&state, "session-a", 0));
+    const uint64_t sequence = send_heartbeat(&state, 0, 100);
+
+    TEST_ASSERT_FALSE(backend_usb_live_acknowledge(
+        &state, "session-a", sequence, 15100));
+    TEST_ASSERT_FALSE(state.confirmed);
+}
+
 int main(int argc, char **argv)
 {
     UNITY_BEGIN();
@@ -336,5 +480,12 @@ int main(int argc, char **argv)
     BACKEND_RUN_TEST(test_only_newer_completed_ack_renews_an_expired_lease);
     BACKEND_RUN_TEST(test_stop_clears_live_state_and_new_session_invalidates_old_ack);
     BACKEND_RUN_TEST(test_deadlines_saturate_without_wrapping_and_still_expire_at_boundary);
+    BACKEND_RUN_TEST(test_partial_heartbeat_failure_blocks_later_frames_until_newline_recovery);
+    BACKEND_RUN_TEST(test_stale_live_ready_is_rejected_for_restart_and_stop_generations);
+    BACKEND_RUN_TEST(test_forced_lock_contention_is_counted_without_taking_queue_lock);
+    BACKEND_RUN_TEST(test_delayed_unacked_heartbeat_cannot_mint_a_fresh_lease);
+    BACKEND_RUN_TEST(test_older_sent_sequence_is_rejected_after_a_newer_heartbeat);
+    BACKEND_RUN_TEST(test_latest_heartbeat_ack_is_accepted_just_before_freshness_deadline);
+    BACKEND_RUN_TEST(test_latest_heartbeat_ack_fails_open_at_exact_freshness_deadline);
     return UNITY_END();
 }

@@ -170,7 +170,7 @@ void test_save_validates_commits_once_then_reconnects_with_one_generation_increm
     TEST_ASSERT_EQUAL(
         BACKEND_PORTAL_UPDATE_OK,
         backend_usb_config_save(
-            &state, fake_commit, fake_reconnect,
+            &state, &active, fake_commit, fake_reconnect,
             &callbacks, 12345, &generation));
     TEST_ASSERT_EQUAL_UINT32(1, callbacks.commit_calls);
     TEST_ASSERT_EQUAL_UINT32(1, callbacks.reconnect_calls);
@@ -201,7 +201,7 @@ void test_invalid_staged_record_fails_before_commit_or_reconnect(void)
     TEST_ASSERT_EQUAL(
         BACKEND_PORTAL_UPDATE_COMMIT_FAILED,
         backend_usb_config_save(
-            &state, fake_commit, fake_reconnect,
+            &state, &active, fake_commit, fake_reconnect,
             &callbacks, 10, &generation));
     TEST_ASSERT_EQUAL_UINT32(0, callbacks.commit_calls);
     TEST_ASSERT_EQUAL_UINT32(0, callbacks.reconnect_calls);
@@ -227,7 +227,7 @@ void test_commit_failure_rolls_back_transaction_state_and_skips_reconnect(void)
     TEST_ASSERT_EQUAL(
         BACKEND_PORTAL_UPDATE_COMMIT_FAILED,
         backend_usb_config_save(
-            &state, fake_commit, fake_reconnect,
+            &state, &active, fake_commit, fake_reconnect,
             &callbacks, 10, &generation));
     TEST_ASSERT_EQUAL_UINT32(1, callbacks.commit_calls);
     TEST_ASSERT_EQUAL_UINT32(0, callbacks.reconnect_calls);
@@ -254,7 +254,7 @@ void test_reconnect_failure_reports_saved_and_keeps_committed_generation(void)
     TEST_ASSERT_EQUAL(
         BACKEND_PORTAL_UPDATE_RECONNECT_FAILED,
         backend_usb_config_save(
-            &state, fake_commit, fake_reconnect,
+            &state, &active, fake_commit, fake_reconnect,
             &callbacks, 55, &generation));
     TEST_ASSERT_EQUAL_UINT32(1, callbacks.commit_calls);
     TEST_ASSERT_EQUAL_UINT32(1, callbacks.reconnect_calls);
@@ -308,6 +308,62 @@ void test_empty_configuration_can_stage_slot_zero_without_touching_other_storage
     TEST_ASSERT_EQUAL_STRING("open-later", state.staged.networks[0].password);
 }
 
+void test_stale_staged_save_cannot_overwrite_a_newer_committed_generation(void)
+{
+    const backend_config_record_t active = config_fixture();
+    backend_usb_config_t state;
+    backend_usb_config_init(&state, &active);
+    TEST_ASSERT_EQUAL(
+        BACKEND_PORTAL_UPDATE_OK,
+        backend_usb_config_stage(&state, "device_id", "stale_usb_value"));
+    const backend_usb_config_t before = state;
+
+    backend_config_record_t newer = active;
+    ++newer.generation;
+    strcpy(newer.device_id, "newer_http_value");
+    config_callbacks_t callbacks = {
+        .commit_result = true,
+        .reconnect_result = true,
+    };
+    uint32_t generation = 99U;
+
+    TEST_ASSERT_EQUAL(
+        BACKEND_PORTAL_UPDATE_STALE_GENERATION,
+        backend_usb_config_save(
+            &state,
+            &newer,
+            fake_commit,
+            fake_reconnect,
+            &callbacks,
+            88,
+            &generation));
+    TEST_ASSERT_EQUAL_UINT32(0U, callbacks.commit_calls);
+    TEST_ASSERT_EQUAL_UINT32(0U, callbacks.reconnect_calls);
+    TEST_ASSERT_EQUAL_UINT32(0U, generation);
+    TEST_ASSERT_FALSE(state.dirty);
+    TEST_ASSERT_EQUAL_MEMORY(&newer, &state.staged, sizeof(newer));
+    TEST_ASSERT_FALSE(memcmp(&before, &state, sizeof(state)) == 0);
+
+    TEST_ASSERT_EQUAL(
+        BACKEND_PORTAL_UPDATE_OK,
+        backend_usb_config_stage(&state, "device_id", "restaged_usb_value"));
+    TEST_ASSERT_EQUAL(
+        BACKEND_PORTAL_UPDATE_OK,
+        backend_usb_config_save(
+            &state,
+            &newer,
+            fake_commit,
+            fake_reconnect,
+            &callbacks,
+            89,
+            &generation));
+    TEST_ASSERT_EQUAL_UINT32(1U, callbacks.commit_calls);
+    TEST_ASSERT_EQUAL_UINT32(1U, callbacks.reconnect_calls);
+    TEST_ASSERT_EQUAL_UINT32(newer.generation + 1U, generation);
+    TEST_ASSERT_EQUAL_STRING(
+        "restaged_usb_value", callbacks.committed.device_id);
+}
+
 int main(int argc, char **argv)
 {
     UNITY_BEGIN();
@@ -320,5 +376,6 @@ int main(int argc, char **argv)
     BACKEND_RUN_TEST(test_reconnect_failure_reports_saved_and_keeps_committed_generation);
     BACKEND_RUN_TEST(test_redacted_json_exposes_presence_but_never_staged_passwords);
     BACKEND_RUN_TEST(test_empty_configuration_can_stage_slot_zero_without_touching_other_storage);
+    BACKEND_RUN_TEST(test_stale_staged_save_cannot_overwrite_a_newer_committed_generation);
     return UNITY_END();
 }

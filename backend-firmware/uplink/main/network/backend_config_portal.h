@@ -26,6 +26,8 @@ typedef bool (*backend_config_portal_reconnect_fn)(
     void *context,
     const backend_config_record_t *committed,
     int64_t now_ms);
+typedef bool (*backend_config_portal_begin_transaction_fn)(void *context);
+typedef void (*backend_config_portal_end_transaction_fn)(void *context);
 typedef bool (*backend_config_portal_get_fn)(
     void *context,
     const char *base_url,
@@ -49,6 +51,8 @@ typedef struct {
     void *context;
     backend_config_portal_commit_fn commit_config;
     backend_config_portal_reconnect_fn reconnect_wifi;
+    backend_config_portal_begin_transaction_fn begin_config_transaction;
+    backend_config_portal_end_transaction_fn end_config_transaction;
     backend_config_portal_get_fn backend_get;
     backend_config_portal_dashboard_status_fn dashboard_status;
     backend_config_portal_event_snapshot_fn event_snapshot;
@@ -108,6 +112,9 @@ backend_portal_update_result_t backend_config_portal_apply_update(
     const char *json,
     size_t length,
     int64_t now_ms);
+bool backend_config_portal_snapshot_config(
+    const backend_config_portal_t *portal,
+    backend_config_record_t *out);
 bool backend_config_portal_test_backend(
     backend_config_portal_t *portal,
     backend_portal_backend_test_result_t *out);

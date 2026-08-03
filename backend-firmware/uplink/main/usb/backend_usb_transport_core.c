@@ -10,6 +10,26 @@ static void increment_saturating(uint64_t *value)
     }
 }
 
+static void atomic_increment_saturating(atomic_uint_fast64_t *value)
+{
+    uint_fast64_t current = atomic_load_explicit(
+        value, memory_order_relaxed);
+    while (current != UINT_FAST64_MAX &&
+           !atomic_compare_exchange_weak_explicit(
+               value,
+               &current,
+               current + 1U,
+               memory_order_relaxed,
+               memory_order_relaxed)) {
+    }
+}
+
+static bool live_frame_kind(backend_usb_frame_kind_t kind)
+{
+    return kind == BACKEND_USB_FRAME_LIVE_HEARTBEAT ||
+        kind == BACKEND_USB_FRAME_LIVE_READY;
+}
+
 static int64_t deadline_after(int64_t now_ms, int64_t delay_ms)
 {
     if (delay_ms > 0 && now_ms > INT64_MAX - delay_ms) {
@@ -87,6 +107,7 @@ bool backend_usb_live_note_heartbeat_sent(
         return false;
     }
     state->last_sent_sequence = sequence;
+    state->last_sent_ms = now_ms;
     state->pending_heartbeat_sequence = 0;
     state->heartbeat_pending = false;
     state->next_heartbeat_ms = deadline_after(
@@ -127,7 +148,10 @@ bool backend_usb_live_acknowledge(
     if (!state->started || session_id == NULL ||
         strcmp(session_id, state->session_id) != 0 ||
         sequence <= state->last_ack_sequence ||
-        sequence > state->last_sent_sequence) {
+        sequence != state->last_sent_sequence ||
+        now_ms < state->last_sent_ms ||
+        now_ms >= deadline_after(
+            state->last_sent_ms, BACKEND_USB_LIVE_LEASE_MS)) {
         return false;
     }
     state->last_ack_sequence = sequence;
@@ -174,14 +198,17 @@ bool backend_usb_transport_init(
     transport->optional = optional_storage;
     transport->required_capacity = required_capacity;
     transport->optional_capacity = optional_capacity;
+    atomic_init(&transport->optional_contention_drops, 0U);
+    atomic_init(&transport->required_contention_failures, 0U);
     return true;
 }
 
-bool backend_usb_transport_enqueue(
+static bool enqueue_frame(
     backend_usb_transport_core_t *transport,
     backend_usb_frame_priority_t priority,
     backend_usb_frame_kind_t kind,
     uint64_t correlation_sequence,
+    uint64_t live_generation,
     const char *frame,
     size_t length)
 {
@@ -201,6 +228,7 @@ bool backend_usb_transport_enqueue(
             &transport->required[tail];
         destination->kind = kind;
         destination->correlation_sequence = correlation_sequence;
+        destination->live_generation = live_generation;
         destination->length = length;
         memcpy(destination->bytes, frame, length);
         ++transport->required_count;
@@ -219,12 +247,56 @@ bool backend_usb_transport_enqueue(
             &transport->optional[tail];
         destination->kind = kind;
         destination->correlation_sequence = correlation_sequence;
+        destination->live_generation = live_generation;
         destination->length = length;
         memcpy(destination->bytes, frame, length);
         ++transport->optional_count;
         return true;
     }
     return false;
+}
+
+bool backend_usb_transport_enqueue(
+    backend_usb_transport_core_t *transport,
+    backend_usb_frame_priority_t priority,
+    backend_usb_frame_kind_t kind,
+    uint64_t correlation_sequence,
+    const char *frame,
+    size_t length)
+{
+    if (live_frame_kind(kind)) {
+        return false;
+    }
+    return enqueue_frame(
+        transport,
+        priority,
+        kind,
+        correlation_sequence,
+        0U,
+        frame,
+        length);
+}
+
+bool backend_usb_transport_enqueue_live(
+    backend_usb_transport_core_t *transport,
+    backend_usb_frame_priority_t priority,
+    backend_usb_frame_kind_t kind,
+    uint64_t correlation_sequence,
+    uint64_t live_generation,
+    const char *frame,
+    size_t length)
+{
+    if (!live_frame_kind(kind) || live_generation == 0U) {
+        return false;
+    }
+    return enqueue_frame(
+        transport,
+        priority,
+        kind,
+        correlation_sequence,
+        live_generation,
+        frame,
+        length);
 }
 
 bool backend_usb_transport_pop(
@@ -241,6 +313,7 @@ bool backend_usb_transport_pop(
         out->priority = BACKEND_USB_FRAME_REQUIRED;
         out->kind = source->kind;
         out->correlation_sequence = source->correlation_sequence;
+        out->live_generation = source->live_generation;
         out->length = source->length;
         memcpy(out->bytes, source->bytes, source->length);
         transport->required_head =
@@ -254,6 +327,7 @@ bool backend_usb_transport_pop(
         out->priority = BACKEND_USB_FRAME_OPTIONAL;
         out->kind = source->kind;
         out->correlation_sequence = source->correlation_sequence;
+        out->live_generation = source->live_generation;
         out->length = source->length;
         memcpy(out->bytes, source->bytes, source->length);
         transport->optional_head =
@@ -262,4 +336,79 @@ bool backend_usb_transport_pop(
         return true;
     }
     return false;
+}
+
+bool backend_usb_transport_pop_current(
+    backend_usb_transport_core_t *transport,
+    uint64_t live_generation,
+    backend_usb_frame_t *out)
+{
+    if (transport == NULL || out == NULL || transport->output_poisoned) {
+        return false;
+    }
+    while (backend_usb_transport_pop(transport, out)) {
+        if (!live_frame_kind(out->kind) ||
+            out->live_generation == live_generation) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void backend_usb_transport_note_tx_failed(
+    backend_usb_transport_core_t *transport,
+    const backend_usb_frame_t *frame,
+    uint64_t live_generation,
+    bool wrote_any_bytes)
+{
+    if (transport == NULL || frame == NULL) {
+        return;
+    }
+    if (wrote_any_bytes) {
+        transport->output_poisoned = true;
+    }
+    if (frame->kind == BACKEND_USB_FRAME_LIVE_HEARTBEAT &&
+        frame->live_generation == live_generation) {
+        backend_usb_live_note_heartbeat_failed(
+            &transport->live, frame->correlation_sequence);
+    }
+}
+
+void backend_usb_transport_note_output_recovered(
+    backend_usb_transport_core_t *transport)
+{
+    if (transport != NULL) {
+        transport->output_poisoned = false;
+    }
+}
+
+void backend_usb_transport_note_lock_failure(
+    backend_usb_transport_core_t *transport,
+    backend_usb_frame_priority_t priority)
+{
+    if (transport == NULL) {
+        return;
+    }
+    if (priority == BACKEND_USB_FRAME_REQUIRED) {
+        atomic_increment_saturating(
+            &transport->required_contention_failures);
+    } else if (priority == BACKEND_USB_FRAME_OPTIONAL) {
+        atomic_increment_saturating(&transport->optional_contention_drops);
+    }
+}
+
+uint64_t backend_usb_transport_required_contention_failures(
+    const backend_usb_transport_core_t *transport)
+{
+    return transport == NULL ? 0U : (uint64_t)atomic_load_explicit(
+        &transport->required_contention_failures,
+        memory_order_relaxed);
+}
+
+uint64_t backend_usb_transport_optional_contention_drops(
+    const backend_usb_transport_core_t *transport)
+{
+    return transport == NULL ? 0U : (uint64_t)atomic_load_explicit(
+        &transport->optional_contention_drops,
+        memory_order_relaxed);
 }

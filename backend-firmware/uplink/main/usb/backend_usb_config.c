@@ -89,6 +89,7 @@ backend_portal_update_result_t backend_usb_config_stage(
 
 backend_portal_update_result_t backend_usb_config_save(
     backend_usb_config_t *state,
+    const backend_config_record_t *current,
     backend_config_portal_commit_fn commit,
     backend_config_portal_reconnect_fn reconnect,
     void *context,
@@ -98,8 +99,14 @@ backend_portal_update_result_t backend_usb_config_save(
     if (out_generation != NULL) {
         *out_generation = 0;
     }
-    if (state == NULL || commit == NULL || reconnect == NULL) {
+    if (state == NULL || current == NULL || commit == NULL ||
+        reconnect == NULL) {
         return BACKEND_PORTAL_UPDATE_INVALID_ARGUMENT;
+    }
+    if (state->staged.generation != current->generation) {
+        state->staged = *current;
+        state->dirty = false;
+        return BACKEND_PORTAL_UPDATE_STALE_GENERATION;
     }
     backend_config_record_t candidate = state->staged;
     ++candidate.generation;

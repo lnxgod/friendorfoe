@@ -144,6 +144,7 @@ typedef struct {
     SemaphoreHandle_t relay_complete;
 #if defined(FOF_BACKEND_PROFILE_BADGE_LITE)
     SemaphoreHandle_t event_ring_lock;
+    SemaphoreHandle_t config_transaction_lock;
 #endif
 #if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
     QueueHandle_t ota_work_queue;
@@ -537,7 +538,8 @@ static bool upload_context_locked(
     context->upload.ok = s_runtime.uploader.ack_count;
     context->upload.failed = s_runtime.uploader.quarantine_count;
     context->upload.retry_count = s_runtime.uploader.retry_count;
-    if (s_runtime.uploader.last_backend_success_ms >= 0 &&
+    if (s_runtime.uploader.ack_count != 0U &&
+        s_runtime.uploader.last_backend_success_ms >= 0 &&
         now_ms >= s_runtime.uploader.last_backend_success_ms) {
         context->upload.has_last_success_age = true;
         context->upload.last_success_age_s = (uint32_t)(
@@ -663,6 +665,21 @@ static bool portal_commit(
     unlock_runtime();
     return true;
 }
+
+#if defined(FOF_BACKEND_PROFILE_BADGE_LITE)
+static bool begin_config_transaction(void *context)
+{
+    (void)context;
+    return xSemaphoreTakeRecursive(
+        s_runtime.config_transaction_lock, portMAX_DELAY) == pdTRUE;
+}
+
+static void end_config_transaction(void *context)
+{
+    (void)context;
+    (void)xSemaphoreGiveRecursive(s_runtime.config_transaction_lock);
+}
+#endif
 
 static bool portal_reconnect(
     void *context,
@@ -1874,28 +1891,30 @@ static void dispatch_uart_frame(
         size_t completed_length = 0U;
 #endif
         lock_runtime();
-        const bool accepted = backend_ble_investigation_accept_chunk(
+#if defined(FOF_BACKEND_PROFILE_BADGE_LITE)
+        const uint8_t queue_count_before =
+            s_runtime.investigation.queue_count;
+#endif
+        (void)backend_ble_investigation_accept_chunk(
             &s_runtime.investigation,
             (backend_scanner_slot_t)slot,
             &chunk);
 #if defined(FOF_BACKEND_PROFILE_BADGE_LITE)
-        if (accepted && chunk.kind == BLE_INV_CHUNK_END) {
-            for (uint8_t index = 0U;
-                 index < s_runtime.investigation.queue_count; ++index) {
-                const uint8_t queue_index = (uint8_t)(
-                    (s_runtime.investigation.queue_head + index) %
-                    BACKEND_COMMAND_RESULT_QUEUE_CAPACITY);
-                const backend_command_result_t *result =
-                    &s_runtime.investigation.queue[queue_index];
-                if (strcmp(result->type, "ble_inv_end") == 0 &&
-                    result->json_length < sizeof(completed_json)) {
-                    completed_length = result->json_length;
-                    memcpy(
-                        completed_json,
-                        result->json,
-                        completed_length + 1U);
-                    break;
-                }
+        for (uint8_t index = queue_count_before;
+             index < s_runtime.investigation.queue_count; ++index) {
+            const uint8_t queue_index = (uint8_t)(
+                (s_runtime.investigation.queue_head + index) %
+                BACKEND_COMMAND_RESULT_QUEUE_CAPACITY);
+            const backend_command_result_t *result =
+                &s_runtime.investigation.queue[queue_index];
+            if (strcmp(result->type, "ble_inv_end") == 0 &&
+                result->json_length < sizeof(completed_json)) {
+                completed_length = result->json_length;
+                memcpy(
+                    completed_json,
+                    result->json,
+                    completed_length + 1U);
+                break;
             }
         }
 #endif
@@ -3857,7 +3876,11 @@ typedef struct {
     bool dashboard_routes_enabled;
     const char *dashboard_failure_reason;
     backend_scanner_health_t scanners[2];
+    backend_scanner_status_t scanner_status[2];
+    bool scanner_status_available[2];
     backend_threat_snapshot_t threats;
+    bool backend_has_last_success_age;
+    uint32_t backend_last_success_age_s;
     backend_led_state_t led_state;
     bool ota_ready;
     size_t upload_depth;
@@ -3914,6 +3937,13 @@ static bool take_lite_status_snapshot(
         snapshot->scanners,
         s_runtime.scanner_health,
         sizeof(snapshot->scanners));
+    for (size_t slot = 0U; slot < 2U; ++slot) {
+        if (s_runtime.scanner_tracker[slot].initialized) {
+            snapshot->scanner_status_available[slot] = true;
+            snapshot->scanner_status[slot] =
+                s_runtime.scanner_tracker[slot].status;
+        }
+    }
     backend_threat_snapshot(
         &s_runtime.threats, now_ms, &snapshot->threats);
     snapshot->led_state = backend_status_led_state();
@@ -3924,6 +3954,15 @@ static bool take_lite_status_snapshot(
     snapshot->upload_ok = s_runtime.uploader.ack_count;
     snapshot->upload_failed = s_runtime.uploader.quarantine_count;
     snapshot->upload_retries = s_runtime.uploader.retry_count;
+    if (s_runtime.uploader.ack_count != 0U &&
+        s_runtime.uploader.last_backend_success_ms >= 0 &&
+        now_ms >= s_runtime.uploader.last_backend_success_ms) {
+        const int64_t age_s =
+            (now_ms - s_runtime.uploader.last_backend_success_ms) / 1000;
+        snapshot->backend_has_last_success_age = true;
+        snapshot->backend_last_success_age_s = age_s > UINT32_MAX
+            ? UINT32_MAX : (uint32_t)age_s;
+    }
     snapshot->history_available = s_runtime.history_available;
     const bool usb_available = s_runtime.usb_available;
     unlock_runtime();
@@ -3941,6 +3980,116 @@ static bool take_lite_status_snapshot(
             &s_runtime.usb, now_ms, &snapshot->usb);
     }
     return true;
+}
+
+static bool append_lite_backend_status(
+    backend_json_writer_t *writer,
+    const lite_status_snapshot_t *status)
+{
+    if (writer == NULL || status == NULL ||
+        !backend_json_append_format(
+            writer,
+            ",\"backend\":{\"reachable\":%s,"
+            "\"last_success_age_s\":",
+            status->backend_reachable ? "true" : "false")) {
+        return false;
+    }
+    if (status->backend_has_last_success_age) {
+        if (!backend_json_append_format(
+                writer,
+                "%lu",
+                (unsigned long)status->backend_last_success_age_s)) {
+            return false;
+        }
+    } else if (!backend_json_append(writer, "null")) {
+        return false;
+    }
+    return backend_json_append(writer, "}");
+}
+
+static bool append_lite_scanner_summary(
+    backend_json_writer_t *writer,
+    size_t slot,
+    const lite_status_snapshot_t *status)
+{
+    if (writer == NULL || status == NULL || slot >= 2U) {
+        return false;
+    }
+    const backend_scanner_health_t *health = &status->scanners[slot];
+    const bool available = status->scanner_status_available[slot];
+    const backend_scanner_status_t *scanner =
+        &status->scanner_status[slot];
+    if (!backend_json_append_format(
+            writer,
+            "{\"slot\":%u,\"connected\":%s,"
+            "\"identity_valid\":%s,\"status_available\":%s,"
+            "\"identity\":",
+            (unsigned)slot,
+            health->connected ? "true" : "false",
+            health->identity_valid ? "true" : "false",
+            available ? "true" : "false")) {
+        return false;
+    }
+    if (available) {
+        if (!backend_json_append(writer, "{\"target\":") ||
+            !backend_json_append_escaped(writer, scanner->target) ||
+            !backend_json_append(writer, ",\"project\":") ||
+            !backend_json_append_escaped(writer, scanner->project) ||
+            !backend_json_append(writer, ",\"hardware\":") ||
+            !backend_json_append_escaped(writer, scanner->hardware) ||
+            !backend_json_append(writer, ",\"version\":") ||
+            !backend_json_append_escaped(writer, scanner->version) ||
+            !backend_json_append(writer, "}")) {
+            return false;
+        }
+    } else if (!backend_json_append(writer, "null")) {
+        return false;
+    }
+    if (!backend_json_append(writer, ",\"profile\":")) {
+        return false;
+    }
+    if (available) {
+        if (!backend_json_append_format(
+                writer, "%u", (unsigned)scanner->profile)) {
+            return false;
+        }
+    } else if (!backend_json_append(writer, "null")) {
+        return false;
+    }
+    if (!backend_json_append_format(
+            writer,
+            ",\"health\":{\"command\":%s,\"radio\":%s,"
+            "\"role_acked\":%s},\"errors\":",
+            health->command_healthy ? "true" : "false",
+            health->radio_healthy ? "true" : "false",
+            health->role_acked ? "true" : "false")) {
+        return false;
+    }
+    if (available) {
+        if (!backend_json_append_format(
+                writer,
+                "{\"rx\":%lu,\"tx_drops\":%lu}",
+                (unsigned long)scanner->rx_errors,
+                (unsigned long)scanner->tx_drops)) {
+            return false;
+        }
+    } else if (!backend_json_append(writer, "null")) {
+        return false;
+    }
+    if (!backend_json_append(writer, ",\"uptime_ms\":")) {
+        return false;
+    }
+    if (available) {
+        if (!backend_json_append_format(
+                writer,
+                "%llu",
+                (unsigned long long)scanner->uptime_ms)) {
+            return false;
+        }
+    } else if (!backend_json_append(writer, "null")) {
+        return false;
+    }
+    return backend_json_append(writer, "}");
 }
 
 static size_t build_lite_status(
@@ -3988,12 +4137,14 @@ static size_t build_lite_status(
             "\"remote_ota\",\"uart_relay_ota\"],"
             "\"wifi\":{\"configured\":%s,\"connected\":%s,"
             "\"full_pass_failed\":%s},"
-            "\"backend\":{\"reachable\":%s},"
             "\"recovery\":{\"reason\":\"%s\",\"ap_running\":%s},"
             "\"scanner\":[{\"slot\":0,\"connected\":%s,"
             "\"identity_valid\":%s},{\"slot\":1,\"connected\":%s,"
             "\"identity_valid\":%s}],"
-            "\"threats\":{\"drone_active\":%s,\"meta_active\":%s},"
+            "\"threats\":{\"drone_active\":%s,\"meta_active\":%s,"
+            "\"drone_count\":%u,\"meta_count\":%u,"
+            "\"drone_last_seen_age_ms\":%lld,"
+            "\"meta_last_seen_age_ms\":%lld},"
             "\"led\":\"%s\",\"ota_ready\":%s,"
             "\"upload\":{\"depth\":%u,\"capacity\":%u,"
             "\"dropped\":%llu,\"ok\":%llu,\"failed\":%llu,"
@@ -4014,7 +4165,6 @@ static size_t build_lite_status(
             status.wifi_configured ? "true" : "false",
             status.wifi_connected ? "true" : "false",
             status.wifi_full_pass_failed ? "true" : "false",
-            status.backend_reachable ? "true" : "false",
             lite_recovery_reason_name(status.recovery_reason),
             status.ap_running ? "true" : "false",
             status.scanners[0].connected ? "true" : "false",
@@ -4023,6 +4173,10 @@ static size_t build_lite_status(
             status.scanners[1].identity_valid ? "true" : "false",
             status.threats.drone_live ? "true" : "false",
             status.threats.meta_live ? "true" : "false",
+            (unsigned)status.threats.drone_count,
+            (unsigned)status.threats.meta_count,
+            (long long)status.threats.drone_last_seen_age_ms,
+            (long long)status.threats.meta_last_seen_age_ms,
             led,
             status.ota_ready ? "true" : "false",
             (unsigned)status.upload_depth,
@@ -4062,7 +4216,13 @@ static size_t build_lite_status(
     } else {
         ok = backend_json_append_escaped(&writer, degraded_reason);
     }
-    ok = ok && backend_json_append(&writer, "}}");
+    ok = ok && backend_json_append(&writer, "}") &&
+        append_lite_backend_status(&writer, &status) &&
+        backend_json_append(&writer, ",\"scanner_summaries\":[") &&
+        append_lite_scanner_summary(&writer, 0U, &status) &&
+        backend_json_append(&writer, ",") &&
+        append_lite_scanner_summary(&writer, 1U, &status) &&
+        backend_json_append(&writer, "]}");
     if (usb_frame) {
         ok = ok && backend_json_append(&writer, "\n");
     }
@@ -4181,6 +4341,8 @@ static const char *portal_update_reason(
         return "commit_failed";
     case BACKEND_PORTAL_UPDATE_RECONNECT_FAILED:
         return "reconnect_failed";
+    case BACKEND_PORTAL_UPDATE_STALE_GENERATION:
+        return "stale_generation";
     case BACKEND_PORTAL_UPDATE_INVALID_ARGUMENT:
         return "invalid_argument";
     case BACKEND_PORTAL_UPDATE_INVALID_JSON:
@@ -4249,6 +4411,10 @@ static void emit_staged_result(
 static void handle_lite_config_set(
     const backend_usb_command_t *command, int64_t now_ms)
 {
+    if (!begin_config_transaction(NULL)) {
+        emit_control_error("config_transaction_failed");
+        return;
+    }
     const backend_portal_update_result_t result =
         backend_config_portal_apply_update(
             &s_runtime.portal,
@@ -4262,6 +4428,7 @@ static void handle_lite_config_set(
         config = s_runtime.config;
         unlock_runtime();
         backend_usb_config_init(&s_runtime.usb_config, &config);
+        end_config_transaction(NULL);
         char frame[128];
         const int written = snprintf(
             frame,
@@ -4274,6 +4441,7 @@ static void handle_lite_config_set(
         }
         return;
     }
+    end_config_transaction(NULL);
     char frame[128];
     const int written = snprintf(
         frame,
@@ -4287,9 +4455,17 @@ static void handle_lite_config_set(
 
 static void handle_lite_save(int64_t now_ms)
 {
+    if (!begin_config_transaction(NULL)) {
+        emit_staged_result("FOF_ERROR:", "config_transaction_failed");
+        return;
+    }
+    lock_runtime();
+    const backend_config_record_t current = s_runtime.config;
+    unlock_runtime();
     uint32_t generation = 0U;
     const backend_portal_update_result_t result = backend_usb_config_save(
         &s_runtime.usb_config,
+        &current,
         portal_commit,
         portal_reconnect,
         NULL,
@@ -4302,6 +4478,7 @@ static void handle_lite_save(int64_t now_ms)
         const backend_config_record_t config = s_runtime.config;
         unlock_runtime();
         backend_usb_config_init(&s_runtime.usb_config, &config);
+        end_config_transaction(NULL);
         if (result == BACKEND_PORTAL_UPDATE_OK) {
             emit_staged_result("", "FOF_SAVED");
         } else {
@@ -4310,6 +4487,7 @@ static void handle_lite_save(int64_t now_ms)
         (void)generation;
         return;
     }
+    end_config_transaction(NULL);
     emit_staged_result("FOF_ERROR:", portal_update_reason(result));
 }
 
@@ -4410,7 +4588,11 @@ static void lite_usb_line(
         frame_length = backend_usb_protocol_encode_live_ready(
             session_id, frame, sizeof(frame));
         if (frame_length == 0U ||
-            !emit_required_frame(frame, frame_length)) {
+            !backend_usb_service_emit_live_ready(
+                &s_runtime.usb,
+                session_id,
+                frame,
+                frame_length)) {
             (void)backend_usb_service_live_stop(
                 &s_runtime.usb, session_id);
             emit_control_error("required_queue_full");
@@ -4450,9 +4632,13 @@ static void lite_usb_line(
         handle_lite_config_set(&command, now_ms);
         return;
     case BACKEND_USB_COMMAND_SET: {
-        const backend_portal_update_result_t result =
-            backend_usb_config_stage(
+        backend_portal_update_result_t result =
+            BACKEND_PORTAL_UPDATE_COMMIT_FAILED;
+        if (begin_config_transaction(NULL)) {
+            result = backend_usb_config_stage(
                 &s_runtime.usb_config, command.key, command.value);
+            end_config_transaction(NULL);
+        }
         if (result == BACKEND_PORTAL_UPDATE_OK) {
             emit_staged_result("FOF_OK:", command.key);
         } else {
@@ -4626,6 +4812,7 @@ static bool init_sync_objects(void)
     s_runtime.relay_complete = xSemaphoreCreateBinary();
 #if defined(FOF_BACKEND_PROFILE_BADGE_LITE)
     s_runtime.event_ring_lock = xSemaphoreCreateMutex();
+    s_runtime.config_transaction_lock = xSemaphoreCreateRecursiveMutex();
 #endif
 #if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
     s_runtime.ota_work_queue = xQueueCreate(
@@ -4645,7 +4832,8 @@ static bool init_sync_objects(void)
            s_runtime.uart_tx_lock[1] != NULL &&
            s_runtime.relay_complete != NULL
 #if defined(FOF_BACKEND_PROFILE_BADGE_LITE)
-           && s_runtime.event_ring_lock != NULL
+           && s_runtime.event_ring_lock != NULL &&
+           s_runtime.config_transaction_lock != NULL
 #endif
 #if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
            && s_runtime.ota_work_queue != NULL &&
@@ -4985,6 +5173,8 @@ void app_main(void)
         .reconnect_wifi = portal_reconnect,
         .backend_get = portal_backend_get,
 #if defined(FOF_BACKEND_PROFILE_BADGE_LITE)
+        .begin_config_transaction = begin_config_transaction,
+        .end_config_transaction = end_config_transaction,
         .dashboard_status = portal_dashboard_status,
         .event_snapshot = portal_event_snapshot,
 #endif

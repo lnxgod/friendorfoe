@@ -62,38 +62,38 @@ static bool complete_single_line(const char *frame, size_t length)
 
 static void note_tx_failure_locked(
     backend_usb_service_t *service,
-    const backend_usb_frame_t *frame)
+    const backend_usb_frame_t *frame,
+    bool wrote_any_bytes)
 {
     increment_saturating(&service->tx_failures);
-    if (frame->kind == BACKEND_USB_FRAME_LIVE_HEARTBEAT &&
-        service->tx_live_generation == service->live_generation) {
-        backend_usb_live_note_heartbeat_failed(
-            &service->transport.live, frame->correlation_sequence);
-    }
+    backend_usb_transport_note_tx_failed(
+        &service->transport,
+        frame,
+        service->live_generation,
+        wrote_any_bytes);
 }
 
-static bool recover_poisoned_output(backend_usb_service_t *service)
+typedef struct {
+    size_t bytes_written;
+    bool wrote_any_bytes;
+    bool complete;
+} backend_usb_physical_tx_result_t;
+
+static bool write_recovery_newline_physical(void)
 {
     static const char newline = '\n';
     const int written = usb_serial_jtag_write_bytes(
         &newline, 1U, pdMS_TO_TICKS(BACKEND_USB_IO_WAIT_MS));
-    if (written != 1) {
-        return false;
-    }
-    if (xSemaphoreTake(
-            service->lock,
-            pdMS_TO_TICKS(BACKEND_USB_REQUIRED_LOCK_MS)) == pdTRUE) {
-        add_saturating(&service->bytes_transmitted, 1U);
-        service->output_poisoned = false;
-        (void)xSemaphoreGive(service->lock);
-    }
-    return true;
+    return written == 1;
 }
 
-static bool write_complete_frame(
-    backend_usb_service_t *service,
+static backend_usb_physical_tx_result_t write_frame_physical(
     const backend_usb_frame_t *frame)
 {
+    backend_usb_physical_tx_result_t result = {0};
+    if (frame == NULL) {
+        return result;
+    }
     size_t offset = 0U;
     while (offset < frame->length) {
         const size_t remaining = frame->length - offset;
@@ -104,43 +104,38 @@ static bool write_complete_frame(
             chunk,
             pdMS_TO_TICKS(BACKEND_USB_IO_WAIT_MS));
         if (written <= 0 || (size_t)written > chunk) {
-            if (xSemaphoreTake(
-                    service->lock,
-                    pdMS_TO_TICKS(BACKEND_USB_REQUIRED_LOCK_MS)) == pdTRUE) {
-                if (offset != 0U) {
-                    service->output_poisoned = true;
-                }
-                note_tx_failure_locked(service, frame);
-                (void)xSemaphoreGive(service->lock);
-            }
-            return false;
+            result.wrote_any_bytes = offset != 0U || written > 0;
+            return result;
         }
         offset += (size_t)written;
-        if (xSemaphoreTake(
-                service->lock,
-                pdMS_TO_TICKS(BACKEND_USB_REQUIRED_LOCK_MS)) == pdTRUE) {
-            add_saturating(
-                &service->bytes_transmitted, (size_t)written);
-            (void)xSemaphoreGive(service->lock);
-        }
+        result.bytes_written += (size_t)written;
+        result.wrote_any_bytes = true;
     }
-
-    if (frame->kind == BACKEND_USB_FRAME_LIVE_HEARTBEAT &&
-        xSemaphoreTake(
-            service->lock,
-            pdMS_TO_TICKS(BACKEND_USB_REQUIRED_LOCK_MS)) == pdTRUE) {
-        if (service->tx_live_generation == service->live_generation) {
-            (void)backend_usb_live_note_heartbeat_sent(
-                &service->transport.live,
-                frame->correlation_sequence,
-                monotonic_ms());
-        }
-        (void)xSemaphoreGive(service->lock);
-    }
-    return true;
+    result.complete = true;
+    return result;
 }
 
-static void remove_queued_heartbeats_locked(backend_usb_service_t *service)
+static void finish_tx_locked(
+    backend_usb_service_t *service,
+    const backend_usb_frame_t *frame,
+    backend_usb_physical_tx_result_t result)
+{
+    add_saturating(&service->bytes_transmitted, result.bytes_written);
+    if (!result.complete) {
+        note_tx_failure_locked(service, frame, result.wrote_any_bytes);
+        return;
+    }
+    if (frame->kind == BACKEND_USB_FRAME_LIVE_HEARTBEAT &&
+        frame->live_generation == service->live_generation) {
+        (void)backend_usb_live_note_heartbeat_sent(
+            &service->transport.live,
+            frame->correlation_sequence,
+            monotonic_ms());
+    }
+}
+
+static void remove_queued_live_controls_locked(
+    backend_usb_service_t *service)
 {
     backend_usb_transport_core_t *transport = &service->transport;
     size_t position = 0U;
@@ -149,7 +144,9 @@ static void remove_queued_heartbeats_locked(backend_usb_service_t *service)
             (transport->required_head + position) %
             transport->required_capacity;
         if (transport->required[index].kind !=
-            BACKEND_USB_FRAME_LIVE_HEARTBEAT) {
+                BACKEND_USB_FRAME_LIVE_HEARTBEAT &&
+            transport->required[index].kind !=
+                BACKEND_USB_FRAME_LIVE_READY) {
             ++position;
             continue;
         }
@@ -172,6 +169,7 @@ static void queue_due_heartbeat(backend_usb_service_t *service)
 {
     char frame[192];
     uint64_t sequence = 0U;
+    uint64_t live_generation = 0U;
     if (xSemaphoreTake(service->lock, 0) != pdTRUE) {
         return;
     }
@@ -182,6 +180,7 @@ static void queue_due_heartbeat(backend_usb_service_t *service)
     (void)snprintf(
         session_id, sizeof(session_id), "%s",
         service->transport.live.session_id);
+    live_generation = service->live_generation;
     (void)xSemaphoreGive(service->lock);
     if (!due) {
         return;
@@ -190,12 +189,12 @@ static void queue_due_heartbeat(backend_usb_service_t *service)
     const size_t length = backend_usb_protocol_encode_live_heartbeat(
         session_id, sequence, frame, sizeof(frame));
     if (length == 0U || !backend_usb_service_emit_heartbeat(
-            service, sequence, frame, length)) {
-        if (xSemaphoreTake(
-                service->lock,
-                pdMS_TO_TICKS(BACKEND_USB_REQUIRED_LOCK_MS)) == pdTRUE) {
-            backend_usb_live_note_heartbeat_failed(
-                &service->transport.live, sequence);
+            service, sequence, live_generation, frame, length)) {
+        if (xSemaphoreTake(service->lock, portMAX_DELAY) == pdTRUE) {
+            if (live_generation == service->live_generation) {
+                backend_usb_live_note_heartbeat_failed(
+                    &service->transport.live, sequence);
+            }
             (void)xSemaphoreGive(service->lock);
         }
     }
@@ -205,31 +204,46 @@ static void usb_tx_task(void *argument)
 {
     backend_usb_service_t *service = argument;
     for (;;) {
-        bool poisoned = false;
-        if (xSemaphoreTake(service->lock, portMAX_DELAY) == pdTRUE) {
-            poisoned = service->output_poisoned;
-            (void)xSemaphoreGive(service->lock);
+        queue_due_heartbeat(service);
+        if (xSemaphoreTake(service->tx_gate, portMAX_DELAY) != pdTRUE) {
+            continue;
         }
-        if (poisoned) {
-            if (!recover_poisoned_output(service)) {
+        if (xSemaphoreTake(service->lock, portMAX_DELAY) != pdTRUE) {
+            (void)xSemaphoreGive(service->tx_gate);
+            continue;
+        }
+        if (service->transport.output_poisoned) {
+            (void)xSemaphoreGive(service->lock);
+            const bool recovered = write_recovery_newline_physical();
+            (void)xSemaphoreTake(service->lock, portMAX_DELAY);
+            if (recovered) {
+                add_saturating(&service->bytes_transmitted, 1U);
+                backend_usb_transport_note_output_recovered(
+                    &service->transport);
+            }
+            (void)xSemaphoreGive(service->lock);
+            (void)xSemaphoreGive(service->tx_gate);
+            if (!recovered) {
                 vTaskDelay(pdMS_TO_TICKS(20U));
             }
             continue;
         }
-
-        queue_due_heartbeat(service);
-        bool have_frame = false;
-        if (xSemaphoreTake(service->lock, portMAX_DELAY) == pdTRUE) {
-            have_frame = backend_usb_transport_pop(
-                &service->transport, &service->tx_frame);
-            service->tx_live_generation = service->live_generation;
-            (void)xSemaphoreGive(service->lock);
-        }
+        const bool have_frame = backend_usb_transport_pop_current(
+            &service->transport,
+            service->live_generation,
+            &service->tx_frame);
+        (void)xSemaphoreGive(service->lock);
         if (!have_frame) {
+            (void)xSemaphoreGive(service->tx_gate);
             vTaskDelay(pdMS_TO_TICKS(10U));
             continue;
         }
-        (void)write_complete_frame(service, &service->tx_frame);
+        const backend_usb_physical_tx_result_t result =
+            write_frame_physical(&service->tx_frame);
+        (void)xSemaphoreTake(service->lock, portMAX_DELAY);
+        finish_tx_locked(service, &service->tx_frame, result);
+        (void)xSemaphoreGive(service->lock);
+        (void)xSemaphoreGive(service->tx_gate);
     }
 }
 
@@ -339,7 +353,8 @@ bool backend_usb_service_start(
         sizeof(backend_usb_optional_frame_t));
 
     service->lock = xSemaphoreCreateMutex();
-    if (service->lock == NULL ||
+    service->tx_gate = xSemaphoreCreateMutex();
+    if (service->lock == NULL || service->tx_gate == NULL ||
         !scanner_uart_line_framer_init(
             &service->rx_framer,
             service->rx_line_storage,
@@ -353,6 +368,9 @@ bool backend_usb_service_start(
         if (service->lock != NULL) {
             vSemaphoreDelete(service->lock);
         }
+        if (service->tx_gate != NULL) {
+            vSemaphoreDelete(service->tx_gate);
+        }
         psram_free(service->required_storage);
         psram_free(service->optional_storage);
         memset(service, 0, sizeof(*service));
@@ -365,6 +383,7 @@ bool backend_usb_service_start(
     };
     if (usb_serial_jtag_driver_install(&driver) != ESP_OK) {
         vSemaphoreDelete(service->lock);
+        vSemaphoreDelete(service->tx_gate);
         psram_free(service->required_storage);
         psram_free(service->optional_storage);
         memset(service, 0, sizeof(*service));
@@ -386,6 +405,7 @@ bool backend_usb_service_start(
         }
         (void)usb_serial_jtag_driver_uninstall();
         vSemaphoreDelete(service->lock);
+        vSemaphoreDelete(service->tx_gate);
         psram_free(service->required_storage);
         psram_free(service->optional_storage);
         memset(service, 0, sizeof(*service));
@@ -409,11 +429,8 @@ bool backend_usb_service_emit(
     const TickType_t wait = priority == BACKEND_USB_FRAME_REQUIRED
         ? pdMS_TO_TICKS(BACKEND_USB_REQUIRED_LOCK_MS) : 0;
     if (xSemaphoreTake(service->lock, wait) != pdTRUE) {
-        if (priority == BACKEND_USB_FRAME_OPTIONAL &&
-            xSemaphoreTake(service->lock, 0) == pdTRUE) {
-            increment_saturating(&service->transport.optional_drops);
-            (void)xSemaphoreGive(service->lock);
-        }
+        backend_usb_transport_note_lock_failure(
+            &service->transport, priority);
         return false;
     }
     const bool enqueued = backend_usb_transport_enqueue(
@@ -423,13 +440,6 @@ bool backend_usb_service_emit(
         0U,
         frame,
         length);
-    if (enqueued && length >= sizeof("FOF_LIVE_READY:") - 1U &&
-        memcmp(
-            frame,
-            "FOF_LIVE_READY:",
-            sizeof("FOF_LIVE_READY:") - 1U) == 0) {
-        service->live_ready_pending = false;
-    }
     (void)xSemaphoreGive(service->lock);
     return enqueued;
 }
@@ -437,23 +447,66 @@ bool backend_usb_service_emit(
 bool backend_usb_service_emit_heartbeat(
     backend_usb_service_t *service,
     uint64_t sequence,
+    uint64_t live_generation,
     const char *frame,
     size_t length)
 {
     if (service == NULL || !service->started || sequence == 0U ||
-        !complete_single_line(frame, length) ||
-        xSemaphoreTake(
-            service->lock,
-            pdMS_TO_TICKS(BACKEND_USB_REQUIRED_LOCK_MS)) != pdTRUE) {
+        live_generation == 0U || !complete_single_line(frame, length)) {
         return false;
     }
-    const bool enqueued = backend_usb_transport_enqueue(
+    if (xSemaphoreTake(
+            service->lock,
+            pdMS_TO_TICKS(BACKEND_USB_REQUIRED_LOCK_MS)) != pdTRUE) {
+        backend_usb_transport_note_lock_failure(
+            &service->transport, BACKEND_USB_FRAME_REQUIRED);
+        return false;
+    }
+    const bool enqueued = live_generation == service->live_generation &&
+        service->transport.live.started &&
+        backend_usb_transport_enqueue_live(
+            &service->transport,
+            BACKEND_USB_FRAME_REQUIRED,
+            BACKEND_USB_FRAME_LIVE_HEARTBEAT,
+            sequence,
+            live_generation,
+            frame,
+            length);
+    (void)xSemaphoreGive(service->lock);
+    return enqueued;
+}
+
+bool backend_usb_service_emit_live_ready(
+    backend_usb_service_t *service,
+    const char *session_id,
+    const char *frame,
+    size_t length)
+{
+    if (service == NULL || !service->started || session_id == NULL ||
+        !complete_single_line(frame, length)) {
+        return false;
+    }
+    if (xSemaphoreTake(
+            service->lock,
+            pdMS_TO_TICKS(BACKEND_USB_REQUIRED_LOCK_MS)) != pdTRUE) {
+        backend_usb_transport_note_lock_failure(
+            &service->transport, BACKEND_USB_FRAME_REQUIRED);
+        return false;
+    }
+    const bool current = service->transport.live.started &&
+        service->live_ready_pending &&
+        strcmp(service->transport.live.session_id, session_id) == 0;
+    const bool enqueued = current && backend_usb_transport_enqueue_live(
         &service->transport,
         BACKEND_USB_FRAME_REQUIRED,
-        BACKEND_USB_FRAME_LIVE_HEARTBEAT,
-        sequence,
+        BACKEND_USB_FRAME_LIVE_READY,
+        0U,
+        service->live_generation,
         frame,
         length);
+    if (enqueued) {
+        service->live_ready_pending = false;
+    }
     (void)xSemaphoreGive(service->lock);
     return enqueued;
 }
@@ -481,15 +534,19 @@ bool backend_usb_service_live_start(
     if (out_session_id != NULL) {
         out_session_id[0] = '\0';
     }
-    if (service == NULL || !service->started || out_session_id == NULL ||
-        xSemaphoreTake(
-            service->lock,
-            pdMS_TO_TICKS(BACKEND_USB_REQUIRED_LOCK_MS)) != pdTRUE) {
+    if (service == NULL || !service->started || out_session_id == NULL) {
+        return false;
+    }
+    if (xSemaphoreTake(service->tx_gate, portMAX_DELAY) != pdTRUE) {
+        return false;
+    }
+    if (xSemaphoreTake(service->lock, portMAX_DELAY) != pdTRUE) {
+        (void)xSemaphoreGive(service->tx_gate);
         return false;
     }
     char session_id[33];
     next_session_id(service, session_id);
-    remove_queued_heartbeats_locked(service);
+    remove_queued_live_controls_locked(service);
     if (service->live_generation != UINT64_MAX) {
         ++service->live_generation;
     } else {
@@ -503,6 +560,7 @@ bool backend_usb_service_live_start(
         memcpy(out_session_id, session_id, sizeof(session_id));
     }
     (void)xSemaphoreGive(service->lock);
+    (void)xSemaphoreGive(service->tx_gate);
     return started;
 }
 
@@ -512,15 +570,24 @@ bool backend_usb_service_live_acknowledge(
     uint64_t sequence,
     int64_t now_ms)
 {
-    if (service == NULL || !service->started ||
-        xSemaphoreTake(
-            service->lock,
-            pdMS_TO_TICKS(BACKEND_USB_REQUIRED_LOCK_MS)) != pdTRUE) {
+    if (service == NULL || !service->started) {
         return false;
+    }
+    if (xSemaphoreTake(service->tx_gate, portMAX_DELAY) != pdTRUE) {
+        return false;
+    }
+    if (xSemaphoreTake(service->lock, portMAX_DELAY) != pdTRUE) {
+        (void)xSemaphoreGive(service->tx_gate);
+        return false;
+    }
+    const int64_t fresh_now_ms = monotonic_ms();
+    if (fresh_now_ms > now_ms) {
+        now_ms = fresh_now_ms;
     }
     const bool acknowledged = backend_usb_live_acknowledge(
         &service->transport.live, session_id, sequence, now_ms);
     (void)xSemaphoreGive(service->lock);
+    (void)xSemaphoreGive(service->tx_gate);
     return acknowledged;
 }
 
@@ -528,16 +595,20 @@ bool backend_usb_service_live_stop(
     backend_usb_service_t *service,
     const char *session_id)
 {
-    if (service == NULL || !service->started || session_id == NULL ||
-        xSemaphoreTake(
-            service->lock,
-            pdMS_TO_TICKS(BACKEND_USB_REQUIRED_LOCK_MS)) != pdTRUE) {
+    if (service == NULL || !service->started || session_id == NULL) {
+        return false;
+    }
+    if (xSemaphoreTake(service->tx_gate, portMAX_DELAY) != pdTRUE) {
+        return false;
+    }
+    if (xSemaphoreTake(service->lock, portMAX_DELAY) != pdTRUE) {
+        (void)xSemaphoreGive(service->tx_gate);
         return false;
     }
     const bool matches = service->transport.live.started &&
         strcmp(service->transport.live.session_id, session_id) == 0;
     if (matches) {
-        remove_queued_heartbeats_locked(service);
+        remove_queued_live_controls_locked(service);
         backend_usb_live_stop(&service->transport.live);
         service->live_ready_pending = false;
         if (service->live_generation != UINT64_MAX) {
@@ -547,6 +618,7 @@ bool backend_usb_service_live_stop(
         }
     }
     (void)xSemaphoreGive(service->lock);
+    (void)xSemaphoreGive(service->tx_gate);
     return matches;
 }
 
@@ -580,11 +652,27 @@ bool backend_usb_service_snapshot(
         return false;
     }
     out->available = true;
-    out->output_poisoned = service->output_poisoned;
+    out->output_poisoned = service->transport.output_poisoned;
     out->required_queue_depth = service->transport.required_count;
     out->optional_queue_depth = service->transport.optional_count;
     out->optional_drops = service->transport.optional_drops;
     out->required_failures = service->transport.required_failures;
+    const uint64_t contention_optional =
+        backend_usb_transport_optional_contention_drops(
+            &service->transport);
+    const uint64_t contention_required =
+        backend_usb_transport_required_contention_failures(
+            &service->transport);
+    if (UINT64_MAX - out->optional_drops < contention_optional) {
+        out->optional_drops = UINT64_MAX;
+    } else {
+        out->optional_drops += contention_optional;
+    }
+    if (UINT64_MAX - out->required_failures < contention_required) {
+        out->required_failures = UINT64_MAX;
+    } else {
+        out->required_failures += contention_required;
+    }
     if (UINT64_MAX - out->required_failures < service->tx_failures) {
         out->required_failures = UINT64_MAX;
     } else {

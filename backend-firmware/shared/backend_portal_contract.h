@@ -43,6 +43,7 @@ typedef enum {
     BACKEND_PORTAL_UPDATE_INVALID_CONFIG,
     BACKEND_PORTAL_UPDATE_COMMIT_FAILED,
     BACKEND_PORTAL_UPDATE_RECONNECT_FAILED,
+    BACKEND_PORTAL_UPDATE_STALE_GENERATION,
 } backend_portal_update_result_t;
 
 const backend_portal_route_t *backend_portal_required_routes(

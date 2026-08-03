@@ -57,6 +57,22 @@ def _partition_rows(filename: str = "partitions_backend_uplink_8mb.csv") -> list
     return rows
 
 
+def _c_function(source: str, name: str) -> str:
+    match = re.search(rf"\b{name}\s*\([^;]*?\)\s*\{{", source, re.S)
+    assert match is not None, f"missing C function: {name}"
+    start = match.start()
+    brace = source.index("{", match.start())
+    depth = 0
+    for index in range(brace, len(source)):
+        if source[index] == "{":
+            depth += 1
+        elif source[index] == "}":
+            depth -= 1
+            if depth == 0:
+                return source[start : index + 1]
+    raise AssertionError(f"unterminated C function: {name}")
+
+
 def test_uplink_environment_drives_one_exact_backend_image() -> None:
     parser, text = _load_environment()
     environment = parser["env:uplink-s3-backend"]
@@ -218,6 +234,57 @@ def test_lite_usb_service_owns_bounded_driver_and_strict_psram_queues() -> None:
     assert "usb_serial_jtag_write_bytes(" in service
 
 
+def test_lite_usb_driver_io_runs_outside_lock_then_cleanup_is_unskippable() -> None:
+    service = (UPLINK / "main/usb/backend_usb_service.c").read_text(
+        encoding="utf-8"
+    )
+    physical_write = _c_function(service, "write_frame_physical")
+    recovery_write = _c_function(service, "write_recovery_newline_physical")
+    tx_task = _c_function(service, "usb_tx_task")
+
+    assert "usb_serial_jtag_write_bytes(" in physical_write
+    assert "usb_serial_jtag_write_bytes(" in recovery_write
+    assert "xSemaphoreTake" not in physical_write
+    assert "xSemaphoreGive" not in physical_write
+    assert "xSemaphoreTake" not in recovery_write
+    assert "xSemaphoreGive" not in recovery_write
+
+    pop = tx_task.index("backend_usb_transport_pop_current(")
+    unlock = tx_task.index("xSemaphoreGive(service->lock)", pop)
+    physical = tx_task.index("write_frame_physical(", unlock)
+    cleanup_lock = tx_task.index(
+        "xSemaphoreTake(service->lock, portMAX_DELAY)", physical
+    )
+    cleanup = tx_task.index("finish_tx_locked(", cleanup_lock)
+    assert pop < unlock < physical < cleanup_lock < cleanup
+
+    for function_name in (
+        "backend_usb_service_live_start",
+        "backend_usb_service_live_acknowledge",
+        "backend_usb_service_live_stop",
+    ):
+        control = _c_function(service, function_name)
+        gate = control.index(
+            "xSemaphoreTake(service->tx_gate, portMAX_DELAY)"
+        )
+        state_lock = control.index(
+            "xSemaphoreTake(service->lock, portMAX_DELAY)", gate
+        )
+        state_unlock = control.index("xSemaphoreGive(service->lock)", state_lock)
+        gate_unlock = control.index("xSemaphoreGive(service->tx_gate)", state_unlock)
+        assert gate < state_lock < state_unlock < gate_unlock
+
+    acknowledge = _c_function(
+        service, "backend_usb_service_live_acknowledge"
+    )
+    acknowledge_lock = acknowledge.index(
+        "xSemaphoreTake(service->lock, portMAX_DELAY)"
+    )
+    assert acknowledge.index("monotonic_ms()", acknowledge_lock) < acknowledge.index(
+        "backend_usb_live_acknowledge(", acknowledge_lock
+    )
+
+
 def test_lite_main_registers_http_and_canonical_sinks_with_psram_history() -> None:
     source = (UPLINK / "main/main.c").read_text(encoding="utf-8")
 
@@ -231,6 +298,65 @@ def test_lite_main_registers_http_and_canonical_sinks_with_psram_history() -> No
     )
     assert "fof_badge_uplink" not in lite_status_sources
     assert "uplink-s3-fof_badge" not in lite_status_sources
+
+
+def test_lite_status_has_bounded_scanner_threat_and_backend_freshness_shape() -> None:
+    source = (UPLINK / "main/main.c").read_text(encoding="utf-8")
+    snapshot = _c_function(source, "take_lite_status_snapshot")
+    backend = _c_function(source, "append_lite_backend_status")
+    scanner = _c_function(source, "append_lite_scanner_summary")
+    status = _c_function(source, "build_lite_status")
+    backend_shape = backend.replace("\\", "")
+    scanner_shape = scanner.replace("\\", "")
+    status_shape = status.replace("\\", "")
+
+    assert "s_runtime.uploader.ack_count != 0U" in snapshot
+    assert "last_backend_success_ms >= 0" in snapshot
+    assert "backend_has_last_success_age" in snapshot
+    assert '"last_success_age_s":' in backend_shape
+    assert 'backend_json_append(writer, "null")' in backend
+
+    for key in (
+        '"status_available":',
+        '"identity":',
+        '"profile":',
+        '"health":',
+        '"errors":',
+        '"uptime_ms":',
+    ):
+        assert key in scanner_shape
+    assert "backend_json_append_escaped" in scanner
+    assert "append_lite_scanner_summary(" in status
+
+    for key in (
+        '"drone_count":',
+        '"meta_count":',
+        '"drone_last_seen_age_ms":',
+        '"meta_last_seen_age_ms":',
+    ):
+        assert key in status_shape
+
+
+def test_lite_investigation_terminal_observer_emits_only_the_new_result() -> None:
+    source = (UPLINK / "main/main.c").read_text(encoding="utf-8")
+    dispatch = _c_function(source, "dispatch_uart_frame")
+
+    before = dispatch.index("const uint8_t queue_count_before =")
+    accept = dispatch.index("backend_ble_investigation_accept_chunk(", before)
+    scan = dispatch.index(
+        "for (uint8_t index = queue_count_before;", accept
+    )
+    unlock = dispatch.index("unlock_runtime()", scan)
+    encode = dispatch.index(
+        "backend_usb_protocol_encode_investigation(", unlock
+    )
+    emit = dispatch.index("BACKEND_USB_FRAME_OPTIONAL", encode)
+    assert before < accept < scan < unlock < encode < emit
+    assert "index < s_runtime.investigation.queue_count" in dispatch[scan:unlock]
+    assert 'strcmp(result->type, "ble_inv_end") == 0' in dispatch[scan:unlock]
+    assert "accepted && chunk.kind == BLE_INV_CHUNK_END" not in dispatch
+    assert "backend_ble_investigation_next_result(" not in dispatch[before:emit]
+    assert "backend_ble_investigation_mark_acked(" not in dispatch[before:emit]
 
 
 def test_uplink_partition_table_is_exact_nonoverlapping_eight_megabytes() -> None:

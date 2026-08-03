@@ -437,10 +437,19 @@ void test_config_update_rejects_unknown_catalog_and_malformed_fields(void)
             &current, wrong_bool, sizeof(wrong_bool) - 1U, &candidate));
 
     static const char no_networks[] = "{\"networks\":[]}";
+#if defined(FOF_BACKEND_PROFILE_BADGE_LITE)
+    TEST_ASSERT_EQUAL(
+        BACKEND_PORTAL_UPDATE_OK,
+        backend_portal_parse_config_update(
+            &current, no_networks, sizeof(no_networks) - 1U, &candidate));
+    TEST_ASSERT_EQUAL_UINT8(0U, candidate.network_count);
+    candidate = sentinel;
+#else
     TEST_ASSERT_EQUAL(
         BACKEND_PORTAL_UPDATE_INVALID_CONFIG,
         backend_portal_parse_config_update(
             &current, no_networks, sizeof(no_networks) - 1U, &candidate));
+#endif
 
     static const char duplicate[] =
         "{\"display_name\":\"first\",\"display_name\":\"second\"}";
@@ -467,10 +476,29 @@ typedef struct {
     const char *dashboard_status;
     unsigned dashboard_status_calls;
     unsigned event_snapshot_calls;
+    unsigned transaction_begin_calls;
+    unsigned transaction_end_calls;
+    unsigned transaction_depth;
     uint64_t event_after;
     size_t event_limit;
     size_t event_capacity;
 } portal_fixture_t;
+
+static bool fake_transaction_begin(void *context)
+{
+    portal_fixture_t *fixture = context;
+    ++fixture->transaction_begin_calls;
+    ++fixture->transaction_depth;
+    return true;
+}
+
+static void fake_transaction_end(void *context)
+{
+    portal_fixture_t *fixture = context;
+    ++fixture->transaction_end_calls;
+    TEST_ASSERT_EQUAL_UINT32(1U, fixture->transaction_depth);
+    --fixture->transaction_depth;
+}
 
 static bool fake_commit(
     void *context, const backend_config_record_t *candidate)
@@ -564,9 +592,70 @@ static backend_config_portal_ops_t fixture_ops(portal_fixture_t *fixture)
         .backend_get = fake_health_get,
         .dashboard_status = fake_dashboard_status,
         .event_snapshot = fake_event_snapshot,
+        .begin_config_transaction = fake_transaction_begin,
+        .end_config_transaction = fake_transaction_end,
     };
     return ops;
 }
+
+void test_config_update_is_bracketed_by_one_transaction(void)
+{
+    const backend_config_record_t current = config_fixture(false);
+    portal_fixture_t fixture = {
+        .commit_result = true,
+        .reconnect_result = true,
+    };
+    const backend_config_portal_ops_t ops = fixture_ops(&fixture);
+    backend_config_portal_t portal;
+    TEST_ASSERT_TRUE(backend_config_portal_init(&portal, &current, &ops));
+    static const char update[] = "{\"display_name\":\"Serialized\"}";
+
+    TEST_ASSERT_EQUAL(
+        BACKEND_PORTAL_UPDATE_OK,
+        backend_config_portal_apply_update(
+            &portal, update, sizeof(update) - 1U, 1234));
+    TEST_ASSERT_EQUAL_UINT32(1U, fixture.transaction_begin_calls);
+    TEST_ASSERT_EQUAL_UINT32(1U, fixture.transaction_end_calls);
+    TEST_ASSERT_EQUAL_UINT32(0U, fixture.transaction_depth);
+    TEST_ASSERT_EQUAL_UINT32(1U, fixture.commit_calls);
+    TEST_ASSERT_EQUAL_UINT32(1U, fixture.reconnect_calls);
+
+    fixture.transaction_begin_calls = 0U;
+    fixture.transaction_end_calls = 0U;
+    backend_config_record_t snapshot;
+    memset(&snapshot, 0xA5, sizeof(snapshot));
+    TEST_ASSERT_TRUE(backend_config_portal_snapshot_config(
+        &portal, &snapshot));
+    TEST_ASSERT_EQUAL_UINT32(1U, fixture.transaction_begin_calls);
+    TEST_ASSERT_EQUAL_UINT32(1U, fixture.transaction_end_calls);
+    TEST_ASSERT_EQUAL_UINT32(0U, fixture.transaction_depth);
+    TEST_ASSERT_EQUAL_MEMORY(&portal.config, &snapshot, sizeof(snapshot));
+}
+
+#if defined(FOF_BACKEND_PROFILE_BADGE_LITE)
+void test_lite_can_atomically_commit_zero_network_recovery_config(void)
+{
+    const backend_config_record_t current = config_fixture(false);
+    portal_fixture_t fixture = {
+        .commit_result = true,
+        .reconnect_result = true,
+    };
+    const backend_config_portal_ops_t ops = fixture_ops(&fixture);
+    backend_config_portal_t portal;
+    TEST_ASSERT_TRUE(backend_config_portal_init(&portal, &current, &ops));
+    static const char update[] = "{\"networks\":[]}";
+
+    TEST_ASSERT_EQUAL(
+        BACKEND_PORTAL_UPDATE_OK,
+        backend_config_portal_apply_update(
+            &portal, update, sizeof(update) - 1U, 1500));
+    TEST_ASSERT_EQUAL_UINT32(1U, fixture.commit_calls);
+    TEST_ASSERT_EQUAL_UINT32(1U, fixture.reconnect_calls);
+    TEST_ASSERT_EQUAL_UINT8(0U, portal.config.network_count);
+    TEST_ASSERT_EQUAL_UINT32(current.generation + 1U,
+                             portal.config.generation);
+}
+#endif
 
 #if defined(FOF_BACKEND_PROFILE_BADGE_LITE)
 void test_dashboard_query_defaults_and_requires_full_unsigned_values(void)
@@ -649,6 +738,9 @@ void test_dashboard_status_is_redacted_and_event_copy_is_bounded(void)
     TEST_ASSERT_FALSE(backend_config_portal_dashboard_status(
         &portal, status, sizeof(status), &status_length));
     TEST_ASSERT_EQUAL_UINT32(0U, status_length);
+    TEST_ASSERT_EQUAL_UINT32(2U, fixture.transaction_begin_calls);
+    TEST_ASSERT_EQUAL_UINT32(2U, fixture.transaction_end_calls);
+    TEST_ASSERT_EQUAL_UINT32(0U, fixture.transaction_depth);
 
     backend_dashboard_event_t events[50];
     backend_event_ring_snapshot_t snapshot;
@@ -772,6 +864,9 @@ void test_backend_health_test_is_bounded_and_cannot_change_update_authority(void
     TEST_ASSERT_EQUAL_UINT32(
         BACKEND_CONFIG_PORTAL_BACKEND_TEST_TIMEOUT_MS,
         fixture.health_timeout_ms);
+    TEST_ASSERT_EQUAL_UINT32(1U, fixture.transaction_begin_calls);
+    TEST_ASSERT_EQUAL_UINT32(1U, fixture.transaction_end_calls);
+    TEST_ASSERT_EQUAL_UINT32(0U, fixture.transaction_depth);
     TEST_ASSERT_FALSE(portal.config.auto_update_enabled);
     TEST_ASSERT_EQUAL_UINT32(0, fixture.commit_calls);
     TEST_ASSERT_EQUAL_UINT32(0, fixture.reconnect_calls);
@@ -799,6 +894,9 @@ void test_usb_command_and_ap_identity_are_exact(void)
     backend_config_portal_ap_config_t ap_config;
     TEST_ASSERT_TRUE(backend_config_portal_build_ap_config(
         &portal, mac, &ap_config));
+    TEST_ASSERT_EQUAL_UINT32(1U, fixture.transaction_begin_calls);
+    TEST_ASSERT_EQUAL_UINT32(1U, fixture.transaction_end_calls);
+    TEST_ASSERT_EQUAL_UINT32(0U, fixture.transaction_depth);
 #if defined(FOF_BACKEND_PROFILE_BADGE_LITE)
     TEST_ASSERT_EQUAL_STRING("FriendOrFoe-Lite-CB77A4", ap_config.ssid);
 #else
@@ -1028,6 +1126,11 @@ int main(void)
         test_config_update_rejects_unknown_catalog_and_malformed_fields);
     BACKEND_RUN_TEST(
         test_portal_reconnects_only_after_atomic_commit_succeeds);
+    BACKEND_RUN_TEST(test_config_update_is_bracketed_by_one_transaction);
+#if defined(FOF_BACKEND_PROFILE_BADGE_LITE)
+    BACKEND_RUN_TEST(
+        test_lite_can_atomically_commit_zero_network_recovery_config);
+#endif
     BACKEND_RUN_TEST(
         test_reconnect_failure_reports_config_saved_distinct_from_commit_failure);
     BACKEND_RUN_TEST(

@@ -46,6 +46,7 @@ typedef struct {
 
 typedef struct backend_usb_service {
     SemaphoreHandle_t lock;
+    SemaphoreHandle_t tx_gate;
     TaskHandle_t rx_task;
     TaskHandle_t tx_task;
     backend_usb_service_config_t config;
@@ -57,12 +58,10 @@ typedef struct backend_usb_service {
     uint8_t rx_line_storage[SCANNER_UART_LINE_BUFFER_SIZE];
     char last_session_id[33];
     uint64_t live_generation;
-    uint64_t tx_live_generation;
     uint64_t bytes_transmitted;
     uint64_t bytes_received;
     uint64_t tx_failures;
     bool started;
-    bool output_poisoned;
     bool live_ready_pending;
 } backend_usb_service_t;
 
@@ -77,6 +76,12 @@ bool backend_usb_service_emit(
 bool backend_usb_service_emit_heartbeat(
     backend_usb_service_t *service,
     uint64_t sequence,
+    uint64_t live_generation,
+    const char *frame,
+    size_t length);
+bool backend_usb_service_emit_live_ready(
+    backend_usb_service_t *service,
+    const char *session_id,
     const char *frame,
     size_t length);
 bool backend_usb_service_live_confirmed(
