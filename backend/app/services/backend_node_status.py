@@ -7,6 +7,7 @@ from app.services.firmware_management import enrich_node_management
 MAX_TRUSTED_CLOCK_SKEW_S = 300.0
 
 STICKY_BATCH_FIELDS = (
+    "boot_id", "topology_generation",
     "product_family", "firmware_line", "component",
     "firmware_version", "board_type", "firmware_target", "app_project",
     "hardware_type", "hardware_mac", "capabilities", "node_name",

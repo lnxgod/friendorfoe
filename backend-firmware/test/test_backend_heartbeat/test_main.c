@@ -20,6 +20,8 @@ void tearDown(void) {}
 static backend_batch_context_t heartbeat_context(void)
 {
     backend_batch_context_t context = {
+        .boot_id = UINT32_C(0x10203040),
+        .topology_generation = 7U,
         .capability_count = 2U,
         .scanner_present = {true, false},
         .clock_valid = true,
@@ -47,6 +49,9 @@ static backend_batch_context_t heartbeat_context(void)
         .sequence = 77U,
     };
     strcpy(context.device_id, "uplink_CB77A4");
+    strcpy(context.product_family, FOF_BACKEND_PRODUCT_FAMILY);
+    strcpy(context.firmware_line, FOF_BACKEND_FIRMWARE_LINE);
+    strcpy(context.component, "uplink");
     strcpy(context.firmware_version, "0.1.0-backend");
     strcpy(context.firmware_target, FOF_BACKEND_UPLINK_TARGET);
     strcpy(context.app_project, FOF_BACKEND_UPLINK_PROJECT);
@@ -172,10 +177,20 @@ void test_empty_heartbeat_contains_exact_operational_fields(void)
         BACKEND_JSON_MAX_TOKENS,
         &token_count));
     TEST_ASSERT_EQUAL(BACKEND_JSON_OBJECT, tokens[0].kind);
-    TEST_ASSERT_EQUAL_UINT16(34U, tokens[0].child_count);
+    TEST_ASSERT_EQUAL_UINT16(44U, tokens[0].child_count);
 
     assert_string_key(batch.json, tokens, token_count, 0U,
                       "device_id", "uplink_CB77A4");
+    assert_i64_key(batch.json, tokens, token_count, 0U,
+                   "boot_id", UINT32_C(0x10203040));
+    assert_i64_key(batch.json, tokens, token_count, 0U,
+                   "topology_generation", 7);
+    assert_string_key(batch.json, tokens, token_count, 0U,
+                      "product_family", FOF_BACKEND_PRODUCT_FAMILY);
+    assert_string_key(batch.json, tokens, token_count, 0U,
+                      "firmware_line", FOF_BACKEND_FIRMWARE_LINE);
+    assert_string_key(batch.json, tokens, token_count, 0U,
+                      "component", "uplink");
     assert_string_key(batch.json, tokens, token_count, 0U,
                       "firmware_version", "0.1.0-backend");
     assert_string_key(batch.json, tokens, token_count, 0U,
@@ -220,10 +235,16 @@ void test_empty_heartbeat_contains_exact_operational_fields(void)
     TEST_ASSERT_EQUAL_UINT16(1U, tokens[scanners].child_count);
     const size_t scanner = scanners + 1U;
     TEST_ASSERT_EQUAL(BACKEND_JSON_OBJECT, tokens[scanner].kind);
-    TEST_ASSERT_EQUAL_UINT16(36U, tokens[scanner].child_count);
+    TEST_ASSERT_EQUAL_UINT16(44U, tokens[scanner].child_count);
     assert_string_key(batch.json, tokens, token_count, scanner,
                       "uart", "ble");
     assert_i64_key(batch.json, tokens, token_count, scanner, "slot", 0);
+    assert_string_key(batch.json, tokens, token_count, scanner,
+                      "product_family", FOF_BACKEND_PRODUCT_FAMILY);
+    assert_string_key(batch.json, tokens, token_count, scanner,
+                      "firmware_line", FOF_BACKEND_FIRMWARE_LINE);
+    assert_string_key(batch.json, tokens, token_count, scanner,
+                      "component", "scanner");
     assert_string_key(batch.json, tokens, token_count, scanner,
                       "firmware_target", FOF_BACKEND_SCANNER_TARGET);
     assert_string_key(batch.json, tokens, token_count, scanner,
@@ -256,6 +277,12 @@ void test_empty_heartbeat_contains_exact_operational_fields(void)
                       "ota_state", "idle");
     assert_string_key(batch.json, tokens, token_count, scanner,
                       "rollback_state", "valid");
+    const size_t scanner_capabilities = require_key(
+        batch.json, tokens, token_count, scanner, "capabilities");
+    TEST_ASSERT_EQUAL(BACKEND_JSON_ARRAY,
+                      tokens[scanner_capabilities].kind);
+    TEST_ASSERT_EQUAL_UINT16(6U,
+                             tokens[scanner_capabilities].child_count);
 
     const size_t queue = require_key(
         batch.json, tokens, token_count, 0U, "upload_queue");

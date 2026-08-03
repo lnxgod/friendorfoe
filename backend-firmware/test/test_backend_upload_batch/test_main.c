@@ -70,6 +70,8 @@ static backend_scanner_status_t fixture_scanner(
 static backend_batch_context_t fixture_batch_context(void)
 {
     backend_batch_context_t context = {
+        .boot_id = UINT32_C(0x10203040),
+        .topology_generation = 7U,
         .capability_count = 7U,
         .has_device_location = true,
         .device_lat = 36.1699,
@@ -409,9 +411,10 @@ void test_empty_batch_has_exact_identity_health_and_scanner_bridge(void)
     backend_json_token_t tokens[BACKEND_JSON_MAX_TOKENS];
     size_t count = parse_object(
         batch.json, batch.json_len, tokens, BACKEND_JSON_MAX_TOKENS);
-    TEST_ASSERT_EQUAL_UINT16(46U, tokens[0].child_count);
+    TEST_ASSERT_EQUAL_UINT16(50U, tokens[0].child_count);
     static const char *const top_level_keys[] = {
         "device_id", "product_family", "firmware_line", "component",
+        "boot_id", "topology_generation",
         "firmware_version", "firmware_target", "app_project", "hardware_type",
         "hardware_mac", "node_name", "capabilities",
         "device_lat", "device_lon", "device_alt", "timestamp", "scanners",
@@ -430,6 +433,10 @@ void test_empty_batch_has_exact_identity_health_and_scanner_bridge(void)
                       "firmware_line", "backend");
     assert_string_key(batch.json, tokens, count, 0U,
                       "component", "uplink");
+    assert_i64_key(batch.json, tokens, count, 0U,
+                   "boot_id", UINT32_C(0x10203040));
+    assert_i64_key(batch.json, tokens, count, 0U,
+                   "topology_generation", 7);
     assert_string_key(batch.json, tokens, count, 0U,
                       "firmware_version", FOF_VERSION_BACKEND);
     assert_string_key(batch.json, tokens, count, 0U,
@@ -588,6 +595,23 @@ void test_empty_batch_has_exact_identity_health_and_scanner_bridge(void)
                     "ble_healthy", false);
     assert_bool_key(scanner_json, scanner_tokens, scanner_count, 0U,
                     "wifi_healthy", true);
+}
+
+void test_zero_uplink_boot_or_topology_is_rejected(void)
+{
+    backend_batch_context_t context = fixture_batch_context();
+    backend_upload_builder_t builder;
+
+    context.boot_id = 0U;
+    backend_upload_builder_init(&builder, &context, 1000);
+    TEST_ASSERT_FALSE(builder.active);
+    TEST_ASSERT_TRUE(builder.failed);
+
+    context = fixture_batch_context();
+    context.topology_generation = 0U;
+    backend_upload_builder_init(&builder, &context, 1000);
+    TEST_ASSERT_FALSE(builder.active);
+    TEST_ASSERT_TRUE(builder.failed);
 }
 
 void test_detection_parity_uses_canonical_keys_and_copies_input(void)
@@ -853,7 +877,7 @@ void test_invalid_clock_and_optional_fields_are_absent_and_context_is_copied(voi
     backend_json_token_t tokens[BACKEND_JSON_MAX_TOKENS];
     size_t count = parse_object(
         batch.json, batch.json_len, tokens, BACKEND_JSON_MAX_TOKENS);
-    TEST_ASSERT_EQUAL_UINT16(38U, tokens[0].child_count);
+    TEST_ASSERT_EQUAL_UINT16(42U, tokens[0].child_count);
     assert_string_key(batch.json, tokens, count, 0U,
                       "device_id", "uplink_CB77A4");
     assert_string_key(batch.json, tokens, count, 0U,
@@ -1138,6 +1162,7 @@ int main(void)
     UNITY_BEGIN();
     BACKEND_RUN_TEST(
         test_empty_batch_has_exact_identity_health_and_scanner_bridge);
+    BACKEND_RUN_TEST(test_zero_uplink_boot_or_topology_is_rejected);
     BACKEND_RUN_TEST(
         test_detection_parity_uses_canonical_keys_and_copies_input);
     BACKEND_RUN_TEST(

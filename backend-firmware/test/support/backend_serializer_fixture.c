@@ -56,6 +56,8 @@ static backend_batch_context_t fixture_context(void)
 #endif
     backend_batch_context_t context = {
         .device_id = "uplink_CB77A4",
+        .boot_id = UINT32_C(0x10203040),
+        .topology_generation = 7U,
         .product_family = FOF_BACKEND_PRODUCT_FAMILY,
         .firmware_line = FOF_BACKEND_FIRMWARE_LINE,
         .component = "uplink",

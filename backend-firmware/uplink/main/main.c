@@ -339,6 +339,8 @@ static bool upload_context_locked(
     memset(context, 0, sizeof(*context));
     copy_text(context->device_id, sizeof(context->device_id),
               s_runtime.config.device_id);
+    context->boot_id = s_runtime.boot_id;
+    context->topology_generation = s_runtime.topology_generation;
     copy_text(context->product_family, sizeof(context->product_family),
               identity->product_family);
     copy_text(context->firmware_line, sizeof(context->firmware_line),

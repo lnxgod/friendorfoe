@@ -124,6 +124,8 @@ def test_real_serializer_emits_complete_bounded_fixture(
         key: body[key]
         for key in (
             "device_id",
+            "boot_id",
+            "topology_generation",
             "product_family",
             "firmware_line",
             "component",
@@ -138,6 +140,8 @@ def test_real_serializer_emits_complete_bounded_fixture(
         )
     } == {
         "device_id": "uplink_CB77A4",
+        "boot_id": 0x10203040,
+        "topology_generation": 7,
         "product_family": product_family,
         "firmware_line": "backend",
         "component": "uplink",

@@ -1,0 +1,242 @@
+# Task 6 report: guarded Fullsize backend OTA rollouts
+
+## Outcome
+
+Implemented a separate, durable S3 Fullsize backend-OTA channel at base
+`435f0570dafec7fcd406ce172de8a2ee2e717969`. The implementation does not alter
+the existing BLE command models, unions, persistence, or `/commands/next`
+routes. The intended commit subject is exactly:
+
+```text
+backend: add guarded Fullsize OTA rollouts
+```
+
+## RED/GREEN evidence
+
+The work was developed in focused TDD slices.
+
+- Initial backend-OTA API/service tests: 30 expected failures because the
+  separate routes, models, persistence, and state machine did not exist.
+- Initial host serializer tests: 2 expected failures because top-level uplink
+  `boot_id` and `topology_generation` were absent.
+- Initial native upload-batch test: failed to build/validate against the new
+  telemetry contract before the struct, runtime population, serializer, and
+  fixture changes were implemented.
+- Follow-up safety RED: 3 failures proved that successful probe did not yet
+  revalidate the complete live binding, no-update scanner boot IDs were not
+  persisted for later uplink convergence, and uint32 sequence exhaustion could
+  mutate/persist before response validation. All three now pass.
+- Follow-up ingestion RED: 2 failures proved bool/string coercion for uplink
+  boot telemetry. Both fields now use strict nonzero uint32 validation.
+- The first mandated native heartbeat gate exposed a stale heartbeat fixture:
+  its context omitted the now-required server-authoritative identity and new
+  uplink binding fields, and its exact token counts predated those fields. The
+  fixture now exercises the complete Lite and Fullsize heartbeat contract.
+
+Final focused GREEN gates:
+
+```text
+backend/.venv312/bin/pytest -q \
+  tests/test_backend_ota_commands.py \
+  tests/test_backend_node_commands.py \
+  tests/test_scanner_ota_relay_paths.py \
+  tests/test_backend_firmware_ingest.py
+299 passed, 3 warnings in 5.08s
+
+backend/.venv312/bin/python -m pytest -q \
+  backend-firmware/tools/tests/test_serializer_fixture.py
+7 passed in 3.34s
+
+pio test -e backend-native \
+  -f test_backend_upload_batch -f test_backend_heartbeat
+20 test cases: 20 succeeded
+
+pio test -e backend-native-fullsize \
+  -f test_backend_upload_batch -f test_backend_heartbeat
+20 test cases: 20 succeeded
+```
+
+The backend warnings are existing/the expected Pydantic `schema` shadowing
+warnings. The host serializer gate reports the repository's existing
+`pytest-asyncio` default-loop-scope deprecation warning.
+
+## Exact channel and schemas
+
+Only these routes were added, with the literal `/next` route declared before
+the dynamic operation route:
+
+```text
+POST /nodes/{device_id}/backend-ota/rollouts
+GET  /nodes/{device_id}/backend-ota/next
+POST /nodes/{device_id}/backend-ota/{operation_id}/events
+GET  /nodes/{device_id}/backend-ota/{operation_id}
+```
+
+Request parsing reads raw UTF-8 JSON with duplicate-key detection before strict
+Pydantic validation. The create request has exactly required
+`components="all"` plus optional/defaulted
+`apply_mode="newer_only"|"same_version_recovery"`; missing, individual,
+unknown, skip, duplicate, coerced, and extra fields return 422 without a row.
+
+The probe response/command has exactly 13 keys:
+
+```text
+schema, operation_id, type, component, catalog_name, expected_sha256,
+expected_size, expected_uplink_mac, expected_uplink_boot_id,
+expected_target_mac, expected_target_boot_id,
+expected_topology_generation, next_sequence
+```
+
+Apply has those same 13 keys, changes `type`, and adds exactly `apply_mode` and
+`probe_receipt_sha256` (15 keys total). Operation IDs come only from
+`secrets.token_hex(16)` and remain the same 32 lowercase hexadecimal characters
+through every persisted phase and restart.
+
+Exact event shapes are:
+
+- begin: 6 keys (`schema`, `operation_id`, `sequence`, `type`, `component`,
+  `catalog_name`);
+- progress: those 6 plus `stage`, `received`, `total`, `retry_count` (10);
+- end: those 6 plus the 15 required terminal identity, outcome, health, and
+  receipt fields (21).
+
+The exact acknowledgement has 8 keys: `ok`, `operation_id`,
+`accepted_sequence`, `next_sequence`, `current_component`, `current_action`,
+`terminal`, and `duplicate`. History has exactly 9 keys: `operation_id`,
+`device_id`, `state`, `apply_mode`, `current_component`, `current_action`,
+`next_sequence`, `terminal`, and ordered `events`.
+
+The existing BLE focused tests pass in the combined backend gate, proving its
+poll/result/history response bodies and 204 behavior remain unchanged.
+
+## Immutable preflight and firmware binding
+
+Creation performs the required order before activating a row:
+
+1. Strict request validation.
+2. Fresh preflight of one exact healthy Fullsize uplink plus scanner0 bound by
+   `uart=ble, slot=0` and scanner1 by `uart=wifi, slot=1`, independent of list
+   order. Server-authoritative identities, three distinct MACs, healthy role,
+   radio, ingress, OTA, rollback, nonzero boot IDs, and uplink-owned nonzero
+   topology generation are mandatory. Scanner `role_generation` cannot replace
+   topology generation.
+3. Fetch scanner bytes exactly once, immediately revalidate the complete
+   binding with a fresh clock, then validate embedded image identity/capacity
+   and derive version/size/SHA-256 from those same bytes.
+4. Fetch uplink bytes exactly once and repeat the immediate complete-binding
+   check and same-byte metadata derivation.
+5. Perform a final synchronous complete-binding check, then insert.
+
+Tests prove invalid scanner bytes stop before the uplink fetch, staleness is
+recomputed after awaited fetches, changes after either fetch/final check abort,
+and no rollout calls `get_catalog()`, `get_firmware_version()`, compatibility,
+legacy-trigger, legacy identity-rebind, or direct legacy relay helpers.
+
+## Durable state-machine proof
+
+`BackendOtaRollout` and `BackendOtaEvent` are dedicated tables. A nullable
+unique `active_key=device_id` enforces one active rollout and is cleared only on
+whole-rollout terminal completion/failure. The rollout persists immutable
+binding/image JSON, apply mode, current component/action, accepted probe
+receipt, global next sequence, begin/stage/counter state, converged scanner boot
+IDs, and lifecycle timestamps. Events persist exact raw UTF-8 text plus body
+SHA-256 under unique `(operation_id, sequence)`.
+
+The serialized lifecycle is:
+
+```text
+scanner0 probe -> scanner0 apply + heartbeat convergence
+-> scanner1 probe -> scanner1 apply + heartbeat convergence
+-> uplink probe -> uplink apply + uplink/scanner heartbeat convergence
+```
+
+Successful probe and no-update both recheck the complete live heartbeat against
+the phase-appropriate original/prior-converged trio before advancing. Apply
+requires positive writes, exact image identity/version, bound MAC/topology,
+new target boot ID, all three health booleans, and matching live convergence.
+No-update records scanner boot convergence even without an apply. Uplink apply
+also requires both exact scanners to have rejoined healthy at their persisted
+converged boot IDs.
+
+Only the five specified terminal state/decision pairs are accepted, with exact
+error and write-count semantics. Begin must be first. Probe/apply and
+component-specific stages are enforced; stage order cannot regress. Byte/retry
+counters and totals are monotonic within a stage and may restart when the stage
+advances. Global sequence is strict uint32 and exhaustion rejects before any
+event insertion or rollout mutation.
+
+SQLite uses `BEGIN IMMEDIATE`; row reads use `SELECT ... FOR UPDATE`; unique
+active/event keys remain the final race guards. Tests prove simultaneous create
+produces one active row, simultaneous byte-identical events produce one stored
+event plus one idempotent replay, and existing-sequence lookup precedes current
+phase/terminal checks. Reordered JSON or any raw-byte change at the same
+sequence returns 409. Restart/resume, terminal history, completed replacement,
+duplicate polling, duplicate replay after advancement, and retryable store
+outage (`503`, `Retry-After: 1`) are covered.
+
+## Canonical receipt proof
+
+`backend-firmware/test/fixtures/backend_ota_receipt_v1.json` contains named
+probe/apply vectors with trusted persisted command fields, end fields excluding
+the receipt, exact UTF-8 with one final LF, byte-identical hex, and lowercase
+SHA-256:
+
+```text
+probe: b5103aade2dd17dc43e5c8b705cd494104972d31ddec458db0c66e072ed64aa5
+apply: 08685a02685969b76713b5474746a09f1e4feb05195172b83b1fb97b0385d577
+```
+
+The probe preimage is 756 bytes (1512 hex characters); apply is 761 bytes
+(1522 hex characters). Tests prove UTF-8 equals the fixture hex, hashes equal
+the fixture digests, builder output matches exact bytes/line order/boolean
+`0|1` normalization, one final LF is present, and apply binds the accepted
+probe digest. The receipt field itself is never hashed.
+
+## Uplink heartbeat telemetry and Task 7 carry-forward
+
+The shared upload context and JSON now carry uplink `boot_id` and
+`topology_generation`; the uplink runtime populates them directly from
+`s_runtime.boot_id` and `s_runtime.topology_generation`. Both serializer
+profiles, native heartbeat fixtures, and generated backend fixtures include
+them. Native builders reject zero. Backend ingestion accepts omission for old
+traffic but, when supplied, requires strict nonzero uint32 values and preserves
+both as sticky heartbeat fields. Fullsize rollout preflight requires both.
+
+Task 7 must keep these protocol values distinct in scanner-side
+`ota_read_binding()`: scanner `role_generation` is scanner-owned role state and
+must never be substituted for the uplink-owned `topology_generation` carried by
+the command/heartbeat binding. The scanner's own boot binding likewise remains
+the exact scanner boot ID; prior no-update components can legitimately retain
+their existing boot IDs and are persisted as converged.
+
+## Changed-path and protected-path audit
+
+Task-owned changes are confined to:
+
+```text
+backend/app/models/db_models.py
+backend/app/models/schemas.py
+backend/app/routers/nodes.py
+backend/app/services/backend_node_status.py
+backend/app/services/backend_ota_commands.py
+backend/tests/fixtures/backend_firmware_detection_batch.json
+backend/tests/fixtures/backend_firmware_fullsize_detection_batch.json
+backend/tests/test_backend_firmware_ingest.py
+backend/tests/test_backend_ota_commands.py
+backend-firmware/shared/backend_upload_batch.c
+backend-firmware/shared/backend_upload_batch.h
+backend-firmware/uplink/main/main.c
+backend-firmware/test/fixtures/backend_ota_receipt_v1.json
+backend-firmware/test/support/backend_serializer_fixture.c
+backend-firmware/test/test_backend_heartbeat/test_main.c
+backend-firmware/test/test_backend_upload_batch/test_main.c
+backend-firmware/tools/tests/test_serializer_fixture.py
+.superpowers/sdd/2026-08-02-s3-fullsize-backend-firmware/task-6-report.md
+```
+
+No `android/`, protected `esp32/`, deployment, workflow, database-content,
+factory-flasher, native Badge, or APK paths changed. No hardware or deployment
+commands ran. The only verification concern is that the system `python3` did
+not provide this repository's pytest environment, so the host serializer gate
+used the checked backend `.venv312` Python explicitly; the requested test file
+and assertions were unchanged.

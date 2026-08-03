@@ -272,6 +272,7 @@ static bool valid_scanner(const backend_scanner_status_t *status)
 static bool valid_context(const backend_batch_context_t *context)
 {
     if (context == NULL || context->sequence == 0U ||
+        context->boot_id == 0U || context->topology_generation == 0U ||
         context->capability_count > 16U ||
         !valid_text(context->device_id, sizeof(context->device_id)) ||
         context->device_id[0] == '\0' ||
@@ -751,6 +752,9 @@ static size_t encode_prefix(const backend_batch_context_t *context,
     backend_json_writer_init(&writer, output, capacity);
     backend_json_append(&writer, "{\"device_id\":");
     backend_json_append_escaped(&writer, context->device_id);
+    append_u64(&writer, "boot_id", context->boot_id);
+    append_u64(&writer, "topology_generation",
+               context->topology_generation);
     append_string(&writer, "product_family", context->product_family);
     append_string(&writer, "firmware_line", context->firmware_line);
     append_string(&writer, "component", context->component);

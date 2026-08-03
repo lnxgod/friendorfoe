@@ -362,6 +362,10 @@ class DroneDetectionBatch(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     device_id: str = Field(..., description="Unique identifier for the ESP32 sensor device")
+    boot_id: int | None = Field(None, strict=True, ge=1, le=0xFFFFFFFF)
+    topology_generation: int | None = Field(
+        None, strict=True, ge=1, le=0xFFFFFFFF,
+    )
     device_lat: float | None = Field(None, description="Sensor device latitude")
     device_lon: float | None = Field(None, description="Sensor device longitude")
     device_alt: float | None = Field(None, description="Sensor device altitude in meters")
@@ -845,6 +849,155 @@ class NodeCommandHistoryResponse(BaseModel):
     result_state: str | None
     terminal: bool
     events: list[NodeCommandResultRequest]
+
+
+# ---------------------------------------------------------------------------
+# Isolated S3 Fullsize backend OTA rollout channel
+# ---------------------------------------------------------------------------
+
+class BackendOtaRolloutRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    components: Literal["all"]
+    apply_mode: Literal["newer_only", "same_version_recovery"] = "newer_only"
+
+
+class BackendOtaProbeEnvelope(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    schema: Literal[1]
+    operation_id: str = Field(pattern=r"^[0-9a-f]{32}$")
+    type: Literal["backend_ota_probe"]
+    component: Literal["scanner0", "scanner1", "uplink"]
+    catalog_name: Literal[
+        "scanner-s3-combo-fullsize-backend",
+        "uplink-s3-fullsize-backend",
+    ]
+    expected_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    expected_size: int = Field(ge=1, le=0xFFFFFFFF)
+    expected_uplink_mac: str = Field(
+        pattern=r"^[0-9A-F]{2}(?::[0-9A-F]{2}){5}$",
+    )
+    expected_uplink_boot_id: int = Field(ge=1, le=0xFFFFFFFF)
+    expected_target_mac: str = Field(
+        pattern=r"^[0-9A-F]{2}(?::[0-9A-F]{2}){5}$",
+    )
+    expected_target_boot_id: int = Field(ge=1, le=0xFFFFFFFF)
+    expected_topology_generation: int = Field(ge=1, le=0xFFFFFFFF)
+    next_sequence: int = Field(ge=0, le=0xFFFFFFFF)
+
+
+class BackendOtaApplyEnvelope(BackendOtaProbeEnvelope):
+    type: Literal["backend_ota_apply"]
+    apply_mode: Literal["newer_only", "same_version_recovery"]
+    probe_receipt_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+BackendOtaCommandEnvelope = Annotated[
+    BackendOtaProbeEnvelope | BackendOtaApplyEnvelope,
+    Field(discriminator="type"),
+]
+
+
+class BackendOtaEventBase(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    schema: Literal[1]
+    operation_id: str = Field(pattern=r"^[0-9a-f]{32}$")
+    sequence: int = Field(ge=0, le=0xFFFFFFFF)
+    component: Literal["scanner0", "scanner1", "uplink"]
+    catalog_name: Literal[
+        "scanner-s3-combo-fullsize-backend",
+        "uplink-s3-fullsize-backend",
+    ]
+
+
+class BackendOtaBeginEvent(BackendOtaEventBase):
+    type: Literal["backend_ota_begin"]
+
+
+class BackendOtaProgressEvent(BackendOtaEventBase):
+    type: Literal["backend_ota_progress"]
+    stage: Literal[
+        "metadata", "download", "validate", "stage", "uart_relay",
+        "reboot_wait", "convergence",
+    ]
+    received: int = Field(ge=0, le=0xFFFFFFFF)
+    total: int = Field(ge=0, le=0xFFFFFFFF)
+    retry_count: int = Field(ge=0, le=0xFFFFFFFF)
+
+
+_OTA_IDENTITY_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+_OTA_MAC_PATTERN = r"^[0-9A-F]{2}(?::[0-9A-F]{2}){5}$"
+
+
+class BackendOtaEndEvent(BackendOtaEventBase):
+    type: Literal["backend_ota_end"]
+    state: Literal["complete", "no_update", "failed", "rolled_back"]
+    decision: Literal[
+        "eligible", "applied", "no_update", "rejected", "rolled_back",
+    ]
+    error: Literal[
+        "none", "identity_mismatch", "stale_binding", "capacity",
+        "download", "hash_mismatch", "uart", "reboot_timeout", "health",
+        "rollback", "internal",
+    ]
+    image_writes: int = Field(ge=0, le=0xFFFFFFFF)
+    target: str = Field(max_length=64)
+    project: str = Field(max_length=64)
+    hardware: str = Field(max_length=64)
+    version: str = Field(max_length=64)
+    actual_mac: str = Field(pattern=_OTA_MAC_PATTERN)
+    actual_boot_id: int = Field(ge=1, le=0xFFFFFFFF)
+    actual_topology_generation: int = Field(ge=1, le=0xFFFFFFFF)
+    role_healthy: bool
+    radio_healthy: bool
+    rollback_clear: bool
+    receipt_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @model_validator(mode="after")
+    def identity_strings_are_canonical(self):
+        values = (self.target, self.project, self.hardware, self.version)
+        empty_allowed = self.state == "failed"
+        for value in values:
+            if value == "" and empty_allowed:
+                continue
+            if re.fullmatch(_OTA_IDENTITY_PATTERN, value) is None:
+                raise ValueError("invalid OTA identity string")
+        return self
+
+
+BackendOtaEventRequest = Annotated[
+    BackendOtaBeginEvent | BackendOtaProgressEvent | BackendOtaEndEvent,
+    Field(discriminator="type"),
+]
+
+
+class BackendOtaEventAck(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    ok: Literal[True] = True
+    operation_id: str = Field(pattern=r"^[0-9a-f]{32}$")
+    accepted_sequence: int = Field(ge=0, le=0xFFFFFFFF)
+    next_sequence: int = Field(ge=1, le=0xFFFFFFFF)
+    current_component: Literal["scanner0", "scanner1", "uplink"]
+    current_action: Literal["probe", "apply"]
+    terminal: bool
+    duplicate: bool
+
+
+class BackendOtaHistoryResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    operation_id: str = Field(pattern=r"^[0-9a-f]{32}$")
+    device_id: str
+    state: Literal["active", "complete", "failed", "rolled_back"]
+    apply_mode: Literal["newer_only", "same_version_recovery"]
+    current_component: Literal["scanner0", "scanner1", "uplink"]
+    current_action: Literal["probe", "apply"]
+    next_sequence: int = Field(ge=0, le=0xFFFFFFFF)
+    terminal: bool
+    events: list[BackendOtaEventRequest]
 
 
 # ---------------------------------------------------------------------------

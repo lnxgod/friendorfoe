@@ -87,6 +87,77 @@ class NodeCommandResultEvent(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class BackendOtaRollout(Base):
+    """One durable Fullsize rollout with a nullable one-active-node key."""
+
+    __tablename__ = "backend_ota_rollouts"
+
+    operation_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    device_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    active_key: Mapped[str | None] = mapped_column(
+        String(64), unique=True, nullable=True,
+    )
+    apply_mode: Mapped[str] = mapped_column(String(32), nullable=False)
+    binding_json: Mapped[str] = mapped_column(Text, nullable=False)
+    scanner_image_json: Mapped[str] = mapped_column(Text, nullable=False)
+    uplink_image_json: Mapped[str] = mapped_column(Text, nullable=False)
+    state: Mapped[str] = mapped_column(String(24), nullable=False, default="active")
+    current_component: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="scanner0",
+    )
+    current_action: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="probe",
+    )
+    next_sequence: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    accepted_probe_receipt: Mapped[str | None] = mapped_column(
+        String(64), nullable=True,
+    )
+    began: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    last_stage_rank: Mapped[int] = mapped_column(Integer, nullable=False, default=-1)
+    last_received: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    progress_total: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    retry_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    scanner0_converged_boot_id: Mapped[int | None] = mapped_column(
+        BigInteger, nullable=True,
+    )
+    scanner1_converged_boot_id: Mapped[int | None] = mapped_column(
+        BigInteger, nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    first_delivered_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )
+    last_polled_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )
+
+
+class BackendOtaEvent(Base):
+    """One immutable raw UTF-8 event body in the rollout global sequence."""
+
+    __tablename__ = "backend_ota_events"
+    __table_args__ = (
+        UniqueConstraint(
+            "operation_id", "sequence", name="uq_backend_ota_event_sequence",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    operation_id: Mapped[str] = mapped_column(
+        ForeignKey("backend_ota_rollouts.operation_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    event_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    raw_payload: Mapped[str] = mapped_column(Text, nullable=False)
+    body_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class DroneDetection(Base):
     """A single drone detection from an ESP32 sensor, persisted to PostgreSQL."""
 

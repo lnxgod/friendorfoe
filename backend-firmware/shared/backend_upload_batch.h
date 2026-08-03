@@ -47,6 +47,8 @@ typedef struct {
 
 typedef struct {
     char device_id[33];
+    uint32_t boot_id;
+    uint32_t topology_generation;
     char product_family[24];
     char firmware_line[24];
     char component[16];

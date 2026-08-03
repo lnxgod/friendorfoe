@@ -367,6 +367,26 @@ def test_backend_management_wire_fields_are_typed(field: str, value: str):
         })
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("boot_id", 0),
+        ("boot_id", True),
+        ("boot_id", "7"),
+        ("topology_generation", 0),
+        ("topology_generation", False),
+        ("topology_generation", 0x1_0000_0000),
+    ],
+)
+def test_uplink_boot_and_topology_are_strict_nonzero_uint32(field, value):
+    with pytest.raises(ValueError):
+        DroneDetectionBatch.model_validate({
+            "device_id": "uplink_BAD_BINDING",
+            field: value,
+            "detections": [],
+        })
+
+
 @pytest.mark.asyncio
 async def test_diagnostics_use_canonical_scanner_target_and_version(client, monkeypatch):
     device_id = "uplink_CANON_DIAG"
@@ -1207,6 +1227,8 @@ async def test_real_backend_firmware_serializer_contract(
     assert body["product_family"] == product_family
     assert body["firmware_line"] == "backend"
     assert body["component"] == "uplink"
+    assert body["boot_id"] == 0x10203040
+    assert body["topology_generation"] == 7
     assert body["firmware_target"] == uplink_target
     assert body["capabilities"] == [
         "display_none", led, "scanner_uart", "http_uplink", "config_ap",
@@ -1247,6 +1269,12 @@ async def test_real_backend_firmware_serializer_contract(
         ack["processed"] + ack["deduplicated"] + ack["filtered"]
         == ack["accepted"]
     )
+
+    from app.routers import detections
+
+    heartbeat = detections._node_heartbeats["uplink_CB77A4"]
+    assert heartbeat["boot_id"] == 0x10203040
+    assert heartbeat["topology_generation"] == 7
 
     history = await client.get(
         "/detections/drones/history",
@@ -2094,6 +2122,7 @@ def test_backend_heartbeat_keeps_operational_device_id_and_sticky_metadata():
     previous = {
         "device_id": "uplink_CB77A4", "total_batches": 4,
         "node_name": "Roof", "lat": 36.1, "lon": -115.1, "alt": 700.0,
+        "boot_id": 0x10203040, "topology_generation": 7,
     }
     batch = DroneDetectionBatch(
         device_id="uplink_CB77A4",
@@ -2128,6 +2157,8 @@ def test_backend_heartbeat_keeps_operational_device_id_and_sticky_metadata():
     assert merged["firmware_line"] == "backend"
     assert merged["component"] == "uplink"
     assert merged["hardware_mac"] == "A4:CF:12:CB:77:A4"
+    assert merged["boot_id"] == 0x10203040
+    assert merged["topology_generation"] == 7
     assert merged["health"]["config_generation"] == 4
 
 

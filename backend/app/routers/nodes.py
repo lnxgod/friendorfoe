@@ -16,6 +16,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.db_models import DroneDetection, SensorNode
 from app.models.schemas import (
+    BackendOtaCommandEnvelope,
+    BackendOtaEventAck,
+    BackendOtaHistoryResponse,
+    BackendOtaProbeEnvelope,
     DetectionHistoryItem,
     DetectionHistoryResponse,
     BleInvestigateCancelEnvelope,
@@ -50,6 +54,15 @@ from app.services.node_commands import (
     NodeCommandService,
     NodeCommandUnavailable,
 )
+from app.services.backend_ota_commands import (
+    BackendOtaConflict,
+    BackendOtaNotFound,
+    BackendOtaRequestInvalid,
+    BackendOtaService,
+    BackendOtaUnavailable,
+    parse_event_request,
+    parse_rollout_request,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +70,7 @@ router = APIRouter(prefix="/nodes", tags=["nodes"])
 
 _firmware_mgr = FirmwareManager()
 _node_command_service = NodeCommandService()
+_backend_ota_service = BackendOtaService()
 _COMMAND_STORE_RETRY_AFTER_SECONDS = "1"
 
 _firmware_rollouts: dict[str, dict] = {}
@@ -65,6 +79,14 @@ _firmware_rollout_tasks: dict[str, asyncio.Task] = {}
 
 
 def _command_store_unavailable(exc: NodeCommandUnavailable) -> HTTPException:
+    return HTTPException(
+        status_code=503,
+        detail=str(exc),
+        headers={"Retry-After": _COMMAND_STORE_RETRY_AFTER_SECONDS},
+    )
+
+
+def _backend_ota_store_unavailable(exc: BackendOtaUnavailable) -> HTTPException:
     return HTTPException(
         status_code=503,
         detail=str(exc),
@@ -1062,6 +1084,107 @@ def _node_to_response(node: SensorNode) -> NodeResponse:
         last_seen=node.last_seen.isoformat() if node.last_seen else None,
         created_at=node.created_at.isoformat() if node.created_at else None,
     )
+
+
+@router.post(
+    "/{device_id}/backend-ota/rollouts",
+    status_code=201,
+    response_model=BackendOtaProbeEnvelope,
+)
+async def create_backend_ota_rollout(
+    device_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        rollout = parse_rollout_request(await request.body())
+        return await _backend_ota_service.create_rollout(
+            db,
+            device_id,
+            rollout,
+            now=time.time(),
+            firmware_manager=_firmware_mgr,
+            snapshot_provider=_ota_target_snapshot,
+        )
+    except BackendOtaRequestInvalid as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except BackendOtaConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except BackendOtaUnavailable as exc:
+        raise _backend_ota_store_unavailable(exc) from exc
+
+
+@router.get(
+    "/{device_id}/backend-ota/next",
+    response_model=BackendOtaCommandEnvelope,
+    responses={204: {"description": "No outstanding backend OTA command"}},
+)
+async def get_next_backend_ota_command(
+    device_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        command = await _backend_ota_service.next_for_device(
+            db, device_id, now=time.time(),
+        )
+    except BackendOtaUnavailable as exc:
+        raise _backend_ota_store_unavailable(exc) from exc
+    if command is None:
+        return Response(status_code=204)
+    return command
+
+
+@router.post(
+    "/{device_id}/backend-ota/{operation_id}/events",
+    response_model=BackendOtaEventAck,
+)
+async def record_backend_ota_event(
+    device_id: str,
+    operation_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        event, raw_payload, body_sha256 = parse_event_request(
+            await request.body(),
+        )
+        return await _backend_ota_service.record_event(
+            db,
+            device_id,
+            operation_id,
+            event,
+            raw_payload,
+            body_sha256,
+            now=time.time(),
+            snapshot_provider=_ota_target_snapshot,
+        )
+    except BackendOtaRequestInvalid as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except BackendOtaNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except BackendOtaConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except BackendOtaUnavailable as exc:
+        raise _backend_ota_store_unavailable(exc) from exc
+
+
+@router.get(
+    "/{device_id}/backend-ota/{operation_id}",
+    response_model=BackendOtaHistoryResponse,
+)
+async def get_backend_ota_history(
+    device_id: str,
+    operation_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        return await _backend_ota_service.history_for_device(
+            db, device_id, operation_id,
+        )
+    except BackendOtaNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except BackendOtaUnavailable as exc:
+        raise _backend_ota_store_unavailable(exc) from exc
 
 
 @router.post(
