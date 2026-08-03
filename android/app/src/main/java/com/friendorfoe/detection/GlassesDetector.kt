@@ -1217,18 +1217,30 @@ class GlassesDetector @Inject constructor(
 
         fun buildScanCallback(): ScanCallback = object : ScanCallback() {
             override fun onScanResult(callbackType: Int, result: ScanResult) {
-                val detection = checkScanResult(result)
-                if (detection != null) {
-                    trySend(GlassesScanEvent.Observation(detection))
-                }
-            }
-
-            override fun onBatchScanResults(results: List<ScanResult>) {
-                for (result in results) {
+                try {
                     val detection = checkScanResult(result)
                     if (detection != null) {
                         trySend(GlassesScanEvent.Observation(detection))
                     }
+                } catch (security: SecurityException) {
+                    reportPermissionBlocked(security)
+                    callbackRegistry.closeAndStopAll()
+                    close()
+                }
+            }
+
+            override fun onBatchScanResults(results: List<ScanResult>) {
+                try {
+                    for (result in results) {
+                        val detection = checkScanResult(result)
+                        if (detection != null) {
+                            trySend(GlassesScanEvent.Observation(detection))
+                        }
+                    }
+                } catch (security: SecurityException) {
+                    reportPermissionBlocked(security)
+                    callbackRegistry.closeAndStopAll()
+                    close()
                 }
             }
 
@@ -1749,7 +1761,7 @@ class GlassesDetector @Inject constructor(
         // the same advertisement, so future backend-forwarding can correlate.
         val ja3 = BleFeatureExtractor.computeJa3Hash(
             result,
-            addrType = if (result.device.type == android.bluetooth.BluetoothDevice.DEVICE_TYPE_LE) 1 else 0,
+            addressType = BlePacketParser.getAddressType(result),
             props = 0
         )
 

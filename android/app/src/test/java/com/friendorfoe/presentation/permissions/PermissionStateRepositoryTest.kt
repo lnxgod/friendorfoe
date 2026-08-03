@@ -127,6 +127,7 @@ class PermissionStateRepositoryTest {
             setOf(
                 Manifest.permission.BLUETOOTH_CONNECT,
                 Manifest.permission.ACCESS_FINE_LOCATION,
+                Manifest.permission.ACCESS_COARSE_LOCATION,
             ),
             repository.missingPermissionsFor(AppFeature.PHONE_PRIVACY_SCAN),
         )

@@ -23,8 +23,8 @@ android {
         applicationId = "com.friendorfoe"
         minSdk = 26
         targetSdk = 34
-        versionCode = 117
-        versionName = "0.67.8-android-regression-restoration-rc1"
+        versionCode = 118
+        versionName = "0.67.9-android-settings-permissions"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

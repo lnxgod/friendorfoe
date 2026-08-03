@@ -374,13 +374,30 @@ class SkyObjectRepository @Inject constructor(
      * Each emission is a single drone detection/update.
      */
     private suspend fun collectWifiNan() {
-        wifiNanRemoteIdScanner.startScanning().collect { drone ->
-            synchronized(nanObjects) {
-                nanObjects[drone.id] = drone
+        wifiNanRemoteIdScanner.startScanning().collect { event ->
+            when (event) {
+                is com.friendorfoe.detection.WifiNanScanEvent.Observation -> {
+                    val drone = event.drone
+                    synchronized(nanObjects) {
+                        nanObjects[drone.id] = drone
+                    }
+                    appendTrailPoint(drone)
+                    Log.d(TAG, "WiFi NaN updated: drone ${drone.droneId}")
+                    rebuildMergedList()
+                }
+                is com.friendorfoe.detection.WifiNanScanEvent.PermissionBlocked -> {
+                    Log.w(TAG, "WiFi NaN scan paused: ${event.message}")
+                }
+                is com.friendorfoe.detection.WifiNanScanEvent.Unsupported -> {
+                    Log.i(TAG, "WiFi NaN unavailable: ${event.message}")
+                }
+                is com.friendorfoe.detection.WifiNanScanEvent.Failure -> {
+                    Log.w(TAG, "WiFi NaN scan failed: ${event.message}")
+                }
+                com.friendorfoe.detection.WifiNanScanEvent.Ready -> {
+                    Log.d(TAG, "WiFi NaN scan ready")
+                }
             }
-            appendTrailPoint(drone)
-            Log.d(TAG, "WiFi NaN updated: drone ${drone.droneId}")
-            rebuildMergedList()
         }
     }
 

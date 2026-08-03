@@ -36,7 +36,7 @@ jobs:
         run: chmod +x android/gradlew
 
       - name: Test and build debug APK
-        run: cd android && ./gradlew clean testDebugUnitTest assembleDebug
+        run: cd android && ./gradlew clean testDebugUnitTest lintDebug assembleDebug
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -111,7 +111,7 @@ jobs:
           "$APKSIGNER" verify --verbose --print-certs "$APK" | tee /tmp/apksigner-output.txt
           grep -F "certificate SHA-256 digest: 3a1581ba5d10df59fdb28e09987851d6c7d79ce26df4eb69b9f6d262b9b68e95" /tmp/apksigner-output.txt
           "$AAPT" dump badging "$APK" | tee /tmp/aapt-output.txt
-          grep -F "package: name='com.friendorfoe' versionCode='117' versionName='0.67.8-android-regression-restoration-rc1'" /tmp/aapt-output.txt
+          grep -F "package: name='com.friendorfoe' versionCode='118' versionName='0.67.9-android-settings-permissions'" /tmp/aapt-output.txt
           cp "$APK" "$ASSET"
           sha256sum "$ASSET" > "$ASSET.sha256"
 

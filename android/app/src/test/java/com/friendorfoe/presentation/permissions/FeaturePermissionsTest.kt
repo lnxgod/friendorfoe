@@ -19,6 +19,7 @@ class FeaturePermissionsTest {
             Manifest.permission.BLUETOOTH_CONNECT,
             Manifest.permission.NEARBY_WIFI_DEVICES,
             Manifest.permission.ACCESS_FINE_LOCATION,
+            Manifest.permission.ACCESS_COARSE_LOCATION,
         )
 
         assertEquals(expected, requiredPermissions(AppFeature.LOCAL_RADIO_DISCOVERY, sdk = 35))
@@ -31,6 +32,7 @@ class FeaturePermissionsTest {
             Manifest.permission.BLUETOOTH_SCAN,
             Manifest.permission.BLUETOOTH_CONNECT,
             Manifest.permission.ACCESS_FINE_LOCATION,
+            Manifest.permission.ACCESS_COARSE_LOCATION,
         )
 
         assertEquals(expected, requiredPermissions(AppFeature.LOCAL_RADIO_DISCOVERY, sdk = 32))
@@ -43,6 +45,39 @@ class FeaturePermissionsTest {
 
         assertEquals(expected, requiredPermissions(AppFeature.LOCAL_RADIO_DISCOVERY, sdk = 30))
         assertEquals(expected, requiredPermissions(AppFeature.PHONE_PRIVACY_SCAN, sdk = 30))
+    }
+
+    @Test
+    fun android12PreciseUpgradeRequestsFineAndCoarseTogether() {
+        assertEquals(
+            setOf(
+                Manifest.permission.ACCESS_FINE_LOCATION,
+                Manifest.permission.ACCESS_COARSE_LOCATION,
+            ),
+            permissionRequestPlan(
+                feature = AppFeature.AR_MAP_LOCATION,
+                sdk = 31,
+                grantedPermissions = setOf(Manifest.permission.ACCESS_COARSE_LOCATION),
+            ),
+        )
+    }
+
+    @Test
+    fun calibrationUsesCanonicalPreciseLocationAndBluetoothContract() {
+        assertEquals(
+            setOf(
+                Manifest.permission.ACCESS_FINE_LOCATION,
+                Manifest.permission.ACCESS_COARSE_LOCATION,
+                Manifest.permission.BLUETOOTH_ADVERTISE,
+                Manifest.permission.BLUETOOTH_SCAN,
+                Manifest.permission.BLUETOOTH_CONNECT,
+            ),
+            requiredPermissions(AppFeature.CALIBRATION, sdk = 35),
+        )
+        assertEquals(
+            false,
+            PermissionUiState.Approximate.isUsableFor(AppFeature.CALIBRATION),
+        )
     }
 
     @Test

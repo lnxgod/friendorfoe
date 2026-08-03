@@ -31,6 +31,7 @@ import com.friendorfoe.presentation.about.InfoUiState
 import com.friendorfoe.presentation.about.UpdateUiState
 import com.friendorfoe.presentation.permissions.AppFeature
 import com.friendorfoe.presentation.permissions.PermissionBindings
+import com.friendorfoe.presentation.permissions.PermissionSettingsLaunchResult
 import com.friendorfoe.presentation.permissions.PermissionUiState
 import com.friendorfoe.presentation.theme.FriendOrFoeTheme
 import org.junit.Assert.assertEquals
@@ -171,10 +172,10 @@ class NavigationShellTest {
                                 states = AppFeature.entries.associateWith {
                                     PermissionUiState.Granted
                                 },
-                                requestFeature = { _, onResolved ->
-                                    onResolved(PermissionUiState.Granted)
+                                requestFeature = {},
+                                openFeatureSettings = { _, _ ->
+                                    PermissionSettingsLaunchResult.Opened
                                 },
-                                openFeatureSettings = { _, _ -> },
                             ),
                         )
                     }

@@ -265,20 +265,20 @@ class AboutViewModelTest {
     }
 
     @Test
-    fun followerAndWifiAnomalyControlsWaitForAnEffectivePhoneScan() {
+    fun followerAndWifiAnomalyControlsStayInteractiveAndReportPrerequisites() {
         val configured = DetectionSettings.defaults().copy(
             phonePrivacyScanEnabled = true,
             backendOnlyMode = false,
         )
 
-        assertFalse(
+        assertTrue(
             isInfoSettingInteractive(
                 InfoSettingKey.STALKER,
                 configured,
                 PermissionUiState.Denied,
             )
         )
-        assertFalse(
+        assertTrue(
             isInfoSettingInteractive(
                 InfoSettingKey.WIFI_ANOMALY,
                 configured.copy(phonePrivacyScanEnabled = false),
@@ -292,7 +292,7 @@ class AboutViewModelTest {
                 PermissionUiState.Granted,
             )
         )
-        assertFalse(
+        assertTrue(
             isInfoSettingInteractive(
                 InfoSettingKey.WIFI_ANOMALY,
                 configured.copy(backendOnlyMode = true),
@@ -300,7 +300,7 @@ class AboutViewModelTest {
             )
         )
         assertEquals(
-            "Requires Phone privacy scan.",
+            "Inactive until Phone privacy scan is enabled and allowed.",
             infoSettingDisabledReason(
                 InfoSettingKey.STALKER,
                 configured.copy(phonePrivacyScanEnabled = false),
@@ -308,7 +308,7 @@ class AboutViewModelTest {
             ),
         )
         assertEquals(
-            "Unavailable in backend-only mode.",
+            "Inactive while backend-only mode pauses phone collectors.",
             infoSettingDisabledReason(
                 InfoSettingKey.WIFI_ANOMALY,
                 configured.copy(backendOnlyMode = true),
@@ -331,8 +331,7 @@ class AboutViewModelTest {
         assertFalse(disabled.sensorBackendEnabled)
         assertFalse(disabled.backendOnlyMode)
         assertFalse(rejectedEnable.backendOnlyMode)
-        assertEquals(
-            "Enable Sensor backend connection first.",
+        assertNull(
             infoSettingDisabledReason(
                 InfoSettingKey.BACKEND_ONLY,
                 DetectionSettings.defaults(),

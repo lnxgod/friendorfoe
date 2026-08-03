@@ -48,6 +48,7 @@ private object AndroidUltrasonicAudioPlatform : UltrasonicAudioPlatform {
         audioFormat: Int,
     ): Int = AudioRecord.getMinBufferSize(sampleRate, channelConfig, audioFormat)
 
+    @Suppress("MissingPermission")
     override fun createCapture(
         audioSource: Int,
         sampleRate: Int,
@@ -123,7 +124,6 @@ class UltrasonicDetector internal constructor(
         val persistenceFrames: Int
     )
 
-    @Suppress("MissingPermission")
     fun monitoringEvents(): Flow<UltrasonicScanEvent> = flow {
         var recorder: UltrasonicAudioCapture? = null
         try {

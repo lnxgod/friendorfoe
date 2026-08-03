@@ -86,14 +86,20 @@ class InfoScreenTest {
     }
 
     @Test
-    fun freshStateShowsBackendOffAndPreventsBackendOnlyMode() {
+    fun freshStateShowsBackendOffAndKeepsBackendOnlyModeActionable() {
         val settings = DetectionSettings.defaults()
+        var backendOnlyRequested = false
         setInfoContent(
             state = state().copy(
                 settings = settings,
                 backendUrlCanTest = false,
             ),
             actions = InfoActions(
+                onSetSetting = { key, enabled ->
+                    if (key == InfoSettingKey.BACKEND_ONLY && enabled) {
+                        backendOnlyRequested = true
+                    }
+                },
                 settingDisabledReason = { key ->
                     infoSettingDisabledReason(
                         key = key,
@@ -110,11 +116,10 @@ class InfoScreenTest {
             .assertIsOff()
         compose.onNodeWithTag("setting_backend_only")
             .performScrollTo()
-            .assertIsNotEnabled()
-        compose.onNodeWithText(
-            "Enable Sensor backend connection first.",
-            substring = true,
-        ).assertIsDisplayed()
+            .assertIsEnabled()
+            .assertIsOff()
+            .performClick()
+        compose.runOnIdle { assertTrue(backendOnlyRequested) }
         compose.onNodeWithTag("backend_test").assertIsNotEnabled()
     }
 

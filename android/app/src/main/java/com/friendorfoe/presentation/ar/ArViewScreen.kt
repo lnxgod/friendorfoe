@@ -113,7 +113,10 @@ import com.friendorfoe.presentation.detail.DroneDetailContent
 import com.friendorfoe.presentation.list.listBadgeVisual
 import com.friendorfoe.presentation.list.listPrimaryText
 import com.friendorfoe.presentation.permissions.PermissionUiState
-import com.friendorfoe.presentation.permissions.isUsable
+import com.friendorfoe.presentation.permissions.AppFeature
+import com.friendorfoe.presentation.permissions.isUsableFor
+import com.friendorfoe.presentation.permissions.PermissionSettingsLaunchResult
+import com.friendorfoe.presentation.permissions.openApplicationDetailsSettings
 import com.friendorfoe.presentation.util.categoryBadge
 import com.friendorfoe.presentation.util.categoryColor
 import com.friendorfoe.domain.model.ObjectCategory
@@ -147,8 +150,9 @@ fun ArViewScreen(
     captureReviewViewModel: CaptureReviewViewModel = hiltViewModel(),
     locationPermissionState: PermissionUiState,
 ) {
+    val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
-    val activity = LocalContext.current as? Activity
+    val activity = context as? Activity
 
     // Collect state from ViewModel
     val screenPositions by viewModel.screenPositions.collectAsStateWithLifecycle()
@@ -229,7 +233,17 @@ fun ArViewScreen(
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
-                Lifecycle.Event.ON_RESUME -> viewModel.startSensors(activity)
+                Lifecycle.Event.ON_RESUME -> {
+                    viewModel.startSensors(activity)
+                    if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.P) {
+                        captureReviewViewModel.resumeLegacySaveIfGranted(
+                            ContextCompat.checkSelfPermission(
+                                context,
+                                Manifest.permission.WRITE_EXTERNAL_STORAGE,
+                            ) == PackageManager.PERMISSION_GRANTED,
+                        )
+                    }
+                }
                 Lifecycle.Event.ON_PAUSE -> viewModel.stopSensors()
                 else -> {}
             }
@@ -242,7 +256,6 @@ fun ArViewScreen(
         }
     }
 
-    val context = LocalContext.current
     val hapticFeedback = LocalHapticFeedback.current
     val captureInteractions = remember(viewModel, captureReviewViewModel, onObjectTapped) {
         ArCaptureInteractions(
@@ -275,9 +288,16 @@ fun ArViewScreen(
                 ) == PackageManager.PERMISSION_GRANTED
             },
             requestLegacyWritePermission = {
-                legacyWritePermissionLauncher.launch(
+                if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.P) {
+                    legacyWritePermissionLauncher.launch(
+                        Manifest.permission.WRITE_EXTERNAL_STORAGE,
+                    )
+                }
+            },
+            shouldShowLegacyWriteRationale = {
+                activity?.shouldShowRequestPermissionRationale(
                     Manifest.permission.WRITE_EXTERNAL_STORAGE,
-                )
+                ) ?: false
             },
         )
     }
@@ -742,6 +762,11 @@ fun ArViewScreen(
             onShare = { captureReviewViewModel.share() },
             onDiscard = captureReviewViewModel::discard,
             onRetrySave = captureSaveInteractions::save,
+            onOpenAppSettings = {
+                if (openApplicationDetailsSettings(context) == PermissionSettingsLaunchResult.Failed) {
+                    captureReviewViewModel.markSaveSettingsLaunchFailed()
+                }
+            },
         )
     }
 
@@ -877,7 +902,7 @@ internal fun selectOffScreenRadioPositions(screenPositions: List<ScreenPosition>
 internal fun isRadioPositioningAvailable(
     locationState: PermissionUiState,
     gpsStatus: GpsStatus,
-): Boolean = locationState.isUsable() && gpsStatus == GpsStatus.LOCKED
+): Boolean = locationState.isUsableFor(AppFeature.AR_MAP_LOCATION) && gpsStatus == GpsStatus.LOCKED
 
 internal fun displayedRadioPositions(
     screenPositions: List<ScreenPosition>,

@@ -268,25 +268,23 @@ object BlePacketParser {
         return 10.0.pow((txPower - rssi) / (10.0 * pathLossExp))
     }
 
-    /** Get BLE address type (API 33+) */
+    /**
+     * Get the BLE address type when Android exposes it.
+     *
+     * Android only added [BluetoothDevice.addressType] in API 35. Earlier
+     * releases do not expose enough information to classify an address
+     * without reading the MAC, which itself needs a revocable permission.
+     */
     @Suppress("MissingPermission")
     fun getAddressType(result: ScanResult): AddressType {
-        return if (Build.VERSION.SDK_INT >= 33) {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.VANILLA_ICE_CREAM) {
             when (result.device.addressType) {
                 BluetoothDevice.ADDRESS_TYPE_PUBLIC -> AddressType.PUBLIC
                 BluetoothDevice.ADDRESS_TYPE_RANDOM -> AddressType.RANDOM
                 else -> AddressType.UNKNOWN
             }
         } else {
-            // Heuristic: check MSB of MAC address
-            // Random addresses have bits 7:6 = 01 (resolvable) or 11 (non-resolvable)
-            val macFirst = result.device.address.substringBefore(":").uppercase()
-            try {
-                val firstByte = macFirst.toInt(16)
-                if ((firstByte and 0xC0) != 0x00) AddressType.RANDOM else AddressType.PUBLIC
-            } catch (_: Exception) {
-                AddressType.UNAVAILABLE
-            }
+            AddressType.UNAVAILABLE
         }
     }
 

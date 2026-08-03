@@ -1,5 +1,6 @@
 package com.friendorfoe.detection
 
+import android.annotation.SuppressLint
 import android.content.Context
 import android.content.pm.PackageManager
 import android.net.wifi.aware.AttachCallback
@@ -21,6 +22,14 @@ import kotlinx.coroutines.flow.callbackFlow
 import java.time.Instant
 import javax.inject.Inject
 import javax.inject.Singleton
+
+sealed interface WifiNanScanEvent {
+    data object Ready : WifiNanScanEvent
+    data class Observation(val drone: Drone) : WifiNanScanEvent
+    data class PermissionBlocked(val message: String) : WifiNanScanEvent
+    data class Unsupported(val message: String) : WifiNanScanEvent
+    data class Failure(val message: String) : WifiNanScanEvent
+}
 
 /**
  * WiFi Aware (NaN) Remote ID scanner for detecting drones broadcasting
@@ -54,13 +63,15 @@ class WifiNanRemoteIdScanner @Inject constructor(
     /**
      * Start scanning for OpenDroneID broadcasts over WiFi NaN.
      *
-     * Returns a Flow that emits Drone objects. If WiFi Aware is not supported
-     * or not available, the flow completes immediately without emitting.
+     * Returns a Flow of scan outcomes. Permission loss is an emitted,
+     * recoverable outcome rather than an exception from an asynchronous
+     * framework callback.
      */
-    fun startScanning(): Flow<Drone> = callbackFlow {
+    fun startScanning(): Flow<WifiNanScanEvent> = callbackFlow {
         // Check hardware support
         if (!context.packageManager.hasSystemFeature(PackageManager.FEATURE_WIFI_AWARE)) {
             Log.w(TAG, "WiFi Aware not supported on this device")
+            trySend(WifiNanScanEvent.Unsupported("WiFi Aware is not supported on this device"))
             close()
             return@callbackFlow
         }
@@ -69,6 +80,7 @@ class WifiNanRemoteIdScanner @Inject constructor(
             as? WifiAwareManager
         if (awareManager == null || !awareManager.isAvailable) {
             Log.w(TAG, "WiFi Aware not available")
+            trySend(WifiNanScanEvent.Unsupported("WiFi Aware is not currently available"))
             close()
             return@callbackFlow
         }
@@ -86,7 +98,7 @@ class WifiNanRemoteIdScanner @Inject constructor(
                 try {
                     val drone = processDiscovery(peerHandle, serviceSpecificInfo, matchFilter)
                     if (drone != null) {
-                        trySend(drone)
+                        trySend(WifiNanScanEvent.Observation(drone))
                     }
                 } catch (e: Exception) {
                     Log.e(TAG, "Error processing NaN discovery", e)
@@ -104,7 +116,7 @@ class WifiNanRemoteIdScanner @Inject constructor(
                     Log.d(TAG, "NaN RTT range: ${rttDistanceM}m for peer ${peerHandle.hashCode()}")
                     val drone = processDiscovery(peerHandle, serviceSpecificInfo, matchFilter, rttDistanceM)
                     if (drone != null) {
-                        trySend(drone)
+                        trySend(WifiNanScanEvent.Observation(drone))
                     }
                 } catch (e: Exception) {
                     Log.e(TAG, "Error processing NaN ranged discovery", e)
@@ -123,6 +135,7 @@ class WifiNanRemoteIdScanner @Inject constructor(
         }
 
         val attachCallback = object : AttachCallback() {
+            @SuppressLint("MissingPermission")
             override fun onAttached(session: WifiAwareSession) {
                 awareSession = session
                 Log.i(TAG, "WiFi Aware attached, subscribing to OpenDroneID")
@@ -132,7 +145,21 @@ class WifiNanRemoteIdScanner @Inject constructor(
                     .setSubscribeType(SubscribeConfig.SUBSCRIBE_TYPE_PASSIVE)
                     .build()
 
-                session.subscribe(subscribeConfig, discoveryCallback, handler)
+                fun subscribeToOpenDroneId() {
+                    session.subscribe(subscribeConfig, discoveryCallback, handler)
+                }
+                try {
+                    subscribeToOpenDroneId()
+                    trySend(WifiNanScanEvent.Ready)
+                } catch (security: SecurityException) {
+                    Log.w(TAG, "WiFi NaN subscription permission was revoked", security)
+                    trySend(
+                        WifiNanScanEvent.PermissionBlocked(
+                            security.message ?: "Nearby Wi-Fi permission was revoked",
+                        ),
+                    )
+                    close()
+                }
             }
 
             override fun onAttachFailed() {
@@ -146,7 +173,21 @@ class WifiNanRemoteIdScanner @Inject constructor(
         }
 
         Log.i(TAG, "Starting WiFi NaN Remote ID scan")
-        awareManager.attach(attachCallback, handler)
+        @Suppress("MissingPermission")
+        fun attachToWifiAware() {
+            awareManager.attach(attachCallback, handler)
+        }
+        try {
+            attachToWifiAware()
+        } catch (security: SecurityException) {
+            Log.w(TAG, "WiFi Aware attach permission was revoked", security)
+            trySend(
+                WifiNanScanEvent.PermissionBlocked(
+                    security.message ?: "Nearby Wi-Fi permission was revoked",
+                ),
+            )
+            close()
+        }
 
         awaitClose {
             Log.i(TAG, "Stopping WiFi NaN Remote ID scan")

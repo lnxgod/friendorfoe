@@ -7,6 +7,8 @@ import com.friendorfoe.domain.model.DetectionSource
 import com.friendorfoe.domain.model.FilterState
 import com.friendorfoe.domain.model.ObjectCategory
 import com.friendorfoe.domain.model.SkyObject
+import com.friendorfoe.presentation.permissions.PermissionSettingsLaunchResult
+import com.friendorfoe.presentation.permissions.PermissionUiState
 
 sealed interface ListBodyState {
     data object Loading : ListBodyState
@@ -25,6 +27,8 @@ data class ListUiState(
     val filter: FilterState = FilterState(),
     val activeFilterCount: Int = 0,
     val body: ListBodyState = ListBodyState.Loading,
+    val locationPermissionState: PermissionUiState = PermissionUiState.Loading,
+    val locationSettingsLaunchFailed: Boolean = false,
 )
 
 data class ListActions(
@@ -32,6 +36,10 @@ data class ListActions(
     val onOpenFilters: () -> Unit = {},
     val onClearFilters: () -> Unit = {},
     val onOpenPeek: (SkyObject) -> Unit = {},
+    val onRequestLocation: () -> Unit = {},
+    val onOpenLocationSettings: () -> PermissionSettingsLaunchResult = {
+        PermissionSettingsLaunchResult.Failed
+    },
 )
 
 fun reduceListBody(
