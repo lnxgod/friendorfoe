@@ -55,6 +55,9 @@ _STAGE_RANK = {
     "convergence": 6,
 }
 _IDENTITY_TEXT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+_BACKEND_VERSION_RE = re.compile(
+    r"^([0-9]+)\.([0-9]+)\.([0-9]+)-backend$",
+)
 
 
 class BackendOtaError(Exception):
@@ -121,7 +124,8 @@ def build_receipt_preimage(command: dict, end: dict) -> bytes:
         "rollback_clear": int(end["rollback_clear"]),
     }
     fields = (
-        "operation_id", "command_type", "component", "catalog_name",
+        "operation_id", "command_type", "apply_mode", "component",
+        "catalog_name",
         "expected_sha256", "expected_size", "expected_uplink_mac",
         "expected_uplink_boot_id", "expected_target_mac",
         "expected_target_boot_id", "expected_topology_generation", "state",
@@ -158,6 +162,40 @@ def _identity_text(value: object, label: str) -> str:
     if not isinstance(value, str) or _IDENTITY_TEXT_RE.fullmatch(value) is None:
         raise BackendOtaConflict(f"{label} is noncanonical")
     return value
+
+
+def _backend_version_parts(value: object, label: str) -> tuple[int, int, int]:
+    if not isinstance(value, str) or len(value) > 64:
+        raise BackendOtaConflict(f"{label} is noncanonical")
+    match = _BACKEND_VERSION_RE.fullmatch(value)
+    if match is None:
+        raise BackendOtaConflict(f"{label} is noncanonical")
+    parts = tuple(int(component) for component in match.groups())
+    if any(component > UINT32_MAX for component in parts):
+        raise BackendOtaConflict(f"{label} exceeds uint32 ordering")
+    return parts
+
+
+def _backend_version(value: object, label: str) -> str:
+    _backend_version_parts(value, label)
+    assert isinstance(value, str)
+    return value
+
+
+def _backend_version_relation(candidate: object, current: object) -> str:
+    candidate_text = _backend_version(candidate, "candidate firmware version")
+    current_text = _backend_version(current, "running firmware version")
+    candidate_parts = _backend_version_parts(
+        candidate_text, "candidate firmware version",
+    )
+    current_parts = _backend_version_parts(
+        current_text, "running firmware version",
+    )
+    if candidate_parts > current_parts:
+        return "newer"
+    if candidate_parts < current_parts:
+        return "older"
+    return "equal" if candidate_text == current_text else "unordered"
 
 
 def _exact_identity(report: dict, *, component: str) -> None:
@@ -203,7 +241,7 @@ def _binding_from_snapshot(
         "target": UPLINK_CATALOG,
         "project": UPLINK_PROJECT,
         "hardware": FULLSIZE_HARDWARE,
-        "version": _identity_text(
+        "version": _backend_version(
             heartbeat.get("firmware_version"), "uplink firmware version",
         ),
     }
@@ -256,7 +294,7 @@ def _binding_from_snapshot(
             "target": SCANNER_CATALOG,
             "project": SCANNER_PROJECT,
             "hardware": FULLSIZE_HARDWARE,
-            "version": _identity_text(
+            "version": _backend_version(
                 scanner.get("firmware_version"),
                 f"{component} firmware version",
             ),
@@ -534,6 +572,7 @@ def _probe_envelope(row: BackendOtaRollout) -> BackendOtaProbeEnvelope:
         expected_target_mac=target["mac"],
         expected_target_boot_id=target["boot_id"],
         expected_topology_generation=uplink["topology_generation"],
+        apply_mode=row.apply_mode,
         next_sequence=row.next_sequence,
     )
 
@@ -742,6 +781,7 @@ def _validate_end(
     if pair == ("complete", "eligible"):
         if row.current_action != "probe" or event.image_writes != 0:
             raise BackendOtaConflict("invalid probe terminal tuple")
+        _validate_probe_outcome(row, pair)
         _validate_success_identity(
             row, event, command, require_new_boot=False,
         )
@@ -755,6 +795,7 @@ def _validate_end(
     if pair == ("no_update", "no_update"):
         if row.current_action != "probe" or event.image_writes != 0:
             raise BackendOtaConflict("invalid no-update terminal tuple")
+        _validate_probe_outcome(row, pair)
         _validate_success_identity(
             row, event, command, require_new_boot=False,
         )
@@ -797,6 +838,29 @@ def _rollout_image(row: BackendOtaRollout) -> dict:
         if row.current_component != "uplink"
         else row.uplink_image_json
     )
+
+
+def _validate_probe_outcome(
+    row: BackendOtaRollout,
+    pair: tuple[str, str],
+) -> None:
+    original = json.loads(row.binding_json)
+    image = _rollout_image(row)
+    relation = _backend_version_relation(
+        image["version"], original[row.current_component]["version"],
+    )
+    if relation == "newer":
+        expected = ("complete", "eligible")
+    elif relation == "equal" and row.apply_mode == "newer_only":
+        expected = ("no_update", "no_update")
+    elif relation == "equal" and row.apply_mode == "same_version_recovery":
+        expected = ("complete", "eligible")
+    else:
+        expected = None
+    if pair != expected:
+        raise BackendOtaConflict(
+            "probe outcome contradicts persisted version/apply-mode policy",
+        )
 
 
 def _validate_success_identity(

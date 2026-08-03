@@ -17,6 +17,14 @@ Independent-review hardening is delivered as the exact follow-up commit:
 backend: harden Fullsize rollout contracts
 ```
 
+Pre-deployment protocol amendment round 2 binds recovery authorization to the
+probe itself, before Task 7 can download or stage an equal image. Its exact
+commit subject is:
+
+```text
+backend: bind Fullsize recovery mode to probes
+```
+
 ## RED/GREEN evidence
 
 The work was developed in focused TDD slices.
@@ -55,6 +63,17 @@ All fix-round regressions are GREEN. Exact UART/type and apply-stage neighbors,
 pre-validation all-empty failure attribution, and complete but nonmatching
 observed failure identity were retained as positive characterization cases.
 
+Fix round 2 added the complete amendment matrix before production changes. The
+focused RED slice produced 30 expected failures (plus one already-green generic
+invalid-character guard): missing probe mode and 14/15-key shapes, both-mode
+duplicate polling, eight canonical/u32 running-version cases, 16 persisted
+version-relation × mode outcomes, apply-time no-update, golden receipt line
+order, and mode-only receipt mutation/rejection. After the envelope/receipt
+slice, all 16 policy cases still exercised backend-authoritative comparison of
+the fetched candidate with the persisted current component. The final
+amendment slice is 30/30 GREEN, and the complete Task 6 service file is 113/113
+GREEN.
+
 Final focused GREEN gates:
 
 ```text
@@ -63,7 +82,7 @@ backend/.venv312/bin/pytest -q \
   tests/test_backend_node_commands.py \
   tests/test_scanner_ota_relay_paths.py \
   tests/test_backend_firmware_ingest.py
-330 passed, 3 warnings in 6.69s
+358 passed, 3 warnings in 6.28s
 
 backend/.venv312/bin/python -m pytest -q \
   backend-firmware/tools/tests/test_serializer_fixture.py
@@ -100,17 +119,20 @@ Pydantic validation. The create request has exactly required
 `apply_mode="newer_only"|"same_version_recovery"`; missing, individual,
 unknown, skip, duplicate, coerced, and extra fields return 422 without a row.
 
-The probe response/command has exactly 13 keys:
+The amended probe response/command has exactly 14 keys:
 
 ```text
 schema, operation_id, type, component, catalog_name, expected_sha256,
 expected_size, expected_uplink_mac, expected_uplink_boot_id,
 expected_target_mac, expected_target_boot_id,
-expected_topology_generation, next_sequence
+expected_topology_generation, apply_mode, next_sequence
 ```
 
-Apply has those same 13 keys, changes `type`, and adds exactly `apply_mode` and
-`probe_receipt_sha256` (15 keys total). Operation IDs come only from
+Apply has those same 14 keys, changes `type`, and adds exactly
+`probe_receipt_sha256` (15 keys total). Default rollouts emit
+`apply_mode="newer_only"`; explicit recovery emits
+`apply_mode="same_version_recovery"` in both phases. Duplicate polls retain
+that mode byte-for-byte. Operation IDs come only from
 `secrets.token_hex(16)` and remain the same 32 lowercase hexadecimal characters
 through every persisted phase and restart.
 
@@ -143,8 +165,13 @@ Creation performs the required order before activating a row:
    topology generation are mandatory. Scanner `role_generation` cannot replace
    topology generation. UARTs are exact strings, slots are exact integers
    (never bool/float), profiles are exactly `ble_primary`/`wifi_primary`, and
-   every runtime version is a nonempty canonical string. The returned snapshot
-   device ID must equal the requested route device ID.
+   every runtime version has the exact canonical backend form
+   `uint32.uint32.uint32-backend`. Leading `v`, wrong/missing/extended suffixes,
+   invalid separators, and any numeric component above `UINT32_MAX` fail before
+   a firmware fetch or active row. Leading-zero numeric components retain the
+   firmware comparator's semantics: identical spellings may be equal, while
+   different spellings of the same numeric core are unordered. The returned
+   snapshot device ID must equal the requested route device ID.
 3. Fetch scanner bytes exactly once, immediately revalidate the complete
    binding with a fresh clock, then validate embedded image identity/capacity
    and derive version/size/SHA-256 from those same bytes.
@@ -177,6 +204,16 @@ scanner0 probe -> scanner0 apply + heartbeat convergence
 -> scanner1 probe -> scanner1 apply + heartbeat convergence
 -> uplink probe -> uplink apply + uplink/scanner heartbeat convergence
 ```
+
+Before either successful probe tuple advances, the backend compares the exact
+fetched-image version with the persisted original running version using the
+firmware's three-uint32 ordering and exact normalized spelling, then combines
+that relation with the persisted mode. Newer requires `complete/eligible` in
+either mode. Equal requires `no_update/no_update` in `newer_only` and
+`complete/eligible` in `same_version_recovery`. Older, unordered, or invalid
+candidates cannot advance through eligible or no-update under either mode;
+their `failed/rejected` evidence remains reportable. Apply-time no-update is
+still 409. Therefore recovery authorizes equality only and can never downgrade.
 
 Successful probe and no-update both recheck the complete live heartbeat against
 the phase-appropriate original/prior-converged trio before advancing. Apply
@@ -227,15 +264,18 @@ the receipt, exact UTF-8 with one final LF, byte-identical hex, and lowercase
 SHA-256:
 
 ```text
-probe: b5103aade2dd17dc43e5c8b705cd494104972d31ddec458db0c66e072ed64aa5
-apply: 08685a02685969b76713b5474746a09f1e4feb05195172b83b1fb97b0385d577
+probe: fe251f806c754ce75978ea3da2dba33787f61e033423f60271449a2873365778
+apply: 24b481545a5be0c3e995031b1c46b50ee7dfe150f0a895a7b6997b309cfa9038
 ```
 
-The probe preimage is 756 bytes (1512 hex characters); apply is 761 bytes
-(1522 hex characters). Tests prove UTF-8 equals the fixture hex, hashes equal
-the fixture digests, builder output matches exact bytes/line order/boolean
-`0|1` normalization, one final LF is present, and apply binds the accepted
-probe digest. The receipt field itself is never hashed.
+The amended v1 preimage inserts `apply_mode=newer_only` immediately after
+`command_type` in both vectors. The probe preimage is 778 bytes (1556 hex
+characters); apply is 783 bytes (1566 hex characters). Tests prove UTF-8 equals
+the fixture hex, hashes equal the fixture digests, builder output matches exact
+bytes/line order/boolean `0|1` normalization, one final LF is present, and
+apply binds the accepted probe digest. Changing only `apply_mode` changes the
+digest, and the backend rejects a receipt computed for the other mode. The
+receipt field itself is never hashed.
 
 ## Uplink heartbeat telemetry and Task 7 carry-forward
 
@@ -253,6 +293,15 @@ must never be substituted for the uplink-owned `topology_generation` carried by
 the command/heartbeat binding. The scanner's own boot binding likewise remains
 the exact scanner boot ID; prior no-update components can legitimately retain
 their existing boot IDs and are persisted as converged.
+
+Task 7 must now require `apply_mode` in both strict Fullsize envelope decoders
+and bind it into both terminal receipts before download/cache/write. Preserve
+the existing Lite `backend_ota_maintenance_run_probe(...)` signature and its
+newer-only behavior byte-for-byte. Fullsize needs a profile-only mode-aware
+probe entry point backed by a shared internal staging helper: equality returns
+zero-write no-update in newer-only, but fully downloads/validates with zero
+probe writes and exposes apply in recovery. Newer remains eligible in both;
+older/unordered/invalid reject in both. Do not permit apply-time no-update.
 
 ## Changed-path and protected-path audit
 
@@ -276,6 +325,7 @@ backend-firmware/test/support/backend_serializer_fixture.c
 backend-firmware/test/test_backend_heartbeat/test_main.c
 backend-firmware/test/test_backend_upload_batch/test_main.c
 backend-firmware/tools/tests/test_serializer_fixture.py
+docs/superpowers/plans/2026-08-02-s3-fullsize-backend-firmware.md
 .superpowers/sdd/2026-08-02-s3-fullsize-backend-firmware/task-6-report.md
 ```
 
@@ -289,3 +339,8 @@ and assertions were unchanged.
 Fix round 1 changes only the backend OTA service, its focused test file, and
 this report. It does not touch C/native firmware, so the already-green native
 gates were intentionally not rerun.
+
+Fix round 2 changes only the backend OTA schema/service, focused Task 6 tests,
+undeployed Fullsize receipt fixture, Task 6/7 implementation plan, and this
+report. No C/native/Lite path changed, so native gates were again intentionally
+not rerun.

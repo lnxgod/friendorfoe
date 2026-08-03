@@ -884,12 +884,12 @@ class BackendOtaProbeEnvelope(BaseModel):
     )
     expected_target_boot_id: int = Field(ge=1, le=0xFFFFFFFF)
     expected_topology_generation: int = Field(ge=1, le=0xFFFFFFFF)
+    apply_mode: Literal["newer_only", "same_version_recovery"]
     next_sequence: int = Field(ge=0, le=0xFFFFFFFF)
 
 
 class BackendOtaApplyEnvelope(BackendOtaProbeEnvelope):
     type: Literal["backend_ota_apply"]
-    apply_mode: Literal["newer_only", "same_version_recovery"]
     probe_receipt_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 

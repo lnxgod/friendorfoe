@@ -25,6 +25,23 @@ SCANNER_PROJECT = "fof_backend_scanner_fullsize"
 UPLINK_PROJECT = "fof_backend_uplink_fullsize"
 FULLSIZE_HARDWARE = "esp32s3_n16r8_fullsize"
 TARGET_VERSION = "0.2.1-backend"
+PROBE_KEYS = {
+    "schema",
+    "operation_id",
+    "type",
+    "component",
+    "catalog_name",
+    "expected_sha256",
+    "expected_size",
+    "expected_uplink_mac",
+    "expected_uplink_boot_id",
+    "expected_target_mac",
+    "expected_target_boot_id",
+    "expected_topology_generation",
+    "apply_mode",
+    "next_sequence",
+}
+APPLY_KEYS = PROBE_KEYS | {"probe_receipt_sha256"}
 
 
 def _backend_image(name: str, version: str = TARGET_VERSION) -> bytes:
@@ -88,13 +105,19 @@ def _scanner(
     }
 
 
-def fullsize_heartbeat(*, scanners_reversed: bool = False) -> dict:
+def fullsize_heartbeat(
+    *,
+    scanners_reversed: bool = False,
+    version: str = "0.2.0-backend",
+) -> dict:
     scanners = [
         _scanner(
             uart="ble", slot=0, mac="AA:BB:CC:DD:EE:02", boot_id=202,
+            version=version,
         ),
         _scanner(
             uart="wifi", slot=1, mac="AA:BB:CC:DD:EE:03", boot_id=303,
+            version=version,
         ),
     ]
     if scanners_reversed:
@@ -109,7 +132,7 @@ def fullsize_heartbeat(*, scanners_reversed: bool = False) -> dict:
         "firmware_target": UPLINK_NAME,
         "app_project": UPLINK_PROJECT,
         "hardware_type": FULLSIZE_HARDWARE,
-        "firmware_version": "0.2.0-backend",
+        "firmware_version": version,
         "hardware_mac": "AA:BB:CC:DD:EE:01",
         "boot_id": 101,
         "topology_generation": 7,
@@ -123,12 +146,20 @@ def install_heartbeat(heartbeat: dict | None = None) -> dict:
     return heartbeat
 
 
-def install_images(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+def install_images(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    version: str = TARGET_VERSION,
+) -> list[str]:
     calls: list[str] = []
+    images = {
+        SCANNER_NAME: _backend_image(SCANNER_NAME, version),
+        UPLINK_NAME: _backend_image(UPLINK_NAME, version),
+    }
 
     async def exact_bytes(name: str) -> bytes:
         calls.append(name)
-        return SCANNER_IMAGE if name == SCANNER_NAME else UPLINK_IMAGE
+        return images[name]
 
     async def forbidden(*_args, **_kwargs):
         raise AssertionError("rollout metadata must come from the fetched bytes")
@@ -220,6 +251,7 @@ async def test_create_preflights_then_fetches_each_exact_image_once_and_binds_sl
         "expected_target_mac": "AA:BB:CC:DD:EE:02",
         "expected_target_boot_id": 202,
         "expected_topology_generation": 7,
+        "apply_mode": "newer_only",
         "next_sequence": 0,
     }
     assert response.json() == expected
@@ -385,6 +417,52 @@ async def test_preflight_rejects_noncanonical_trio_binding_before_fetch(
 
     assert response.status_code == 409
     assert calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("component", "version"),
+    [
+        pytest.param("uplink", "v0.2.0-backend", id="leading-v"),
+        pytest.param("uplink", "0.2.0", id="missing-backend-suffix"),
+        pytest.param("uplink", "0.2.0-BACKEND", id="wrong-suffix-case"),
+        pytest.param("uplink", "4294967296.2.0-backend", id="uplink-u32-overflow"),
+        pytest.param("scanner0", "0.2.0-backend.extra", id="extra-suffix"),
+        pytest.param("scanner0", "0.2.0+backend", id="wrong-separator"),
+        pytest.param("scanner1", "0.2.0-backend-", id="trailing-suffix"),
+        pytest.param("scanner1", "0.4294967296.0-backend", id="scanner-u32-overflow"),
+    ],
+)
+async def test_exact_preflight_rejects_versions_outside_firmware_backend_ordering(
+    client,
+    backend_sensor_session_factory,
+    monkeypatch,
+    component,
+    version,
+):
+    heartbeat = fullsize_heartbeat()
+    if component == "uplink":
+        heartbeat["firmware_version"] = version
+    else:
+        scanner_index = 0 if component == "scanner0" else 1
+        heartbeat["scanners"][scanner_index]["firmware_version"] = version
+    install_heartbeat(heartbeat)
+    calls = install_images(monkeypatch)
+
+    response = await client.post(
+        "/nodes/uplink_FULL/backend-ota/rollouts",
+        json={"components": "all"},
+    )
+
+    assert response.status_code == 409
+    assert "version" in response.json()["detail"].lower()
+    assert calls == []
+    from app.models.db_models import BackendOtaRollout
+
+    async with backend_sensor_session_factory() as db:
+        assert await db.scalar(
+            select(func.count()).select_from(BackendOtaRollout),
+        ) == 0
 
 
 @pytest.mark.asyncio
@@ -685,6 +763,7 @@ def _manual_receipt(command: dict, end: dict) -> tuple[str, str]:
         "fof-backend-ota-end-receipt-v1",
         f"operation_id={values['operation_id']}",
         f"command_type={values['command_type']}",
+        f"apply_mode={values['apply_mode']}",
         f"component={values['component']}",
         f"catalog_name={values['catalog_name']}",
         f"expected_sha256={values['expected_sha256']}",
@@ -771,11 +850,21 @@ def _end(
     return event
 
 
-async def _create_rollout(client, monkeypatch, *, heartbeat: dict | None = None) -> tuple[dict, dict]:
+async def _create_rollout(
+    client,
+    monkeypatch,
+    *,
+    heartbeat: dict | None = None,
+    apply_mode: str | None = None,
+    image_version: str = TARGET_VERSION,
+) -> tuple[dict, dict]:
     heartbeat = install_heartbeat(heartbeat)
-    install_images(monkeypatch)
+    install_images(monkeypatch, version=image_version)
+    body = {"components": "all"}
+    if apply_mode is not None:
+        body["apply_mode"] = apply_mode
     response = await client.post(
-        "/nodes/uplink_FULL/backend-ota/rollouts", json={"components": "all"},
+        "/nodes/uplink_FULL/backend-ota/rollouts", json=body,
     )
     assert response.status_code == 201, response.text
     return heartbeat, response.json()
@@ -787,6 +876,212 @@ async def _post_event(client, command: dict, event: dict, *, raw: bytes | None =
         content=raw if raw is not None else _raw(event),
         headers={"content-type": "application/json"},
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("apply_mode", ["newer_only", "same_version_recovery"])
+async def test_probe_and_apply_exact_shapes_retain_mode_across_duplicate_polls(
+    client,
+    monkeypatch,
+    apply_mode,
+):
+    _heartbeat, command = await _create_rollout(
+        client,
+        monkeypatch,
+        apply_mode=apply_mode,
+    )
+    assert set(command) == PROBE_KEYS
+    assert len(command) == 14
+    assert command["type"] == "backend_ota_probe"
+    assert command["apply_mode"] == apply_mode
+
+    first_probe = await client.get("/nodes/uplink_FULL/backend-ota/next")
+    duplicate_probe = await client.get("/nodes/uplink_FULL/backend-ota/next")
+    assert first_probe.status_code == duplicate_probe.status_code == 200
+    assert first_probe.content == duplicate_probe.content
+    assert first_probe.json() == command
+
+    assert (await _post_event(client, command, _begin(command))).status_code == 200
+    eligible = _end(
+        command,
+        sequence=1,
+        state="complete",
+        decision="eligible",
+        error="none",
+        image_writes=0,
+        target=SCANNER_NAME,
+        project=SCANNER_PROJECT,
+        hardware=FULLSIZE_HARDWARE,
+        version=TARGET_VERSION,
+    )
+    accepted = await _post_event(client, command, eligible)
+    assert accepted.status_code == 200, accepted.text
+
+    first_apply = await client.get("/nodes/uplink_FULL/backend-ota/next")
+    duplicate_apply = await client.get("/nodes/uplink_FULL/backend-ota/next")
+    assert first_apply.status_code == duplicate_apply.status_code == 200
+    assert first_apply.content == duplicate_apply.content
+    apply_command = first_apply.json()
+    assert set(apply_command) == APPLY_KEYS
+    assert len(apply_command) == 15
+    assert apply_command["type"] == "backend_ota_apply"
+    assert apply_command["apply_mode"] == apply_mode
+    assert apply_command["probe_receipt_sha256"] == eligible["receipt_sha256"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    (
+        "current_version",
+        "candidate_version",
+        "apply_mode",
+        "state",
+        "decision",
+        "error",
+        "expected_status",
+        "expected_next_type",
+        "expected_next_component",
+    ),
+    [
+        pytest.param(
+            "0.2.0-backend", TARGET_VERSION, "newer_only",
+            "complete", "eligible", "none", 200,
+            "backend_ota_apply", "scanner0", id="newer-newer-only-eligible",
+        ),
+        pytest.param(
+            "0.2.0-backend", TARGET_VERSION, "same_version_recovery",
+            "complete", "eligible", "none", 200,
+            "backend_ota_apply", "scanner0", id="newer-recovery-eligible",
+        ),
+        pytest.param(
+            TARGET_VERSION, TARGET_VERSION, "newer_only",
+            "complete", "eligible", "none", 409,
+            "backend_ota_probe", "scanner0", id="equal-newer-only-eligible-rejected",
+        ),
+        pytest.param(
+            TARGET_VERSION, TARGET_VERSION, "newer_only",
+            "no_update", "no_update", "none", 200,
+            "backend_ota_probe", "scanner1", id="equal-newer-only-no-update",
+        ),
+        pytest.param(
+            TARGET_VERSION, TARGET_VERSION, "same_version_recovery",
+            "complete", "eligible", "none", 200,
+            "backend_ota_apply", "scanner0", id="equal-recovery-eligible",
+        ),
+        pytest.param(
+            TARGET_VERSION, TARGET_VERSION, "same_version_recovery",
+            "no_update", "no_update", "none", 409,
+            "backend_ota_probe", "scanner0", id="equal-recovery-no-update-rejected",
+        ),
+        pytest.param(
+            "0.2.2-backend", TARGET_VERSION, "newer_only",
+            "complete", "eligible", "none", 409,
+            "backend_ota_probe", "scanner0", id="older-newer-only-eligible-rejected",
+        ),
+        pytest.param(
+            "0.2.2-backend", TARGET_VERSION, "same_version_recovery",
+            "complete", "eligible", "none", 409,
+            "backend_ota_probe", "scanner0", id="older-recovery-eligible-rejected",
+        ),
+        pytest.param(
+            "0.2.2-backend", TARGET_VERSION, "newer_only",
+            "no_update", "no_update", "none", 409,
+            "backend_ota_probe", "scanner0", id="older-newer-only-no-update-rejected",
+        ),
+        pytest.param(
+            "0.2.2-backend", TARGET_VERSION, "same_version_recovery",
+            "no_update", "no_update", "none", 409,
+            "backend_ota_probe", "scanner0", id="older-recovery-no-update-rejected",
+        ),
+        pytest.param(
+            "0.2.2-backend", TARGET_VERSION, "newer_only",
+            "failed", "rejected", "identity_mismatch", 200,
+            None, None, id="older-newer-only-failure-reportable",
+        ),
+        pytest.param(
+            "0.2.2-backend", TARGET_VERSION, "same_version_recovery",
+            "failed", "rejected", "identity_mismatch", 200,
+            None, None, id="older-recovery-failure-reportable",
+        ),
+        pytest.param(
+            "00.2.1-backend", TARGET_VERSION, "same_version_recovery",
+            "complete", "eligible", "none", 409,
+            "backend_ota_probe", "scanner0", id="unordered-eligible-rejected",
+        ),
+        pytest.param(
+            "00.2.1-backend", TARGET_VERSION, "newer_only",
+            "no_update", "no_update", "none", 409,
+            "backend_ota_probe", "scanner0", id="unordered-no-update-rejected",
+        ),
+        pytest.param(
+            "0.2.1-backend", "4294967296.2.1-backend", "same_version_recovery",
+            "complete", "eligible", "none", 409,
+            "backend_ota_probe", "scanner0", id="invalid-candidate-eligible-rejected",
+        ),
+        pytest.param(
+            "0.2.1-backend", "4294967296.2.1-backend", "newer_only",
+            "no_update", "no_update", "none", 409,
+            "backend_ota_probe", "scanner0", id="invalid-candidate-no-update-rejected",
+        ),
+    ],
+)
+async def test_probe_outcome_is_authorized_by_persisted_version_relation_and_mode(
+    client,
+    monkeypatch,
+    current_version,
+    candidate_version,
+    apply_mode,
+    state,
+    decision,
+    error,
+    expected_status,
+    expected_next_type,
+    expected_next_component,
+):
+    heartbeat, command = await _create_rollout(
+        client,
+        monkeypatch,
+        heartbeat=fullsize_heartbeat(version=current_version),
+        apply_mode=apply_mode,
+        image_version=candidate_version,
+    )
+    assert heartbeat["firmware_version"] == current_version
+    assert command["apply_mode"] == apply_mode
+    assert (await _post_event(client, command, _begin(command))).status_code == 200
+    terminal = _end(
+        command,
+        sequence=1,
+        state=state,
+        decision=decision,
+        error=error,
+        image_writes=0,
+        target=SCANNER_NAME,
+        project=SCANNER_PROJECT,
+        hardware=FULLSIZE_HARDWARE,
+        version=candidate_version,
+    )
+
+    response = await _post_event(client, command, terminal)
+
+    assert response.status_code == expected_status, response.text
+    next_response = await client.get("/nodes/uplink_FULL/backend-ota/next")
+    if expected_next_type is None:
+        assert next_response.status_code == 204
+        history = await client.get(
+            f"/nodes/uplink_FULL/backend-ota/{command['operation_id']}",
+        )
+        assert history.status_code == 200
+        assert history.json()["state"] == "failed"
+        assert history.json()["terminal"] is True
+    else:
+        assert next_response.status_code == 200
+        next_command = next_response.json()
+        assert next_command["type"] == expected_next_type
+        assert next_command["component"] == expected_next_component
+        assert next_command["apply_mode"] == apply_mode
+        assert next_command["next_sequence"] == (
+            2 if expected_status == 200 else 1
+        )
 
 
 @pytest.mark.asyncio
@@ -1102,14 +1397,66 @@ async def test_receipt_fixture_bytes_hex_digest_and_builder_are_identical():
     for name in ("probe", "apply"):
         vector = fixture[name]
         encoded = vector["preimage_utf8"].encode("utf-8")
+        apply_mode = vector["command"]["apply_mode"]
+        assert apply_mode in {"newer_only", "same_version_recovery"}
+        assert encoded.splitlines()[2:4] == [
+            f"command_type=backend_ota_{name}".encode(),
+            f"apply_mode={apply_mode}".encode(),
+        ]
         assert encoded.hex() == vector["preimage_hex"]
         assert encoded.endswith(b"\n") and not encoded.endswith(b"\n\n")
         assert hashlib.sha256(encoded).hexdigest() == vector["receipt_sha256"]
         assert build_receipt_preimage(vector["command"], vector["end"]) == encoded
+        alternate = {
+            **vector["command"],
+            "apply_mode": (
+                "same_version_recovery"
+                if apply_mode == "newer_only"
+                else "newer_only"
+            ),
+        }
+        altered = build_receipt_preimage(alternate, vector["end"])
+        assert altered != encoded
+        assert hashlib.sha256(altered).hexdigest() != vector["receipt_sha256"]
     assert (
         fixture["apply"]["command"]["probe_receipt_sha256"]
         == fixture["probe"]["receipt_sha256"]
     )
+
+
+@pytest.mark.asyncio
+async def test_backend_rejects_receipt_bound_to_other_apply_mode(
+    client,
+    monkeypatch,
+):
+    _heartbeat, command = await _create_rollout(
+        client,
+        monkeypatch,
+        apply_mode="same_version_recovery",
+    )
+    assert command["apply_mode"] == "same_version_recovery"
+    assert (await _post_event(client, command, _begin(command))).status_code == 200
+    eligible = _end(
+        command,
+        sequence=1,
+        state="complete",
+        decision="eligible",
+        error="none",
+        image_writes=0,
+        target=SCANNER_NAME,
+        project=SCANNER_PROJECT,
+        hardware=FULLSIZE_HARDWARE,
+        version=TARGET_VERSION,
+    )
+    other_mode_command = {**command, "apply_mode": "newer_only"}
+    _, mismatched_digest = _manual_receipt(other_mode_command, eligible)
+    assert mismatched_digest != eligible["receipt_sha256"]
+    eligible["receipt_sha256"] = mismatched_digest
+
+    response = await _post_event(client, command, eligible)
+
+    assert response.status_code == 409
+    assert "receipt" in response.json()["detail"]
 
 
 async def _finish_eligible_probe(client, command: dict) -> tuple[dict, dict]:
@@ -1137,6 +1484,41 @@ async def _finish_eligible_probe(client, command: dict) -> tuple[dict, dict]:
     assert apply_command["operation_id"] == command["operation_id"]
     assert apply_command["probe_receipt_sha256"] == eligible["receipt_sha256"]
     return apply_command, eligible
+
+
+@pytest.mark.asyncio
+async def test_apply_phase_rejects_no_update_and_remains_on_same_apply(
+    client,
+    monkeypatch,
+):
+    _heartbeat, probe = await _create_rollout(client, monkeypatch)
+    apply_command, _receipt = await _finish_eligible_probe(client, probe)
+    assert (await _post_event(
+        client,
+        apply_command,
+        _begin(apply_command),
+    )).status_code == 200
+    no_update = _end(
+        apply_command,
+        sequence=apply_command["next_sequence"] + 1,
+        state="no_update",
+        decision="no_update",
+        error="none",
+        image_writes=0,
+        target=SCANNER_NAME,
+        project=SCANNER_PROJECT,
+        hardware=FULLSIZE_HARDWARE,
+        version=TARGET_VERSION,
+    )
+
+    response = await _post_event(client, apply_command, no_update)
+
+    assert response.status_code == 409
+    still_apply = await client.get("/nodes/uplink_FULL/backend-ota/next")
+    assert still_apply.status_code == 200
+    assert still_apply.json()["type"] == "backend_ota_apply"
+    assert still_apply.json()["apply_mode"] == "newer_only"
+    assert still_apply.json()["next_sequence"] == 3
 
 
 def _converge_heartbeat(heartbeat: dict, component: str, new_boot_id: int) -> None:

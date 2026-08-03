@@ -670,14 +670,16 @@ The strict probe envelope contains exactly these keys:
   "expected_target_mac": "AA:BB:CC:DD:EE:02",
   "expected_target_boot_id": 202,
   "expected_topology_generation": 7,
+  "apply_mode": "newer_only",
   "next_sequence": 0
 }
 ```
 
 The strict apply envelope has the same keys, changes `type` to
-`backend_ota_apply`, and adds exactly `apply_mode` plus
-`probe_receipt_sha256`. For the uplink component, target MAC/boot ID equal the
-uplink binding; no identity field is nullable.
+`backend_ota_apply`, and adds exactly `probe_receipt_sha256`. Thus probe has 14
+keys and apply has 15. `apply_mode` is required and identical in both phases:
+an omitted mode is never inferred by firmware. For the uplink component,
+target MAC/boot ID equal the uplink binding; no identity field is nullable.
 
 Result bodies are also exact. `backend_ota_begin` has `schema`, `operation_id`,
 `sequence`, `type`, `component`, and `catalog_name`. `backend_ota_progress`
@@ -690,7 +692,7 @@ has those six plus `stage`, `received`, `total`, and `retry_count`.
 `backend_ota_end` with zero image writes and a receipt hash that the subsequent
 apply envelope binds.
 
-All event keys are required and non-null. Strings are UTF-8 without control characters. `operation_id` is 32 lowercase hex; SHA values are 64 lowercase hex; catalog/target/project/hardware/version strings are 1–64 ASCII identity characters; MACs are uppercase colon-separated hex; sequences, byte counts, retry counts, boot IDs, and topology generations are unsigned 32-bit decimal values; booleans are JSON booleans. `stage` is one of `metadata`, `download`, `validate`, `stage`, `uart_relay`, `reboot_wait`, `convergence`. `state` is one of `complete`, `no_update`, `failed`, `rolled_back`; `decision` is one of `eligible`, `applied`, `no_update`, `rejected`, `rolled_back`; `error` is one of `none`, `identity_mismatch`, `stale_binding`, `capacity`, `download`, `hash_mismatch`, `uart`, `reboot_timeout`, `health`, `rollback`, `internal`. Identity strings may be empty only when `state=failed` before identity could be read; otherwise they must be non-empty. The only valid state/decision pairs are `complete/eligible` for a probe, `complete/applied` for an apply, `no_update/no_update`, `failed/rejected`, and `rolled_back/rolled_back`; the first three require `error=none`, while the final two require a non-`none` error. Successful probe is exactly `(state=complete, decision=eligible, error=none, image_writes=0)`; only that tuple may generate an apply command.
+All event keys are required and non-null. Strings are UTF-8 without control characters. `operation_id` is 32 lowercase hex; SHA values are 64 lowercase hex; catalog/target/project/hardware/version strings are 1–64 ASCII identity characters; MACs are uppercase colon-separated hex; sequences, byte counts, retry counts, boot IDs, and topology generations are unsigned 32-bit decimal values; booleans are JSON booleans. `stage` is one of `metadata`, `download`, `validate`, `stage`, `uart_relay`, `reboot_wait`, `convergence`. `state` is one of `complete`, `no_update`, `failed`, `rolled_back`; `decision` is one of `eligible`, `applied`, `no_update`, `rejected`, `rolled_back`; `error` is one of `none`, `identity_mismatch`, `stale_binding`, `capacity`, `download`, `hash_mismatch`, `uart`, `reboot_timeout`, `health`, `rollback`, `internal`. Identity strings may be empty only when `state=failed` before identity could be read; otherwise they must be non-empty. The only valid state/decision pairs are `complete/eligible` for a probe, `complete/applied` for an apply, `no_update/no_update`, `failed/rejected`, and `rolled_back/rolled_back`; the first three require `error=none`, while the final two require a non-`none` error. A newer candidate requires probe `complete/eligible` in either mode. Equality requires `no_update/no_update` under `newer_only` and `complete/eligible` under `same_version_recovery`. Older, unordered, invalid, and noncanonical versions may report `failed/rejected` but cannot advance through a successful tuple. Apply-time no-update is invalid, and recovery authorizes equality only, never downgrade. The backend independently derives that relation from the persisted running version, fetched-image version, and persisted mode before accepting either successful probe tuple. Exact-trio preflight rejects running versions outside canonical `uint32.uint32.uint32-backend` firmware ordering before any fetch or active row.
 
 Every terminal `receipt_sha256` is SHA-256 over this exact UTF-8/LF preimage, not over JSON and never over itself. Values use the normalized representations above; there is no trailing whitespace and there is one final LF:
 
@@ -698,6 +700,7 @@ Every terminal `receipt_sha256` is SHA-256 over this exact UTF-8/LF preimage, no
 fof-backend-ota-end-receipt-v1
 operation_id={operation_id}
 command_type={backend_ota_probe|backend_ota_apply}
+apply_mode={newer_only|same_version_recovery}
 component={component}
 catalog_name={catalog_name}
 expected_sha256={expected_sha256}
@@ -757,7 +760,7 @@ Expected: FAIL because the independent rollout service and routes are missing; e
 
 - [ ] **Step 4: Implement strict probe/apply envelopes**
 
-`backend_ota_probe` contains operation ID, component, exact catalog name/SHA/size, expected uplink MAC/boot ID, expected target MAC/boot ID, and topology generation. `backend_ota_apply` copies the accepted probe binding and adds the exact apply mode. Every Pydantic model uses `extra="forbid"`.
+`backend_ota_probe` contains operation ID, component, exact catalog name/SHA/size, expected uplink MAC/boot ID, expected target MAC/boot ID, topology generation, and exact apply mode. `backend_ota_apply` copies the accepted probe binding and adds only the accepted probe receipt. Every Pydantic model uses `extra="forbid"`.
 
 Implement and test the canonical probe-receipt builder before accepting apply. The Python digest must match the shared golden vector exactly; altered field order, case, newline, normalized value, or receipt hash is rejected.
 
@@ -872,13 +875,23 @@ typedef struct {
 
 For Fullsize only, the strict parser decodes the 32 lowercase-hex server ID into `backend_ota_operation_id_t`; the event encoder always writes it back as the same canonical 32 lowercase hex. Profile-select the operation ID field in `backend_ota_request_t`, `backend_ota_evidence_t`, buffer ownership, relay claims, firmware-store claims, and `backend_ota_journal_record_t`; Fullsize removes `next_operation_id` and never invents a local rollout ID. Image generation, scanner UART session ID, topology generation, and role generation remain distinct numeric protocol fields and must never be substituted for the rollout ID. Fullsize gets a distinct journal schema/version and CRC covering all 16 bytes; an unexpected numeric journal fails closed and requires attended recovery. Lite keeps its existing journal schema/version and golden encoded records exactly unchanged.
 
+The Fullsize decoder requires the 14-key probe and 15-key apply contracts from
+Task 6. Both carry the same `apply_mode`; apply adds only the accepted probe
+receipt. Feed probe mode into a Fullsize-only, mode-aware maintenance entry
+point backed by one internal staging helper. Keep the existing
+`backend_ota_maintenance_run_probe(...)` API and its hard-coded newer-only Lite
+behavior unchanged. The Fullsize helper permits equality only for
+`same_version_recovery`; `newer_only` equality emits zero-write no-update, and
+older, unordered, invalid, or noncanonical versions emit rejection without an
+image write or apply transition.
+
 - [ ] **Step 1: Write failing strict-decoder tests**
 
-The OTA decoder must reject missing/extra/duplicate keys, noncanonical operation IDs, malformed MAC/SHA, wrong component/catalog pairing, wrong Fullsize target/project/hardware, stale boot/topology binding, invalid mode, oversized JSON, and BLE envelopes. The existing BLE decoder must continue rejecting OTA envelopes without changing its accepted eight-field contract. Add native receipt generation/verification against `test/fixtures/backend_ota_receipt_v1.json`; one-byte changes in every bound field must change the digest and fail apply.
+The OTA decoder must reject missing/extra/duplicate keys, noncanonical operation IDs, malformed MAC/SHA, wrong component/catalog pairing, wrong Fullsize target/project/hardware, stale boot/topology binding, a missing or invalid mode on either probe or apply, oversized JSON, and BLE envelopes. The existing BLE decoder must continue rejecting OTA envelopes without changing its accepted eight-field contract. Add native receipt generation/verification against `test/fixtures/backend_ota_receipt_v1.json`; one-byte changes in every bound field, including probe/apply `apply_mode`, must change the digest and fail apply.
 
 - [ ] **Step 2: Write failing orchestration tests**
 
-Map probe to `backend_ota_maintenance_run_probe` and apply to `backend_ota_maintenance_request_apply`. Assert scanner0 and scanner1 are never active together, uplink cannot start before both scanners converge, events are queued with monotonic stages, bounded retry counts are reported, and normal detection UART traffic resumes after success or failure.
+Map Fullsize probe to the new mode-aware maintenance entry point and apply to `backend_ota_maintenance_request_apply`; do not route Fullsize probe through the unchanged Lite `backend_ota_maintenance_run_probe`. Assert the version-relation × mode matrix for both scanner and uplink: newer is eligible in either mode; equal is zero-write no-update under newer-only and zero-write eligible under recovery; older rejects in both. Assert scanner0 and scanner1 are never active together, uplink cannot start before both scanners converge, events are queued with monotonic stages, bounded retry counts are reported, and normal detection UART traffic resumes after success or failure. Apply-time no-update remains invalid.
 
 Add power-loss/reboot tests at accepted-command, download, staged, UART relay, and reboot-wait boundaries. Every persisted journal record, buffer owner, relay claim, and emitted event must retain the same 16-byte server operation ID. Byte-identical duplicate commands/events are idempotent; a different ID cannot claim an existing buffer; stale numeric-schema journals fail closed; reboot resumes or rolls back the same rollout without inventing a local ID.
 
@@ -915,7 +928,7 @@ Expected: FAIL on absent Fullsize OTA command/parser/progress behavior and the n
 
 - [ ] **Step 5: Implement a separate poll/apply/event client**
 
-Poll only `/nodes/{device_id}/backend-ota/next`; never multiplex OTA fields into `/commands/next`. Bind each accepted envelope to exact local uplink/scanner MAC, boot ID, topology generation, selected profile, catalog target, expected SHA, size, and the decoded 16-byte operation ID before any download or cache write.
+Poll only `/nodes/{device_id}/backend-ota/next`; never multiplex OTA fields into `/commands/next`. Bind each accepted envelope to exact local uplink/scanner MAC, boot ID, topology generation, selected profile, catalog target, expected SHA, size, apply mode, and the decoded 16-byte operation ID before any download or cache write.
 
 Compile and start this client only when `FOF_BACKEND_PROFILE_S3_FULLSIZE` is selected. The uplink main-component CMake source list includes `backend_ota_command_client.c` only for `FOF_BACKEND_PROFILE_NAME=s3_fullsize`, and `main.c` wraps initialization/task creation in the same fail-closed profile guard. The Lite native/embedded source lists omit the client entirely. Lite build-contract tests inspect its compilation database, link map, and firmware strings to prove there is no client object, `/backend-ota/next` path, poll task, or strict OTA decoder; a Lite startup fixture proves no OTA task is created. Fullsize envelopes supplied to any compiled Lite parser remain rejected by the unchanged BLE decoder.
 
