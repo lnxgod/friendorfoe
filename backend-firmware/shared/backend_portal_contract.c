@@ -7,7 +7,7 @@
 #include "backend_json_reader.h"
 #include "backend_json_writer.h"
 
-static const backend_portal_route_t ROUTES[] = {
+static const backend_portal_route_t REQUIRED_ROUTES[] = {
     { BACKEND_PORTAL_GET, "/", BACKEND_PORTAL_ROOT },
     { BACKEND_PORTAL_GET, "/api/status", BACKEND_PORTAL_STATUS },
     { BACKEND_PORTAL_GET, "/api/config", BACKEND_PORTAL_CONFIG_GET },
@@ -16,12 +16,40 @@ static const backend_portal_route_t ROUTES[] = {
       BACKEND_PORTAL_BACKEND_TEST },
 };
 
-const backend_portal_route_t *backend_portal_routes(size_t *out_count)
+#if defined(FOF_BACKEND_PROFILE_BADGE_LITE)
+static const backend_portal_route_t DASHBOARD_ROUTES[] = {
+    { BACKEND_PORTAL_GET, "/dashboard", BACKEND_PORTAL_DASHBOARD },
+    { BACKEND_PORTAL_GET, "/api/dashboard/status",
+      BACKEND_PORTAL_DASHBOARD_STATUS },
+    { BACKEND_PORTAL_GET, "/api/events", BACKEND_PORTAL_EVENTS },
+};
+#endif
+
+const backend_portal_route_t *backend_portal_required_routes(
+    size_t *out_count)
 {
     if (out_count) {
-        *out_count = sizeof(ROUTES) / sizeof(ROUTES[0]);
+        *out_count =
+            sizeof(REQUIRED_ROUTES) / sizeof(REQUIRED_ROUTES[0]);
     }
-    return ROUTES;
+    return REQUIRED_ROUTES;
+}
+
+const backend_portal_route_t *backend_portal_dashboard_routes(
+    size_t *out_count)
+{
+#if defined(FOF_BACKEND_PROFILE_BADGE_LITE)
+    if (out_count) {
+        *out_count =
+            sizeof(DASHBOARD_ROUTES) / sizeof(DASHBOARD_ROUTES[0]);
+    }
+    return DASHBOARD_ROUTES;
+#else
+    if (out_count) {
+        *out_count = 0U;
+    }
+    return NULL;
+#endif
 }
 
 bool backend_portal_route_lookup(
@@ -32,11 +60,21 @@ bool backend_portal_route_lookup(
     if (!path || !out) {
         return false;
     }
-    for (size_t index = 0; index < sizeof(ROUTES) / sizeof(ROUTES[0]);
-         ++index) {
-        if (ROUTES[index].method == method &&
-            strcmp(ROUTES[index].path, path) == 0) {
-            *out = ROUTES[index].id;
+    size_t route_count = 0U;
+    const backend_portal_route_t *routes =
+        backend_portal_required_routes(&route_count);
+    for (size_t index = 0; index < route_count; ++index) {
+        if (routes[index].method == method &&
+            strcmp(routes[index].path, path) == 0) {
+            *out = routes[index].id;
+            return true;
+        }
+    }
+    routes = backend_portal_dashboard_routes(&route_count);
+    for (size_t index = 0; index < route_count; ++index) {
+        if (routes[index].method == method &&
+            strcmp(routes[index].path, path) == 0) {
+            *out = routes[index].id;
             return true;
         }
     }

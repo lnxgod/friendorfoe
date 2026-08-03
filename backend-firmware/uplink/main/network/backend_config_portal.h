@@ -6,6 +6,7 @@
 #include <stdint.h>
 
 #include "backend_config.h"
+#include "backend_dashboard_page.h"
 #include "backend_portal_contract.h"
 
 #ifdef __cplusplus
@@ -30,12 +31,26 @@ typedef bool (*backend_config_portal_get_fn)(
     const char *path,
     uint32_t timeout_ms,
     int *status_code);
+typedef bool (*backend_config_portal_dashboard_status_fn)(
+    void *context,
+    char *output,
+    size_t capacity,
+    size_t *out_length);
+typedef bool (*backend_config_portal_event_snapshot_fn)(
+    void *context,
+    uint64_t after,
+    size_t limit,
+    backend_dashboard_event_t *events,
+    size_t event_capacity,
+    backend_event_ring_snapshot_t *snapshot);
 
 typedef struct {
     void *context;
     backend_config_portal_commit_fn commit_config;
     backend_config_portal_reconnect_fn reconnect_wifi;
     backend_config_portal_get_fn backend_get;
+    backend_config_portal_dashboard_status_fn dashboard_status;
+    backend_config_portal_event_snapshot_fn event_snapshot;
 } backend_config_portal_ops_t;
 
 typedef struct {
@@ -56,6 +71,8 @@ typedef struct {
     bool (*start_http)(void *context);
     bool (*register_route)(
         void *context, const backend_portal_route_t *route);
+    bool (*unregister_route)(
+        void *context, const backend_portal_route_t *route);
     bool (*rollback)(void *context);
 } backend_config_portal_test_platform_hooks_t;
 
@@ -74,6 +91,8 @@ typedef struct {
     backend_config_portal_ops_t ops;
     bool initialized;
     bool running;
+    bool dashboard_routes_enabled;
+    const char *dashboard_failure_reason;
     bool usb_start_requested;
     void *server;
     void *ap_netif;
@@ -102,6 +121,18 @@ bool backend_config_portal_build_ap_config(
     const uint8_t sta_mac[6],
     backend_config_portal_ap_config_t *out);
 bool backend_config_portal_local_ipv4_allowed(const uint8_t address[4]);
+#if defined(FOF_BACKEND_PROFILE_BADGE_LITE)
+bool backend_config_portal_dashboard_status(
+    backend_config_portal_t *portal,
+    char *output,
+    size_t capacity,
+    size_t *out_length);
+bool backend_config_portal_copy_dashboard_events(
+    backend_config_portal_t *portal,
+    backend_dashboard_query_t query,
+    backend_dashboard_event_t events[BACKEND_DASHBOARD_MAX_LIMIT],
+    backend_event_ring_snapshot_t *snapshot);
+#endif
 const char *backend_config_portal_update_response(
     backend_portal_update_result_t result, int *out_status_code);
 bool backend_config_portal_start(

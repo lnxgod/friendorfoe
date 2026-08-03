@@ -23,6 +23,9 @@ typedef enum {
     BACKEND_PORTAL_CONFIG_GET,
     BACKEND_PORTAL_CONFIG_POST,
     BACKEND_PORTAL_BACKEND_TEST,
+    BACKEND_PORTAL_DASHBOARD,
+    BACKEND_PORTAL_DASHBOARD_STATUS,
+    BACKEND_PORTAL_EVENTS,
 } backend_portal_route_id_t;
 
 typedef struct {
@@ -42,7 +45,10 @@ typedef enum {
     BACKEND_PORTAL_UPDATE_RECONNECT_FAILED,
 } backend_portal_update_result_t;
 
-const backend_portal_route_t *backend_portal_routes(size_t *out_count);
+const backend_portal_route_t *backend_portal_required_routes(
+    size_t *out_count);
+const backend_portal_route_t *backend_portal_dashboard_routes(
+    size_t *out_count);
 bool backend_portal_route_lookup(
     backend_portal_method_t method,
     const char *path,

@@ -1,6 +1,7 @@
 #include "backend_config_portal.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "backend_json_writer.h"
@@ -101,6 +102,105 @@ bool backend_config_portal_local_ipv4_allowed(const uint8_t address[4])
     static const uint8_t ap_address[4] = {192U, 168U, 4U, 1U};
     return address && memcmp(address, ap_address, sizeof(ap_address)) == 0;
 }
+
+#if defined(FOF_BACKEND_PROFILE_BADGE_LITE)
+static bool output_contains_config_value(
+    const char *output,
+    const char *value,
+    size_t value_capacity)
+{
+    const char *terminator = memchr(value, '\0', value_capacity);
+    return terminator && terminator != value && strstr(output, value) != NULL;
+}
+
+bool backend_config_portal_dashboard_status(
+    backend_config_portal_t *portal,
+    char *output,
+    size_t capacity,
+    size_t *out_length)
+{
+    if (out_length) {
+        *out_length = 0U;
+    }
+    if (output && capacity > 0U) {
+        output[0] = '\0';
+    }
+    if (!portal || !portal->initialized || !output || capacity == 0U ||
+        !out_length || !portal->ops.dashboard_status ||
+        !portal->ops.dashboard_status(
+            portal->ops.context, output, capacity, out_length) ||
+        *out_length >= capacity || output[*out_length] != '\0' ||
+        strlen(output) != *out_length ||
+        !backend_dashboard_status_is_redacted(output, *out_length)) {
+        if (output && capacity > 0U) {
+            output[0] = '\0';
+        }
+        if (out_length) {
+            *out_length = 0U;
+        }
+        return false;
+    }
+    for (uint8_t index = 0U; index < portal->config.network_count;
+         ++index) {
+        if (output_contains_config_value(
+                output,
+                portal->config.networks[index].ssid,
+                sizeof(portal->config.networks[index].ssid)) ||
+            output_contains_config_value(
+                output,
+                portal->config.networks[index].password,
+                sizeof(portal->config.networks[index].password))) {
+            output[0] = '\0';
+            *out_length = 0U;
+            return false;
+        }
+    }
+    if (output_contains_config_value(
+            output,
+            portal->config.backend_url,
+            sizeof(portal->config.backend_url)) ||
+        output_contains_config_value(
+            output,
+            portal->config.ap_password,
+            sizeof(portal->config.ap_password))) {
+        output[0] = '\0';
+        *out_length = 0U;
+        return false;
+    }
+    return true;
+}
+
+bool backend_config_portal_copy_dashboard_events(
+    backend_config_portal_t *portal,
+    backend_dashboard_query_t query,
+    backend_dashboard_event_t events[BACKEND_DASHBOARD_MAX_LIMIT],
+    backend_event_ring_snapshot_t *snapshot)
+{
+    if (!portal || !portal->initialized || !events || !snapshot ||
+        !portal->ops.event_snapshot || query.limit == 0U ||
+        query.limit > BACKEND_DASHBOARD_MAX_LIMIT) {
+        return false;
+    }
+    memset(
+        events,
+        0,
+        BACKEND_DASHBOARD_MAX_LIMIT * sizeof(events[0]));
+    memset(snapshot, 0, sizeof(*snapshot));
+    if (!portal->ops.event_snapshot(
+            portal->ops.context,
+            query.after,
+            query.limit,
+            events,
+            BACKEND_DASHBOARD_MAX_LIMIT,
+            snapshot) ||
+        snapshot->count > query.limit ||
+        snapshot->count > BACKEND_DASHBOARD_MAX_LIMIT) {
+        memset(snapshot, 0, sizeof(*snapshot));
+        return false;
+    }
+    return true;
+}
+#endif
 
 const char *backend_config_portal_update_response(
     backend_portal_update_result_t result, int *out_status_code)
@@ -267,10 +367,17 @@ bool backend_config_portal_build_ap_config(
     }
     backend_config_portal_ap_config_t config;
     memset(&config, 0, sizeof(config));
+#if defined(FOF_BACKEND_PROFILE_BADGE_LITE)
+    static const char AP_SSID_FORMAT[] =
+        "FriendOrFoe-Lite-%02X%02X%02X";
+#else
+    static const char AP_SSID_FORMAT[] =
+        "FriendOrFoe-Backend-%02X%02X%02X";
+#endif
     const int written = snprintf(
         config.ssid,
         sizeof(config.ssid),
-        "FriendOrFoe-Backend-%02X%02X%02X",
+        AP_SSID_FORMAT,
         sta_mac[3],
         sta_mac[4],
         sta_mac[5]);
@@ -306,6 +413,13 @@ static esp_err_t send_json(httpd_req_t *request, const char *json)
 {
     httpd_resp_set_type(request, "application/json");
     return httpd_resp_send(request, json, HTTPD_RESP_USE_STRLEN);
+}
+
+static esp_err_t send_service_unavailable(
+    httpd_req_t *request, const char *message)
+{
+    httpd_resp_set_status(request, "503 Service Unavailable");
+    return httpd_resp_send(request, message, HTTPD_RESP_USE_STRLEN);
 }
 
 static esp_err_t send_update_result(
@@ -381,6 +495,97 @@ static bool request_uses_ap_local_destination(httpd_req_t *request)
     return backend_config_portal_local_ipv4_allowed(octets);
 }
 
+#if defined(FOF_BACKEND_PROFILE_BADGE_LITE)
+static esp_err_t send_dashboard_events(
+    httpd_req_t *request,
+    backend_config_portal_t *portal)
+{
+    char query_text[128];
+    const size_t query_length = httpd_req_get_url_query_len(request);
+    const char *query = NULL;
+    if (query_length > 0U) {
+        if (query_length >= sizeof(query_text) ||
+            httpd_req_get_url_query_str(
+                request, query_text, sizeof(query_text)) != ESP_OK) {
+            return httpd_resp_send_err(
+                request, HTTPD_400_BAD_REQUEST,
+                "invalid cursor or limit");
+        }
+        query = query_text;
+    }
+
+    backend_dashboard_query_t parsed = {
+        .after = 0U,
+        .limit = BACKEND_DASHBOARD_DEFAULT_LIMIT,
+    };
+    if (!backend_dashboard_query_parse(query, &parsed) ||
+        parsed.limit > BACKEND_DASHBOARD_MAX_LIMIT) {
+        return httpd_resp_send_err(
+            request, HTTPD_400_BAD_REQUEST,
+            "invalid cursor or limit");
+    }
+
+    backend_dashboard_event_t *events = calloc(
+        BACKEND_DASHBOARD_MAX_LIMIT, sizeof(events[0]));
+    char *event_json = malloc(4096U);
+    if (!events || !event_json) {
+        free(events);
+        free(event_json);
+        return httpd_resp_send_err(
+            request, HTTPD_500_INTERNAL_SERVER_ERROR,
+            "event buffer unavailable");
+    }
+    backend_event_ring_snapshot_t snapshot;
+    if (!backend_config_portal_copy_dashboard_events(
+            portal, parsed, events, &snapshot)) {
+        free(events);
+        free(event_json);
+        return send_service_unavailable(
+            request, "event snapshot unavailable");
+    }
+
+    char prefix[192];
+    if (backend_dashboard_snapshot_encode_prefix(
+            &snapshot, prefix, sizeof(prefix)) == 0U) {
+        free(events);
+        free(event_json);
+        return httpd_resp_send_err(
+            request, HTTPD_500_INTERNAL_SERVER_ERROR,
+            "event metadata unavailable");
+    }
+    httpd_resp_set_type(request, "application/json");
+    esp_err_t result = httpd_resp_send_chunk(
+        request, prefix, HTTPD_RESP_USE_STRLEN);
+    for (size_t index = 0U;
+         result == ESP_OK && index < snapshot.count; ++index) {
+        if (index > 0U) {
+            result = httpd_resp_send_chunk(request, ",", 1U);
+        }
+        if (result == ESP_OK &&
+            backend_dashboard_event_encode_json(
+                &events[index], event_json, 4096U) == 0U) {
+            result = ESP_FAIL;
+        }
+        if (result == ESP_OK) {
+            result = httpd_resp_send_chunk(
+                request, event_json, HTTPD_RESP_USE_STRLEN);
+        }
+    }
+    if (result == ESP_OK) {
+        result = httpd_resp_send_chunk(
+            request,
+            backend_dashboard_snapshot_suffix(),
+            HTTPD_RESP_USE_STRLEN);
+    }
+    if (result == ESP_OK) {
+        result = httpd_resp_send_chunk(request, NULL, 0U);
+    }
+    free(events);
+    free(event_json);
+    return result;
+}
+#endif
+
 static esp_err_t portal_http_handler(httpd_req_t *request)
 {
     if (!request_uses_ap_local_destination(request)) {
@@ -393,6 +598,38 @@ static esp_err_t portal_http_handler(httpd_req_t *request)
             portal_method(request->method), request->uri, &route)) {
         return httpd_resp_send_err(request, HTTPD_404_NOT_FOUND, "not found");
     }
+#if defined(FOF_BACKEND_PROFILE_BADGE_LITE)
+    if ((route == BACKEND_PORTAL_DASHBOARD ||
+         route == BACKEND_PORTAL_DASHBOARD_STATUS ||
+         route == BACKEND_PORTAL_EVENTS) &&
+        !portal->dashboard_routes_enabled) {
+        return httpd_resp_send_err(request, HTTPD_404_NOT_FOUND, "not found");
+    }
+    if (route == BACKEND_PORTAL_DASHBOARD) {
+        httpd_resp_set_type(request, "text/html; charset=utf-8");
+        return httpd_resp_send(
+            request,
+            backend_dashboard_page_html(),
+            HTTPD_RESP_USE_STRLEN);
+    }
+    if (route == BACKEND_PORTAL_DASHBOARD_STATUS) {
+        char status[2048];
+        size_t status_length = 0U;
+        if (!backend_config_portal_dashboard_status(
+                portal,
+                status,
+                sizeof(status),
+                &status_length)) {
+            return send_service_unavailable(
+                request, "dashboard status unavailable");
+        }
+        httpd_resp_set_type(request, "application/json");
+        return httpd_resp_send(request, status, status_length);
+    }
+    if (route == BACKEND_PORTAL_EVENTS) {
+        return send_dashboard_events(request, portal);
+    }
+#endif
     if (route == BACKEND_PORTAL_ROOT) {
         httpd_resp_set_type(request, "text/html; charset=utf-8");
         return httpd_resp_send(
@@ -621,6 +858,34 @@ static bool platform_register_route(
 #endif
 }
 
+#if defined(FOF_BACKEND_PROFILE_BADGE_LITE)
+static bool platform_unregister_route(
+    backend_config_portal_t *portal,
+    const backend_portal_route_t *route)
+{
+#ifdef UNIT_TESTING
+    if (s_test_platform_hooks_installed) {
+        return s_test_platform_hooks.unregister_route &&
+               s_test_platform_hooks.unregister_route(
+                   s_test_platform_hooks.context, route);
+    }
+#endif
+#ifdef ESP_PLATFORM
+    if (!portal->server || !route) {
+        return false;
+    }
+    return httpd_unregister_uri_handler(
+        (httpd_handle_t)portal->server,
+        route->path,
+        http_method(route->method)) == ESP_OK;
+#else
+    (void)portal;
+    (void)route;
+    return true;
+#endif
+}
+#endif
+
 static bool platform_rollback(backend_config_portal_t *portal)
 {
     bool success = true;
@@ -631,6 +896,7 @@ static bool platform_rollback(backend_config_portal_t *portal)
                       s_test_platform_hooks.context);
         portal->server = NULL;
         portal->running = false;
+        portal->dashboard_routes_enabled = false;
         return success;
     }
 #endif
@@ -649,6 +915,7 @@ static bool platform_rollback(backend_config_portal_t *portal)
     portal->server = NULL;
 #endif
     portal->running = false;
+    portal->dashboard_routes_enabled = false;
     return success;
 }
 
@@ -672,15 +939,35 @@ bool backend_config_portal_start(
         (void)platform_rollback(portal);
         return false;
     }
-    size_t route_count = 0;
+    size_t route_count = 0U;
     const backend_portal_route_t *routes =
-        backend_portal_routes(&route_count);
+        backend_portal_required_routes(&route_count);
     for (size_t index = 0; index < route_count; ++index) {
         if (!platform_register_route(portal, &routes[index])) {
             (void)platform_rollback(portal);
             return false;
         }
     }
+#if defined(FOF_BACKEND_PROFILE_BADGE_LITE)
+    routes = backend_portal_dashboard_routes(&route_count);
+    size_t registered = 0U;
+    for (; registered < route_count; ++registered) {
+        if (!platform_register_route(portal, &routes[registered])) {
+            while (registered > 0U) {
+                registered--;
+                (void)platform_unregister_route(
+                    portal, &routes[registered]);
+            }
+            portal->dashboard_routes_enabled = false;
+            portal->dashboard_failure_reason =
+                "route_registration_failed";
+            portal->running = true;
+            return true;
+        }
+    }
+    portal->dashboard_routes_enabled = true;
+    portal->dashboard_failure_reason = NULL;
+#endif
     portal->running = true;
     return true;
 }

@@ -6,6 +6,7 @@
 #include <unity.h>
 
 #include "backend_config_portal.h"
+#include "backend_dashboard_page.h"
 #include "backend_json_reader.h"
 #include "backend_portal_contract.h"
 #include "backend_wifi_manager.h"
@@ -56,7 +57,7 @@ void tearDown(void)
     backend_config_portal_set_test_platform_hooks(NULL);
 }
 
-void test_route_registry_contains_exactly_the_five_config_routes(void)
+void test_required_route_registry_contains_exactly_the_five_config_routes(void)
 {
     static const struct {
         backend_portal_method_t method;
@@ -72,7 +73,8 @@ void test_route_registry_contains_exactly_the_five_config_routes(void)
     };
 
     size_t route_count = 0;
-    const backend_portal_route_t *routes = backend_portal_routes(&route_count);
+    const backend_portal_route_t *routes =
+        backend_portal_required_routes(&route_count);
     TEST_ASSERT_NOT_NULL(routes);
     TEST_ASSERT_EQUAL_UINT32(
         sizeof(expected) / sizeof(expected[0]), route_count);
@@ -97,6 +99,33 @@ void test_route_registry_contains_exactly_the_five_config_routes(void)
     TEST_ASSERT_FALSE(backend_portal_route_lookup(
         BACKEND_PORTAL_GET, NULL, &sentinel));
     TEST_ASSERT_EQUAL(BACKEND_PORTAL_STATUS, sentinel);
+}
+
+void test_dashboard_route_registry_is_lite_only(void)
+{
+    size_t route_count = 99U;
+    const backend_portal_route_t *routes =
+        backend_portal_dashboard_routes(&route_count);
+#if defined(FOF_BACKEND_PROFILE_BADGE_LITE)
+    static const struct {
+        const char *path;
+        backend_portal_route_id_t id;
+    } expected[] = {
+        {"/dashboard", BACKEND_PORTAL_DASHBOARD},
+        {"/api/dashboard/status", BACKEND_PORTAL_DASHBOARD_STATUS},
+        {"/api/events", BACKEND_PORTAL_EVENTS},
+    };
+    TEST_ASSERT_NOT_NULL(routes);
+    TEST_ASSERT_EQUAL_UINT32(3U, route_count);
+    for (size_t index = 0; index < route_count; ++index) {
+        TEST_ASSERT_EQUAL(BACKEND_PORTAL_GET, routes[index].method);
+        TEST_ASSERT_EQUAL_STRING(expected[index].path, routes[index].path);
+        TEST_ASSERT_EQUAL(expected[index].id, routes[index].id);
+    }
+#else
+    TEST_ASSERT_NULL(routes);
+    TEST_ASSERT_EQUAL_UINT32(0U, route_count);
+#endif
 }
 
 void test_redacted_config_is_parseable_and_contains_no_secret_values(void)
@@ -395,6 +424,12 @@ typedef struct {
     char health_url[192];
     char health_path[32];
     uint32_t health_timeout_ms;
+    const char *dashboard_status;
+    unsigned dashboard_status_calls;
+    unsigned event_snapshot_calls;
+    uint64_t event_after;
+    size_t event_limit;
+    size_t event_capacity;
 } portal_fixture_t;
 
 static bool fake_commit(
@@ -436,6 +471,50 @@ static bool fake_health_get(
     return fixture->health_transport_result;
 }
 
+static bool fake_dashboard_status(
+    void *context,
+    char *output,
+    size_t capacity,
+    size_t *out_length)
+{
+    portal_fixture_t *fixture = context;
+    fixture->dashboard_status_calls++;
+    if (!fixture->dashboard_status) {
+        return false;
+    }
+    const size_t length = strlen(fixture->dashboard_status);
+    if (length >= capacity) {
+        return false;
+    }
+    memcpy(output, fixture->dashboard_status, length + 1U);
+    *out_length = length;
+    return true;
+}
+
+static bool fake_event_snapshot(
+    void *context,
+    uint64_t after,
+    size_t limit,
+    backend_dashboard_event_t *events,
+    size_t event_capacity,
+    backend_event_ring_snapshot_t *snapshot)
+{
+    portal_fixture_t *fixture = context;
+    fixture->event_snapshot_calls++;
+    fixture->event_after = after;
+    fixture->event_limit = limit;
+    fixture->event_capacity = event_capacity;
+    TEST_ASSERT_NOT_NULL(events);
+    TEST_ASSERT_NOT_NULL(snapshot);
+    memset(snapshot, 0, sizeof(*snapshot));
+    snapshot->count = 1U;
+    snapshot->oldest_sequence = 40U;
+    snapshot->newest_sequence = 44U;
+    snapshot->cursor_reset = true;
+    events[0].sequence = 40U;
+    return true;
+}
+
 static backend_config_portal_ops_t fixture_ops(portal_fixture_t *fixture)
 {
     const backend_config_portal_ops_t ops = {
@@ -443,9 +522,115 @@ static backend_config_portal_ops_t fixture_ops(portal_fixture_t *fixture)
         .commit_config = fake_commit,
         .reconnect_wifi = fake_reconnect,
         .backend_get = fake_health_get,
+        .dashboard_status = fake_dashboard_status,
+        .event_snapshot = fake_event_snapshot,
     };
     return ops;
 }
+
+#if defined(FOF_BACKEND_PROFILE_BADGE_LITE)
+void test_dashboard_query_defaults_and_requires_full_unsigned_values(void)
+{
+    backend_dashboard_query_t query = {.after = 999U, .limit = 999U};
+    TEST_ASSERT_TRUE(backend_dashboard_query_parse(NULL, &query));
+    TEST_ASSERT_EQUAL_UINT64(0U, query.after);
+    TEST_ASSERT_EQUAL_UINT32(25U, query.limit);
+
+    TEST_ASSERT_TRUE(backend_dashboard_query_parse(
+        "after=18446744073709551615&limit=50", &query));
+    TEST_ASSERT_EQUAL_UINT64(UINT64_MAX, query.after);
+    TEST_ASSERT_EQUAL_UINT32(50U, query.limit);
+    TEST_ASSERT_TRUE(backend_dashboard_query_parse("limit=25", &query));
+    TEST_ASSERT_EQUAL_UINT64(0U, query.after);
+    TEST_ASSERT_EQUAL_UINT32(25U, query.limit);
+
+    static const char *const invalid[] = {
+        "limit=51",
+        "limit=0",
+        "limit=25x",
+        "after=",
+        "after=-1",
+        "after=+1",
+        "after=18446744073709551616",
+        "after=1x",
+        "after=1&after=2",
+        "unknown=1",
+    };
+    for (size_t index = 0U;
+         index < sizeof(invalid) / sizeof(invalid[0]); ++index) {
+        TEST_ASSERT_FALSE(
+            backend_dashboard_query_parse(invalid[index], &query));
+    }
+    TEST_ASSERT_FALSE(backend_dashboard_query_parse("after=1", NULL));
+}
+
+void test_stale_cursor_metadata_is_serialized_before_events(void)
+{
+    const backend_event_ring_snapshot_t snapshot = {
+        .count = 2U,
+        .oldest_sequence = 40U,
+        .newest_sequence = 44U,
+        .cursor_reset = true,
+    };
+    char output[192];
+    const size_t length = backend_dashboard_snapshot_encode_prefix(
+        &snapshot, output, sizeof(output));
+    TEST_ASSERT_EQUAL_UINT32(strlen(output), length);
+    TEST_ASSERT_EQUAL_STRING(
+        "{\"count\":2,\"oldest_sequence\":40,\"newest_sequence\":44,"
+        "\"cursor_reset\":true,\"events\":[",
+        output);
+    TEST_ASSERT_EQUAL_STRING("]}", backend_dashboard_snapshot_suffix());
+}
+
+void test_dashboard_status_is_redacted_and_event_copy_is_bounded(void)
+{
+    const backend_config_record_t current = config_fixture(false);
+    portal_fixture_t fixture = {
+        .dashboard_status =
+            "{\"wifi_connected\":true,\"dropped_contention\":2}",
+    };
+    const backend_config_portal_ops_t ops = fixture_ops(&fixture);
+    backend_config_portal_t portal;
+    TEST_ASSERT_TRUE(backend_config_portal_init(&portal, &current, &ops));
+
+    char status[160];
+    size_t status_length = 0U;
+    TEST_ASSERT_TRUE(backend_config_portal_dashboard_status(
+        &portal, status, sizeof(status), &status_length));
+    TEST_ASSERT_EQUAL_UINT32(strlen(status), status_length);
+    TEST_ASSERT_NULL(strstr(status, "password"));
+    TEST_ASSERT_NULL(strstr(status, "ssid"));
+    TEST_ASSERT_NULL(strstr(status, "backend_url"));
+    TEST_ASSERT_NULL(strstr(status, "portal-secret"));
+    TEST_ASSERT_NULL(strstr(status, "wifi-secret-one"));
+
+    fixture.dashboard_status = "{\"password\":\"portal-secret\"}";
+    TEST_ASSERT_FALSE(backend_config_portal_dashboard_status(
+        &portal, status, sizeof(status), &status_length));
+    TEST_ASSERT_EQUAL_UINT32(0U, status_length);
+
+    backend_dashboard_event_t events[50];
+    backend_event_ring_snapshot_t snapshot;
+    const backend_dashboard_query_t query = {.after = 39U, .limit = 50U};
+    TEST_ASSERT_TRUE(backend_config_portal_copy_dashboard_events(
+        &portal, query, events, &snapshot));
+    TEST_ASSERT_EQUAL_UINT32(1U, fixture.event_snapshot_calls);
+    TEST_ASSERT_EQUAL_UINT64(39U, fixture.event_after);
+    TEST_ASSERT_EQUAL_UINT32(50U, fixture.event_limit);
+    TEST_ASSERT_EQUAL_UINT32(50U, fixture.event_capacity);
+    TEST_ASSERT_EQUAL_UINT32(1U, snapshot.count);
+    TEST_ASSERT_EQUAL_UINT64(40U, events[0].sequence);
+
+    const backend_dashboard_query_t excessive = {
+        .after = 0U,
+        .limit = 51U,
+    };
+    TEST_ASSERT_FALSE(backend_config_portal_copy_dashboard_events(
+        &portal, excessive, events, &snapshot));
+    TEST_ASSERT_EQUAL_UINT32(1U, fixture.event_snapshot_calls);
+}
+#endif
 
 void test_portal_reconnects_only_after_atomic_commit_succeeds(void)
 {
@@ -574,7 +759,11 @@ void test_usb_command_and_ap_identity_are_exact(void)
     backend_config_portal_ap_config_t ap_config;
     TEST_ASSERT_TRUE(backend_config_portal_build_ap_config(
         &portal, mac, &ap_config));
+#if defined(FOF_BACKEND_PROFILE_BADGE_LITE)
+    TEST_ASSERT_EQUAL_STRING("FriendOrFoe-Lite-CB77A4", ap_config.ssid);
+#else
     TEST_ASSERT_EQUAL_STRING("FriendOrFoe-Backend-CB77A4", ap_config.ssid);
+#endif
     TEST_ASSERT_EQUAL_STRING("portal-secret", ap_config.password);
     TEST_ASSERT_EQUAL_STRING("192.168.4.1", ap_config.ipv4);
     TEST_ASSERT_EQUAL_UINT8(1, ap_config.channel);
@@ -592,6 +781,9 @@ void test_usb_command_and_ap_identity_are_exact(void)
     TEST_ASSERT_TRUE(backend_config_portal_start(&portal, mac));
     TEST_ASSERT_TRUE(backend_config_portal_stop(&portal));
     TEST_ASSERT_FALSE(backend_config_portal_is_running(&portal));
+#if defined(FOF_BACKEND_PROFILE_BADGE_LITE)
+    TEST_ASSERT_FALSE(portal.dashboard_routes_enabled);
+#endif
     TEST_ASSERT_TRUE(backend_config_portal_stop(&portal));
 }
 
@@ -618,10 +810,14 @@ typedef enum {
 
 typedef struct {
     portal_fail_stage_t fail_stage;
+    unsigned fail_route_call;
     unsigned set_config_calls;
     unsigned start_ap_calls;
     unsigned start_http_calls;
     unsigned register_route_calls;
+    unsigned unregister_route_calls;
+    backend_portal_route_id_t registered[8];
+    backend_portal_route_id_t unregistered[3];
     unsigned rollback_calls;
 } activation_fixture_t;
 
@@ -654,8 +850,21 @@ static bool activation_register_route(
     activation_fixture_t *fixture = context;
     fixture->register_route_calls++;
     TEST_ASSERT_NOT_NULL(route);
+    fixture->registered[fixture->register_route_calls - 1U] = route->id;
     return fixture->fail_stage != PORTAL_FAIL_REGISTER_ROUTE ||
-           fixture->register_route_calls < 3U;
+           fixture->register_route_calls != fixture->fail_route_call;
+}
+
+static bool activation_unregister_route(
+    void *context, const backend_portal_route_t *route)
+{
+    activation_fixture_t *fixture = context;
+    TEST_ASSERT_NOT_NULL(route);
+    if (fixture->unregister_route_calls < 3U) {
+        fixture->unregistered[fixture->unregister_route_calls] = route->id;
+    }
+    fixture->unregister_route_calls++;
+    return true;
 }
 
 static bool activation_rollback(void *context)
@@ -677,6 +886,7 @@ void test_every_ap_activation_failure_rolls_back_to_no_portal(void)
          ++stage) {
         activation_fixture_t activation = {
             .fail_stage = (portal_fail_stage_t)stage,
+            .fail_route_call = 3U,
         };
         const backend_config_portal_test_platform_hooks_t hooks = {
             .context = &activation,
@@ -684,6 +894,7 @@ void test_every_ap_activation_failure_rolls_back_to_no_portal(void)
             .start_ap = activation_start_ap,
             .start_http = activation_start_http,
             .register_route = activation_register_route,
+            .unregister_route = activation_unregister_route,
             .rollback = activation_rollback,
         };
         backend_config_portal_set_test_platform_hooks(&hooks);
@@ -696,11 +907,71 @@ void test_every_ap_activation_failure_rolls_back_to_no_portal(void)
     }
 }
 
+#if defined(FOF_BACKEND_PROFILE_BADGE_LITE)
+void test_each_optional_route_failure_preserves_the_required_portal(void)
+{
+    const backend_config_record_t current = config_fixture(false);
+    portal_fixture_t portal_fixture = {0};
+    const backend_config_portal_ops_t ops = fixture_ops(&portal_fixture);
+    const uint8_t mac[6] = {0x02, 0x10, 0x20, 0xCB, 0x77, 0xA4};
+
+    for (unsigned optional_index = 0U; optional_index < 3U;
+         ++optional_index) {
+        activation_fixture_t activation = {
+            .fail_stage = PORTAL_FAIL_REGISTER_ROUTE,
+            .fail_route_call = 6U + optional_index,
+        };
+        const backend_config_portal_test_platform_hooks_t hooks = {
+            .context = &activation,
+            .set_ap_config = activation_set_config,
+            .start_ap = activation_start_ap,
+            .start_http = activation_start_http,
+            .register_route = activation_register_route,
+            .unregister_route = activation_unregister_route,
+            .rollback = activation_rollback,
+        };
+        backend_config_portal_set_test_platform_hooks(&hooks);
+        backend_config_portal_t portal;
+        TEST_ASSERT_TRUE(backend_config_portal_init(
+            &portal, &current, &ops));
+        TEST_ASSERT_TRUE(backend_config_portal_start(&portal, mac));
+        TEST_ASSERT_TRUE(backend_config_portal_is_running(&portal));
+        TEST_ASSERT_FALSE(portal.dashboard_routes_enabled);
+        TEST_ASSERT_EQUAL_STRING(
+            "route_registration_failed", portal.dashboard_failure_reason);
+        TEST_ASSERT_EQUAL_UINT32(0U, activation.rollback_calls);
+        TEST_ASSERT_EQUAL_UINT32(
+            6U + optional_index, activation.register_route_calls);
+        TEST_ASSERT_EQUAL_UINT32(
+            optional_index, activation.unregister_route_calls);
+        for (unsigned required = 0U; required < 5U; ++required) {
+            TEST_ASSERT_EQUAL(
+                BACKEND_PORTAL_ROOT + required,
+                activation.registered[required]);
+        }
+        for (unsigned removed = 0U; removed < optional_index; ++removed) {
+            TEST_ASSERT_EQUAL(
+                BACKEND_PORTAL_DASHBOARD + optional_index - removed - 1U,
+                activation.unregistered[removed]);
+        }
+    }
+}
+#endif
+
 int main(void)
 {
     UNITY_BEGIN();
     BACKEND_RUN_TEST(
-        test_route_registry_contains_exactly_the_five_config_routes);
+        test_required_route_registry_contains_exactly_the_five_config_routes);
+    BACKEND_RUN_TEST(test_dashboard_route_registry_is_lite_only);
+#if defined(FOF_BACKEND_PROFILE_BADGE_LITE)
+    BACKEND_RUN_TEST(
+        test_dashboard_query_defaults_and_requires_full_unsigned_values);
+    BACKEND_RUN_TEST(
+        test_stale_cursor_metadata_is_serialized_before_events);
+    BACKEND_RUN_TEST(
+        test_dashboard_status_is_redacted_and_event_copy_is_bounded);
+#endif
     BACKEND_RUN_TEST(
         test_redacted_config_is_parseable_and_contains_no_secret_values);
     BACKEND_RUN_TEST(
@@ -724,5 +995,9 @@ int main(void)
     BACKEND_RUN_TEST(test_only_the_ap_local_ipv4_destination_is_allowed);
     BACKEND_RUN_TEST(
         test_every_ap_activation_failure_rolls_back_to_no_portal);
+#if defined(FOF_BACKEND_PROFILE_BADGE_LITE)
+    BACKEND_RUN_TEST(
+        test_each_optional_route_failure_preserves_the_required_portal);
+#endif
     return UNITY_END();
 }
