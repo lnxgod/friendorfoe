@@ -4289,6 +4289,26 @@ static bool append_lite_scanner_summary(
     return backend_json_append(writer, "}");
 }
 
+static bool append_lite_badge_compatibility(
+    backend_json_writer_t *writer,
+    const lite_status_snapshot_t *status)
+{
+    if (writer == NULL || status == NULL ||
+        !backend_json_append_format(
+            writer,
+            ",\"counts\":{\"drone\":%u,\"meta\":%u,"
+            "\"tracker\":0,\"wifi_anomaly\":0,\"ble\":0,\"other\":0},"
+            "\"scanners\":[",
+            (unsigned)status->threats.drone_count,
+            (unsigned)status->threats.meta_count) ||
+        !append_lite_scanner_summary(writer, 0U, status) ||
+        !backend_json_append(writer, ",") ||
+        !append_lite_scanner_summary(writer, 1U, status)) {
+        return false;
+    }
+    return backend_json_append(writer, "]");
+}
+
 static size_t build_lite_status(
     bool usb_frame, char *output, size_t capacity)
 {
@@ -4321,6 +4341,14 @@ static size_t build_lite_status(
         backend_json_append_escaped(&writer, identity->hardware) &&
         backend_json_append(&writer, ",\"version\":") &&
         backend_json_append_escaped(&writer, identity->version) &&
+        backend_json_append(&writer, ",\"firmware_name\":") &&
+        backend_json_append_escaped(&writer, identity->target) &&
+        backend_json_append(&writer, ",\"app_project\":") &&
+        backend_json_append_escaped(&writer, identity->project) &&
+        backend_json_append(&writer, ",\"hardware_type\":") &&
+        backend_json_append_escaped(&writer, identity->hardware) &&
+        backend_json_append(&writer, ",\"hardware_id\":") &&
+        backend_json_append_escaped(&writer, status.mac) &&
         backend_json_append(&writer, ",\"mac\":") &&
         backend_json_append_escaped(&writer, status.mac) &&
         backend_json_append_format(
@@ -4415,6 +4443,7 @@ static size_t build_lite_status(
     }
     ok = ok && backend_json_append(&writer, "}") &&
         append_lite_backend_status(&writer, &status) &&
+        append_lite_badge_compatibility(&writer, &status) &&
         backend_json_append(&writer, ",\"scanner_summaries\":[") &&
         append_lite_scanner_summary(&writer, 0U, &status) &&
         backend_json_append(&writer, ",") &&

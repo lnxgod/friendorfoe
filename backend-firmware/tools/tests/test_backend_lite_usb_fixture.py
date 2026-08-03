@@ -23,12 +23,32 @@ from tools.backend_lite_usb_fixture import (
 )
 
 
+SCANNER_SUMMARIES_JSON = (
+    '[{"slot":0,"connected":true,'
+    '"identity_valid":true,"status_available":true,'
+    '"identity":{"target":"scanner-s3-combo-backend",'
+    '"project":"fof_backend_scanner",'
+    '"hardware":"seeed_xiao_esp32s3",'
+    '"version":"0.2.0-backend"},"profile":1,'
+    '"health":{"command":true,"radio":true,"role_acked":true},'
+    '"errors":{"rx":0,"tx_drops":0},"uptime_ms":9000},'
+    '{"slot":1,"connected":false,"identity_valid":false,'
+    '"status_available":false,"identity":null,"profile":null,'
+    '"health":{"command":false,"radio":false,"role_acked":false},'
+    '"errors":null,"uptime_ms":null}]'
+)
+
+
 STATUS_FRAME = (
     'FOF_STATUS:{"product_family":"badge_lite",'
     '"target":"uplink-s3-backend",'
     '"project":"fof_backend_uplink",'
     '"hardware":"seeed_xiao_esp32s3",'
     '"version":"0.2.0-backend",'
+    '"firmware_name":"uplink-s3-backend",'
+    '"app_project":"fof_backend_uplink",'
+    '"hardware_type":"seeed_xiao_esp32s3",'
+    '"hardware_id":"AA:BB:CC:DD:EE:FF",'
     '"mac":"AA:BB:CC:DD:EE:FF",'
     '"boot_id":305419896,'
     '"mode":"headless",'
@@ -57,18 +77,13 @@ STATUS_FRAME = (
     '"history":{"available":true,"count":0,"contention_drops":0},'
     '"dashboard":{"enabled":true,"degraded_reason":null},'
     '"backend":{"reachable":false,"last_success_age_s":null},'
-    '"scanner_summaries":[{"slot":0,"connected":true,'
-    '"identity_valid":true,"status_available":true,'
-    '"identity":{"target":"scanner-s3-combo-backend",'
-    '"project":"fof_backend_scanner",'
-    '"hardware":"seeed_xiao_esp32s3",'
-    '"version":"0.2.0-backend"},"profile":1,'
-    '"health":{"command":true,"radio":true,"role_acked":true},'
-    '"errors":{"rx":0,"tx_drops":0},"uptime_ms":9000},'
-    '{"slot":1,"connected":false,"identity_valid":false,'
-    '"status_available":false,"identity":null,"profile":null,'
-    '"health":{"command":false,"radio":false,"role_acked":false},'
-    '"errors":null,"uptime_ms":null}]}'
+    '"counts":{"drone":0,"meta":0,"tracker":0,'
+    '"wifi_anomaly":0,"ble":0,"other":0},'
+    '"scanners":'
+    + SCANNER_SUMMARIES_JSON
+    + ',"scanner_summaries":'
+    + SCANNER_SUMMARIES_JSON
+    + '}'
 )
 
 
@@ -109,6 +124,10 @@ def test_literal_status_matches_final_encoder_contract():
         "project",
         "hardware",
         "version",
+        "firmware_name",
+        "app_project",
+        "hardware_type",
+        "hardware_id",
         "mac",
         "boot_id",
         "mode",
@@ -127,8 +146,14 @@ def test_literal_status_matches_final_encoder_contract():
         "history",
         "dashboard",
         "backend",
+        "counts",
+        "scanners",
         "scanner_summaries",
     ]
+    assert status["firmware_name"] == "uplink-s3-backend"
+    assert status["app_project"] == "fof_backend_uplink"
+    assert status["hardware_type"] == "seeed_xiao_esp32s3"
+    assert status["hardware_id"] == status["mac"]
     assert status["upload"] == {
         "depth": 0,
         "capacity": 512,
@@ -179,6 +204,7 @@ def test_literal_status_matches_final_encoder_contract():
             "uptime_ms": None,
         },
     ]
+    assert status["scanners"] == status["scanner_summaries"]
 
 
 def test_handoff_document_uses_the_same_literal_status_frame():

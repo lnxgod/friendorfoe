@@ -107,6 +107,30 @@ def test_lite_boot_stack_covers_config_migration_chain() -> None:
     assert int(config["CONFIG_ESP_MAIN_TASK_STACK_SIZE"]) >= 8192
 
 
+def test_lite_status_exposes_truthful_badge_compatibility_fields() -> None:
+    source = (UPLINK / "main/main.c").read_text(encoding="utf-8")
+    status = _c_function(source, "build_lite_status")
+    compatibility = _c_function(
+        source, "append_lite_badge_compatibility"
+    )
+    for field in (
+        "firmware_name",
+        "app_project",
+        "hardware_type",
+        "hardware_id",
+    ):
+        assert f'\\"{field}\\"' in status
+    assert "identity->target" in status
+    assert "identity->project" in status
+    assert "identity->hardware" in status
+    assert "status.mac" in status
+    assert '\\"counts\\"' in compatibility
+    assert '\\"scanners\\"' in compatibility
+    assert "append_lite_scanner_summary" in compatibility
+    assert "uplink-s3-fof_badge" not in status
+    assert "fof_badge_uplink" not in status
+
+
 def test_uart_worker_stack_covers_nested_status_decode_frames() -> None:
     source = (UPLINK / "main/main.c").read_text(encoding="utf-8")
     match = re.search(
