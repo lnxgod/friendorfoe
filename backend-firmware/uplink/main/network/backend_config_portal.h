@@ -18,6 +18,7 @@ extern "C" {
 #define BACKEND_CONFIG_PORTAL_DEFAULT_PASSWORD "friendorfoe"
 #define BACKEND_CONFIG_PORTAL_CHANNEL 1U
 #define BACKEND_CONFIG_PORTAL_MAX_CLIENTS 4U
+#define BACKEND_CONFIG_PORTAL_ROUTE_PATH_CAPACITY 96U
 
 typedef bool (*backend_config_portal_commit_fn)(
     void *context, const backend_config_record_t *candidate);
@@ -121,6 +122,10 @@ bool backend_config_portal_build_ap_config(
     const uint8_t sta_mac[6],
     backend_config_portal_ap_config_t *out);
 bool backend_config_portal_local_ipv4_allowed(const uint8_t address[4]);
+bool backend_config_portal_route_from_uri(
+    backend_portal_method_t method,
+    const char *uri,
+    backend_portal_route_id_t *out);
 #if defined(FOF_BACKEND_PROFILE_BADGE_LITE)
 bool backend_config_portal_dashboard_status(
     backend_config_portal_t *portal,

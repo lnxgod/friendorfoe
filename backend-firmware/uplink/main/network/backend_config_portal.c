@@ -103,6 +103,29 @@ bool backend_config_portal_local_ipv4_allowed(const uint8_t address[4])
     return address && memcmp(address, ap_address, sizeof(ap_address)) == 0;
 }
 
+bool backend_config_portal_route_from_uri(
+    backend_portal_method_t method,
+    const char *uri,
+    backend_portal_route_id_t *out)
+{
+    if (!uri || !out || uri[0] != '/') {
+        return false;
+    }
+    size_t path_length = 0U;
+    while (path_length < BACKEND_CONFIG_PORTAL_ROUTE_PATH_CAPACITY &&
+           uri[path_length] != '\0' && uri[path_length] != '?') {
+        path_length++;
+    }
+    if (path_length == 0U ||
+        path_length >= BACKEND_CONFIG_PORTAL_ROUTE_PATH_CAPACITY) {
+        return false;
+    }
+    char path[BACKEND_CONFIG_PORTAL_ROUTE_PATH_CAPACITY];
+    memcpy(path, uri, path_length);
+    path[path_length] = '\0';
+    return backend_portal_route_lookup(method, path, out);
+}
+
 #if defined(FOF_BACKEND_PROFILE_BADGE_LITE)
 static bool output_contains_config_value(
     const char *output,
@@ -594,7 +617,7 @@ static esp_err_t portal_http_handler(httpd_req_t *request)
     }
     backend_config_portal_t *portal = request->user_ctx;
     backend_portal_route_id_t route = BACKEND_PORTAL_ROOT;
-    if (!portal || !backend_portal_route_lookup(
+    if (!portal || !backend_config_portal_route_from_uri(
             portal_method(request->method), request->uri, &route)) {
         return httpd_resp_send_err(request, HTTPD_404_NOT_FOUND, "not found");
     }

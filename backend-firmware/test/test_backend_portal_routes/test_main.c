@@ -128,6 +128,46 @@ void test_dashboard_route_registry_is_lite_only(void)
 #endif
 }
 
+void test_dispatch_route_uses_only_the_bounded_uri_path(void)
+{
+    backend_portal_route_id_t route = BACKEND_PORTAL_ROOT;
+#if defined(FOF_BACKEND_PROFILE_BADGE_LITE)
+    TEST_ASSERT_TRUE(backend_config_portal_route_from_uri(
+        BACKEND_PORTAL_GET,
+        "/api/events?after=40&limit=25",
+        &route));
+    TEST_ASSERT_EQUAL(BACKEND_PORTAL_EVENTS, route);
+#else
+    TEST_ASSERT_FALSE(backend_config_portal_route_from_uri(
+        BACKEND_PORTAL_GET,
+        "/api/events?after=40&limit=25",
+        &route));
+#endif
+
+    TEST_ASSERT_TRUE(backend_config_portal_route_from_uri(
+        BACKEND_PORTAL_GET, "/", &route));
+    TEST_ASSERT_EQUAL(BACKEND_PORTAL_ROOT, route);
+    TEST_ASSERT_TRUE(backend_config_portal_route_from_uri(
+        BACKEND_PORTAL_GET, "/api/status", &route));
+    TEST_ASSERT_EQUAL(BACKEND_PORTAL_STATUS, route);
+
+    route = BACKEND_PORTAL_STATUS;
+    TEST_ASSERT_FALSE(backend_config_portal_route_from_uri(
+        BACKEND_PORTAL_GET, NULL, &route));
+    TEST_ASSERT_FALSE(backend_config_portal_route_from_uri(
+        BACKEND_PORTAL_GET, "", &route));
+    TEST_ASSERT_FALSE(backend_config_portal_route_from_uri(
+        BACKEND_PORTAL_GET, "api/events?after=40", &route));
+    TEST_ASSERT_FALSE(backend_config_portal_route_from_uri(
+        BACKEND_PORTAL_GET,
+        "/api/events-too-long-to-match-because-this-path-keeps-growing-"
+        "past-the-bounded-dispatch-buffer-without-a-query-delimiter",
+        &route));
+    TEST_ASSERT_FALSE(backend_config_portal_route_from_uri(
+        BACKEND_PORTAL_GET, "/api/events?after=40", NULL));
+    TEST_ASSERT_EQUAL(BACKEND_PORTAL_STATUS, route);
+}
+
 void test_redacted_config_is_parseable_and_contains_no_secret_values(void)
 {
     const backend_config_record_t config = config_fixture(false);
@@ -964,6 +1004,7 @@ int main(void)
     BACKEND_RUN_TEST(
         test_required_route_registry_contains_exactly_the_five_config_routes);
     BACKEND_RUN_TEST(test_dashboard_route_registry_is_lite_only);
+    BACKEND_RUN_TEST(test_dispatch_route_uses_only_the_bounded_uri_path);
 #if defined(FOF_BACKEND_PROFILE_BADGE_LITE)
     BACKEND_RUN_TEST(
         test_dashboard_query_defaults_and_requires_full_unsigned_values);
