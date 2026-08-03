@@ -23,8 +23,8 @@ android {
         applicationId = "com.friendorfoe"
         minSdk = 26
         targetSdk = 34
-        versionCode = 118
-        versionName = "0.67.9-android-settings-permissions"
+        versionCode = 119
+        versionName = "0.67.10-android-settings-live-state"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

@@ -113,6 +113,13 @@ class DetectionPrefs @Inject constructor(
         backendUrl = backendUrl,
     )
 
+    private fun updateSettings(action: SharedPreferences.Editor.() -> Unit) {
+        val editor = prefs.edit()
+        action(editor)
+        editor.apply()
+        _settings.value = snapshot()
+    }
+
     private val ignoredIdentityStore = IgnoredIdentityStore(
         readStructured = {
             prefs.getStringSet(KEY_IGNORED_IDENTITIES, null)?.toSet()
@@ -130,73 +137,73 @@ class DetectionPrefs @Inject constructor(
 
     var adsbEnabled: Boolean
         get() = prefs.getBoolean(KEY_ADSB, true)
-        set(value) = prefs.edit().putBoolean(KEY_ADSB, value).apply()
+        set(value) = updateSettings { putBoolean(KEY_ADSB, value) }
 
     var bleRidEnabled: Boolean
         get() = prefs.getBoolean(KEY_BLE_RID, true)
-        set(value) = prefs.edit().putBoolean(KEY_BLE_RID, value).apply()
+        set(value) = updateSettings { putBoolean(KEY_BLE_RID, value) }
 
     var wifiEnabled: Boolean
         get() = prefs.getBoolean(KEY_WIFI, true)
-        set(value) = prefs.edit().putBoolean(KEY_WIFI, value).apply()
+        set(value) = updateSettings { putBoolean(KEY_WIFI, value) }
 
     var privacyEnabled: Boolean
         get() = prefs.getBoolean(KEY_PRIVACY, true)
-        set(value) = prefs.edit().putBoolean(KEY_PRIVACY, value).apply()
+        set(value) = updateSettings { putBoolean(KEY_PRIVACY, value) }
 
     var stalkerDetectionEnabled: Boolean
         get() = prefs.getBoolean(KEY_STALKER, true)
-        set(value) = prefs.edit().putBoolean(KEY_STALKER, value).apply()
+        set(value) = updateSettings { putBoolean(KEY_STALKER, value) }
 
     var ultrasonicEnabled: Boolean
         get() = prefs.getBoolean(KEY_ULTRASONIC, false) // OFF by default — uses microphone
-        set(value) = prefs.edit().putBoolean(KEY_ULTRASONIC, value).apply()
+        set(value) = updateSettings { putBoolean(KEY_ULTRASONIC, value) }
 
     var wifiAnomalyEnabled: Boolean
         get() = prefs.getBoolean(KEY_WIFI_ANOMALY, true)
-        set(value) = prefs.edit().putBoolean(KEY_WIFI_ANOMALY, value).apply()
+        set(value) = updateSettings { putBoolean(KEY_WIFI_ANOMALY, value) }
 
     var privacyNotificationsEnabled: Boolean
         get() = prefs.getBoolean(KEY_PRIVACY_NOTIFICATIONS, false)
-        set(value) = prefs.edit().putBoolean(KEY_PRIVACY_NOTIFICATIONS, value).apply()
+        set(value) = updateSettings { putBoolean(KEY_PRIVACY_NOTIFICATIONS, value) }
 
     var droneAlertsEnabled: Boolean
         get() = prefs.getBoolean(KEY_DRONE_ALERTS, false)
-        set(value) = prefs.edit().putBoolean(KEY_DRONE_ALERTS, value).apply()
+        set(value) = updateSettings { putBoolean(KEY_DRONE_ALERTS, value) }
 
     var helicopterAlertsEnabled: Boolean
         get() = prefs.getBoolean(KEY_HELICOPTER_ALERTS, false)
-        set(value) = prefs.edit().putBoolean(KEY_HELICOPTER_ALERTS, value).apply()
+        set(value) = updateSettings { putBoolean(KEY_HELICOPTER_ALERTS, value) }
 
     var militaryAlertsEnabled: Boolean
         get() = prefs.getBoolean(KEY_MILITARY_ALERTS, false)
-        set(value) = prefs.edit().putBoolean(KEY_MILITARY_ALERTS, value).apply()
+        set(value) = updateSettings { putBoolean(KEY_MILITARY_ALERTS, value) }
 
     var policeAlertsEnabled: Boolean
         get() = prefs.getBoolean(KEY_POLICE_ALERTS, false)
-        set(value) = prefs.edit().putBoolean(KEY_POLICE_ALERTS, value).apply()
+        set(value) = updateSettings { putBoolean(KEY_POLICE_ALERTS, value) }
 
     /** Sensor backend (ESP32 network) — disabled until explicitly enabled. */
     var sensorBackendEnabled: Boolean
         get() = prefs.getBoolean(KEY_SENSOR_BACKEND, false)
         set(value) {
-            prefs.edit().apply {
+            updateSettings {
                 putBoolean(KEY_SENSOR_BACKEND, value)
                 if (!value) putBoolean(KEY_BACKEND_ONLY, false)
-            }.apply()
+            }
         }
 
     /** Backend URL — configurable */
     override var backendUrl: String
         get() = prefs.getString(KEY_BACKEND_URL, DEFAULT_BACKEND_URL) ?: DEFAULT_BACKEND_URL
-        set(value) = prefs.edit().putString(KEY_BACKEND_URL, value).apply()
+        set(value) = updateSettings { putString(KEY_BACKEND_URL, value) }
 
     /** Backend-only mode — phone sensors off; ESP32/API/badge feeds remain available. */
     var backendOnlyMode: Boolean
         get() = sensorBackendEnabled && prefs.getBoolean(KEY_BACKEND_ONLY, false)
-        set(value) = prefs.edit()
-            .putBoolean(KEY_BACKEND_ONLY, value && sensorBackendEnabled)
-            .apply()
+        set(value) = updateSettings {
+            putBoolean(KEY_BACKEND_ONLY, value && sensorBackendEnabled)
+        }
 
     /** Bearer token for the calibration walk endpoints.
      *  Default matches the backend's `_DEV_DEFAULT_CAL_TOKEN` so a
