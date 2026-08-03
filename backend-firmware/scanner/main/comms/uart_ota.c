@@ -63,7 +63,11 @@ static void manifest_from_begin(
     manifest->image_size = begin->image_size;
     manifest->crc32 = begin->crc32;
     memcpy(manifest->sha256, begin->sha256, sizeof(manifest->sha256));
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    manifest->generation = begin->manifest_generation;
+#else
     manifest->generation = begin->generation;
+#endif
     manifest->allow_same_version = begin->allow_same_version;
 }
 
@@ -313,7 +317,11 @@ uart_ota_result_t uart_ota_begin(
     const backend_scanner_ota_begin_control_t *begin)
 {
     if (ota == NULL || begin == NULL || !ota->initialized ||
-        begin->session_id == 0U || begin->generation == 0U) {
+        begin->session_id == 0U || begin->generation == 0U
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+        || begin->manifest_generation == 0U
+#endif
+        ) {
         return UART_OTA_RESULT_INVALID_ARGUMENT;
     }
     backend_ota_manifest_t manifest;

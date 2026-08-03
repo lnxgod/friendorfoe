@@ -136,9 +136,27 @@ static bool parse_mac(const char value[18], uint8_t output[6])
 static bool relay_binding_is_live(const backend_scanner_relay_t *relay)
 {
     return relay != NULL && relay->store != NULL &&
-           backend_firmware_store_matches(relay->store, &relay->manifest) &&
+           backend_firmware_store_matches(
+               relay->store,
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+               relay->has_operation_id, &relay->operation_id,
+#endif
+               &relay->manifest) &&
            backend_firmware_store_relay_claim_matches(
-               relay->store, relay->generation, relay->session_id);
+               relay->store,
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+               relay->has_operation_id, &relay->operation_id,
+#endif
+               relay->generation, relay->session_id);
+}
+
+static uint32_t relay_wire_generation(const backend_scanner_relay_t *relay)
+{
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    return relay->session_generation;
+#else
+    return relay->generation;
+#endif
 }
 
 static void action_init(
@@ -150,7 +168,7 @@ static void action_init(
     action->kind = kind;
     action->slot = relay->slot;
     action->session_id = relay->session_id;
-    action->generation = relay->generation;
+    action->generation = relay_wire_generation(relay);
     action->topology_generation = relay->expected_topology_generation;
     action->dry_run = relay->dry_run;
 }
@@ -181,7 +199,10 @@ static void queue_begin(backend_scanner_relay_t *relay)
     backend_scanner_ota_begin_control_t *begin =
         &action.control.payload.ota_begin;
     begin->session_id = relay->session_id;
-    begin->generation = relay->generation;
+    begin->generation = relay_wire_generation(relay);
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    begin->manifest_generation = relay->manifest.generation;
+#endif
     begin->component_slot = (uint8_t)relay->slot;
     format_mac(relay->expected_mac, begin->expected_mac);
     begin->expected_boot_id = relay->old_boot_id;
@@ -218,7 +239,11 @@ static bool queue_chunk(backend_scanner_relay_t *relay)
     write_be16(action.frame + 1U, (uint16_t)action.sequence);
     write_be16(action.frame + 3U, (uint16_t)length);
     if (!backend_firmware_store_read(
-            relay->store, relay->generation, action.image_offset,
+            relay->store,
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+            relay->has_operation_id, &relay->operation_id,
+#endif
+            relay->generation, action.image_offset,
             action.frame + OTA_CHUNK_HEADER_SIZE, length)) {
         return false;
     }
@@ -239,7 +264,7 @@ static void queue_end(backend_scanner_relay_t *relay)
     action.image_offset = relay->acknowledged_bytes;
     action.control.type = BACKEND_SCANNER_CONTROL_OTA_END;
     action.control.payload.ota_finish.session_id = relay->session_id;
-    action.control.payload.ota_finish.generation = relay->generation;
+    action.control.payload.ota_finish.generation = relay_wire_generation(relay);
     strcpy(action.control.payload.ota_finish.reason, "image_validated");
     queue_new_action(relay, &action);
 }
@@ -253,35 +278,85 @@ static void queue_status_request(backend_scanner_relay_t *relay)
     queue_new_action(relay, &action);
 }
 
-static backend_scanner_relay_event_result_t finish_failed(
-    backend_scanner_relay_t *relay,
-    backend_scanner_relay_event_result_t result)
+static void release_and_discard_store(backend_scanner_relay_t *relay)
 {
-    if (relay != NULL && relay->store != NULL) {
-        backend_firmware_store_release_relay(
-            relay->store, relay->generation, relay->session_id);
+    if (relay == NULL || relay->store == NULL) {
+        return;
     }
-    if (relay != NULL) {
-        relay->state = BACKEND_SCANNER_RELAY_FAILED;
-        relay->awaiting_receipt = false;
-        relay->action_pending = false;
-        relay->retry_pending = false;
-        memset(&relay->pending_action, 0, sizeof(relay->pending_action));
-    }
-    return result;
+    backend_firmware_store_release_relay(
+        relay->store,
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+        relay->has_operation_id, &relay->operation_id,
+#endif
+        relay->generation, relay->session_id);
+    (void)backend_firmware_store_discard(
+        relay->store,
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+        relay->has_operation_id, &relay->operation_id,
+#endif
+        relay->generation);
 }
 
-static backend_scanner_relay_event_result_t finish_complete(
-    backend_scanner_relay_t *relay)
+static backend_scanner_relay_event_result_t finish_terminal(
+    backend_scanner_relay_t *relay, bool success)
 {
-    backend_firmware_store_release_relay(
-        relay->store, relay->generation, relay->session_id);
-    relay->state = BACKEND_SCANNER_RELAY_COMPLETE;
+    release_and_discard_store(relay);
+    relay->state = success ? BACKEND_SCANNER_RELAY_COMPLETE
+                           : BACKEND_SCANNER_RELAY_FAILED;
     relay->awaiting_receipt = false;
     relay->action_pending = false;
     relay->retry_pending = false;
     memset(&relay->pending_action, 0, sizeof(relay->pending_action));
-    return BACKEND_SCANNER_RELAY_EVENT_COMPLETE;
+    return success ? BACKEND_SCANNER_RELAY_EVENT_COMPLETE
+                   : BACKEND_SCANNER_RELAY_EVENT_FAILED;
+}
+
+static backend_scanner_relay_event_result_t queue_restore(
+    backend_scanner_relay_t *relay, bool success)
+{
+    backend_scanner_relay_action_t action;
+    action_init(relay, BACKEND_SCANNER_RELAY_ACTION_SEND_RESTORE, &action);
+    action.control.type = BACKEND_SCANNER_CONTROL_ROLE;
+    action.control.payload.role.boot_id = relay->old_boot_id;
+    action.control.payload.role.generation = relay->expected_role_generation;
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    action.control.payload.role.topology_generation =
+        relay->expected_topology_generation;
+#endif
+    action.control.payload.role.profile = relay->expected_profile;
+    relay->cleanup_success = success;
+    relay->state = BACKEND_SCANNER_RELAY_RESTORE_REQUESTED;
+    queue_new_action(relay, &action);
+    return BACKEND_SCANNER_RELAY_EVENT_ACCEPTED;
+}
+
+static backend_scanner_relay_event_result_t start_failure_cleanup(
+    backend_scanner_relay_t *relay,
+    backend_scanner_relay_event_result_t immediate_result)
+{
+    if (relay->state == BACKEND_SCANNER_RELAY_ABORT_REQUESTED ||
+        relay->state == BACKEND_SCANNER_RELAY_RESTORE_REQUESTED ||
+        relay->state == BACKEND_SCANNER_RELAY_RESTORE_WAIT) {
+        return BACKEND_SCANNER_RELAY_EVENT_WAITING;
+    }
+    relay->cleanup_success = false;
+    if (relay->remote_begin_sent) {
+        backend_scanner_relay_action_t action;
+        action_init(relay, BACKEND_SCANNER_RELAY_ACTION_SEND_ABORT, &action);
+        action.control.type = BACKEND_SCANNER_CONTROL_OTA_ABORT;
+        action.control.payload.ota_finish.session_id = relay->session_id;
+        action.control.payload.ota_finish.generation =
+            relay_wire_generation(relay);
+        strcpy(action.control.payload.ota_finish.reason, "relay_cleanup");
+        relay->state = BACKEND_SCANNER_RELAY_ABORT_REQUESTED;
+        queue_new_action(relay, &action);
+        return BACKEND_SCANNER_RELAY_EVENT_ACCEPTED;
+    }
+    if (relay->quiet_sent) {
+        return queue_restore(relay, false);
+    }
+    (void)finish_terminal(relay, false);
+    return immediate_result;
 }
 
 static backend_scanner_relay_event_result_t schedule_retry(
@@ -291,7 +366,11 @@ static backend_scanner_relay_event_result_t schedule_retry(
         return BACKEND_SCANNER_RELAY_EVENT_RETRY_SCHEDULED;
     }
     if (relay->retry_count >= BACKEND_SCANNER_RELAY_MAX_RETRIES) {
-        return finish_failed(relay, BACKEND_SCANNER_RELAY_EVENT_FAILED);
+        if (relay->state == BACKEND_SCANNER_RELAY_ABORT_REQUESTED) {
+            return queue_restore(relay, false);
+        }
+        return start_failure_cleanup(
+            relay, BACKEND_SCANNER_RELAY_EVENT_FAILED);
     }
     ++relay->retry_count;
     relay->pending_action = relay->last_action;
@@ -385,6 +464,11 @@ bool backend_scanner_relay_can_begin(
 bool backend_scanner_relay_begin(
     backend_scanner_relay_t *relay,
     backend_firmware_store_t *store,
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    bool has_operation_id,
+    const backend_ota_operation_id_t *operation_id,
+    uint32_t session_generation,
+#endif
     backend_scanner_slot_t slot,
     const backend_ota_manifest_t *manifest,
     const uint8_t expected_mac[6],
@@ -399,6 +483,9 @@ bool backend_scanner_relay_begin(
     if (relay == NULL || manifest == NULL || expected_mac == NULL ||
         relay->state != BACKEND_SCANNER_RELAY_IDLE ||
         store == NULL || session_id == 0U || old_boot_id == 0U ||
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+        !has_operation_id || operation_id == NULL || session_generation == 0U ||
+#endif
         expected_topology_generation == 0U ||
         expected_role_generation == 0U || !profile_is_valid(expected_profile)) {
         return false;
@@ -408,9 +495,18 @@ bool backend_scanner_relay_begin(
     memcpy(admitted_mac, expected_mac, sizeof(admitted_mac));
     if (!backend_scanner_relay_can_begin(
             slot, &admitted, admitted_mac, generation) ||
-        !backend_firmware_store_matches(store, &admitted) ||
+        !backend_firmware_store_matches(
+            store,
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+            has_operation_id, operation_id,
+#endif
+            &admitted) ||
         !backend_firmware_store_claim_relay(
-            store, generation, session_id)) {
+            store,
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+            has_operation_id, operation_id,
+#endif
+            generation, session_id)) {
         return false;
     }
 
@@ -419,6 +515,11 @@ bool backend_scanner_relay_begin(
     relay->slot = slot;
     relay->expected_profile = expected_profile;
     memcpy(relay->expected_mac, admitted_mac, sizeof(relay->expected_mac));
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    relay->operation_id = *operation_id;
+    relay->has_operation_id = true;
+    relay->session_generation = session_generation;
+#endif
     relay->session_id = session_id;
     relay->generation = generation;
     relay->old_boot_id = old_boot_id;
@@ -436,13 +537,16 @@ bool backend_scanner_relay_take_action(
     backend_scanner_relay_action_t *out)
 {
     if (relay == NULL || out == NULL || now_ms < 0 ||
-        !relay->action_pending || !relay_binding_is_live(relay)) {
-        if (relay != NULL && relay->state != BACKEND_SCANNER_RELAY_IDLE &&
-            relay->state != BACKEND_SCANNER_RELAY_COMPLETE &&
-            relay->state != BACKEND_SCANNER_RELAY_FAILED &&
-            !relay_binding_is_live(relay)) {
-            (void)finish_failed(relay, BACKEND_SCANNER_RELAY_EVENT_FAILED);
-        }
+        !relay->action_pending) {
+        return false;
+    }
+    const bool cleanup_action =
+        relay->state == BACKEND_SCANNER_RELAY_ABORT_REQUESTED ||
+        relay->state == BACKEND_SCANNER_RELAY_RESTORE_REQUESTED ||
+        relay->state == BACKEND_SCANNER_RELAY_RESTORE_WAIT;
+    if (!cleanup_action && !relay_binding_is_live(relay)) {
+        (void)start_failure_cleanup(
+            relay, BACKEND_SCANNER_RELAY_EVENT_FAILED);
         return false;
     }
 
@@ -456,12 +560,25 @@ bool backend_scanner_relay_take_action(
             now_ms, BACKEND_SCANNER_RELAY_STATUS_POLL_MS);
         return true;
     }
+    if (out->kind == BACKEND_SCANNER_RELAY_ACTION_SEND_RESTORE) {
+        relay->state = BACKEND_SCANNER_RELAY_RESTORE_WAIT;
+        relay->awaiting_receipt = false;
+        relay->convergence_deadline_ms = deadline_after(
+            now_ms, BACKEND_SCANNER_RELAY_CONVERGENCE_TIMEOUT_MS);
+        relay->next_status_poll_ms = now_ms;
+        relay->last_action = *out;
+        return true;
+    }
     if (out->kind == BACKEND_SCANNER_RELAY_ACTION_NONE) {
         return false;
     }
     if (out->kind == BACKEND_SCANNER_RELAY_ACTION_SEND_END) {
         relay->state = BACKEND_SCANNER_RELAY_END_SENT;
     }
+    relay->quiet_sent = relay->quiet_sent ||
+        out->kind == BACKEND_SCANNER_RELAY_ACTION_SEND_QUIET;
+    relay->remote_begin_sent = relay->remote_begin_sent ||
+        out->kind == BACKEND_SCANNER_RELAY_ACTION_SEND_BEGIN;
     relay->last_action = *out;
     relay->awaiting_receipt = true;
     relay->response_deadline_ms = deadline_after(
@@ -484,19 +601,32 @@ backend_scanner_relay_event_result_t backend_scanner_relay_receive(
         relay->state == BACKEND_SCANNER_RELAY_FAILED) {
         return BACKEND_SCANNER_RELAY_EVENT_INVALID_TRANSITION;
     }
-    if (!relay_binding_is_live(relay)) {
-        return finish_failed(relay, BACKEND_SCANNER_RELAY_EVENT_FAILED);
+    if (relay->state != BACKEND_SCANNER_RELAY_ABORT_REQUESTED &&
+        !relay_binding_is_live(relay)) {
+        return start_failure_cleanup(
+            relay, BACKEND_SCANNER_RELAY_EVENT_FAILED);
     }
     if (receipt->session_id != relay->session_id ||
-        receipt->generation != relay->generation) {
+        receipt->generation != relay_wire_generation(relay)) {
         return BACKEND_SCANNER_RELAY_EVENT_IGNORED_STALE;
     }
     if (receipt->dry_run != relay->dry_run) {
-        return finish_failed(
+        return start_failure_cleanup(
             relay, BACKEND_SCANNER_RELAY_EVENT_INVALID_TRANSITION);
     }
+    if (relay->state == BACKEND_SCANNER_RELAY_ABORT_REQUESTED) {
+        if (response_is_expected(relay) &&
+            relay->last_action.kind ==
+                BACKEND_SCANNER_RELAY_ACTION_SEND_ABORT &&
+            receipt->kind == BACKEND_SCANNER_RELAY_RECEIPT_ERROR) {
+            clear_expected_response(relay);
+            return queue_restore(relay, false);
+        }
+        return BACKEND_SCANNER_RELAY_EVENT_IGNORED_STALE;
+    }
     if (receipt->kind == BACKEND_SCANNER_RELAY_RECEIPT_ERROR) {
-        return finish_failed(relay, BACKEND_SCANNER_RELAY_EVENT_FAILED);
+        return start_failure_cleanup(
+            relay, BACKEND_SCANNER_RELAY_EVENT_FAILED);
     }
 
     if (relay->state == BACKEND_SCANNER_RELAY_QUIET_REQUESTED &&
@@ -520,7 +650,8 @@ backend_scanner_relay_event_result_t backend_scanner_relay_receive(
         clear_expected_response(relay);
         relay->state = BACKEND_SCANNER_RELAY_STREAMING;
         if (!queue_chunk(relay)) {
-            return finish_failed(relay, BACKEND_SCANNER_RELAY_EVENT_FAILED);
+            return start_failure_cleanup(
+                relay, BACKEND_SCANNER_RELAY_EVENT_FAILED);
         }
         return BACKEND_SCANNER_RELAY_EVENT_ACCEPTED;
     }
@@ -550,7 +681,8 @@ backend_scanner_relay_event_result_t backend_scanner_relay_receive(
             relay->next_sequence = chunk->next_sequence;
             if (relay->acknowledged_bytes < relay->manifest.image_size &&
                 !queue_chunk(relay)) {
-                return finish_failed(relay, BACKEND_SCANNER_RELAY_EVENT_FAILED);
+                return start_failure_cleanup(
+                    relay, BACKEND_SCANNER_RELAY_EVENT_FAILED);
             }
             return BACKEND_SCANNER_RELAY_EVENT_ACCEPTED;
         }
@@ -583,7 +715,7 @@ backend_scanner_relay_event_result_t backend_scanner_relay_receive(
         }
         clear_expected_response(relay);
         if (relay->dry_run) {
-            return finish_complete(relay);
+            return queue_restore(relay, true);
         }
         relay->state = BACKEND_SCANNER_RELAY_REBOOT_WAIT;
         relay->convergence_deadline_ms = deadline_after(
@@ -597,7 +729,7 @@ backend_scanner_relay_event_result_t backend_scanner_relay_receive(
         return BACKEND_SCANNER_RELAY_EVENT_IGNORED_STALE;
     }
 
-    return finish_failed(
+    return start_failure_cleanup(
         relay, BACKEND_SCANNER_RELAY_EVENT_INVALID_TRANSITION);
 }
 
@@ -617,8 +749,13 @@ backend_scanner_relay_event_result_t backend_scanner_relay_tick(
     if (relay->state == BACKEND_SCANNER_RELAY_IDLE) {
         return BACKEND_SCANNER_RELAY_EVENT_INVALID_TRANSITION;
     }
-    if (!relay_binding_is_live(relay)) {
-        return finish_failed(relay, BACKEND_SCANNER_RELAY_EVENT_FAILED);
+    const bool cleanup_state =
+        relay->state == BACKEND_SCANNER_RELAY_ABORT_REQUESTED ||
+        relay->state == BACKEND_SCANNER_RELAY_RESTORE_REQUESTED ||
+        relay->state == BACKEND_SCANNER_RELAY_RESTORE_WAIT;
+    if (!cleanup_state && !relay_binding_is_live(relay)) {
+        return start_failure_cleanup(
+            relay, BACKEND_SCANNER_RELAY_EVENT_FAILED);
     }
     if (relay->awaiting_receipt && now_ms >= relay->response_deadline_ms) {
         return schedule_retry(relay);
@@ -626,10 +763,16 @@ backend_scanner_relay_event_result_t backend_scanner_relay_tick(
     if ((relay->state == BACKEND_SCANNER_RELAY_REBOOT_WAIT ||
          relay->state == BACKEND_SCANNER_RELAY_CONVERGENCE_WAIT) &&
         now_ms >= relay->convergence_deadline_ms) {
-        return finish_failed(relay, BACKEND_SCANNER_RELAY_EVENT_FAILED);
+        return start_failure_cleanup(
+            relay, BACKEND_SCANNER_RELAY_EVENT_FAILED);
+    }
+    if (relay->state == BACKEND_SCANNER_RELAY_RESTORE_WAIT &&
+        now_ms >= relay->convergence_deadline_ms) {
+        return finish_terminal(relay, false);
     }
     if ((relay->state == BACKEND_SCANNER_RELAY_REBOOT_WAIT ||
-         relay->state == BACKEND_SCANNER_RELAY_CONVERGENCE_WAIT) &&
+         relay->state == BACKEND_SCANNER_RELAY_CONVERGENCE_WAIT ||
+         relay->state == BACKEND_SCANNER_RELAY_RESTORE_WAIT) &&
         !relay->action_pending && now_ms >= relay->next_status_poll_ms) {
         queue_status_request(relay);
         return BACKEND_SCANNER_RELAY_EVENT_ACCEPTED;
@@ -646,23 +789,59 @@ backend_scanner_relay_event_result_t backend_scanner_relay_on_status(
     if (relay == NULL || status == NULL || now_ms < 0) {
         return BACKEND_SCANNER_RELAY_EVENT_INVALID_ARGUMENT;
     }
+    const bool restoring =
+        relay->state == BACKEND_SCANNER_RELAY_RESTORE_WAIT;
     if (relay->state != BACKEND_SCANNER_RELAY_REBOOT_WAIT &&
-        relay->state != BACKEND_SCANNER_RELAY_CONVERGENCE_WAIT) {
+        relay->state != BACKEND_SCANNER_RELAY_CONVERGENCE_WAIT &&
+        !restoring) {
         return BACKEND_SCANNER_RELAY_EVENT_INVALID_TRANSITION;
     }
-    if (!relay_binding_is_live(relay) ||
+    if ((!restoring && !relay_binding_is_live(relay)) ||
         live_topology_generation != relay->expected_topology_generation ||
         status->schema != BACKEND_SCANNER_STATUS_SCHEMA) {
-        return finish_failed(relay, BACKEND_SCANNER_RELAY_EVENT_FAILED);
+        return restoring
+            ? finish_terminal(relay, false)
+            : start_failure_cleanup(
+                relay, BACKEND_SCANNER_RELAY_EVENT_FAILED);
     }
     uint8_t observed_mac[6];
     if (!parse_mac(status->mac, observed_mac) ||
         memcmp(observed_mac, relay->expected_mac,
                sizeof(relay->expected_mac)) != 0) {
-        return finish_failed(relay, BACKEND_SCANNER_RELAY_EVENT_FAILED);
+        return restoring
+            ? finish_terminal(relay, false)
+            : start_failure_cleanup(
+                relay, BACKEND_SCANNER_RELAY_EVENT_FAILED);
     }
     if (now_ms >= relay->convergence_deadline_ms) {
-        return finish_failed(relay, BACKEND_SCANNER_RELAY_EVENT_FAILED);
+        return restoring
+            ? finish_terminal(relay, false)
+            : start_failure_cleanup(
+                relay, BACKEND_SCANNER_RELAY_EVENT_FAILED);
+    }
+
+    if (restoring) {
+        const bool binding_restored = status->boot_id != 0U &&
+            (!relay->cleanup_success || status->boot_id == relay->old_boot_id) &&
+            fixed_string_equals_literal(
+                status->target, sizeof(status->target),
+                FOF_BACKEND_SCANNER_TARGET) &&
+            fixed_string_equals_literal(
+                status->project, sizeof(status->project),
+                FOF_BACKEND_SCANNER_PROJECT) &&
+            fixed_string_equals_literal(
+                status->hardware, sizeof(status->hardware),
+                FOF_BACKEND_HARDWARE);
+        const bool detection_restored = status->command_ingress &&
+            status->role_acked &&
+            status->role_generation == relay->expected_role_generation &&
+            status->profile == relay->expected_profile &&
+            backend_scanner_required_radio_healthy(
+                status->profile, status->ble_healthy, status->wifi_healthy);
+        if (binding_restored && detection_restored) {
+            return finish_terminal(relay, relay->cleanup_success);
+        }
+        return BACKEND_SCANNER_RELAY_EVENT_WAITING;
     }
 
     if (relay->state == BACKEND_SCANNER_RELAY_REBOOT_WAIT) {
@@ -682,7 +861,8 @@ backend_scanner_relay_event_result_t backend_scanner_relay_on_status(
             !fixed_string_equals_literal(
                 status->version, sizeof(status->version),
                 relay->manifest.version)) {
-            return finish_failed(relay, BACKEND_SCANNER_RELAY_EVENT_FAILED);
+            return start_failure_cleanup(
+                relay, BACKEND_SCANNER_RELAY_EVENT_FAILED);
         }
         relay->new_boot_id = status->boot_id;
         relay->state = BACKEND_SCANNER_RELAY_CONVERGENCE_WAIT;
@@ -699,7 +879,8 @@ backend_scanner_relay_event_result_t backend_scanner_relay_on_status(
                !fixed_string_equals_literal(
                    status->version, sizeof(status->version),
                    relay->manifest.version)) {
-        return finish_failed(relay, BACKEND_SCANNER_RELAY_EVENT_FAILED);
+        return start_failure_cleanup(
+            relay, BACKEND_SCANNER_RELAY_EVENT_FAILED);
     }
 
     bool healthy = status->command_ingress && status->role_acked &&
@@ -710,9 +891,25 @@ backend_scanner_relay_event_result_t backend_scanner_relay_on_status(
         fixed_string_equals_literal(
             status->rollback_state, sizeof(status->rollback_state), "valid");
     if (healthy) {
-        return finish_complete(relay);
+        return finish_terminal(relay, true);
     }
     return BACKEND_SCANNER_RELAY_EVENT_WAITING;
+}
+
+backend_scanner_relay_event_result_t backend_scanner_relay_abort(
+    backend_scanner_relay_t *relay,
+    int64_t now_ms)
+{
+    if (relay == NULL || now_ms < 0) {
+        return BACKEND_SCANNER_RELAY_EVENT_INVALID_ARGUMENT;
+    }
+    if (relay->state == BACKEND_SCANNER_RELAY_IDLE ||
+        relay->state == BACKEND_SCANNER_RELAY_COMPLETE ||
+        relay->state == BACKEND_SCANNER_RELAY_FAILED) {
+        return BACKEND_SCANNER_RELAY_EVENT_INVALID_TRANSITION;
+    }
+    return start_failure_cleanup(
+        relay, BACKEND_SCANNER_RELAY_EVENT_FAILED);
 }
 
 bool backend_scanner_relay_reset(backend_scanner_relay_t *relay)
@@ -724,7 +921,11 @@ bool backend_scanner_relay_reset(backend_scanner_relay_t *relay)
     }
     if (relay->store != NULL) {
         backend_firmware_store_release_relay(
-            relay->store, relay->generation, relay->session_id);
+            relay->store,
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+            relay->has_operation_id, &relay->operation_id,
+#endif
+            relay->generation, relay->session_id);
     }
     backend_scanner_relay_init(relay);
     return true;

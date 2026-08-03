@@ -10,19 +10,73 @@
 void setUp(void) {}
 void tearDown(void) {}
 
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+#define TEST_JOURNAL_CRC_OFFSET 502U
+#define TEST_JOURNAL_PROFILE_SHIFT 159U
+#else
+#define TEST_JOURNAL_CRC_OFFSET 343U
+#define TEST_JOURNAL_PROFILE_SHIFT 0U
+#endif
+
+static backend_ota_operation_id_t test_operation_id(uint8_t seed)
+{
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    backend_ota_operation_id_t operation_id;
+    for (size_t index = 0U; index < sizeof(operation_id.bytes); ++index) {
+        operation_id.bytes[index] = (uint8_t)(seed + index);
+    }
+    return operation_id;
+#else
+    return UINT32_C(0x04030200) | seed;
+#endif
+}
+
+static void set_record_operation(
+    backend_ota_journal_record_t *record, uint8_t seed)
+{
+    record->operation_id = test_operation_id(seed);
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    record->has_operation_id = true;
+#endif
+}
+
+static void clear_record_operation(backend_ota_journal_record_t *record)
+{
+    memset(&record->operation_id, 0, sizeof(record->operation_id));
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    record->has_operation_id = false;
+#endif
+}
+
+static void change_record_operation(backend_ota_journal_record_t *record)
+{
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    record->operation_id.bytes[15] ^= UINT8_C(1);
+#else
+    ++record->operation_id;
+#endif
+}
+
+static void assert_operation_equal(
+    const backend_ota_operation_id_t *expected,
+    const backend_ota_operation_id_t *actual)
+{
+    TEST_ASSERT_TRUE(backend_ota_operation_id_equal(expected, actual));
+}
+
 static backend_ota_journal_record_t valid_uplink_record(void)
 {
     backend_ota_journal_record_t record;
     memset(&record, 0, sizeof(record));
     record.schema = BACKEND_OTA_JOURNAL_SCHEMA;
-    record.operation_id = UINT32_C(0x04030201);
+    set_record_operation(&record, 1U);
     record.component = BACKEND_OTA_COMPONENT_UPLINK;
     record.component_slot = -1;
     record.apply_mode = BACKEND_OTA_NEWER_ONLY;
-    strcpy(record.catalog_name, "uplink-s3-backend");
-    strcpy(record.manifest.target, "uplink-s3-backend");
-    strcpy(record.manifest.project, "fof_backend_uplink");
-    strcpy(record.manifest.hardware, "seeed_xiao_esp32s3");
+    strcpy(record.catalog_name, FOF_BACKEND_UPLINK_TARGET);
+    strcpy(record.manifest.target, FOF_BACKEND_UPLINK_TARGET);
+    strcpy(record.manifest.project, FOF_BACKEND_UPLINK_PROJECT);
+    strcpy(record.manifest.hardware, FOF_BACKEND_HARDWARE);
     strcpy(record.manifest.version, "0.1.1-backend");
     record.manifest.image_size = UINT32_C(0x00123456);
     record.manifest.crc32 = 0U;
@@ -43,6 +97,29 @@ static backend_ota_journal_record_t valid_uplink_record(void)
     record.phase = BACKEND_OTA_PHASE_ACCEPTED;
     record.image_writes_before = 11U;
     record.image_writes_after = 11U;
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    record.action = BACKEND_OTA_JOURNAL_ACTION_APPLY;
+    record.expected_size = record.manifest.image_size;
+    memcpy(record.expected_sha256, record.manifest.sha256,
+           sizeof(record.expected_sha256));
+    memcpy(record.expected_uplink_mac, record.uplink_mac,
+           sizeof(record.expected_uplink_mac));
+    record.expected_uplink_boot_id = record.uplink_boot_id;
+    record.has_accepted_probe_receipt = true;
+    for (size_t index = 0U;
+         index < sizeof(record.accepted_probe_receipt_sha256); ++index) {
+        record.accepted_probe_receipt_sha256[index] =
+            (uint8_t)(UINT8_C(0x80) + index);
+    }
+    record.command_next_sequence = 2U;
+    record.event_sequence = 2U;
+    record.progress_initialized = true;
+    record.progress_stage = BACKEND_OTA_JOURNAL_PROGRESS_STAGE;
+    record.progress_received = record.expected_size;
+    record.progress_total = record.expected_size;
+    record.checkpoint = BACKEND_OTA_JOURNAL_CHECKPOINT_IMAGE_STAGED;
+    record.has_manifest = true;
+#endif
     return record;
 }
 
@@ -52,9 +129,9 @@ static backend_ota_journal_record_t valid_scanner_record(
     backend_ota_journal_record_t record = valid_uplink_record();
     record.component = component;
     record.component_slot = component == BACKEND_OTA_COMPONENT_SCANNER0 ? 0 : 1;
-    strcpy(record.catalog_name, "scanner-s3-combo-backend");
-    strcpy(record.manifest.target, "scanner-s3-combo-backend");
-    strcpy(record.manifest.project, "fof_backend_scanner");
+    strcpy(record.catalog_name, FOF_BACKEND_SCANNER_TARGET);
+    strcpy(record.manifest.target, FOF_BACKEND_SCANNER_TARGET);
+    strcpy(record.manifest.project, FOF_BACKEND_SCANNER_PROJECT);
     const uint8_t scanner_mac[6] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0x02};
     memcpy(record.expected_target_mac, scanner_mac, sizeof(scanner_mac));
     memcpy(record.actual_target_mac, scanner_mac, sizeof(scanner_mac));
@@ -63,7 +140,35 @@ static backend_ota_journal_record_t valid_scanner_record(
     return record;
 }
 
-void test_schema_one_record_encodes_fixed_width_little_endian_without_padding(void)
+static void set_record_phase(
+    backend_ota_journal_record_t *record, backend_ota_phase_t phase)
+{
+    record->phase = phase;
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    switch (phase) {
+    case BACKEND_OTA_PHASE_ACCEPTED:
+        record->checkpoint = BACKEND_OTA_JOURNAL_CHECKPOINT_IMAGE_STAGED;
+        break;
+    case BACKEND_OTA_PHASE_WRITING:
+        record->checkpoint = BACKEND_OTA_JOURNAL_CHECKPOINT_IMAGE_STAGED;
+        break;
+    case BACKEND_OTA_PHASE_REBOOT_PENDING:
+        record->checkpoint = BACKEND_OTA_JOURNAL_CHECKPOINT_REBOOT_WAIT;
+        break;
+    case BACKEND_OTA_PHASE_CONVERGENCE_PENDING:
+        record->checkpoint = BACKEND_OTA_JOURNAL_CHECKPOINT_CONVERGENCE;
+        break;
+    case BACKEND_OTA_PHASE_COMPLETE:
+    case BACKEND_OTA_PHASE_FAILED:
+        record->checkpoint = BACKEND_OTA_JOURNAL_CHECKPOINT_TERMINAL;
+        break;
+    default:
+        break;
+    }
+#endif
+}
+
+void test_profile_record_encodes_fixed_width_without_struct_padding(void)
 {
     backend_ota_journal_record_t record = valid_uplink_record();
     backend_ota_journal_blob_t blob;
@@ -71,10 +176,24 @@ void test_schema_one_record_encodes_fixed_width_little_endian_without_padding(vo
 
     TEST_ASSERT_TRUE(backend_ota_journal_encode(&record, &blob));
     TEST_ASSERT_EQUAL_UINT(BACKEND_OTA_JOURNAL_CANONICAL_SIZE, blob.length);
-    TEST_ASSERT_EQUAL_UINT8(1U, blob.bytes[0]);
+    TEST_ASSERT_EQUAL_UINT8((uint8_t)BACKEND_OTA_JOURNAL_SCHEMA, blob.bytes[0]);
     TEST_ASSERT_EQUAL_UINT8(0U, blob.bytes[1]);
     TEST_ASSERT_EQUAL_UINT8(0U, blob.bytes[2]);
     TEST_ASSERT_EQUAL_UINT8(0U, blob.bytes[3]);
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    TEST_ASSERT_EQUAL_UINT8(1U, blob.bytes[4]);
+    for (size_t index = 0U; index < 16U; ++index) {
+        TEST_ASSERT_EQUAL_UINT8((uint8_t)(index + 1U), blob.bytes[5U + index]);
+    }
+    TEST_ASSERT_EQUAL_UINT8(BACKEND_OTA_JOURNAL_ACTION_APPLY, blob.bytes[21]);
+    TEST_ASSERT_EQUAL_UINT8(1U, blob.bytes[104]);
+    TEST_ASSERT_EQUAL_UINT8(1U, blob.bytes[166]);
+    TEST_ASSERT_EQUAL_INT8(-1, (int8_t)blob.bytes[171]);
+    TEST_ASSERT_EQUAL_UINT8(0x56U, blob.bytes[368]);
+    TEST_ASSERT_EQUAL_UINT8(0x34U, blob.bytes[369]);
+    TEST_ASSERT_EQUAL_UINT8(0x12U, blob.bytes[370]);
+    TEST_ASSERT_EQUAL_UINT8(0x00U, blob.bytes[371]);
+#else
     TEST_ASSERT_EQUAL_UINT8(1U, blob.bytes[4]);
     TEST_ASSERT_EQUAL_UINT8(2U, blob.bytes[5]);
     TEST_ASSERT_EQUAL_UINT8(3U, blob.bytes[6]);
@@ -88,7 +207,31 @@ void test_schema_one_record_encodes_fixed_width_little_endian_without_padding(vo
     TEST_ASSERT_EQUAL_UINT8(0U, blob.bytes[214]);
     TEST_ASSERT_EQUAL_UINT8(0U, blob.bytes[215]);
     TEST_ASSERT_EQUAL_UINT8(0U, blob.bytes[216]);
+#endif
 }
+
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+void test_fullsize_presence_allows_zero_id_and_rejects_numeric_schema(void)
+{
+    backend_ota_journal_record_t record = valid_uplink_record();
+    memset(&record.operation_id, 0, sizeof(record.operation_id));
+    TEST_ASSERT_TRUE(record.has_operation_id);
+    TEST_ASSERT_EQUAL(
+        BACKEND_OTA_JOURNAL_VALID, backend_ota_journal_validate(&record));
+    backend_ota_journal_blob_t blob;
+    TEST_ASSERT_TRUE(backend_ota_journal_encode(&record, &blob));
+    TEST_ASSERT_EQUAL_UINT8(1U, blob.bytes[4]);
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(
+        record.operation_id.bytes, blob.bytes + 5U,
+        sizeof(record.operation_id.bytes));
+
+    backend_ota_journal_record_t decoded;
+    uint8_t numeric_schema[347] = {0U};
+    TEST_ASSERT_EQUAL(BACKEND_OTA_JOURNAL_INVALID_LENGTH,
+        backend_ota_journal_decode(
+            numeric_schema, sizeof(numeric_schema), &decoded));
+}
+#endif
 
 static void assert_invalid(const backend_ota_journal_record_t *record)
 {
@@ -107,7 +250,7 @@ void test_required_identifiers_and_known_enums_are_strict(void)
     TEST_ASSERT_EQUAL(
         BACKEND_OTA_JOURNAL_VALID, backend_ota_journal_validate(&record));
 
-    record.operation_id = 0U;
+    clear_record_operation(&record);
     assert_invalid(&record);
     record = valid_uplink_record();
     record.manifest.generation = 0U;
@@ -266,28 +409,28 @@ void test_each_phase_has_strict_non_replayable_evidence(void)
     TEST_ASSERT_EQUAL(
         BACKEND_OTA_JOURNAL_VALID, backend_ota_journal_validate(&record));
 
-    record.phase = BACKEND_OTA_PHASE_WRITING;
+    set_record_phase(&record, BACKEND_OTA_PHASE_WRITING);
     TEST_ASSERT_EQUAL(
         BACKEND_OTA_JOURNAL_VALID, backend_ota_journal_validate(&record));
 
-    record.phase = BACKEND_OTA_PHASE_REBOOT_PENDING;
+    set_record_phase(&record, BACKEND_OTA_PHASE_REBOOT_PENDING);
     record.image_writes_after = 12U;
     TEST_ASSERT_EQUAL(
         BACKEND_OTA_JOURNAL_VALID, backend_ota_journal_validate(&record));
 
-    record.phase = BACKEND_OTA_PHASE_CONVERGENCE_PENDING;
+    set_record_phase(&record, BACKEND_OTA_PHASE_CONVERGENCE_PENDING);
     record.boot_id_after = 88U;
     TEST_ASSERT_EQUAL(
         BACKEND_OTA_JOURNAL_VALID, backend_ota_journal_validate(&record));
 
-    record.phase = BACKEND_OTA_PHASE_COMPLETE;
+    set_record_phase(&record, BACKEND_OTA_PHASE_COMPLETE);
     record.rollback_clear = true;
     record.converged = true;
     TEST_ASSERT_EQUAL(
         BACKEND_OTA_JOURNAL_VALID, backend_ota_journal_validate(&record));
 
     record = valid_uplink_record();
-    record.phase = BACKEND_OTA_PHASE_FAILED;
+    set_record_phase(&record, BACKEND_OTA_PHASE_FAILED);
     TEST_ASSERT_EQUAL(
         BACKEND_OTA_JOURNAL_VALID, backend_ota_journal_validate(&record));
 
@@ -295,42 +438,42 @@ void test_each_phase_has_strict_non_replayable_evidence(void)
     record.image_writes_after = 12U;
     assert_invalid(&record);
     record = valid_uplink_record();
-    record.phase = BACKEND_OTA_PHASE_WRITING;
+    set_record_phase(&record, BACKEND_OTA_PHASE_WRITING);
     record.image_writes_after = 12U;
     assert_invalid(&record);
     record = valid_uplink_record();
-    record.phase = BACKEND_OTA_PHASE_REBOOT_PENDING;
+    set_record_phase(&record, BACKEND_OTA_PHASE_REBOOT_PENDING);
     assert_invalid(&record);
     record = valid_uplink_record();
-    record.phase = BACKEND_OTA_PHASE_REBOOT_PENDING;
+    set_record_phase(&record, BACKEND_OTA_PHASE_REBOOT_PENDING);
     record.image_writes_after = 12U;
     record.boot_id_after = 88U;
     assert_invalid(&record);
     record = valid_uplink_record();
-    record.phase = BACKEND_OTA_PHASE_CONVERGENCE_PENDING;
+    set_record_phase(&record, BACKEND_OTA_PHASE_CONVERGENCE_PENDING);
     record.image_writes_after = 12U;
     assert_invalid(&record);
     record = valid_uplink_record();
-    record.phase = BACKEND_OTA_PHASE_CONVERGENCE_PENDING;
+    set_record_phase(&record, BACKEND_OTA_PHASE_CONVERGENCE_PENDING);
     record.image_writes_after = 12U;
     record.boot_id_after = record.actual_target_boot_id;
     assert_invalid(&record);
     record = valid_uplink_record();
-    record.phase = BACKEND_OTA_PHASE_COMPLETE;
+    set_record_phase(&record, BACKEND_OTA_PHASE_COMPLETE);
     record.image_writes_after = 12U;
     record.boot_id_after = 88U;
     record.rollback_clear = true;
     assert_invalid(&record);
     record = valid_uplink_record();
-    record.phase = BACKEND_OTA_PHASE_FAILED;
+    set_record_phase(&record, BACKEND_OTA_PHASE_FAILED);
     record.image_writes_after = 10U;
     assert_invalid(&record);
     record = valid_uplink_record();
-    record.phase = BACKEND_OTA_PHASE_FAILED;
+    set_record_phase(&record, BACKEND_OTA_PHASE_FAILED);
     record.converged = true;
     assert_invalid(&record);
     record = valid_uplink_record();
-    record.phase = BACKEND_OTA_PHASE_FAILED;
+    set_record_phase(&record, BACKEND_OTA_PHASE_FAILED);
     record.rollback_clear = true;
     record.converged = true;
     assert_invalid(&record);
@@ -360,7 +503,9 @@ static void write_u32_le(uint8_t bytes[4], uint32_t value)
 
 static void repair_blob_crc(backend_ota_journal_blob_t *blob)
 {
-    write_u32_le(blob->bytes + 343U, test_crc32(blob->bytes, 343U));
+    write_u32_le(
+        blob->bytes + TEST_JOURNAL_CRC_OFFSET,
+        test_crc32(blob->bytes, TEST_JOURNAL_CRC_OFFSET));
 }
 
 typedef struct {
@@ -434,7 +579,8 @@ void test_decode_round_trip_is_exact_and_preserves_zero_manifest_crc(void)
     TEST_ASSERT_EQUAL(BACKEND_OTA_SAME_VERSION_RECOVERY, decoded.apply_mode);
     TEST_ASSERT_EQUAL_STRING(record.manifest.sha256, decoded.manifest.sha256);
     TEST_ASSERT_EQUAL_UINT32(
-        test_crc32(first.bytes, 343U), decoded.record_crc32);
+        test_crc32(first.bytes, TEST_JOURNAL_CRC_OFFSET),
+        decoded.record_crc32);
 
     backend_ota_journal_blob_t second;
     TEST_ASSERT_TRUE(backend_ota_journal_encode(&decoded, &second));
@@ -442,6 +588,7 @@ void test_decode_round_trip_is_exact_and_preserves_zero_manifest_crc(void)
     TEST_ASSERT_EQUAL_UINT8_ARRAY(first.bytes, second.bytes, first.length);
 }
 
+#if defined(FOF_BACKEND_PROFILE_BADGE_LITE)
 void test_computed_zero_record_crc_is_accepted_by_exact_equality(void)
 {
     backend_ota_journal_record_t record = valid_uplink_record();
@@ -462,6 +609,7 @@ void test_computed_zero_record_crc_is_accepted_by_exact_equality(void)
     TEST_ASSERT_EQUAL_UINT32(0U, decoded.record_crc32);
     TEST_ASSERT_EQUAL_UINT32(UINT32_C(0xD68E1C0D), decoded.manifest.crc32);
 }
+#endif
 
 void test_decode_rejects_corrupt_truncated_and_extra_records(void)
 {
@@ -503,35 +651,36 @@ void test_decode_rejects_noncanonical_fields_even_with_repaired_crc(void)
     backend_ota_journal_record_t decoded;
 
     backend_ota_journal_blob_t blob = original;
-    blob.bytes[286] = 2U;
+    blob.bytes[286U + TEST_JOURNAL_PROFILE_SHIFT] = 2U;
     repair_blob_crc(&blob);
     TEST_ASSERT_EQUAL(
         BACKEND_OTA_JOURNAL_INVALID_FIELD,
         backend_ota_journal_decode(blob.bytes, blob.length, &decoded));
 
     blob = original;
-    blob.bytes[341] = 2U;
+    blob.bytes[341U + TEST_JOURNAL_PROFILE_SHIFT] = 2U;
     repair_blob_crc(&blob);
     TEST_ASSERT_EQUAL(
         BACKEND_OTA_JOURNAL_INVALID_FIELD,
         backend_ota_journal_decode(blob.bytes, blob.length, &decoded));
 
     blob = original;
-    blob.bytes[8] = 3U;
+    blob.bytes[8U + TEST_JOURNAL_PROFILE_SHIFT] = 3U;
     repair_blob_crc(&blob);
     TEST_ASSERT_EQUAL(
         BACKEND_OTA_JOURNAL_INVALID_FIELD,
         backend_ota_journal_decode(blob.bytes, blob.length, &decoded));
 
     blob = original;
-    blob.bytes[17U + strlen("uplink-s3-backend") + 1U] = 'x';
+    blob.bytes[17U + TEST_JOURNAL_PROFILE_SHIFT +
+               strlen(FOF_BACKEND_UPLINK_TARGET) + 1U] = 'x';
     repair_blob_crc(&blob);
     TEST_ASSERT_EQUAL(
         BACKEND_OTA_JOURNAL_INVALID_FIELD,
         backend_ota_journal_decode(blob.bytes, blob.length, &decoded));
 
     blob = original;
-    blob.bytes[217] = 'A';
+    blob.bytes[217U + TEST_JOURNAL_PROFILE_SHIFT] = 'A';
     repair_blob_crc(&blob);
     TEST_ASSERT_EQUAL(
         BACKEND_OTA_JOURNAL_INVALID_FIELD,
@@ -570,7 +719,7 @@ void test_callback_load_distinguishes_missing_io_and_corrupt_records(void)
     TEST_ASSERT_EQUAL(
         BACKEND_OTA_JOURNAL_LOAD_PRESENT,
         backend_ota_journal_load(&storage, &loaded));
-    TEST_ASSERT_EQUAL_UINT32(record.operation_id, loaded.operation_id);
+    assert_operation_equal(&record.operation_id, &loaded.operation_id);
 
     fake.length = blob.length - 1U;
     TEST_ASSERT_EQUAL(
@@ -601,7 +750,7 @@ void test_callback_load_distinguishes_missing_io_and_corrupt_records(void)
 static backend_ota_journal_record_t complete_record(void)
 {
     backend_ota_journal_record_t record = valid_uplink_record();
-    record.phase = BACKEND_OTA_PHASE_COMPLETE;
+    set_record_phase(&record, BACKEND_OTA_PHASE_COMPLETE);
     record.image_writes_after = record.image_writes_before + 1U;
     record.boot_id_after = record.actual_target_boot_id + 1U;
     record.rollback_clear = true;
@@ -618,6 +767,35 @@ static void set_durable_record(
     fake->length = blob.length;
     fake->present = true;
 }
+
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+void test_startup_writing_image_staged_routes_post_write_without_replay(void)
+{
+    fake_storage_t fake = {0};
+    backend_ota_journal_record_t record = valid_scanner_record(
+        BACKEND_OTA_COMPONENT_SCANNER0);
+    set_record_phase(&record, BACKEND_OTA_PHASE_WRITING);
+    TEST_ASSERT_EQUAL(
+        BACKEND_OTA_JOURNAL_CHECKPOINT_IMAGE_STAGED, record.checkpoint);
+    set_durable_record(&fake, &record);
+    backend_ota_journal_storage_t storage = storage_adapter(&fake);
+    backend_ota_journal_record_t recovered;
+
+    TEST_ASSERT_EQUAL(
+        BACKEND_OTA_JOURNAL_STARTUP_ROLL_BACK,
+        backend_ota_journal_startup_recover(&storage, &recovered));
+    TEST_ASSERT_EQUAL(BACKEND_OTA_PHASE_WRITING, recovered.phase);
+    TEST_ASSERT_EQUAL(
+        BACKEND_OTA_JOURNAL_CHECKPOINT_IMAGE_STAGED,
+        recovered.checkpoint);
+
+    set_record_phase(&record, BACKEND_OTA_PHASE_ACCEPTED);
+    set_durable_record(&fake, &record);
+    TEST_ASSERT_EQUAL(
+        BACKEND_OTA_JOURNAL_STARTUP_RESTART_DOWNLOAD,
+        backend_ota_journal_startup_recover(&storage, &recovered));
+}
+#endif
 
 void test_accepted_persistence_is_durable_idempotent_and_blocks_active_replay(void)
 {
@@ -640,7 +818,7 @@ void test_accepted_persistence_is_durable_idempotent_and_blocks_active_replay(vo
     TEST_ASSERT_EQUAL_UINT(1U, fake.store_calls);
 
     backend_ota_journal_record_t different = accepted;
-    ++different.operation_id;
+    change_record_operation(&different);
     TEST_ASSERT_EQUAL(
         BACKEND_OTA_JOURNAL_PERSIST_CONFLICT,
         backend_ota_journal_persist_accepted(&storage, &different));
@@ -667,7 +845,8 @@ void test_terminal_record_is_replaced_only_by_a_new_authorized_operation(void)
 
     backend_ota_journal_record_t next = valid_scanner_record(
         BACKEND_OTA_COMPONENT_SCANNER0);
-    next.operation_id = terminal.operation_id + 1U;
+    next.operation_id = terminal.operation_id;
+    change_record_operation(&next);
     TEST_ASSERT_EQUAL(
         BACKEND_OTA_JOURNAL_PERSIST_COMMITTED,
         backend_ota_journal_persist_accepted(&storage, &next));
@@ -676,7 +855,7 @@ void test_terminal_record_is_replaced_only_by_a_new_authorized_operation(void)
     TEST_ASSERT_EQUAL(
         BACKEND_OTA_JOURNAL_LOAD_PRESENT,
         backend_ota_journal_load(&storage, &loaded));
-    TEST_ASSERT_EQUAL_UINT32(next.operation_id, loaded.operation_id);
+    assert_operation_equal(&next.operation_id, &loaded.operation_id);
     TEST_ASSERT_EQUAL(BACKEND_OTA_PHASE_ACCEPTED, loaded.phase);
 
     terminal = complete_record();
@@ -737,7 +916,7 @@ void test_phase_commits_gate_one_mutation_and_recovery_never_replays_it(void)
         BACKEND_OTA_JOURNAL_RECOVERY_FAIL_BEFORE_MUTATION,
         backend_ota_journal_recovery_action(&record));
 
-    record.phase = BACKEND_OTA_PHASE_WRITING;
+    set_record_phase(&record, BACKEND_OTA_PHASE_WRITING);
     TEST_ASSERT_EQUAL(
         BACKEND_OTA_JOURNAL_PERSIST_MUTATION_AUTHORIZED,
         backend_ota_journal_persist_transition(
@@ -752,7 +931,7 @@ void test_phase_commits_gate_one_mutation_and_recovery_never_replays_it(void)
         BACKEND_OTA_JOURNAL_RECOVERY_POST_WRITE_CHECKS,
         backend_ota_journal_recovery_action(&record));
 
-    record.phase = BACKEND_OTA_PHASE_REBOOT_PENDING;
+    set_record_phase(&record, BACKEND_OTA_PHASE_REBOOT_PENDING);
     record.image_writes_after = record.image_writes_before + 1U;
     TEST_ASSERT_EQUAL(
         BACKEND_OTA_JOURNAL_PERSIST_COMMITTED,
@@ -762,7 +941,7 @@ void test_phase_commits_gate_one_mutation_and_recovery_never_replays_it(void)
         BACKEND_OTA_JOURNAL_RECOVERY_REBOOT_CHECKS,
         backend_ota_journal_recovery_action(&record));
 
-    record.phase = BACKEND_OTA_PHASE_CONVERGENCE_PENDING;
+    set_record_phase(&record, BACKEND_OTA_PHASE_CONVERGENCE_PENDING);
     record.boot_id_after = record.actual_target_boot_id + 1U;
     TEST_ASSERT_EQUAL(
         BACKEND_OTA_JOURNAL_PERSIST_COMMITTED,
@@ -772,7 +951,7 @@ void test_phase_commits_gate_one_mutation_and_recovery_never_replays_it(void)
         BACKEND_OTA_JOURNAL_RECOVERY_CONVERGENCE_CHECKS,
         backend_ota_journal_recovery_action(&record));
 
-    record.phase = BACKEND_OTA_PHASE_COMPLETE;
+    set_record_phase(&record, BACKEND_OTA_PHASE_COMPLETE);
     record.rollback_clear = true;
     record.converged = true;
     TEST_ASSERT_EQUAL(
@@ -788,7 +967,7 @@ void test_phase_commits_gate_one_mutation_and_recovery_never_replays_it(void)
             &storage, &record, record.boot_id_after));
 
     backend_ota_journal_record_t failed = record;
-    failed.phase = BACKEND_OTA_PHASE_FAILED;
+    set_record_phase(&failed, BACKEND_OTA_PHASE_FAILED);
     failed.rollback_clear = false;
     failed.converged = false;
     TEST_ASSERT_EQUAL(
@@ -807,7 +986,7 @@ void test_wrong_boot_illegal_skip_and_store_failure_never_authorize_mutation(voi
     const size_t stores_before = fake.store_calls;
 
     backend_ota_journal_record_t writing = accepted;
-    writing.phase = BACKEND_OTA_PHASE_WRITING;
+    set_record_phase(&writing, BACKEND_OTA_PHASE_WRITING);
     TEST_ASSERT_EQUAL(
         BACKEND_OTA_JOURNAL_PERSIST_CONFLICT,
         backend_ota_journal_persist_transition(
@@ -815,7 +994,7 @@ void test_wrong_boot_illegal_skip_and_store_failure_never_authorize_mutation(voi
     TEST_ASSERT_EQUAL_UINT(stores_before, fake.store_calls);
 
     backend_ota_journal_record_t skipped = accepted;
-    skipped.phase = BACKEND_OTA_PHASE_REBOOT_PENDING;
+    set_record_phase(&skipped, BACKEND_OTA_PHASE_REBOOT_PENDING);
     skipped.image_writes_after = skipped.image_writes_before + 1U;
     TEST_ASSERT_EQUAL(
         BACKEND_OTA_JOURNAL_PERSIST_CONFLICT,
@@ -823,7 +1002,7 @@ void test_wrong_boot_illegal_skip_and_store_failure_never_authorize_mutation(voi
             &storage, &skipped, accepted.uplink_boot_id));
 
     backend_ota_journal_record_t impossible_failure = accepted;
-    impossible_failure.phase = BACKEND_OTA_PHASE_FAILED;
+    set_record_phase(&impossible_failure, BACKEND_OTA_PHASE_FAILED);
     impossible_failure.image_writes_after =
         impossible_failure.image_writes_before + 1U;
     TEST_ASSERT_EQUAL(
@@ -859,22 +1038,25 @@ void test_transition_rejects_every_immutable_identity_or_binding_drift(void)
         BACKEND_OTA_COMPONENT_SCANNER0);
     set_durable_record(&fake, &accepted);
     backend_ota_journal_record_t next = accepted;
-    next.phase = BACKEND_OTA_PHASE_WRITING;
+    set_record_phase(&next, BACKEND_OTA_PHASE_WRITING);
 
-    ++next.operation_id;
+    change_record_operation(&next);
     TEST_ASSERT_EQUAL(
         BACKEND_OTA_JOURNAL_PERSIST_CONFLICT,
         backend_ota_journal_persist_transition(
             &storage, &next, accepted.uplink_boot_id));
     next = accepted;
-    next.phase = BACKEND_OTA_PHASE_WRITING;
+    set_record_phase(&next, BACKEND_OTA_PHASE_WRITING);
     next.manifest.sha256[0] = '1';
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    next.expected_sha256[0] = '1';
+#endif
     TEST_ASSERT_EQUAL(
         BACKEND_OTA_JOURNAL_PERSIST_CONFLICT,
         backend_ota_journal_persist_transition(
             &storage, &next, accepted.uplink_boot_id));
     next = accepted;
-    next.phase = BACKEND_OTA_PHASE_WRITING;
+    set_record_phase(&next, BACKEND_OTA_PHASE_WRITING);
     next.expected_target_mac[5] ^= UINT8_C(2);
     next.actual_target_mac[5] ^= UINT8_C(2);
     TEST_ASSERT_EQUAL(
@@ -882,7 +1064,7 @@ void test_transition_rejects_every_immutable_identity_or_binding_drift(void)
         backend_ota_journal_persist_transition(
             &storage, &next, accepted.uplink_boot_id));
     next = accepted;
-    next.phase = BACKEND_OTA_PHASE_WRITING;
+    set_record_phase(&next, BACKEND_OTA_PHASE_WRITING);
     ++next.expected_target_boot_id;
     ++next.actual_target_boot_id;
     TEST_ASSERT_EQUAL(
@@ -890,7 +1072,7 @@ void test_transition_rejects_every_immutable_identity_or_binding_drift(void)
         backend_ota_journal_persist_transition(
             &storage, &next, accepted.uplink_boot_id));
     next = accepted;
-    next.phase = BACKEND_OTA_PHASE_WRITING;
+    set_record_phase(&next, BACKEND_OTA_PHASE_WRITING);
     ++next.expected_topology_generation;
     ++next.actual_topology_generation;
     TEST_ASSERT_EQUAL(
@@ -909,7 +1091,7 @@ void test_every_nonterminal_phase_can_fail_durably_without_write_authority(void)
     };
     for (size_t index = 0U; index < sizeof(phases) / sizeof(phases[0]); ++index) {
         backend_ota_journal_record_t current = valid_uplink_record();
-        current.phase = phases[index];
+        set_record_phase(&current, phases[index]);
         if (current.phase >= BACKEND_OTA_PHASE_REBOOT_PENDING) {
             current.image_writes_after = current.image_writes_before + 1U;
         }
@@ -921,7 +1103,7 @@ void test_every_nonterminal_phase_can_fail_durably_without_write_authority(void)
         set_durable_record(&fake, &current);
         backend_ota_journal_storage_t storage = storage_adapter(&fake);
         backend_ota_journal_record_t failed = current;
-        failed.phase = BACKEND_OTA_PHASE_FAILED;
+        set_record_phase(&failed, BACKEND_OTA_PHASE_FAILED);
         TEST_ASSERT_EQUAL(
             BACKEND_OTA_JOURNAL_PERSIST_COMMITTED,
             backend_ota_journal_persist_transition(
@@ -932,7 +1114,7 @@ void test_every_nonterminal_phase_can_fail_durably_without_write_authority(void)
     }
 
     backend_ota_journal_record_t invalid = valid_uplink_record();
-    invalid.operation_id = 0U;
+    clear_record_operation(&invalid);
     TEST_ASSERT_EQUAL(
         BACKEND_OTA_JOURNAL_RECOVERY_INVALID,
         backend_ota_journal_recovery_action(&invalid));
@@ -942,7 +1124,13 @@ int main(void)
 {
     UNITY_BEGIN();
     BACKEND_RUN_TEST(
-        test_schema_one_record_encodes_fixed_width_little_endian_without_padding);
+        test_profile_record_encodes_fixed_width_without_struct_padding);
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    BACKEND_RUN_TEST(
+        test_fullsize_presence_allows_zero_id_and_rejects_numeric_schema);
+    BACKEND_RUN_TEST(
+        test_startup_writing_image_staged_routes_post_write_without_replay);
+#endif
     BACKEND_RUN_TEST(test_required_identifiers_and_known_enums_are_strict);
     BACKEND_RUN_TEST(
         test_component_slot_catalog_and_backend_identity_are_exact);
@@ -953,8 +1141,10 @@ int main(void)
     BACKEND_RUN_TEST(test_each_phase_has_strict_non_replayable_evidence);
     BACKEND_RUN_TEST(
         test_decode_round_trip_is_exact_and_preserves_zero_manifest_crc);
+#if defined(FOF_BACKEND_PROFILE_BADGE_LITE)
     BACKEND_RUN_TEST(
         test_computed_zero_record_crc_is_accepted_by_exact_equality);
+#endif
     BACKEND_RUN_TEST(test_decode_rejects_corrupt_truncated_and_extra_records);
     BACKEND_RUN_TEST(
         test_decode_rejects_noncanonical_fields_even_with_repaired_crc);

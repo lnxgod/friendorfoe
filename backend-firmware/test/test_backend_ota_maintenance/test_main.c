@@ -52,7 +52,44 @@ typedef struct {
     bool fail_journal_store;
     uint8_t change_binding_during_dry_run;
     backend_ota_request_t *request_to_mutate;
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    bool dry_run_has_operation_id;
+    backend_ota_operation_id_t dry_run_operation_id;
+    bool mutate_has_operation_id;
+    backend_ota_operation_id_t mutate_operation_id;
+#endif
 } maintenance_fixture_t;
+
+static backend_ota_operation_id_t maintenance_operation_id(uint8_t seed)
+{
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    backend_ota_operation_id_t operation_id;
+    for (size_t index = 0U; index < sizeof(operation_id.bytes); ++index) {
+        operation_id.bytes[index] = (uint8_t)(seed + index);
+    }
+    return operation_id;
+#else
+    return (backend_ota_operation_id_t)seed;
+#endif
+}
+
+static void maintenance_set_evidence_operation(
+    backend_ota_evidence_t *evidence, uint8_t seed)
+{
+    evidence->operation_id = maintenance_operation_id(seed);
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    evidence->has_operation_id = true;
+#endif
+}
+
+static void maintenance_set_journal_operation(
+    backend_ota_journal_record_t *record, uint8_t seed)
+{
+    record->operation_id = maintenance_operation_id(seed);
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    record->has_operation_id = true;
+#endif
+}
 
 static void fixture_event(maintenance_fixture_t *fixture, char event)
 {
@@ -237,12 +274,23 @@ static backend_ota_image_result_t maintenance_validate(
 static bool maintenance_scanner_dry_run(
     void *context,
     backend_ota_component_t component,
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    bool has_operation_id,
+    const backend_ota_operation_id_t *operation_id,
+#endif
     const backend_ota_manifest_t *manifest,
     const uint8_t *bytes,
     size_t length)
 {
     maintenance_fixture_t *fixture = context;
     fixture->scanner_dry_run_calls++;
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    if (!has_operation_id || operation_id == NULL) {
+        return false;
+    }
+    fixture->dry_run_has_operation_id = true;
+    fixture->dry_run_operation_id = *operation_id;
+#endif
     if (fixture->change_binding_during_dry_run == 1U) {
         fixture->binding.target_boot_id++;
     } else if (fixture->change_binding_during_dry_run == 2U) {
@@ -255,12 +303,23 @@ static bool maintenance_scanner_dry_run(
 static bool maintenance_mutate(
     void *context,
     backend_ota_component_t component,
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    bool has_operation_id,
+    const backend_ota_operation_id_t *operation_id,
+#endif
     const backend_ota_manifest_t *manifest,
     const uint8_t *bytes,
     size_t length)
 {
     maintenance_fixture_t *fixture = context;
     (void)component;
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    if (!has_operation_id || operation_id == NULL) {
+        return false;
+    }
+    fixture->mutate_has_operation_id = true;
+    fixture->mutate_operation_id = *operation_id;
+#endif
     fixture->mutate_calls++;
     fixture->image_write_count++;
     fixture_event(fixture, 'D');
@@ -325,11 +384,11 @@ static void maintenance_metadata(
         fixture->metadata, sizeof(fixture->metadata),
         "{\"name\":\"%s\",\"target\":\"%s\",\"description\":\"backend\","
         "\"board\":\"esp32s3\",\"project\":\"%s\","
-        "\"hardware\":\"seeed_xiao_esp32s3\",\"version\":\"%s\","
+        "\"hardware\":\"%s\",\"version\":\"%s\","
         "\"size\":8,\"sha256\":\"0123456789abcdef0123456789abcdef"
         "0123456789abcdef0123456789abcdef\",\"crc32\":305419896,"
         "\"download_url\":\"/nodes/firmware/download/%s\"}",
-        target, target, project, version, target);
+        target, target, project, FOF_BACKEND_HARDWARE, version, target);
     TEST_ASSERT_GREATER_THAN(0, length);
     TEST_ASSERT_LESS_THAN((int)sizeof(fixture->metadata), length);
 }
@@ -410,6 +469,18 @@ static backend_ota_request_t maintenance_apply_request(
     backend_ota_apply_mode_t mode)
 {
     backend_ota_request_t request = {0};
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    request.has_operation_id = true;
+    request.operation_id = maintenance_operation_id(UINT8_C(0x10));
+    request.expected_size = 8U;
+    request.has_accepted_probe_receipt = true;
+    for (size_t index = 0U;
+         index < sizeof(request.accepted_probe_receipt_sha256); ++index) {
+        request.accepted_probe_receipt_sha256[index] =
+            (uint8_t)(UINT8_C(0x80) + index);
+    }
+    request.command_next_sequence = 2U;
+#endif
     request.component = component;
     request.apply_mode = mode;
     strcpy(request.catalog_name, backend_ota_component_catalog_name(component));
@@ -421,6 +492,25 @@ static backend_ota_request_t maintenance_apply_request(
     request.expected_topology_generation =
         fixture->binding.topology_generation;
     return request;
+}
+
+static bool maintenance_run_probe(
+    backend_ota_maintenance_t *state,
+    backend_ota_component_t component,
+    const char *catalog_name,
+    const char *expected_sha256_or_null,
+    backend_ota_evidence_t *out)
+{
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    const backend_ota_operation_id_t operation_id =
+        maintenance_operation_id(UINT8_C(0x10));
+    return backend_ota_maintenance_run_fullsize_probe(
+        state, true, &operation_id, 8U, component, catalog_name,
+        expected_sha256_or_null, BACKEND_OTA_NEWER_ONLY, out);
+#else
+    return backend_ota_maintenance_run_probe(
+        state, component, catalog_name, expected_sha256_or_null, out);
+#endif
 }
 
 static bool fixture_begin(void *context, size_t image_size)
@@ -595,13 +685,21 @@ void test_usb_probe_and_apply_parse_only_exact_backend_commands(void)
         "0123456789abcdef0123456789abcdef"
         "0123456789abcdef0123456789abcdef";
     backend_ota_request_t request;
-    const char probe[] =
-        "FOF_BACKEND_OTA_PROBE scanner0 scanner-s3-combo-backend *";
+#if defined(FOF_BACKEND_PROFILE_BADGE_LITE)
+    static const char scanner_catalog[] = "scanner-s3-combo-backend";
+#else
+    static const char scanner_catalog[] = "scanner-s3-combo-fullsize-backend";
+#endif
+    char probe[128];
+    const int probe_length = snprintf(
+        probe, sizeof(probe), "FOF_BACKEND_OTA_PROBE scanner0 %s *",
+        scanner_catalog);
+    TEST_ASSERT_GREATER_THAN(0, probe_length);
     TEST_ASSERT_TRUE(backend_ota_maintenance_parse_usb(
-        probe, sizeof(probe) - 1U, &request));
+        probe, (size_t)probe_length, &request));
     TEST_ASSERT_TRUE(request.probe);
     TEST_ASSERT_EQUAL(BACKEND_OTA_COMPONENT_SCANNER0, request.component);
-    TEST_ASSERT_EQUAL_STRING("scanner-s3-combo-backend", request.catalog_name);
+    TEST_ASSERT_EQUAL_STRING(scanner_catalog, request.catalog_name);
     TEST_ASSERT_EQUAL_STRING("", request.expected_sha256);
 
     char apply[256];
@@ -615,7 +713,7 @@ void test_usb_probe_and_apply_parse_only_exact_backend_commands(void)
         apply, (size_t)apply_length, &request));
     TEST_ASSERT_FALSE(request.probe);
     TEST_ASSERT_EQUAL(BACKEND_OTA_COMPONENT_SCANNER1, request.component);
-    TEST_ASSERT_EQUAL_STRING("scanner-s3-combo-backend", request.catalog_name);
+    TEST_ASSERT_EQUAL_STRING(scanner_catalog, request.catalog_name);
     TEST_ASSERT_EQUAL_STRING(sha, request.expected_sha256);
     TEST_ASSERT_EQUAL(
         BACKEND_OTA_SAME_VERSION_RECOVERY, request.apply_mode);
@@ -688,7 +786,7 @@ void test_evidence_encoder_has_exact_prefix_key_order_and_canonical_values(void)
 {
     backend_ota_evidence_t evidence;
     memset(&evidence, 0, sizeof(evidence));
-    evidence.operation_id = 7U;
+    maintenance_set_evidence_operation(&evidence, 7U);
     evidence.probe = false;
     evidence.component = BACKEND_OTA_COMPONENT_SCANNER0;
     evidence.apply_mode = BACKEND_OTA_SAME_VERSION_RECOVERY;
@@ -725,8 +823,21 @@ void test_evidence_encoder_has_exact_prefix_key_order_and_canonical_values(void)
     size_t length = backend_ota_evidence_encode(
         &evidence, output, sizeof(output));
     TEST_ASSERT_GREATER_THAN(0U, length);
-    TEST_ASSERT_EQUAL_STRING(
-        "FOF_BACKEND_OTA_EVIDENCE {\"schema\":1,\"operation_id\":7,"
+#if defined(FOF_BACKEND_PROFILE_BADGE_LITE)
+    const char *expected_target = "scanner-s3-combo-backend";
+    const char *expected_project = "fof_backend_scanner";
+    const char *expected_hardware = "seeed_xiao_esp32s3";
+    const char *expected_operation_id = "7";
+#else
+    const char *expected_target = "scanner-s3-combo-fullsize-backend";
+    const char *expected_project = "fof_backend_scanner_fullsize";
+    const char *expected_hardware = "esp32s3_n16r8_fullsize";
+    const char *expected_operation_id =
+        "\"0708090a0b0c0d0e0f10111213141516\"";
+#endif
+    char expected[2048];
+    const int expected_length = snprintf(expected, sizeof(expected),
+        "FOF_BACKEND_OTA_EVIDENCE {\"schema\":1,\"operation_id\":%s,"
         "\"mode\":\"same-version-recovery\",\"component\":\"scanner0\","
         "\"component_slot\":0,\"uplink_mac\":\"AA:BB:CC:DD:EE:FF\","
         "\"expected_target_mac\":\"AA:BB:CC:DD:EE:01\","
@@ -735,10 +846,10 @@ void test_evidence_encoder_has_exact_prefix_key_order_and_canonical_values(void)
         "\"actual_target_boot_id\":305419896,"
         "\"expected_topology_generation\":4,"
         "\"actual_topology_generation\":4,"
-        "\"catalog_name\":\"scanner-s3-combo-backend\","
-        "\"target\":\"scanner-s3-combo-backend\","
-        "\"project\":\"fof_backend_scanner\","
-        "\"hardware\":\"seeed_xiao_esp32s3\","
+        "\"catalog_name\":\"%s\","
+        "\"target\":\"%s\","
+        "\"project\":\"%s\","
+        "\"hardware\":\"%s\","
         "\"version\":\"0.1.1-backend\","
         "\"sha256\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\","
         "\"crc32\":305419896,\"size\":8,\"partition_capacity\":2097152,"
@@ -747,7 +858,10 @@ void test_evidence_encoder_has_exact_prefix_key_order_and_canonical_values(void)
         "\"image_writes_after\":15,\"boot_id_before\":305419896,"
         "\"boot_id_after\":2271560481,\"rollback_clear\":true,"
         "\"converged\":true}",
-        output);
+        expected_operation_id, expected_target, expected_target,
+        expected_project, expected_hardware);
+    TEST_ASSERT_GREATER_THAN(0, expected_length);
+    TEST_ASSERT_EQUAL_STRING(expected, output);
 }
 
 void test_probe_validates_complete_scanner_image_without_mutation(void)
@@ -760,7 +874,7 @@ void test_probe_validates_complete_scanner_image_without_mutation(void)
         "0.1.1-backend", "0.1.0-backend");
     backend_ota_evidence_t evidence;
 
-    TEST_ASSERT_TRUE(backend_ota_maintenance_run_probe(
+    TEST_ASSERT_TRUE(maintenance_run_probe(
         &state, BACKEND_OTA_COMPONENT_SCANNER0,
         FOF_BACKEND_SCANNER_TARGET, NULL, &evidence));
     TEST_ASSERT_EQUAL(BACKEND_OTA_DECISION_ADMIT, evidence.decision);
@@ -789,7 +903,7 @@ void test_cross_family_probe_rejects_before_metadata_download_or_write(void)
         "0.1.1-backend", "0.1.0-backend");
     backend_ota_evidence_t evidence;
 
-    TEST_ASSERT_TRUE(backend_ota_maintenance_run_probe(
+    TEST_ASSERT_TRUE(maintenance_run_probe(
         &state, BACKEND_OTA_COMPONENT_SCANNER0,
         "scanner-s3-combo-fof_badge", NULL, &evidence));
     TEST_ASSERT_EQUAL(
@@ -816,7 +930,7 @@ void test_probe_rejects_scanner_reboot_or_slot_change_during_dry_run(void)
             "0.1.1-backend", "0.1.0-backend");
         fixture.change_binding_during_dry_run = (uint8_t)(index + 1U);
         backend_ota_evidence_t evidence;
-        TEST_ASSERT_TRUE(backend_ota_maintenance_run_probe(
+        TEST_ASSERT_TRUE(maintenance_run_probe(
             &state, components[index], FOF_BACKEND_SCANNER_TARGET,
             NULL, &evidence));
         TEST_ASSERT_EQUAL(
@@ -857,6 +971,180 @@ void test_same_version_apply_requires_explicit_recovery_mode(void)
     TEST_ASSERT_EQUAL_UINT(1U, fixture.accepted_emits);
     TEST_ASSERT_TRUE(fixture.has_journal);
 }
+
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+void test_fullsize_command_is_durable_before_metadata_or_download(void)
+{
+    static maintenance_fixture_t fixture;
+    backend_ota_maintenance_t state;
+    backend_firmware_buffer_t buffer;
+    maintenance_fixture_init(
+        &fixture, &state, &buffer, BACKEND_OTA_COMPONENT_SCANNER0,
+        "0.1.1-backend", "0.1.0-backend");
+    backend_ota_request_t request = maintenance_apply_request(
+        &fixture, BACKEND_OTA_COMPONENT_SCANNER0, BACKEND_OTA_NEWER_ONLY);
+
+    TEST_ASSERT_EQUAL(
+        BACKEND_OTA_JOURNAL_PERSIST_COMMITTED,
+        backend_ota_maintenance_accept_fullsize_command(&state, &request));
+    TEST_ASSERT_EQUAL_UINT(0U, fixture.download_calls);
+    TEST_ASSERT_EQUAL_UINT(0U, fixture.mutate_calls);
+    backend_ota_journal_record_t record;
+    TEST_ASSERT_EQUAL(
+        BACKEND_OTA_JOURNAL_VALID,
+        backend_ota_journal_decode(
+            fixture.journal, fixture.journal_length, &record));
+    TEST_ASSERT_EQUAL(
+        BACKEND_OTA_JOURNAL_CHECKPOINT_COMMAND_ACCEPTED,
+        record.checkpoint);
+    TEST_ASSERT_FALSE(record.has_manifest);
+    TEST_ASSERT_EQUAL(
+        BACKEND_OTA_JOURNAL_PERSIST_ALREADY_DURABLE,
+        backend_ota_maintenance_accept_fullsize_command(&state, &request));
+
+    TEST_ASSERT_TRUE(backend_ota_maintenance_request_apply(&state, &request));
+    TEST_ASSERT_EQUAL_UINT(1U, fixture.download_calls);
+    TEST_ASSERT_EQUAL_UINT(1U, fixture.mutate_calls);
+}
+
+void test_fullsize_accepted_restart_across_uplink_boot_mutates_exactly_once(void)
+{
+    static maintenance_fixture_t fixture;
+    backend_ota_maintenance_t state;
+    backend_firmware_buffer_t buffer;
+    maintenance_fixture_init(
+        &fixture, &state, &buffer, BACKEND_OTA_COMPONENT_SCANNER0,
+        "0.1.1-backend", "0.1.0-backend");
+    backend_ota_request_t request = maintenance_apply_request(
+        &fixture, BACKEND_OTA_COMPONENT_SCANNER0,
+        BACKEND_OTA_NEWER_ONLY);
+    TEST_ASSERT_EQUAL(
+        BACKEND_OTA_JOURNAL_PERSIST_COMMITTED,
+        backend_ota_maintenance_accept_fullsize_command(&state, &request));
+
+    backend_ota_maintenance_on_boot(&state, 101U);
+    TEST_ASSERT_TRUE(state.busy);
+    backend_ota_evidence_t evidence;
+    TEST_ASSERT_TRUE(backend_ota_maintenance_restart_fullsize_command(
+        &state, &request, &evidence));
+    TEST_ASSERT_EQUAL_UINT(1U, fixture.mutate_calls);
+    TEST_ASSERT_EQUAL_UINT(1U, fixture.reboot_calls);
+
+    /* The one-shot bypass cannot replay after mutation authority moved the
+     * journal out of ACCEPTED. */
+    TEST_ASSERT_FALSE(backend_ota_maintenance_restart_fullsize_command(
+        &state, &request, &evidence));
+    TEST_ASSERT_EQUAL_UINT(1U, fixture.mutate_calls);
+}
+
+void test_fullsize_accepted_uplink_reboot_closes_failed_without_mutation(void)
+{
+    static maintenance_fixture_t fixture;
+    backend_ota_maintenance_t state;
+    backend_firmware_buffer_t buffer;
+    maintenance_fixture_init(
+        &fixture, &state, &buffer, BACKEND_OTA_COMPONENT_UPLINK,
+        "0.1.1-backend", "0.1.0-backend");
+    fixture.binding.target_boot_id = 100U;
+    fixture.convergence.binding.target_boot_id = 101U;
+    backend_ota_request_t request = maintenance_apply_request(
+        &fixture, BACKEND_OTA_COMPONENT_UPLINK,
+        BACKEND_OTA_NEWER_ONLY);
+    TEST_ASSERT_EQUAL(
+        BACKEND_OTA_JOURNAL_PERSIST_COMMITTED,
+        backend_ota_maintenance_accept_fullsize_command(&state, &request));
+
+    backend_ota_maintenance_on_boot(&state, 101U);
+    TEST_ASSERT_FALSE(backend_ota_maintenance_resume(&state, false));
+    TEST_ASSERT_FALSE(state.busy);
+    TEST_ASSERT_EQUAL_UINT(0U, fixture.metadata_calls);
+    TEST_ASSERT_EQUAL_UINT(0U, fixture.download_calls);
+    TEST_ASSERT_EQUAL_UINT(0U, fixture.mutate_calls);
+    TEST_ASSERT_EQUAL_UINT(0U, fixture.reboot_calls);
+
+    backend_ota_journal_record_t record;
+    TEST_ASSERT_EQUAL(
+        BACKEND_OTA_JOURNAL_VALID,
+        backend_ota_journal_decode(
+            fixture.journal, fixture.journal_length, &record));
+    TEST_ASSERT_EQUAL(BACKEND_OTA_PHASE_FAILED, record.phase);
+    backend_ota_evidence_t evidence;
+    TEST_ASSERT_TRUE(
+        backend_ota_maintenance_last_evidence(&state, &evidence));
+    TEST_ASSERT_EQUAL(BACKEND_OTA_DECISION_FAILED, evidence.decision);
+}
+
+void test_fullsize_probe_mode_uses_shared_staging_without_lite_api_change(void)
+{
+    static maintenance_fixture_t fixture;
+    backend_ota_maintenance_t state;
+    backend_firmware_buffer_t buffer;
+    maintenance_fixture_init(
+        &fixture, &state, &buffer, BACKEND_OTA_COMPONENT_SCANNER0,
+        "0.1.0-backend", "0.1.0-backend");
+    backend_ota_evidence_t evidence;
+
+    const backend_ota_operation_id_t operation_id =
+        maintenance_operation_id(UINT8_C(0x10));
+    TEST_ASSERT_TRUE(backend_ota_maintenance_run_fullsize_probe(
+        &state, true, &operation_id, 8U,
+        BACKEND_OTA_COMPONENT_SCANNER0,
+        FOF_BACKEND_SCANNER_TARGET, NULL, BACKEND_OTA_NEWER_ONLY,
+        &evidence));
+    TEST_ASSERT_EQUAL(BACKEND_OTA_DECISION_NO_UPDATE, evidence.decision);
+    TEST_ASSERT_EQUAL_UINT(0U, fixture.download_calls);
+    TEST_ASSERT_EQUAL_UINT(0U, fixture.mutate_calls);
+
+    TEST_ASSERT_TRUE(backend_ota_maintenance_run_fullsize_probe(
+        &state, true, &operation_id, 8U,
+        BACKEND_OTA_COMPONENT_SCANNER0,
+        FOF_BACKEND_SCANNER_TARGET, NULL,
+        BACKEND_OTA_SAME_VERSION_RECOVERY, &evidence));
+    TEST_ASSERT_EQUAL(BACKEND_OTA_DECISION_ADMIT, evidence.decision);
+    TEST_ASSERT_TRUE(evidence.complete_image_validated);
+    TEST_ASSERT_EQUAL_UINT(1U, fixture.download_calls);
+    TEST_ASSERT_EQUAL_UINT(0U, fixture.mutate_calls);
+}
+
+void test_fullsize_probe_then_apply_preserves_one_external_operation_id(void)
+{
+    static maintenance_fixture_t fixture;
+    backend_ota_maintenance_t state;
+    backend_firmware_buffer_t buffer;
+    maintenance_fixture_init(
+        &fixture, &state, &buffer, BACKEND_OTA_COMPONENT_SCANNER0,
+        "0.1.1-backend", "0.1.0-backend");
+    backend_ota_request_t request = maintenance_apply_request(
+        &fixture, BACKEND_OTA_COMPONENT_SCANNER0, BACKEND_OTA_NEWER_ONLY);
+    backend_ota_evidence_t probe;
+
+    TEST_ASSERT_TRUE(backend_ota_maintenance_run_fullsize_probe(
+        &state, request.has_operation_id, &request.operation_id,
+        request.expected_size, request.component, request.catalog_name,
+        request.expected_sha256, request.apply_mode, &probe));
+    TEST_ASSERT_EQUAL(BACKEND_OTA_DECISION_ADMIT, probe.decision);
+    TEST_ASSERT_TRUE(probe.has_operation_id);
+    TEST_ASSERT_TRUE(backend_ota_operation_id_equal(
+        &request.operation_id, &probe.operation_id));
+    TEST_ASSERT_TRUE(fixture.dry_run_has_operation_id);
+    TEST_ASSERT_TRUE(backend_ota_operation_id_equal(
+        &request.operation_id, &fixture.dry_run_operation_id));
+    TEST_ASSERT_FALSE(buffer.acquired);
+
+    TEST_ASSERT_TRUE(backend_ota_maintenance_request_apply(&state, &request));
+    TEST_ASSERT_TRUE(fixture.mutate_has_operation_id);
+    TEST_ASSERT_TRUE(backend_ota_operation_id_equal(
+        &request.operation_id, &fixture.mutate_operation_id));
+    backend_ota_journal_record_t record;
+    TEST_ASSERT_EQUAL(
+        BACKEND_OTA_JOURNAL_VALID,
+        backend_ota_journal_decode(
+            fixture.journal, fixture.journal_length, &record));
+    TEST_ASSERT_TRUE(record.has_operation_id);
+    TEST_ASSERT_TRUE(backend_ota_operation_id_equal(
+        &request.operation_id, &record.operation_id));
+}
+#endif
 
 void test_apply_binding_drift_rejects_before_journal_acceptance_or_mutation(void)
 {
@@ -960,7 +1248,25 @@ void test_accepted_encoder_is_exact_and_rejects_mismatched_binding(void)
     backend_ota_journal_record_t record;
     memset(&record, 0, sizeof(record));
     record.schema = BACKEND_OTA_JOURNAL_SCHEMA;
-    record.operation_id = 7U;
+    maintenance_set_journal_operation(&record, 7U);
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    record.action = BACKEND_OTA_JOURNAL_ACTION_APPLY;
+    record.expected_size = 8U;
+    strcpy(record.expected_sha256,
+           "0123456789abcdef0123456789abcdef"
+           "0123456789abcdef0123456789abcdef");
+    record.has_accepted_probe_receipt = true;
+    memset(record.accepted_probe_receipt_sha256, 0xA5,
+           sizeof(record.accepted_probe_receipt_sha256));
+    record.command_next_sequence = 2U;
+    record.event_sequence = 2U;
+    record.progress_initialized = true;
+    record.progress_stage = BACKEND_OTA_JOURNAL_PROGRESS_STAGE;
+    record.progress_received = 8U;
+    record.progress_total = 8U;
+    record.checkpoint = BACKEND_OTA_JOURNAL_CHECKPOINT_IMAGE_STAGED;
+    record.has_manifest = true;
+#endif
     record.component = BACKEND_OTA_COMPONENT_SCANNER0;
     record.component_slot = 0;
     record.apply_mode = BACKEND_OTA_NEWER_ONLY;
@@ -977,6 +1283,10 @@ void test_accepted_encoder_is_exact_and_rejects_mismatched_binding(void)
     };
     memcpy(record.uplink_mac, uplink_mac, 6U);
     record.uplink_boot_id = UINT32_C(0x12345678);
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    memcpy(record.expected_uplink_mac, uplink_mac, 6U);
+    record.expected_uplink_boot_id = UINT32_C(0x12345678);
+#endif
     memcpy(record.expected_target_mac, target_mac, 6U);
     memcpy(record.actual_target_mac, target_mac, 6U);
     record.expected_target_boot_id = UINT32_C(0x12345678);
@@ -988,7 +1298,12 @@ void test_accepted_encoder_is_exact_and_rejects_mismatched_binding(void)
     TEST_ASSERT_GREATER_THAN(0U, backend_ota_accepted_encode(
         &record, output, sizeof(output)));
     TEST_ASSERT_EQUAL_STRING(
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+        "FOF_BACKEND_OTA_ACCEPTED {\"schema\":1,\"operation_id\":"
+        "\"0708090a0b0c0d0e0f10111213141516\","
+#else
         "FOF_BACKEND_OTA_ACCEPTED {\"schema\":1,\"operation_id\":7,"
+#endif
         "\"component\":\"scanner0\",\"component_slot\":0,"
         "\"sha256\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\","
         "\"crc32\":305419896,\"uplink_mac\":\"AA:BB:CC:DD:EE:FF\","
@@ -1063,12 +1378,21 @@ void test_automatic_catalog_poll_downloads_only_after_explicit_enable(void)
     TEST_ASSERT_EQUAL_UINT(0U, fixture.mutate_calls);
     TEST_ASSERT_FALSE(buffer.acquired);
 
-    TEST_ASSERT_TRUE(backend_ota_maintenance_auto_poll(
-        &state, BACKEND_OTA_COMPONENT_SCANNER0, true, &decision));
+    const bool auto_apply = backend_ota_maintenance_auto_poll(
+        &state, BACKEND_OTA_COMPONENT_SCANNER0, true, &decision);
     TEST_ASSERT_EQUAL(BACKEND_OTA_AUTO_APPLY_NEWER, decision);
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    /* Fullsize cannot invent a rollout ID for the legacy catalog poll. */
+    TEST_ASSERT_FALSE(auto_apply);
+    TEST_ASSERT_EQUAL_UINT(0U, fixture.download_calls);
+    TEST_ASSERT_EQUAL_UINT(0U, fixture.mutate_calls);
+    TEST_ASSERT_EQUAL_UINT(0U, fixture.reboot_calls);
+#else
+    TEST_ASSERT_TRUE(auto_apply);
     TEST_ASSERT_EQUAL_UINT(1U, fixture.download_calls);
     TEST_ASSERT_EQUAL_UINT(1U, fixture.mutate_calls);
     TEST_ASSERT_EQUAL_UINT(1U, fixture.reboot_calls);
+#endif
 }
 
 void test_missing_psram_arena_exposes_unavailable_and_performs_no_download(void)
@@ -1104,7 +1428,7 @@ void test_missing_psram_arena_exposes_unavailable_and_performs_no_download(void)
     TEST_ASSERT_FALSE(backend_ota_maintenance_available(&state));
 
     backend_ota_evidence_t evidence;
-    TEST_ASSERT_TRUE(backend_ota_maintenance_run_probe(
+    TEST_ASSERT_TRUE(maintenance_run_probe(
         &state, BACKEND_OTA_COMPONENT_SCANNER0,
         FOF_BACKEND_SCANNER_TARGET, NULL, &evidence));
     TEST_ASSERT_EQUAL(BACKEND_OTA_DECISION_FAILED, evidence.decision);
@@ -1147,7 +1471,7 @@ void test_digest_change_and_parallel_operation_fail_closed(void)
     TEST_ASSERT_NOT_NULL(strstr(
         busy_line, "\"mode\":\"same-version-recovery\""));
     backend_ota_evidence_t probe;
-    TEST_ASSERT_TRUE(backend_ota_maintenance_run_probe(
+    TEST_ASSERT_TRUE(maintenance_run_probe(
         &state, BACKEND_OTA_COMPONENT_SCANNER0,
         FOF_BACKEND_SCANNER_TARGET, NULL, &probe));
     TEST_ASSERT_EQUAL(BACKEND_OTA_DECISION_REJECT_BUSY, probe.decision);
@@ -1199,6 +1523,9 @@ void test_power_cut_after_writing_never_replays_image_mutation(void)
         backend_ota_journal_decode(
             fixture.journal, fixture.journal_length, &record));
     record.phase = BACKEND_OTA_PHASE_WRITING;
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    record.checkpoint = BACKEND_OTA_JOURNAL_CHECKPOINT_IMAGE_STAGED;
+#endif
     record.image_writes_after = record.image_writes_before;
     record.boot_id_after = 0U;
     backend_ota_journal_blob_t writing;
@@ -1251,6 +1578,9 @@ void test_resume_never_advertises_failed_until_failed_record_is_durable(void)
         backend_ota_journal_decode(
             fixture.journal, fixture.journal_length, &record));
     record.phase = BACKEND_OTA_PHASE_ACCEPTED;
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    record.checkpoint = BACKEND_OTA_JOURNAL_CHECKPOINT_IMAGE_STAGED;
+#endif
     record.image_writes_after = record.image_writes_before;
     record.boot_id_after = 0U;
     backend_ota_journal_blob_t accepted;
@@ -1319,6 +1649,17 @@ int main(void)
     RUN_TEST(
         test_probe_rejects_scanner_reboot_or_slot_change_during_dry_run);
     RUN_TEST(test_same_version_apply_requires_explicit_recovery_mode);
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    RUN_TEST(
+        test_fullsize_command_is_durable_before_metadata_or_download);
+    RUN_TEST(
+        test_fullsize_accepted_restart_across_uplink_boot_mutates_exactly_once);
+    RUN_TEST(
+        test_fullsize_accepted_uplink_reboot_closes_failed_without_mutation);
+    RUN_TEST(test_fullsize_probe_mode_uses_shared_staging_without_lite_api_change);
+    RUN_TEST(
+        test_fullsize_probe_then_apply_preserves_one_external_operation_id);
+#endif
     RUN_TEST(
         test_apply_binding_drift_rejects_before_journal_acceptance_or_mutation);
     RUN_TEST(

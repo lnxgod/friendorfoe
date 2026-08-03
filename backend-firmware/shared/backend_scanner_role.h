@@ -16,11 +16,15 @@ typedef enum {
     BACKEND_ROLE_CONFLICT,
     BACKEND_ROLE_INVALID_BOOT,
     BACKEND_ROLE_INVALID_PROFILE,
+    BACKEND_ROLE_INVALID_TOPOLOGY,
 } backend_scanner_role_result_t;
 
 typedef struct {
     uint32_t boot_id;
     uint32_t generation;
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    uint32_t topology_generation;
+#endif
     backend_scan_profile_t effective;
     uint32_t radio_transition_count;
     bool ack_pending;
@@ -47,6 +51,9 @@ backend_scanner_role_result_t backend_scanner_role_apply(
     backend_scanner_role_state_t *state,
     uint32_t boot_id,
     uint32_t generation,
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    uint32_t topology_generation,
+#endif
     backend_scan_profile_t profile);
 
 bool backend_scanner_role_take_ack(

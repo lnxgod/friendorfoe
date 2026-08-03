@@ -26,6 +26,14 @@ typedef struct {
 
 typedef struct {
     bool probe;
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    bool has_operation_id;
+    backend_ota_operation_id_t operation_id;
+    uint32_t expected_size;
+    bool has_accepted_probe_receipt;
+    uint8_t accepted_probe_receipt_sha256[32];
+    uint32_t command_next_sequence;
+#endif
     backend_ota_component_t component;
     char catalog_name[40];
     char expected_sha256[65];
@@ -50,7 +58,10 @@ typedef enum {
 } backend_ota_decision_t;
 
 typedef struct {
-    uint32_t operation_id;
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    bool has_operation_id;
+#endif
+    backend_ota_operation_id_t operation_id;
     bool probe;
     backend_ota_component_t component;
     backend_ota_apply_mode_t apply_mode;
@@ -84,6 +95,25 @@ typedef struct {
     bool radio_healthy;
     bool rollback_clear;
 } backend_ota_convergence_t;
+
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+#define BACKEND_OTA_PROGRESS_MAX_RETRIES 16U
+
+/* Pointer-free worker-to-client handoff.  The client validates this against
+ * the active immutable command before it makes an event durable. */
+typedef struct {
+    bool has_operation_id;
+    backend_ota_operation_id_t operation_id;
+    bool probe;
+    backend_ota_component_t component;
+    char catalog_name[40];
+    backend_ota_manifest_t manifest;
+    backend_ota_journal_progress_stage_t stage;
+    uint32_t received;
+    uint32_t total;
+    uint32_t retry_count;
+} backend_ota_progress_update_t;
+#endif
 
 typedef struct {
     void *context;
@@ -123,12 +153,20 @@ typedef struct {
     bool (*scanner_dry_run)(
         void *context,
         backend_ota_component_t component,
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+        bool has_operation_id,
+        const backend_ota_operation_id_t *operation_id,
+#endif
         const backend_ota_manifest_t *manifest,
         const uint8_t *bytes,
         size_t length);
     bool (*mutate_staged_image)(
         void *context,
         backend_ota_component_t component,
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+        bool has_operation_id,
+        const backend_ota_operation_id_t *operation_id,
+#endif
         const backend_ota_manifest_t *manifest,
         const uint8_t *bytes,
         size_t length);
@@ -139,6 +177,12 @@ typedef struct {
         backend_ota_component_t component,
         const backend_ota_manifest_t *manifest,
         backend_ota_convergence_t *out);
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    bool (*report_progress)(
+        void *context, const backend_ota_progress_update_t *update);
+    uint32_t (*relay_retry_count)(
+        void *context, backend_ota_component_t component);
+#endif
     bool (*emit_and_flush)(
         void *context, const char *line, size_t length);
 } backend_ota_maintenance_adapters_t;
@@ -176,7 +220,13 @@ struct backend_ota_maintenance {
     backend_firmware_buffer_t *firmware_buffer;
     uint8_t uplink_mac[6];
     uint32_t uplink_boot_id;
+#if defined(FOF_BACKEND_PROFILE_BADGE_LITE)
     uint32_t next_operation_id;
+#endif
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    bool restart_authorized;
+    backend_ota_journal_record_t restart_record;
+#endif
     bool initialized;
     bool busy;
     bool buffer_owned;
@@ -227,6 +277,56 @@ bool backend_ota_maintenance_run_probe(
     const char *catalog_name,
     const char *expected_sha256_or_null,
     backend_ota_evidence_t *out);
+
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+/* Fullsize server commands select their mode explicitly.  The existing
+ * run_probe API remains Lite's byte-for-byte newer-only path. */
+bool backend_ota_maintenance_run_fullsize_probe(
+    backend_ota_maintenance_t *state,
+    bool has_operation_id,
+    const backend_ota_operation_id_t *operation_id,
+    uint32_t expected_size,
+    backend_ota_component_t component,
+    const char *catalog_name,
+    const char *expected_sha256_or_null,
+    backend_ota_apply_mode_t apply_mode,
+    backend_ota_evidence_t *out);
+
+/* Durably records the complete pointer-free command binding before the
+ * command is queued or any metadata/download work starts. */
+backend_ota_journal_persist_result_t
+backend_ota_maintenance_accept_fullsize_command(
+    backend_ota_maintenance_t *state,
+    const backend_ota_request_t *request);
+
+bool backend_ota_maintenance_restart_fullsize_command(
+    backend_ota_maintenance_t *state,
+    const backend_ota_request_t *request,
+    backend_ota_evidence_t *out);
+
+/* Persist the exact progress body state before enqueue, then durably advance
+ * its sequence after a strict ACK and before the outbox tombstone. */
+bool backend_ota_maintenance_persist_fullsize_progress(
+    backend_ota_maintenance_t *state,
+    const backend_ota_request_t *request,
+    const backend_ota_progress_update_t *update,
+    uint32_t event_sequence);
+
+bool backend_ota_maintenance_ack_fullsize_progress(
+    backend_ota_maintenance_t *state,
+    const backend_ota_request_t *request,
+    const backend_ota_progress_update_t *update,
+    uint32_t accepted_sequence,
+    uint32_t next_sequence);
+
+bool backend_ota_maintenance_persist_fullsize_terminal(
+    backend_ota_maintenance_t *state,
+    const backend_ota_evidence_t *evidence,
+    uint32_t event_sequence,
+    bool complete,
+    bool has_accepted_probe_receipt,
+    const uint8_t accepted_probe_receipt_sha256[32]);
+#endif
 
 bool backend_ota_maintenance_request_apply(
     backend_ota_maintenance_t *state,

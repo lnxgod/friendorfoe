@@ -5,6 +5,7 @@
 
 #include <unity.h>
 
+#include "backend_hardware_profile.h"
 #include "backend_scanner_control_codec.h"
 #include "backend_uart_rx.h"
 #include "backend_uart_tx.h"
@@ -237,6 +238,9 @@ void test_rx_accepts_only_the_complete_control_allowlist(void)
 {
     static const char *const ALLOWED[] = {
         "{\"type\":\"role\",\"boot_id\":77,\"generation\":4,"
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+        "\"topology_generation\":19,"
+#endif
         "\"profile\":\"ble_primary\"}\n",
         "{\"type\":\"time\",\"generation\":5,\"valid\":true,"
         "\"epoch_ms\":1785600000123,\"source\":\"sntp\"}\n",
@@ -247,12 +251,15 @@ void test_rx_accepts_only_the_complete_control_allowlist(void)
         "{\"type\":\"recovery\",\"boot_id\":77,\"generation\":9,"
         "\"action\":\"restart_radios\"}\n",
         "{\"type\":\"ota_begin\",\"session_id\":7,\"generation\":12,"
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+        "\"manifest_generation\":19,"
+#endif
         "\"component_slot\":0,\"expected_mac\":\"AA:BB:CC:DD:EE:01\","
         "\"expected_boot_id\":305419896,"
         "\"expected_topology_generation\":4,"
-        "\"target\":\"scanner-s3-combo-backend\","
-        "\"project\":\"fof_backend_scanner\","
-        "\"hardware\":\"seeed_xiao_esp32s3\","
+        "\"target\":\"" FOF_BACKEND_SCANNER_TARGET "\","
+        "\"project\":\"" FOF_BACKEND_SCANNER_PROJECT "\","
+        "\"hardware\":\"" FOF_BACKEND_HARDWARE "\","
         "\"version\":\"0.1.1-backend\",\"image_size\":1048576,"
         "\"crc32\":305419896,"
         "\"sha256\":\"0123456789abcdef0123456789abcdef"
@@ -436,6 +443,9 @@ void test_ota_begin_hands_same_read_binary_to_caller_at_json_boundary(void)
         .payload.ota_begin = {
             .session_id = 7,
             .generation = 12,
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+            .manifest_generation = 19,
+#endif
             .component_slot = 0,
             .expected_boot_id = 305419896,
             .expected_topology_generation = 4,
@@ -446,9 +456,9 @@ void test_ota_begin_hands_same_read_binary_to_caller_at_json_boundary(void)
         },
     };
     strcpy(ota_begin.payload.ota_begin.expected_mac, "AA:BB:CC:DD:EE:01");
-    strcpy(ota_begin.payload.ota_begin.target, "scanner-s3-combo-backend");
-    strcpy(ota_begin.payload.ota_begin.project, "fof_backend_scanner");
-    strcpy(ota_begin.payload.ota_begin.hardware, "seeed_xiao_esp32s3");
+    strcpy(ota_begin.payload.ota_begin.target, FOF_BACKEND_SCANNER_TARGET);
+    strcpy(ota_begin.payload.ota_begin.project, FOF_BACKEND_SCANNER_PROJECT);
+    strcpy(ota_begin.payload.ota_begin.hardware, FOF_BACKEND_HARDWARE);
     strcpy(ota_begin.payload.ota_begin.version, "0.1.1-backend");
     strcpy(ota_begin.payload.ota_begin.sha256,
            "0123456789abcdef0123456789abcdef"

@@ -312,6 +312,9 @@ static backend_scanner_ota_begin_control_t begin_for(
     memset(&begin, 0, sizeof(begin));
     begin.session_id = 7U;
     begin.generation = fixture->manifest.generation;
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    begin.manifest_generation = fixture->manifest.generation;
+#endif
     begin.component_slot = 0U;
     strcpy(begin.expected_mac, "AA:BB:CC:DD:EE:01");
     begin.expected_boot_id = UINT32_C(305419896);
@@ -671,6 +674,36 @@ void test_dry_run_end_requires_exact_session_generation_and_never_mutates(void)
     TEST_ASSERT_EQUAL_UINT(0U, fake.flash_begins);
 }
 
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+void test_probe_then_apply_uses_fresh_session_generation_for_same_manifest(void)
+{
+    image_fixture_t fixture = valid_image_fixture();
+    fake_t fake = fresh_fake();
+    uart_ota_t ota;
+    const uart_ota_config_t config = config_for(&fake);
+    backend_scanner_ota_begin_control_t begin = begin_for(&fixture, true);
+    begin.generation = 40U;
+    begin.manifest_generation = fixture.manifest.generation;
+    TEST_ASSERT_TRUE(uart_ota_init(&ota, &config));
+    TEST_ASSERT_EQUAL(UART_OTA_RESULT_OK, uart_ota_begin(&ota, &begin));
+    TEST_ASSERT_EQUAL_UINT32(
+        fixture.manifest.generation, ota.manifest.generation);
+    stage_image(&ota, &fixture);
+    backend_scanner_ota_finish_control_t finish = finish_control(7U, 40U);
+    TEST_ASSERT_EQUAL(UART_OTA_RESULT_OK, uart_ota_end(&ota, &finish));
+    TEST_ASSERT_EQUAL(UART_OTA_STATE_DRY_RUN_COMPLETE, ota.state);
+
+    uart_ota_reset(&ota);
+    begin.dry_run = false;
+    begin.generation = 41U;
+    TEST_ASSERT_EQUAL(UART_OTA_RESULT_OK, uart_ota_begin(&ota, &begin));
+    TEST_ASSERT_EQUAL(UART_OTA_STATE_STAGING, ota.state);
+    TEST_ASSERT_EQUAL_UINT32(41U, ota.highest_generation);
+    TEST_ASSERT_EQUAL_UINT32(
+        fixture.manifest.generation, ota.manifest.generation);
+}
+#endif
+
 void test_apply_writes_only_after_revalidation_then_sets_pending_and_reboots(void)
 {
     image_fixture_t fixture = valid_image_fixture();
@@ -883,6 +916,10 @@ int main(void)
         test_fragmented_complete_image_validates_and_stops_at_frame_boundary);
     BACKEND_RUN_TEST(
         test_dry_run_end_requires_exact_session_generation_and_never_mutates);
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    BACKEND_RUN_TEST(
+        test_probe_then_apply_uses_fresh_session_generation_for_same_manifest);
+#endif
     BACKEND_RUN_TEST(
         test_apply_writes_only_after_revalidation_then_sets_pending_and_reboots);
     BACKEND_RUN_TEST(

@@ -44,6 +44,10 @@ typedef enum {
 typedef struct {
     uint32_t boot_id;
     uint32_t generation;
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    /* Uplink-owned topology epoch; independent of role command generation. */
+    uint32_t topology_generation;
+#endif
     backend_scan_profile_t profile;
 } backend_scanner_role_control_t;
 
@@ -89,7 +93,12 @@ typedef struct {
 
 typedef struct {
     uint32_t session_id;
+    /* Monotonic replay epoch for this UART session. */
     uint32_t generation;
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    /* Immutable catalog/store generation; independent of UART replay. */
+    uint32_t manifest_generation;
+#endif
     uint8_t component_slot;
     char expected_mac[18];
     uint32_t expected_boot_id;

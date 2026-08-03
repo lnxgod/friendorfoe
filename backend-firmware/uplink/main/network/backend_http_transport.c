@@ -92,7 +92,7 @@ static backend_http_result_t result_with_error(backend_http_error_t error)
     return result;
 }
 
-bool backend_http_dns_caller_allowed(
+bool backend_http_platform_caller_allowed(
     bool tcpip_initialized, bool caller_holds_lwip_core)
 {
     return tcpip_initialized && !caller_holds_lwip_core;
@@ -447,6 +447,17 @@ static backend_http_dns_state_t s_dns_state = {
     .lock = portMUX_INITIALIZER_UNLOCKED,
 };
 
+static bool platform_request_caller_allowed(void)
+{
+    const bool tcpip_initialized =
+        sys_thread_tcpip(LWIP_CORE_IS_TCPIP_INITIALIZED);
+    if (!tcpip_initialized) {
+        return false;
+    }
+    return backend_http_platform_caller_allowed(
+        true, sys_thread_tcpip(LWIP_CORE_LOCK_QUERY_HOLDER));
+}
+
 /*
  * Callback arguments always point into this application-lifetime slot pool.
  * A timed-out slot remains pending until its one lwIP callback completes, so a
@@ -699,7 +710,8 @@ static bool platform_resolve(
     backend_http_resolved_address_t *out)
 {
     (void)context;
-    if (!host || !out || timeout_ms == 0U) {
+    if (!host || !out || timeout_ms == 0U ||
+        !platform_request_caller_allowed()) {
         return false;
     }
     const int64_t started_us = esp_timer_get_time();
@@ -712,14 +724,6 @@ static bool platform_resolve(
         const bool success = platform_address_from_ip(
             &numeric_address, port, out);
         return esp_timer_get_time() < deadline_us && success;
-    }
-    const bool tcpip_initialized =
-        sys_thread_tcpip(LWIP_CORE_IS_TCPIP_INITIALIZED);
-    const bool caller_holds_lwip_core =
-        sys_thread_tcpip(LWIP_CORE_LOCK_QUERY_HOLDER);
-    if (!backend_http_dns_caller_allowed(
-            tcpip_initialized, caller_holds_lwip_core)) {
-        return false;
     }
     if (!platform_dns_initialize()) {
         return false;
@@ -891,6 +895,10 @@ static bool select_io(backend_http_io_t *out)
         return true;
     }
 #ifdef ESP_PLATFORM
+    if (!platform_request_caller_allowed()) {
+        memset(out, 0, sizeof(*out));
+        return false;
+    }
     *out = platform_io();
     return true;
 #else
@@ -1713,9 +1721,12 @@ static bool format_request_headers(
     const char *method,
     const backend_http_url_t *url,
     bool has_json_body,
+    bool response_is_binary,
     size_t json_length,
     size_t *out_length)
 {
+    const char *accept_type = response_is_binary
+        ? "application/octet-stream" : "application/json";
     int written = 0;
     if (has_json_body) {
         written = snprintf(
@@ -1723,13 +1734,14 @@ static bool format_request_headers(
             capacity,
             "%s %s HTTP/1.1\r\n"
             "Host: %s\r\n"
-            "Accept: application/json\r\n"
+            "Accept: %s\r\n"
             "Content-Type: application/json\r\n"
             "Content-Length: %zu\r\n"
             "Connection: close\r\n\r\n",
             method,
             url->target,
             url->authority,
+            accept_type,
             json_length);
     } else {
         written = snprintf(
@@ -1737,11 +1749,12 @@ static bool format_request_headers(
             capacity,
             "%s %s HTTP/1.1\r\n"
             "Host: %s\r\n"
-            "Accept: application/json\r\n"
+            "Accept: %s\r\n"
             "Connection: close\r\n\r\n",
             method,
             url->target,
-            url->authority);
+            url->authority,
+            accept_type);
     }
     if (written <= 0 || (size_t)written >= capacity) {
         return false;
@@ -1783,6 +1796,7 @@ static backend_http_result_t perform_request(
             method,
             &url,
             has_json_body,
+            target->binary,
             json_length,
             &request_header_length)) {
         return result_with_error(BACKEND_HTTP_ERROR_INVALID_URL);

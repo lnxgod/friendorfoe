@@ -4,6 +4,7 @@
 
 #include <unity.h>
 
+#include "backend_hardware_profile.h"
 #include "backend_scanner_control_codec.h"
 #include "backend_scanner_status_codec.h"
 #include "../support/backend_test_main.h"
@@ -37,6 +38,10 @@ static void assert_control_roundtrip(const backend_scanner_control_t *input)
                                  output.payload.role.boot_id);
         TEST_ASSERT_EQUAL_UINT32(input->payload.role.generation,
                                  output.payload.role.generation);
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+        TEST_ASSERT_EQUAL_UINT32(input->payload.role.topology_generation,
+                                 output.payload.role.topology_generation);
+#endif
         TEST_ASSERT_EQUAL(input->payload.role.profile,
                           output.payload.role.profile);
         break;
@@ -97,6 +102,11 @@ static void assert_control_roundtrip(const backend_scanner_control_t *input)
                                  output.payload.ota_begin.session_id);
         TEST_ASSERT_EQUAL_UINT32(input->payload.ota_begin.generation,
                                  output.payload.ota_begin.generation);
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+        TEST_ASSERT_EQUAL_UINT32(
+            input->payload.ota_begin.manifest_generation,
+            output.payload.ota_begin.manifest_generation);
+#endif
         TEST_ASSERT_EQUAL_UINT8(input->payload.ota_begin.component_slot,
                                 output.payload.ota_begin.component_slot);
         TEST_ASSERT_EQUAL_STRING(input->payload.ota_begin.expected_mac,
@@ -143,14 +153,27 @@ void test_scanner_control_round_trips_every_union_payload(void)
 {
     backend_scanner_control_t role = {
         .type = BACKEND_SCANNER_CONTROL_ROLE,
-        .payload.role = {77, 4, BACKEND_SCAN_PROFILE_BLE_PRIMARY},
+        .payload.role = {
+            .boot_id = 77,
+            .generation = 4,
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+            .topology_generation = 19,
+#endif
+            .profile = BACKEND_SCAN_PROFILE_BLE_PRIMARY,
+        },
     };
     char line[4096];
     TEST_ASSERT_GREATER_THAN(0U, backend_scanner_control_encode(
         &role, line, sizeof(line)));
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    TEST_ASSERT_EQUAL_STRING(
+        "{\"type\":\"role\",\"boot_id\":77,\"generation\":4,"
+        "\"topology_generation\":19,\"profile\":\"ble_primary\"}", line);
+#else
     TEST_ASSERT_EQUAL_STRING(
         "{\"type\":\"role\",\"boot_id\":77,\"generation\":4,"
         "\"profile\":\"ble_primary\"}", line);
+#endif
     assert_control_roundtrip(&role);
 
     backend_scanner_control_t time = {
@@ -262,13 +285,16 @@ void test_scanner_control_round_trips_every_union_payload(void)
         .payload.ota_begin = {
             .session_id = 7,
             .generation = 12,
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+            .manifest_generation = 19,
+#endif
             .component_slot = 0,
             .expected_mac = "AA:BB:CC:DD:EE:01",
             .expected_boot_id = UINT32_C(305419896),
             .expected_topology_generation = 4,
-            .target = "scanner-s3-combo-backend",
-            .project = "fof_backend_scanner",
-            .hardware = "seeed_xiao_esp32s3",
+            .target = FOF_BACKEND_SCANNER_TARGET,
+            .project = FOF_BACKEND_SCANNER_PROJECT,
+            .hardware = FOF_BACKEND_HARDWARE,
             .version = "0.1.1-backend",
             .image_size = 1048576,
             .crc32 = UINT32_C(305419896),
@@ -282,13 +308,17 @@ void test_scanner_control_round_trips_every_union_payload(void)
         &ota, line, sizeof(line)));
     TEST_ASSERT_EQUAL_STRING(
         "{\"type\":\"ota_begin\",\"session_id\":7,"
-        "\"generation\":12,\"component_slot\":0,"
+        "\"generation\":12,"
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+        "\"manifest_generation\":19,"
+#endif
+        "\"component_slot\":0,"
         "\"expected_mac\":\"AA:BB:CC:DD:EE:01\","
         "\"expected_boot_id\":305419896,"
         "\"expected_topology_generation\":4,"
-        "\"target\":\"scanner-s3-combo-backend\","
-        "\"project\":\"fof_backend_scanner\","
-        "\"hardware\":\"seeed_xiao_esp32s3\","
+        "\"target\":\"" FOF_BACKEND_SCANNER_TARGET "\","
+        "\"project\":\"" FOF_BACKEND_SCANNER_PROJECT "\","
+        "\"hardware\":\"" FOF_BACKEND_HARDWARE "\","
         "\"version\":\"0.1.1-backend\",\"image_size\":1048576,"
         "\"crc32\":305419896,"
         "\"sha256\":\"0123456789abcdef0123456789abcdef"
@@ -325,9 +355,9 @@ static backend_scanner_status_t fixture_status(void)
         .sequence = 12,
         .boot_id = 77,
         .mac = "AA:BB:CC:DD:EE:FF",
-        .target = "scanner-s3-combo-backend",
-        .project = "fof_backend_scanner",
-        .hardware = "seeed_xiao_esp32s3",
+        .target = FOF_BACKEND_SCANNER_TARGET,
+        .project = FOF_BACKEND_SCANNER_PROJECT,
+        .hardware = FOF_BACKEND_HARDWARE,
         .version = "0.1.0-backend",
         .profile = BACKEND_SCAN_PROFILE_BLE_PRIMARY,
         .role_generation = 4,
@@ -383,9 +413,9 @@ void test_scanner_status_round_trips_complete_exact_record(void)
         "{\"type\":\"scanner_status\",\"schema\":1,"
         "\"sequence\":12,\"boot_id\":77,"
         "\"mac\":\"AA:BB:CC:DD:EE:FF\","
-        "\"target\":\"scanner-s3-combo-backend\","
-        "\"project\":\"fof_backend_scanner\","
-        "\"hardware\":\"seeed_xiao_esp32s3\","
+        "\"target\":\"" FOF_BACKEND_SCANNER_TARGET "\","
+        "\"project\":\"" FOF_BACKEND_SCANNER_PROJECT "\","
+        "\"hardware\":\"" FOF_BACKEND_HARDWARE "\","
         "\"version\":\"0.1.0-backend\","
         "\"profile\":\"ble_primary\",\"role_generation\":4,"
         "\"role_acked\":true,\"command_ingress\":true,"
@@ -474,9 +504,9 @@ void test_scanner_status_rejects_wrong_identity_and_overlong_fields(void)
     static const char overlong_mac[] =
         "{\"type\":\"scanner_status\",\"schema\":1,\"sequence\":1,"
         "\"boot_id\":1,\"mac\":\"AA:BB:CC:DD:EE:FFX\","
-        "\"target\":\"scanner-s3-combo-backend\","
-        "\"project\":\"fof_backend_scanner\","
-        "\"hardware\":\"seeed_xiao_esp32s3\","
+        "\"target\":\"" FOF_BACKEND_SCANNER_TARGET "\","
+        "\"project\":\"" FOF_BACKEND_SCANNER_PROJECT "\","
+        "\"hardware\":\"" FOF_BACKEND_HARDWARE "\","
         "\"version\":\"0.1.0-backend\",\"profile\":\"quiescent\","
         "\"role_generation\":0,\"role_acked\":false,"
         "\"command_ingress\":true,\"ble_healthy\":false,"
@@ -537,13 +567,16 @@ void test_control_decoder_rejects_string_enum_time_and_identity_boundaries(void)
         .payload.ota_begin = {
             .session_id = 7U,
             .generation = 12U,
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+            .manifest_generation = 19U,
+#endif
             .component_slot = 0U,
             .expected_mac = "AA:BB:CC:DD:EE:01",
             .expected_boot_id = 77U,
             .expected_topology_generation = 4U,
-            .target = "scanner-s3-combo-backend",
-            .project = "fof_backend_scanner",
-            .hardware = "seeed_xiao_esp32s3",
+            .target = FOF_BACKEND_SCANNER_TARGET,
+            .project = FOF_BACKEND_SCANNER_PROJECT,
+            .hardware = FOF_BACKEND_HARDWARE,
             .version = "0.1.1-backend",
             .image_size = 1048576U,
             .crc32 = UINT32_C(305419896),
@@ -554,7 +587,7 @@ void test_control_decoder_rejects_string_enum_time_and_identity_boundaries(void)
     size_t length = backend_scanner_control_encode(
         &ota, line, sizeof(line));
     TEST_ASSERT_GREATER_THAN(0U, length);
-    char *target = strstr(line, "scanner-s3-combo-backend");
+    char *target = strstr(line, FOF_BACKEND_SCANNER_TARGET);
     TEST_ASSERT_NOT_NULL(target);
     target[0] = 'X';
     TEST_ASSERT_EQUAL(BACKEND_SCANNER_CONTROL_SCHEMA_MISMATCH,
@@ -594,7 +627,7 @@ void test_status_decoder_rejects_unknown_duplicate_missing_and_wrong_identity(vo
 
     char wrong_identity[4096] = {0};
     memcpy(wrong_identity, line, length + 1U);
-    char *target = strstr(wrong_identity, "scanner-s3-combo-backend");
+    char *target = strstr(wrong_identity, FOF_BACKEND_SCANNER_TARGET);
     TEST_ASSERT_NOT_NULL(target);
     target[0] = 'X';
     TEST_ASSERT_EQUAL(BACKEND_SCANNER_STATUS_SCHEMA_MISMATCH,

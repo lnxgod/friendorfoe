@@ -7,6 +7,7 @@
 
 #include "backend_hardware_profile.h"
 #include "backend_ota_identity.h"
+#include "backend_ota_operation_id.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -44,6 +45,10 @@ typedef struct {
     backend_ota_read_fn source_read;
     void *source_context;
     backend_ota_image_result_t last_image_result;
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    backend_ota_operation_id_t operation_id;
+    bool has_operation_id;
+#endif
     uint32_t relay_session_id;
     uint32_t erase_count;
     uint32_t write_count;
@@ -64,6 +69,10 @@ void backend_firmware_store_init(
  */
 backend_firmware_store_result_t backend_firmware_store_stage(
     backend_firmware_store_t *store,
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    bool has_operation_id,
+    const backend_ota_operation_id_t *operation_id,
+#endif
     const backend_ota_manifest_t *manifest,
     backend_ota_read_fn source_read,
     void *source_context,
@@ -71,10 +80,18 @@ backend_firmware_store_result_t backend_firmware_store_stage(
 
 bool backend_firmware_store_matches(
     const backend_firmware_store_t *store,
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    bool has_operation_id,
+    const backend_ota_operation_id_t *operation_id,
+#endif
     const backend_ota_manifest_t *manifest);
 
 bool backend_firmware_store_read(
     const backend_firmware_store_t *store,
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    bool has_operation_id,
+    const backend_ota_operation_id_t *operation_id,
+#endif
     uint32_t generation,
     size_t offset,
     uint8_t *output,
@@ -82,21 +99,37 @@ bool backend_firmware_store_read(
 
 bool backend_firmware_store_claim_relay(
     backend_firmware_store_t *store,
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    bool has_operation_id,
+    const backend_ota_operation_id_t *operation_id,
+#endif
     uint32_t generation,
     uint32_t session_id);
 
 bool backend_firmware_store_relay_claim_matches(
     const backend_firmware_store_t *store,
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    bool has_operation_id,
+    const backend_ota_operation_id_t *operation_id,
+#endif
     uint32_t generation,
     uint32_t session_id);
 
 void backend_firmware_store_release_relay(
     backend_firmware_store_t *store,
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    bool has_operation_id,
+    const backend_ota_operation_id_t *operation_id,
+#endif
     uint32_t generation,
     uint32_t session_id);
 
 bool backend_firmware_store_discard(
     backend_firmware_store_t *store,
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    bool has_operation_id,
+    const backend_ota_operation_id_t *operation_id,
+#endif
     uint32_t generation);
 
 uint32_t backend_firmware_store_image_mutation_count(

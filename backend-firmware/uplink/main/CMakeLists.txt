@@ -1,5 +1,6 @@
 set(BACKEND_STATUS_LED_SRCS "../../shared/backend_status_led.c")
 set(BACKEND_STATUS_LED_REQUIRES)
+set(BACKEND_OTA_FULLSIZE_SRCS)
 set(BACKEND_STATUS_DISCOVERY_PROJECT "${PROJECT_NAME}")
 set(BACKEND_STATUS_FINAL_PROJECT "${CMAKE_PROJECT_NAME}")
 if("${BACKEND_STATUS_DISCOVERY_PROJECT}" STREQUAL "" OR
@@ -22,6 +23,10 @@ if("${BACKEND_STATUS_PROJECT_NAME}" STREQUAL "fof_backend_uplink")
 elseif("${BACKEND_STATUS_PROJECT_NAME}" STREQUAL "fof_backend_uplink_fullsize")
     list(APPEND BACKEND_STATUS_LED_SRCS "../../shared/backend_rgb_led_pattern.c")
     list(APPEND BACKEND_STATUS_LED_REQUIRES backend_fullsize_led)
+    list(APPEND BACKEND_OTA_FULLSIZE_SRCS
+        "network/backend_ota_command_client.c"
+        "network/backend_ota_workflow.c"
+        "storage/backend_ota_event_outbox.c")
 else()
     message(FATAL_ERROR
         "Unknown backend uplink project: ${BACKEND_STATUS_PROJECT_NAME}")
@@ -35,6 +40,7 @@ idf_component_register(
         "core/backend_coordinator.c"
         "core/backend_health.c"
         ${BACKEND_STATUS_LED_SRCS}
+        ${BACKEND_OTA_FULLSIZE_SRCS}
         "network/backend_command_client.c"
         "network/backend_config_portal.c"
         "network/backend_http_transport.c"
@@ -63,6 +69,7 @@ idf_component_register(
         "../../shared/backend_led_pattern.c"
         "../../shared/backend_led_protocol.c"
         "../../shared/backend_ota_identity.c"
+        "../../shared/backend_ota_operation_id.c"
         "../../shared/backend_portal_contract.c"
         "../../shared/backend_recovery_policy.c"
         "../../shared/backend_scanner_control_codec.c"

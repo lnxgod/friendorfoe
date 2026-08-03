@@ -17,6 +17,9 @@
 #include "esp_timer.h"
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+#include "freertos/queue.h"
+#endif
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "nvs.h"
@@ -39,6 +42,11 @@
 #include "backend_led_pattern.h"
 #include "backend_nvs_config.h"
 #include "backend_ota_maintenance.h"
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+#include "backend_ota_command_client.h"
+#include "backend_ota_event_outbox.h"
+#include "backend_ota_workflow.h"
+#endif
 #include "backend_scanner_control_codec.h"
 #include "backend_scanner_relay.h"
 #include "backend_scanner_status_codec.h"
@@ -66,7 +74,16 @@
 #define UPLINK_STATUS_CAPACITY 768U
 #define UPLINK_HTTP_RESPONSE_CAPACITY (BACKEND_HTTP_MAX_JSON_BODY + 1U)
 #define UPLINK_JOURNAL_NAMESPACE "fof_backend"
-#define UPLINK_JOURNAL_KEY "ota_journal"
+#define UPLINK_JOURNAL_KEY BACKEND_OTA_JOURNAL_STORAGE_KEY
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+#define UPLINK_OTA_EVENT_SLOT0_KEY "ota_evt0"
+#define UPLINK_OTA_EVENT_SLOT1_KEY "ota_evt1"
+#define UPLINK_TOPOLOGY_EPOCH_KEY "topo_epoch"
+#define UPLINK_OTA_RESULT_QUEUE_LENGTH 4U
+#define UPLINK_OTA_PROGRESS_QUEUE_LENGTH 1U
+#define UPLINK_OTA_CLIENT_PERIOD_MS 500U
+#define UPLINK_OTA_CLIENT_PATH_CAPACITY 192U
+#endif
 
 typedef struct {
     const esp_partition_t *partition;
@@ -87,6 +104,22 @@ typedef struct {
     size_t length;
 } uplink_memory_image_t;
 
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+typedef struct {
+    backend_ota_command_envelope_t command;
+    bool resume;
+    bool restart;
+} uplink_ota_work_item_t;
+
+typedef struct {
+    backend_ota_command_envelope_t command;
+    backend_ota_evidence_t evidence;
+    fof_firmware_version_relation_t relation;
+    char running_version[65];
+    bool call_succeeded;
+} uplink_ota_result_item_t;
+#endif
+
 typedef struct {
     SemaphoreHandle_t lock;
     SemaphoreHandle_t http_lock;
@@ -94,6 +127,12 @@ typedef struct {
     SemaphoreHandle_t ota_lock;
     SemaphoreHandle_t uart_tx_lock[BACKEND_UART_SLOT_COUNT];
     SemaphoreHandle_t relay_complete;
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    QueueHandle_t ota_work_queue;
+    QueueHandle_t ota_result_queue;
+    QueueHandle_t ota_progress_queue;
+    SemaphoreHandle_t ota_progress_ack;
+#endif
 
     backend_config_record_t config;
     backend_config_portal_t portal;
@@ -124,6 +163,21 @@ typedef struct {
     backend_ota_maintenance_t maintenance;
     backend_ota_poll_state_t ota_poll[3];
     backend_scanner_relay_t relay;
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    backend_ota_event_outbox_storage_t ota_outbox_storage;
+    backend_ota_event_outbox_snapshot_t ota_startup_outbox;
+    backend_ota_journal_record_t ota_startup_journal;
+    backend_ota_journal_startup_action_t ota_startup_action;
+    backend_ota_workflow_t ota_workflow;
+    uplink_ota_result_item_t ota_result_scratch;
+    char ota_client_http_response[UPLINK_HTTP_RESPONSE_CAPACITY];
+    bool ota_terminal_event_pending;
+    backend_ota_terminal_outcome_t ota_terminal_outcome;
+    char ota_terminal_receipt_sha256[65];
+    bool ota_progress_event_pending;
+    bool ota_progress_waiter;
+    backend_ota_progress_update_t ota_pending_progress;
+#endif
 
     uint8_t mac[6];
     char mac_text[18];
@@ -138,6 +192,9 @@ typedef struct {
     uint32_t catalog_generation;
     uint32_t relay_quiet_generation;
     uint32_t relay_expected_role_generation;
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    uint32_t relay_session_generation;
+#endif
     int64_t boot_monotonic_ms;
     int64_t epoch_anchor_ms;
     int64_t epoch_anchor_monotonic_ms;
@@ -158,12 +215,18 @@ typedef struct {
     bool uploader_worker_live;
     bool time_worker_live;
     bool command_worker_live;
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    bool ota_client_worker_live;
+#endif
     bool ota_worker_live;
     bool usb_worker_live;
     bool fatal_runtime;
     bool flow_sent_paused;
     bool flow_state_known;
     bool ota_ready;
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    bool ota_client_blocked;
+#endif
     bool relay_active;
     bool relay_result;
     bool target_claimed[3];
@@ -755,6 +818,205 @@ static bool journal_store(
     return result;
 }
 
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+static bool nvs_erase_exact_key(const char *key)
+{
+    nvs_handle_t handle;
+    if (key == NULL ||
+        nvs_open(UPLINK_JOURNAL_NAMESPACE, NVS_READWRITE, &handle) != ESP_OK) {
+        return false;
+    }
+    const esp_err_t erased = nvs_erase_key(handle, key);
+    const bool result =
+        (erased == ESP_OK || erased == ESP_ERR_NVS_NOT_FOUND) &&
+        nvs_commit(handle) == ESP_OK;
+    nvs_close(handle);
+    return result;
+}
+
+typedef enum {
+    UPLINK_TOPOLOGY_EPOCH_OK = 0,
+    UPLINK_TOPOLOGY_EPOCH_MISSING,
+    UPLINK_TOPOLOGY_EPOCH_ERROR,
+} uplink_topology_epoch_result_t;
+
+static uplink_topology_epoch_result_t topology_epoch_load(uint32_t *out)
+{
+    if (out == NULL) {
+        return UPLINK_TOPOLOGY_EPOCH_ERROR;
+    }
+    nvs_handle_t handle;
+    const esp_err_t opened = nvs_open(
+        UPLINK_JOURNAL_NAMESPACE, NVS_READONLY, &handle);
+    if (opened == ESP_ERR_NVS_NOT_FOUND) {
+        return UPLINK_TOPOLOGY_EPOCH_MISSING;
+    }
+    if (opened != ESP_OK) {
+        return UPLINK_TOPOLOGY_EPOCH_ERROR;
+    }
+    const esp_err_t loaded = nvs_get_u32(
+        handle, UPLINK_TOPOLOGY_EPOCH_KEY, out);
+    nvs_close(handle);
+    if (loaded == ESP_ERR_NVS_NOT_FOUND) {
+        return UPLINK_TOPOLOGY_EPOCH_MISSING;
+    }
+    return loaded == ESP_OK && *out != 0U
+        ? UPLINK_TOPOLOGY_EPOCH_OK : UPLINK_TOPOLOGY_EPOCH_ERROR;
+}
+
+static bool topology_epoch_store(uint32_t value)
+{
+    nvs_handle_t handle;
+    if (value == 0U || nvs_open(
+            UPLINK_JOURNAL_NAMESPACE, NVS_READWRITE, &handle) != ESP_OK) {
+        return false;
+    }
+    const bool stored = nvs_set_u32(
+            handle, UPLINK_TOPOLOGY_EPOCH_KEY, value) == ESP_OK &&
+        nvs_commit(handle) == ESP_OK;
+    nvs_close(handle);
+    return stored;
+}
+
+static bool topology_epoch_restore(
+    backend_ota_journal_startup_action_t action,
+    const backend_ota_journal_record_t *journal)
+{
+    uint32_t stored = 0U;
+    const uplink_topology_epoch_result_t loaded = topology_epoch_load(&stored);
+    if (loaded == UPLINK_TOPOLOGY_EPOCH_ERROR) {
+        return false;
+    }
+    const bool active_recovery =
+        action == BACKEND_OTA_JOURNAL_STARTUP_RESTART_METADATA ||
+        action == BACKEND_OTA_JOURNAL_STARTUP_RESTART_DOWNLOAD ||
+        action == BACKEND_OTA_JOURNAL_STARTUP_ROLL_BACK ||
+        action == BACKEND_OTA_JOURNAL_STARTUP_WAIT_REBOOT ||
+        action == BACKEND_OTA_JOURNAL_STARTUP_CHECK_CONVERGENCE;
+    uint32_t expected = 0U;
+    if (active_recovery) {
+        if (journal == NULL ||
+            journal->expected_topology_generation == 0U) {
+            s_runtime.ota_startup_action =
+                BACKEND_OTA_JOURNAL_STARTUP_BLOCKED;
+            expected = loaded == UPLINK_TOPOLOGY_EPOCH_OK ? stored : 1U;
+        } else if (loaded == UPLINK_TOPOLOGY_EPOCH_OK) {
+            expected = stored;
+            if (stored != journal->expected_topology_generation) {
+                s_runtime.ota_startup_action =
+                    BACKEND_OTA_JOURNAL_STARTUP_BLOCKED;
+            }
+        } else {
+            expected = journal->expected_topology_generation;
+        }
+        if (loaded == UPLINK_TOPOLOGY_EPOCH_MISSING &&
+            !topology_epoch_store(expected)) {
+            return false;
+        }
+    } else if (loaded == UPLINK_TOPOLOGY_EPOCH_OK) {
+        expected = stored;
+    } else {
+        expected = action == BACKEND_OTA_JOURNAL_STARTUP_TERMINAL &&
+                journal != NULL &&
+                journal->expected_topology_generation != 0U
+            ? journal->expected_topology_generation : 1U;
+        if (!topology_epoch_store(expected)) {
+            return false;
+        }
+    }
+    s_runtime.topology_generation = expected;
+    return true;
+}
+
+static bool journal_erase_exact(void *context, const char *key)
+{
+    (void)context;
+    return key != NULL && strcmp(key, UPLINK_JOURNAL_KEY) == 0 &&
+           nvs_erase_exact_key(UPLINK_JOURNAL_KEY);
+}
+
+static const char *ota_outbox_key(backend_ota_event_outbox_slot_t slot)
+{
+    switch (slot) {
+    case BACKEND_OTA_EVENT_OUTBOX_SLOT_0:
+        return UPLINK_OTA_EVENT_SLOT0_KEY;
+    case BACKEND_OTA_EVENT_OUTBOX_SLOT_1:
+        return UPLINK_OTA_EVENT_SLOT1_KEY;
+    default:
+        return NULL;
+    }
+}
+
+static backend_ota_event_outbox_io_result_t ota_outbox_load_slot(
+    void *context,
+    backend_ota_event_outbox_slot_t slot,
+    uint8_t *output,
+    size_t capacity,
+    size_t *out_length)
+{
+    (void)context;
+    const char *key = ota_outbox_key(slot);
+    if (key == NULL || output == NULL || out_length == NULL) {
+        return BACKEND_OTA_EVENT_OUTBOX_IO_ERROR;
+    }
+    nvs_handle_t handle;
+    const esp_err_t opened = nvs_open(
+        UPLINK_JOURNAL_NAMESPACE, NVS_READONLY, &handle);
+    if (opened == ESP_ERR_NVS_NOT_FOUND) {
+        return BACKEND_OTA_EVENT_OUTBOX_IO_NOT_FOUND;
+    }
+    if (opened != ESP_OK) {
+        return BACKEND_OTA_EVENT_OUTBOX_IO_ERROR;
+    }
+    size_t required = 0U;
+    esp_err_t result = nvs_get_blob(handle, key, NULL, &required);
+    if (result == ESP_ERR_NVS_NOT_FOUND) {
+        nvs_close(handle);
+        return BACKEND_OTA_EVENT_OUTBOX_IO_NOT_FOUND;
+    }
+    if (result != ESP_OK || required == 0U || required > capacity) {
+        nvs_close(handle);
+        return BACKEND_OTA_EVENT_OUTBOX_IO_ERROR;
+    }
+    size_t actual = required;
+    result = nvs_get_blob(handle, key, output, &actual);
+    nvs_close(handle);
+    if (result != ESP_OK || actual != required) {
+        return BACKEND_OTA_EVENT_OUTBOX_IO_ERROR;
+    }
+    *out_length = actual;
+    return BACKEND_OTA_EVENT_OUTBOX_IO_OK;
+}
+
+static bool ota_outbox_store_slot(
+    void *context,
+    backend_ota_event_outbox_slot_t slot,
+    const uint8_t *bytes,
+    size_t length)
+{
+    (void)context;
+    const char *key = ota_outbox_key(slot);
+    nvs_handle_t handle;
+    if (key == NULL || bytes == NULL || length == 0U ||
+        length > BACKEND_OTA_EVENT_OUTBOX_SLOT_MAX_BYTES ||
+        nvs_open(UPLINK_JOURNAL_NAMESPACE, NVS_READWRITE, &handle) != ESP_OK) {
+        return false;
+    }
+    const bool result = nvs_set_blob(handle, key, bytes, length) == ESP_OK &&
+                        nvs_commit(handle) == ESP_OK;
+    nvs_close(handle);
+    return result;
+}
+
+static bool ota_outbox_clear_exact_slot(
+    void *context, backend_ota_event_outbox_slot_t slot)
+{
+    (void)context;
+    const char *key = ota_outbox_key(slot);
+    return key != NULL && nvs_erase_exact_key(key);
+}
+#endif
+
 static void *firmware_buffer_alloc(size_t size, void *context)
 {
     (void)context;
@@ -986,6 +1248,10 @@ static backend_ota_image_result_t ota_validate_staged(
 
 static bool relay_image(
     backend_ota_component_t component,
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    bool has_operation_id,
+    const backend_ota_operation_id_t *operation_id,
+#endif
     const backend_ota_manifest_t *manifest,
     const uint8_t *bytes,
     size_t length,
@@ -993,6 +1259,9 @@ static bool relay_image(
 {
     const int slot = backend_ota_component_slot(component);
     if (slot < 0 || slot >= 2 || manifest == NULL || bytes == NULL ||
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+        !has_operation_id || operation_id == NULL ||
+#endif
         length != manifest->image_size) {
         return false;
     }
@@ -1000,6 +1269,10 @@ static bool relay_image(
     const backend_firmware_store_result_t stage =
         backend_firmware_store_stage(
             &s_runtime.firmware_store,
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+            has_operation_id,
+            operation_id,
+#endif
             manifest,
             memory_image_read,
             &image,
@@ -1012,7 +1285,11 @@ static bool relay_image(
     }
     lock_runtime();
     if (!s_runtime.scanner_tracker[slot].initialized ||
-        s_runtime.relay_active || s_runtime.role_generation > UINT32_MAX - 2U) {
+        s_runtime.relay_active || s_runtime.role_generation > UINT32_MAX - 2U
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+        || s_runtime.relay_session_generation == UINT32_MAX
+#endif
+        ) {
         unlock_runtime();
         return false;
     }
@@ -1038,6 +1315,11 @@ static bool relay_image(
     const bool begun = backend_scanner_relay_begin(
         &s_runtime.relay,
         &s_runtime.firmware_store,
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+        has_operation_id,
+        operation_id,
+        ++s_runtime.relay_session_generation,
+#endif
         (backend_scanner_slot_t)slot,
         manifest,
         target_mac,
@@ -1068,22 +1350,40 @@ static bool relay_image(
 static bool ota_scanner_dry_run(
     void *context,
     backend_ota_component_t component,
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    bool has_operation_id,
+    const backend_ota_operation_id_t *operation_id,
+#endif
     const backend_ota_manifest_t *manifest,
     const uint8_t *bytes,
     size_t length)
 {
     (void)context;
-    return relay_image(component, manifest, bytes, length, true);
+    return relay_image(
+        component,
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+        has_operation_id, operation_id,
+#endif
+        manifest, bytes, length, true);
 }
 
 static bool ota_mutate_staged(
     void *context,
     backend_ota_component_t component,
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    bool has_operation_id,
+    const backend_ota_operation_id_t *operation_id,
+#endif
     const backend_ota_manifest_t *manifest,
     const uint8_t *bytes,
     size_t length)
 {
     (void)context;
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    if (!has_operation_id || operation_id == NULL) {
+        return false;
+    }
+#endif
     if (component == BACKEND_OTA_COMPONENT_UPLINK) {
         if (backend_self_ota_begin(&s_runtime.self_ota, manifest) !=
             BACKEND_SELF_OTA_READY) {
@@ -1105,7 +1405,12 @@ static bool ota_mutate_staged(
         return backend_self_ota_finish(&s_runtime.self_ota) ==
                BACKEND_SELF_OTA_READY_TO_REBOOT;
     }
-    return relay_image(component, manifest, bytes, length, false);
+    return relay_image(
+        component,
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+        has_operation_id, operation_id,
+#endif
+        manifest, bytes, length, false);
 }
 
 static bool ota_request_reboot(
@@ -1160,6 +1465,30 @@ static bool ota_read_convergence(
     unlock_runtime();
     return true;
 }
+
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+static bool ota_report_progress(
+    void *context, const backend_ota_progress_update_t *update)
+{
+    (void)context;
+    if (update == NULL || s_runtime.ota_progress_queue == NULL ||
+        s_runtime.ota_progress_ack == NULL ||
+        xQueueSend(
+            s_runtime.ota_progress_queue, update, portMAX_DELAY) != pdTRUE) {
+        return false;
+    }
+    return xSemaphoreTake(
+        s_runtime.ota_progress_ack, portMAX_DELAY) == pdTRUE;
+}
+
+static uint32_t ota_relay_retry_count(
+    void *context, backend_ota_component_t component)
+{
+    (void)context;
+    return component == BACKEND_OTA_COMPONENT_UPLINK
+        ? 0U : (uint32_t)s_runtime.relay.retry_count;
+}
+#endif
 
 static bool ota_emit(void *context, const char *line, size_t length)
 {
@@ -1307,9 +1636,24 @@ static void update_scanner_status_locked(
          * until the relay state machine validates convergence.
          */
         if (!expected_relay_reboot) {
-            s_runtime.topology_generation =
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+            if (s_runtime.topology_generation == UINT32_MAX) {
+                s_runtime.ota_client_blocked = true;
+            } else {
+                const uint32_t next_generation =
+                    s_runtime.topology_generation + 1U;
+                if (topology_epoch_store(next_generation)) {
+                    s_runtime.topology_generation = next_generation;
+                } else {
+                    s_runtime.ota_client_blocked = true;
+                }
+            }
+#else
+            const uint32_t next_generation =
                 s_runtime.topology_generation == UINT32_MAX
                     ? UINT32_MAX : s_runtime.topology_generation + 1U;
+            s_runtime.topology_generation = next_generation;
+#endif
         }
         health->commanded_generation = 0U;
         health->role_acked = false;
@@ -1342,6 +1686,9 @@ static void update_scanner_status_locked(
                 .payload.role = {
                     .boot_id = status->boot_id,
                     .generation = s_runtime.relay_expected_role_generation,
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+                    .topology_generation = s_runtime.topology_generation,
+#endif
                     .profile = s_runtime.relay.expected_profile,
                 },
             };
@@ -1474,6 +1821,9 @@ static void send_role_locked(
         .payload.role = {
             .boot_id = health->boot_id,
             .generation = generation,
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+            .topology_generation = s_runtime.topology_generation,
+#endif
             .profile = profile,
         },
     };
@@ -1528,6 +1878,9 @@ static void service_relay_locked(int64_t now_ms)
             .payload.role = {
                 .boot_id = s_runtime.relay.old_boot_id,
                 .generation = s_runtime.relay_quiet_generation,
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+                .topology_generation = s_runtime.topology_generation,
+#endif
                 .profile = BACKEND_SCAN_PROFILE_QUIESCENT,
             },
         };
@@ -2054,12 +2407,1179 @@ static void command_worker(void *argument)
     }
 }
 
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+static bool ota_lower_hex_decode_32(const char *text, uint8_t output[32])
+{
+    if (text == NULL || output == NULL || text[64] != '\0') {
+        return false;
+    }
+    for (size_t index = 0U; index < 32U; ++index) {
+        const char high = text[index * 2U];
+        const char low = text[index * 2U + 1U];
+        const int high_value = high >= '0' && high <= '9'
+            ? high - '0' : high >= 'a' && high <= 'f'
+                ? high - 'a' + 10 : -1;
+        const int low_value = low >= '0' && low <= '9'
+            ? low - '0' : low >= 'a' && low <= 'f'
+                ? low - 'a' + 10 : -1;
+        if (high_value < 0 || low_value < 0) {
+            memset(output, 0, 32U);
+            return false;
+        }
+        output[index] =
+            (uint8_t)((unsigned)high_value * 16U + (unsigned)low_value);
+    }
+    return true;
+}
+
+static bool ota_command_request(
+    const backend_ota_command_envelope_t *command,
+    backend_ota_request_t *out)
+{
+    if (command == NULL || out == NULL || !command->has_operation_id) {
+        return false;
+    }
+    memset(out, 0, sizeof(*out));
+    out->probe = !command->is_apply;
+    out->has_operation_id = true;
+    out->operation_id = command->operation_id;
+    out->expected_size = command->expected_size;
+    out->has_accepted_probe_receipt = command->is_apply;
+    out->command_next_sequence = command->next_sequence;
+    out->component = command->component;
+    out->apply_mode = command->apply_mode;
+    memcpy(out->catalog_name, command->catalog_name,
+           sizeof(out->catalog_name));
+    memcpy(out->expected_sha256, command->expected_sha256,
+           sizeof(out->expected_sha256));
+    memcpy(out->expected_mac, command->binding.target_mac, 6U);
+    out->expected_boot_id = command->binding.target_boot_id;
+    out->expected_topology_generation =
+        command->binding.topology_generation;
+    return !command->is_apply || ota_lower_hex_decode_32(
+        command->probe_receipt_sha256,
+        out->accepted_probe_receipt_sha256);
+}
+
+static bool ota_progress_event(
+    const backend_ota_progress_update_t *update,
+    uint32_t sequence,
+    backend_ota_progress_event_t *out)
+{
+    const backend_ota_command_envelope_t *command =
+        &s_runtime.ota_workflow.command;
+    if (update == NULL || out == NULL ||
+        !s_runtime.ota_workflow.command_active ||
+        !update->has_operation_id ||
+        !backend_ota_operation_id_equal(
+            &update->operation_id, &command->operation_id) ||
+        update->probe == command->is_apply ||
+        update->component != command->component ||
+        strcmp(update->catalog_name, command->catalog_name) != 0 ||
+        strcmp(update->manifest.sha256, command->expected_sha256) != 0 ||
+        update->manifest.image_size != command->expected_size ||
+        update->stage > BACKEND_OTA_JOURNAL_PROGRESS_CONVERGENCE) {
+        return false;
+    }
+    *out = (backend_ota_progress_event_t) {
+        .prefix = {
+            .has_operation_id = true,
+            .operation_id = update->operation_id,
+            .is_apply = command->is_apply,
+            .sequence = sequence,
+            .component = update->component,
+            .catalog_name = command->catalog_name,
+        },
+        .stage = (backend_ota_progress_stage_t)update->stage,
+        .received = update->received,
+        .total = update->total,
+        .retry_count = update->retry_count,
+    };
+    return true;
+}
+
+static bool ota_command_local(
+    const backend_ota_workflow_t *workflow,
+    backend_ota_command_local_t *out)
+{
+    if (workflow == NULL || out == NULL) {
+        return false;
+    }
+    const backend_ota_component_t component = workflow->expected_component;
+    const backend_firmware_identity_t *identity = backend_identity_for_image(
+        component == BACKEND_OTA_COMPONENT_UPLINK
+            ? BACKEND_IMAGE_UPLINK : BACKEND_IMAGE_SCANNER);
+    backend_ota_target_binding_t target;
+    if (identity == NULL || !ota_snapshot_binding(NULL, component, &target)) {
+        return false;
+    }
+    memset(out, 0, sizeof(*out));
+    out->component = component;
+    out->catalog_name = identity->target;
+    out->target = identity->target;
+    out->project = identity->project;
+    out->hardware = identity->hardware;
+    memcpy(out->binding.uplink_mac, s_runtime.mac, 6U);
+    out->binding.uplink_boot_id = s_runtime.boot_id;
+    memcpy(out->binding.target_mac, target.target_mac, 6U);
+    out->binding.target_boot_id = target.target_boot_id;
+    out->binding.topology_generation = target.topology_generation;
+    out->max_expected_size = (uint32_t)ota_partition_capacity(NULL, component);
+    out->has_expected_next_sequence = workflow->has_expected_sequence;
+    out->expected_next_sequence = workflow->expected_sequence;
+    out->has_accepted_probe = workflow->has_accepted_probe;
+    out->accepted_probe = workflow->accepted_probe;
+    return out->max_expected_size != 0U;
+}
+
+static bool ota_drain_pending_outbox(
+    const char *base_url, const char *device_id,
+    const backend_ota_event_outbox_snapshot_t *pending)
+{
+    if (base_url == NULL || device_id == NULL || pending == NULL ||
+        !s_runtime.ota_workflow.command_active) {
+        return false;
+    }
+    backend_ota_workflow_ack_prediction_t prediction;
+    const bool terminal = s_runtime.ota_terminal_event_pending;
+    const bool progress = s_runtime.ota_progress_event_pending;
+    const bool predicted = terminal
+        ? backend_ota_workflow_predict_terminal_ack(
+              &s_runtime.ota_workflow, s_runtime.ota_terminal_outcome,
+              &prediction)
+        : progress
+            ? backend_ota_workflow_predict_progress_ack(
+                  &s_runtime.ota_workflow, &prediction)
+        : backend_ota_workflow_predict_begin_ack(
+              &s_runtime.ota_workflow, &prediction);
+    char operation_id[BACKEND_OTA_OPERATION_ID_HEX_LENGTH + 1U];
+    char path[UPLINK_OTA_CLIENT_PATH_CAPACITY];
+    if (!predicted || !backend_ota_operation_id_encode(
+            &pending->pending.operation_id, operation_id,
+            sizeof(operation_id)) ||
+        snprintf(
+            path, sizeof(path), "/nodes/%s/backend-ota/%s/events",
+            device_id, operation_id) >= (int)sizeof(path)) {
+        return false;
+    }
+    (void)xSemaphoreTake(s_runtime.http_lock, portMAX_DELAY);
+    const backend_http_result_t http = backend_http_post_json(
+        base_url, path, (const char *)pending->pending.body,
+        pending->pending.body_length, s_runtime.ota_client_http_response,
+        sizeof(s_runtime.ota_client_http_response));
+    (void)xSemaphoreGive(s_runtime.http_lock);
+    const char *action = prediction.is_apply ? "apply" : "probe";
+    backend_ota_command_ack_t ack;
+    if (!http.transport_complete || http.status_code < 200 ||
+        http.status_code >= 300 ||
+        !backend_ota_command_ack_decode(
+            s_runtime.ota_client_http_response, http.body_length,
+            &pending->pending.operation_id, pending->pending.sequence,
+            prediction.component, action, prediction.terminal, &ack)) {
+        return false;
+    }
+    const backend_ota_event_outbox_ack_t outbox_ack = {
+        .strict_decoded = true,
+        .http_status = (uint16_t)http.status_code,
+        .ok = ack.ok,
+        .has_operation_id = ack.has_operation_id,
+        .operation_id = ack.operation_id,
+        .accepted_sequence = ack.accepted_sequence,
+        .next_sequence = ack.next_sequence,
+    };
+    backend_ota_progress_event_t progress_event;
+    if (progress) {
+        backend_ota_request_t request;
+        if (!ota_progress_event(
+                &s_runtime.ota_pending_progress,
+                pending->pending.sequence, &progress_event) ||
+            !ota_command_request(
+                &s_runtime.ota_workflow.command, &request) ||
+            !backend_ota_maintenance_ack_fullsize_progress(
+                &s_runtime.maintenance, &request,
+                &s_runtime.ota_pending_progress,
+                ack.accepted_sequence, ack.next_sequence)) {
+            s_runtime.ota_client_blocked = true;
+            return false;
+        }
+    }
+    if (backend_ota_event_outbox_acknowledge(
+            &s_runtime.ota_outbox_storage, &outbox_ack) !=
+        BACKEND_OTA_EVENT_OUTBOX_ACK_CLEARED) {
+        return false;
+    }
+    if (terminal) {
+        if (!backend_ota_workflow_note_terminal_ack(
+                &s_runtime.ota_workflow, s_runtime.ota_terminal_outcome,
+                s_runtime.ota_terminal_receipt_sha256, &ack)) {
+            s_runtime.ota_client_blocked = true;
+            return false;
+        }
+        s_runtime.ota_terminal_event_pending = false;
+        memset(s_runtime.ota_terminal_receipt_sha256, 0,
+               sizeof(s_runtime.ota_terminal_receipt_sha256));
+    } else if (progress) {
+        if (!backend_ota_workflow_note_progress_ack(
+                &s_runtime.ota_workflow, &progress_event, &ack)) {
+            s_runtime.ota_client_blocked = true;
+            return false;
+        }
+        s_runtime.ota_progress_event_pending = false;
+        memset(&s_runtime.ota_pending_progress, 0,
+               sizeof(s_runtime.ota_pending_progress));
+        if (s_runtime.ota_progress_waiter) {
+            s_runtime.ota_progress_waiter = false;
+            (void)xSemaphoreGive(s_runtime.ota_progress_ack);
+        }
+    } else if (!backend_ota_workflow_note_begin_ack(
+                   &s_runtime.ota_workflow, &ack)) {
+        s_runtime.ota_client_blocked = true;
+        return false;
+    }
+    return true;
+}
+
+static backend_ota_terminal_error_t ota_terminal_error(
+    backend_ota_decision_t decision)
+{
+    switch (decision) {
+    case BACKEND_OTA_DECISION_REJECT_IDENTITY:
+        return BACKEND_OTA_TERMINAL_ERROR_IDENTITY_MISMATCH;
+    case BACKEND_OTA_DECISION_REJECT_TARGET_BINDING:
+        return BACKEND_OTA_TERMINAL_ERROR_STALE_BINDING;
+    case BACKEND_OTA_DECISION_REJECT_CAPACITY:
+        return BACKEND_OTA_TERMINAL_ERROR_CAPACITY;
+    case BACKEND_OTA_DECISION_REJECT_DIGEST:
+        return BACKEND_OTA_TERMINAL_ERROR_HASH_MISMATCH;
+    case BACKEND_OTA_DECISION_REJECT_SIZE:
+    case BACKEND_OTA_DECISION_REJECT_BUSY:
+    case BACKEND_OTA_DECISION_REJECT_VERSION:
+    case BACKEND_OTA_DECISION_FAILED:
+    default:
+        return BACKEND_OTA_TERMINAL_ERROR_INTERNAL;
+    }
+}
+
+static bool ota_terminal_health(
+    backend_ota_component_t component,
+    backend_ota_terminal_evidence_t *terminal)
+{
+    if (terminal == NULL || !ota_snapshot_binding(
+            NULL, component, &terminal->actual_binding)) {
+        return false;
+    }
+    if (component == BACKEND_OTA_COMPONENT_UPLINK) {
+        terminal->identity_exact = true;
+        terminal->command_ingress_healthy = true;
+        terminal->role_acked = true;
+        terminal->profile_correct = true;
+        terminal->radio_healthy = true;
+        terminal->rollback_clear = backend_self_ota_rollback_clear(
+            &s_runtime.self_ota);
+        return true;
+    }
+    const int slot = backend_ota_component_slot(component);
+    if (slot < 0 || slot >= 2) {
+        return false;
+    }
+    lock_runtime();
+    const backend_scanner_status_t *status =
+        &s_runtime.scanner_tracker[slot].status;
+    const backend_firmware_identity_t *identity =
+        backend_identity_for_image(BACKEND_IMAGE_SCANNER);
+    terminal->identity_exact = identity != NULL &&
+        backend_identity_matches(
+            identity, status->target, status->project, status->hardware);
+    terminal->command_ingress_healthy = status->command_ingress;
+    terminal->role_acked = status->role_acked;
+    terminal->profile_correct =
+        status->profile == s_runtime.scanner_health[slot].commanded_profile;
+    terminal->radio_healthy = backend_scanner_required_radio_healthy(
+        status->profile, status->ble_healthy, status->wifi_healthy);
+    terminal->rollback_clear = strcmp(status->rollback_state, "valid") == 0;
+    unlock_runtime();
+    return true;
+}
+
+static bool ota_build_terminal_event(
+    const uplink_ota_result_item_t *result,
+    uint32_t sequence,
+    char *body,
+    size_t capacity,
+    backend_ota_terminal_outcome_t *outcome,
+    backend_ota_built_end_t *built)
+{
+    if (result == NULL || body == NULL || outcome == NULL || built == NULL) {
+        return false;
+    }
+    backend_ota_terminal_evidence_t terminal;
+    memset(&terminal, 0, sizeof(terminal));
+    terminal.candidate = result->evidence.manifest;
+    terminal.relation = result->relation;
+    terminal.complete_image_validated =
+        result->evidence.complete_image_validated;
+    terminal.validated_image_bytes = terminal.complete_image_validated
+        ? result->evidence.manifest.image_size : 0U;
+    if (!ota_terminal_health(result->command.component, &terminal)) {
+        return false;
+    }
+    if (!result->command.is_apply &&
+        result->evidence.decision == BACKEND_OTA_DECISION_ADMIT) {
+        terminal.outcome = BACKEND_OTA_TERMINAL_ELIGIBLE;
+        terminal.error = BACKEND_OTA_TERMINAL_ERROR_NONE;
+    } else if (!result->command.is_apply &&
+               result->evidence.decision == BACKEND_OTA_DECISION_NO_UPDATE) {
+        terminal.outcome = BACKEND_OTA_TERMINAL_NO_UPDATE;
+        terminal.error = BACKEND_OTA_TERMINAL_ERROR_NONE;
+    } else if (result->command.is_apply &&
+               result->evidence.decision == BACKEND_OTA_DECISION_APPLIED &&
+               result->evidence.converged &&
+               result->evidence.rollback_clear) {
+        terminal.outcome = BACKEND_OTA_TERMINAL_APPLIED;
+        terminal.error = BACKEND_OTA_TERMINAL_ERROR_NONE;
+        terminal.image_writes = result->command.expected_size;
+    } else {
+        terminal.outcome = BACKEND_OTA_TERMINAL_FAILED;
+        terminal.error = ota_terminal_error(result->evidence.decision);
+        if (result->command.is_apply ||
+            result->evidence.manifest.target[0] != '\0') {
+            const backend_firmware_identity_t *identity =
+                backend_identity_for_image(
+                    result->command.component == BACKEND_OTA_COMPONENT_UPLINK
+                        ? BACKEND_IMAGE_UPLINK : BACKEND_IMAGE_SCANNER);
+            if (identity == NULL) {
+                return false;
+            }
+            terminal.has_observed_failure_identity = true;
+            copy_text(terminal.observed_target,
+                      sizeof(terminal.observed_target), identity->target);
+            copy_text(terminal.observed_project,
+                      sizeof(terminal.observed_project), identity->project);
+            copy_text(terminal.observed_hardware,
+                      sizeof(terminal.observed_hardware), identity->hardware);
+            copy_text(
+                terminal.observed_version,
+                sizeof(terminal.observed_version),
+                result->evidence.manifest.version[0] != '\0'
+                    ? result->evidence.manifest.version
+                    : result->running_version);
+        }
+    }
+    *outcome = terminal.outcome;
+    return backend_ota_event_end_build(
+        &result->command, &s_runtime.ota_workflow.progress, sequence,
+        &terminal, body, capacity, built);
+}
+
+static void ota_lower_hex_encode_32(
+    const uint8_t bytes[32], char output[65])
+{
+    static const char digits[] = "0123456789abcdef";
+    for (size_t index = 0U; index < 32U; ++index) {
+        output[index * 2U] = digits[bytes[index] >> 4U];
+        output[index * 2U + 1U] = digits[bytes[index] & UINT8_C(0x0f)];
+    }
+    output[64] = '\0';
+}
+
+static bool ota_restore_command_from_journal(
+    const backend_ota_journal_record_t *record,
+    backend_ota_command_envelope_t *out)
+{
+    if (record == NULL || out == NULL || !record->has_operation_id) {
+        return false;
+    }
+    memset(out, 0, sizeof(*out));
+    out->is_apply =
+        record->action == BACKEND_OTA_JOURNAL_ACTION_APPLY;
+    out->has_operation_id = true;
+    out->operation_id = record->operation_id;
+    out->component = record->component;
+    memcpy(out->catalog_name, record->catalog_name,
+           sizeof(out->catalog_name));
+    memcpy(out->expected_sha256, record->expected_sha256,
+           sizeof(out->expected_sha256));
+    out->expected_size = record->expected_size;
+    memcpy(out->binding.uplink_mac, record->expected_uplink_mac, 6U);
+    out->binding.uplink_boot_id = record->expected_uplink_boot_id;
+    memcpy(out->binding.target_mac, record->expected_target_mac, 6U);
+    out->binding.target_boot_id = record->expected_target_boot_id;
+    out->binding.topology_generation =
+        record->expected_topology_generation;
+    out->apply_mode = record->apply_mode;
+    out->next_sequence = record->command_next_sequence;
+    if (out->is_apply) {
+        if (!record->has_accepted_probe_receipt) {
+            return false;
+        }
+        ota_lower_hex_encode_32(
+            record->accepted_probe_receipt_sha256,
+            out->probe_receipt_sha256);
+    }
+    return true;
+}
+
+static bool ota_restore_workflow_from_journal(
+    const backend_ota_journal_record_t *record,
+    backend_ota_command_envelope_t *command)
+{
+    if (!ota_restore_command_from_journal(record, command)) {
+        return false;
+    }
+    backend_ota_workflow_init(&s_runtime.ota_workflow);
+    s_runtime.ota_workflow.has_rollout_operation = true;
+    s_runtime.ota_workflow.rollout_operation_id = record->operation_id;
+    s_runtime.ota_workflow.expected_component = record->component;
+    s_runtime.ota_workflow.expected_apply = command->is_apply;
+    s_runtime.ota_workflow.has_expected_sequence = true;
+    s_runtime.ota_workflow.expected_sequence = command->next_sequence;
+    if (command->is_apply) {
+        backend_ota_accepted_probe_t *accepted =
+            &s_runtime.ota_workflow.accepted_probe;
+        memset(accepted, 0, sizeof(*accepted));
+        accepted->probe.operation_id = command->operation_id;
+        accepted->probe.component = command->component;
+        memcpy(accepted->probe.catalog_name, command->catalog_name,
+               sizeof(accepted->probe.catalog_name));
+        if (!ota_lower_hex_decode_32(
+                command->expected_sha256,
+                accepted->probe.expected_sha256)) {
+            return false;
+        }
+        accepted->probe.expected_size = command->expected_size;
+        accepted->probe.binding = command->binding;
+        accepted->probe.apply_mode = command->apply_mode;
+        memcpy(accepted->receipt_sha256,
+               record->accepted_probe_receipt_sha256, 32U);
+        accepted->apply_start_sequence = command->next_sequence;
+        s_runtime.ota_workflow.has_accepted_probe = true;
+    }
+    if (backend_ota_workflow_admit(
+            &s_runtime.ota_workflow, command) !=
+        BACKEND_OTA_WORKFLOW_ADMITTED) {
+        return false;
+    }
+    if (record->progress_initialized) {
+        s_runtime.ota_workflow.progress =
+            (backend_ota_progress_state_t) {
+                .initialized = true,
+                .stage = (backend_ota_progress_stage_t)
+                    record->progress_stage,
+                .received = record->progress_received,
+                .total = record->progress_total,
+                .retry_count = record->progress_retry_count,
+            };
+        s_runtime.ota_workflow.begin_acked = true;
+        s_runtime.ota_workflow.expected_sequence =
+            record->event_sequence;
+    }
+    return true;
+}
+
+static bool ota_progress_update_from_journal(
+    const backend_ota_journal_record_t *record,
+    backend_ota_progress_update_t *update)
+{
+    if (record == NULL || update == NULL ||
+        !record->progress_initialized || !record->has_manifest) {
+        return false;
+    }
+    memset(update, 0, sizeof(*update));
+    update->has_operation_id = true;
+    update->operation_id = record->operation_id;
+    update->probe = record->action == BACKEND_OTA_JOURNAL_ACTION_PROBE;
+    update->component = record->component;
+    memcpy(update->catalog_name, record->catalog_name,
+           sizeof(update->catalog_name));
+    update->manifest = record->manifest;
+    update->stage = record->progress_stage;
+    update->received = record->progress_received;
+    update->total = record->progress_total;
+    update->retry_count = record->progress_retry_count;
+    return true;
+}
+
+static bool ota_restore_pending_progress(
+    const backend_ota_journal_record_t *record,
+    const backend_ota_event_outbox_snapshot_t *outbox)
+{
+    backend_ota_progress_update_t update;
+    if (record == NULL || outbox == NULL ||
+        outbox->pending.sequence == UINT32_MAX ||
+        !backend_ota_operation_id_equal(
+            &record->operation_id, &outbox->pending.operation_id) ||
+        (record->event_sequence != outbox->pending.sequence &&
+         record->event_sequence != outbox->pending.sequence + 1U) ||
+        !ota_progress_update_from_journal(record, &update)) {
+        return false;
+    }
+    backend_ota_progress_event_t event;
+    backend_ota_progress_state_t candidate = s_runtime.ota_workflow.progress;
+    char body[BACKEND_OTA_EVENT_MAX_BYTES];
+    if (!ota_progress_event(
+            &update, outbox->pending.sequence, &event)) {
+        return false;
+    }
+    const size_t length = backend_ota_event_progress_encode(
+        &candidate, &event, body, sizeof(body));
+    if (length == 0U || length != outbox->pending.body_length ||
+        memcmp(body, outbox->pending.body, length) != 0) {
+        return false;
+    }
+    s_runtime.ota_workflow.begin_acked = true;
+    s_runtime.ota_workflow.expected_sequence = outbox->pending.sequence;
+    s_runtime.ota_pending_progress = update;
+    s_runtime.ota_progress_event_pending = true;
+    s_runtime.ota_progress_waiter = false;
+    return true;
+}
+
+static bool ota_restore_empty_progress(
+    const backend_ota_journal_record_t *record,
+    const backend_ota_event_outbox_snapshot_t *outbox)
+{
+    backend_ota_progress_update_t update;
+    if (record == NULL || outbox == NULL ||
+        record->event_sequence == UINT32_MAX ||
+        !ota_progress_update_from_journal(record, &update)) {
+        return false;
+    }
+
+    /* A tombstone whose exact progress digest precedes the journal cursor is
+     * the ACK-before-tombstone crash cut.  Any other empty snapshot is the
+     * persist-before-enqueue cut and must reconstruct the same event. */
+    bool acknowledged = false;
+    if (outbox->generation != 0U &&
+        outbox->pending.sequence != UINT32_MAX &&
+        record->event_sequence == outbox->pending.sequence + 1U &&
+        backend_ota_operation_id_equal(
+            &record->operation_id, &outbox->pending.operation_id)) {
+        backend_ota_progress_event_t event;
+        backend_ota_progress_state_t candidate =
+            s_runtime.ota_workflow.progress;
+        char body[BACKEND_OTA_EVENT_MAX_BYTES];
+        uint8_t digest[32];
+        const size_t length = ota_progress_event(
+                &update, outbox->pending.sequence, &event)
+            ? backend_ota_event_progress_encode(
+                  &candidate, &event, body, sizeof(body)) : 0U;
+        acknowledged = length != 0U &&
+            backend_ota_sha256(
+                (const uint8_t *)body, length, digest) &&
+            memcmp(digest, outbox->pending.body_sha256,
+                   sizeof(digest)) == 0;
+    }
+    if (acknowledged) {
+        return true;
+    }
+
+    backend_ota_progress_event_t event;
+    backend_ota_progress_state_t candidate = s_runtime.ota_workflow.progress;
+    char body[BACKEND_OTA_EVENT_MAX_BYTES];
+    if (!ota_progress_event(
+            &update, record->event_sequence, &event)) {
+        return false;
+    }
+    const size_t length = backend_ota_event_progress_encode(
+        &candidate, &event, body, sizeof(body));
+    if (length == 0U || backend_ota_event_outbox_enqueue(
+            &s_runtime.ota_outbox_storage, &record->operation_id,
+            record->event_sequence, (const uint8_t *)body, length) !=
+            BACKEND_OTA_EVENT_OUTBOX_ENQUEUE_COMMITTED) {
+        return false;
+    }
+    s_runtime.ota_workflow.begin_acked = true;
+    s_runtime.ota_workflow.expected_sequence = record->event_sequence;
+    s_runtime.ota_pending_progress = update;
+    s_runtime.ota_progress_event_pending = true;
+    s_runtime.ota_progress_waiter = false;
+    return true;
+}
+
+static bool ota_startup_restore(
+    backend_ota_event_outbox_load_result_t outbox_state)
+{
+    if (s_runtime.ota_startup_action == BACKEND_OTA_JOURNAL_STARTUP_EMPTY) {
+        return outbox_state == BACKEND_OTA_EVENT_OUTBOX_LOAD_EMPTY;
+    }
+    if (s_runtime.ota_startup_action == BACKEND_OTA_JOURNAL_STARTUP_BLOCKED) {
+        return false;
+    }
+    backend_ota_command_envelope_t command;
+    if (!ota_restore_workflow_from_journal(
+            &s_runtime.ota_startup_journal, &command)) {
+        return false;
+    }
+    const bool terminal =
+        s_runtime.ota_startup_action == BACKEND_OTA_JOURNAL_STARTUP_TERMINAL;
+    if (terminal) {
+        s_runtime.ota_workflow.work_available = false;
+        s_runtime.ota_workflow.work_inflight = true;
+        s_runtime.ota_workflow.begin_acked = true;
+        s_runtime.ota_workflow.expected_sequence =
+            s_runtime.ota_startup_journal.event_sequence;
+        uplink_ota_result_item_t result;
+        memset(&result, 0, sizeof(result));
+        result.command = command;
+        const char *running_version = ota_running_version(
+            NULL, command.component);
+        copy_text(result.running_version, sizeof(result.running_version),
+                  running_version);
+        result.evidence.has_operation_id = true;
+        result.evidence.operation_id = command.operation_id;
+        result.evidence.probe = !command.is_apply;
+        result.evidence.component = command.component;
+        result.evidence.apply_mode = command.apply_mode;
+        result.evidence.manifest = s_runtime.ota_startup_journal.manifest;
+        result.evidence.complete_image_validated =
+            s_runtime.ota_startup_journal.has_manifest;
+        result.evidence.rollback_clear =
+            s_runtime.ota_startup_journal.rollback_clear;
+        result.evidence.converged = s_runtime.ota_startup_journal.converged;
+        if (s_runtime.ota_startup_journal.phase == BACKEND_OTA_PHASE_FAILED) {
+            result.evidence.decision = BACKEND_OTA_DECISION_FAILED;
+            result.relation = FOF_VERSION_INVALID;
+        } else if (!command.is_apply &&
+                   s_runtime.ota_startup_journal.has_accepted_probe_receipt) {
+            result.evidence.decision = BACKEND_OTA_DECISION_ADMIT;
+            result.relation = command.apply_mode ==
+                    BACKEND_OTA_SAME_VERSION_RECOVERY
+                ? FOF_VERSION_EQUAL : FOF_VERSION_NEWER;
+        } else if (!command.is_apply) {
+            result.evidence.decision = BACKEND_OTA_DECISION_NO_UPDATE;
+            result.relation = FOF_VERSION_EQUAL;
+        } else {
+            result.evidence.decision = BACKEND_OTA_DECISION_APPLIED;
+            result.relation = command.apply_mode ==
+                    BACKEND_OTA_SAME_VERSION_RECOVERY
+                ? FOF_VERSION_EQUAL : FOF_VERSION_NEWER;
+        }
+        char body[BACKEND_OTA_EVENT_MAX_BYTES];
+        backend_ota_built_end_t built;
+        const bool terminal_built = ota_build_terminal_event(
+            &result, s_runtime.ota_workflow.expected_sequence,
+            body, sizeof(body), &s_runtime.ota_terminal_outcome, &built);
+        if (outbox_state == BACKEND_OTA_EVENT_OUTBOX_LOAD_PENDING) {
+            const bool terminal_matches = terminal_built &&
+                backend_ota_operation_id_equal(
+                    &command.operation_id,
+                    &s_runtime.ota_startup_outbox.pending.operation_id) &&
+                s_runtime.ota_workflow.expected_sequence ==
+                    s_runtime.ota_startup_outbox.pending.sequence &&
+                built.body_length ==
+                    s_runtime.ota_startup_outbox.pending.body_length &&
+                memcmp(body, s_runtime.ota_startup_outbox.pending.body,
+                       built.body_length) == 0;
+            if (!terminal_matches) {
+                return ota_restore_pending_progress(
+                           &s_runtime.ota_startup_journal,
+                           &s_runtime.ota_startup_outbox) &&
+                    xQueueSend(
+                        s_runtime.ota_result_queue, &result, 0) == pdTRUE;
+            }
+            s_runtime.ota_terminal_event_pending = true;
+            copy_text(
+                s_runtime.ota_terminal_receipt_sha256,
+                sizeof(s_runtime.ota_terminal_receipt_sha256),
+                built.receipt_sha256);
+            return true;
+        }
+        if (outbox_state != BACKEND_OTA_EVENT_OUTBOX_LOAD_EMPTY ||
+            !terminal_built) {
+            return false;
+        }
+        uint8_t body_digest[32];
+        const bool terminal_tombstoned =
+            s_runtime.ota_startup_outbox.generation != 0U &&
+            s_runtime.ota_startup_outbox.pending.body_length == 0U &&
+            backend_ota_operation_id_equal(
+                &command.operation_id,
+                &s_runtime.ota_startup_outbox.pending.operation_id) &&
+            s_runtime.ota_workflow.expected_sequence ==
+                s_runtime.ota_startup_outbox.pending.sequence &&
+            backend_ota_sha256(
+                (const uint8_t *)body, built.body_length, body_digest) &&
+            memcmp(body_digest,
+                   s_runtime.ota_startup_outbox.pending.body_sha256,
+                   sizeof(body_digest)) == 0;
+        if (terminal_tombstoned) {
+            backend_ota_workflow_ack_prediction_t prediction;
+            backend_ota_command_ack_t ack;
+            memset(&ack, 0, sizeof(ack));
+            if (!backend_ota_workflow_predict_terminal_ack(
+                    &s_runtime.ota_workflow,
+                    s_runtime.ota_terminal_outcome, &prediction)) {
+                return false;
+            }
+            ack.ok = true;
+            ack.has_operation_id = true;
+            ack.operation_id = command.operation_id;
+            ack.accepted_sequence =
+                s_runtime.ota_workflow.expected_sequence;
+            ack.next_sequence = ack.accepted_sequence + 1U;
+            ack.current_component = prediction.component;
+            copy_text(ack.current_action, sizeof(ack.current_action),
+                      prediction.is_apply ? "apply" : "probe");
+            ack.terminal = prediction.terminal;
+            ack.duplicate = true;
+            return backend_ota_workflow_note_terminal_ack(
+                &s_runtime.ota_workflow,
+                s_runtime.ota_terminal_outcome,
+                built.receipt_sha256, &ack);
+        }
+        return xQueueSend(
+            s_runtime.ota_result_queue, &result, 0) == pdTRUE;
+    }
+
+    uplink_ota_work_item_t work = {.command = command};
+    if (s_runtime.ota_startup_action ==
+            BACKEND_OTA_JOURNAL_STARTUP_WAIT_REBOOT ||
+        s_runtime.ota_startup_action ==
+            BACKEND_OTA_JOURNAL_STARTUP_CHECK_CONVERGENCE ||
+        s_runtime.ota_startup_action ==
+            BACKEND_OTA_JOURNAL_STARTUP_ROLL_BACK) {
+        work.resume = true;
+        s_runtime.ota_workflow.work_available = false;
+        s_runtime.ota_workflow.work_inflight = true;
+        if (s_runtime.ota_startup_journal.progress_initialized) {
+            if ((outbox_state == BACKEND_OTA_EVENT_OUTBOX_LOAD_PENDING &&
+                 !ota_restore_pending_progress(
+                     &s_runtime.ota_startup_journal,
+                     &s_runtime.ota_startup_outbox)) ||
+                (outbox_state == BACKEND_OTA_EVENT_OUTBOX_LOAD_EMPTY &&
+                 !ota_restore_empty_progress(
+                     &s_runtime.ota_startup_journal,
+                     &s_runtime.ota_startup_outbox)) ||
+                (outbox_state != BACKEND_OTA_EVENT_OUTBOX_LOAD_PENDING &&
+                 outbox_state != BACKEND_OTA_EVENT_OUTBOX_LOAD_EMPTY)) {
+                return false;
+            }
+            s_runtime.ota_workflow.begin_acked = true;
+        } else {
+            if (outbox_state != BACKEND_OTA_EVENT_OUTBOX_LOAD_EMPTY ||
+                s_runtime.ota_startup_journal.command_next_sequence >=
+                    UINT32_MAX - 1U) {
+                return false;
+            }
+            s_runtime.ota_workflow.begin_acked = true;
+            s_runtime.ota_workflow.expected_sequence =
+                s_runtime.ota_startup_journal.command_next_sequence + 1U;
+        }
+    } else {
+        /* An accepted/staged uplink command is bound to the pre-reboot uplink
+         * boot ID.  Re-downloading or mutating under the new boot would weaken
+         * that binding, so preserve event recovery but close it durably via
+         * maintenance_resume's ACCEPTED -> FAILED path. */
+        const bool stale_uplink_boot =
+            command.component == BACKEND_OTA_COMPONENT_UPLINK &&
+            command.binding.target_boot_id != s_runtime.boot_id;
+        work.resume = stale_uplink_boot;
+        work.restart = !stale_uplink_boot;
+        backend_ota_command_envelope_t ignored;
+        if (!backend_ota_workflow_take_work(
+                &s_runtime.ota_workflow, &ignored)) {
+            return false;
+        }
+        if (s_runtime.ota_startup_journal.progress_initialized) {
+            if ((outbox_state == BACKEND_OTA_EVENT_OUTBOX_LOAD_PENDING &&
+                 !ota_restore_pending_progress(
+                     &s_runtime.ota_startup_journal,
+                     &s_runtime.ota_startup_outbox)) ||
+                (outbox_state == BACKEND_OTA_EVENT_OUTBOX_LOAD_EMPTY &&
+                 !ota_restore_empty_progress(
+                     &s_runtime.ota_startup_journal,
+                     &s_runtime.ota_startup_outbox)) ||
+                (outbox_state != BACKEND_OTA_EVENT_OUTBOX_LOAD_PENDING &&
+                 outbox_state != BACKEND_OTA_EVENT_OUTBOX_LOAD_EMPTY)) {
+                return false;
+            }
+            s_runtime.ota_workflow.begin_acked = true;
+        } else if (outbox_state == BACKEND_OTA_EVENT_OUTBOX_LOAD_EMPTY) {
+            char begin_body[BACKEND_OTA_EVENT_MAX_BYTES];
+            const backend_ota_event_prefix_t begin = {
+                .has_operation_id = true,
+                .operation_id = command.operation_id,
+                .is_apply = command.is_apply,
+                .sequence = command.next_sequence,
+                .component = command.component,
+                .catalog_name = command.catalog_name,
+            };
+            const size_t length = backend_ota_event_begin_encode(
+                &begin, begin_body, sizeof(begin_body));
+            if (length == 0U || backend_ota_event_outbox_enqueue(
+                    &s_runtime.ota_outbox_storage, &command.operation_id,
+                    command.next_sequence, (const uint8_t *)begin_body,
+                    length) != BACKEND_OTA_EVENT_OUTBOX_ENQUEUE_COMMITTED) {
+                return false;
+            }
+        } else if (outbox_state == BACKEND_OTA_EVENT_OUTBOX_LOAD_PENDING) {
+            char begin_body[BACKEND_OTA_EVENT_MAX_BYTES];
+            const backend_ota_event_prefix_t begin = {
+                .has_operation_id = true,
+                .operation_id = command.operation_id,
+                .is_apply = command.is_apply,
+                .sequence = command.next_sequence,
+                .component = command.component,
+                .catalog_name = command.catalog_name,
+            };
+            const size_t length = backend_ota_event_begin_encode(
+                &begin, begin_body, sizeof(begin_body));
+            if (length == 0U ||
+                length != s_runtime.ota_startup_outbox.pending.body_length ||
+                memcmp(begin_body,
+                       s_runtime.ota_startup_outbox.pending.body,
+                       length) != 0) {
+                return false;
+            }
+        } else {
+            return false;
+        }
+    }
+    return xQueueSend(s_runtime.ota_work_queue, &work, 0) == pdTRUE;
+}
+
+static void backend_ota_client_worker(void *argument)
+{
+    (void)argument;
+    lock_runtime();
+    s_runtime.ota_client_worker_live = true;
+    unlock_runtime();
+    for (;;) {
+        bool connected;
+        bool blocked;
+        char base_url[sizeof(s_runtime.config.backend_url)];
+        char device_id[sizeof(s_runtime.config.device_id)];
+        lock_runtime();
+        connected = s_runtime.wifi_connected;
+        blocked = s_runtime.ota_client_blocked;
+        copy_text(base_url, sizeof(base_url), s_runtime.config.backend_url);
+        copy_text(device_id, sizeof(device_id), s_runtime.config.device_id);
+        unlock_runtime();
+        if (!connected || blocked || !s_runtime.ota_ready) {
+            vTaskDelay(pdMS_TO_TICKS(UPLINK_OTA_CLIENT_PERIOD_MS));
+            continue;
+        }
+
+        backend_ota_event_outbox_snapshot_t pending;
+        const backend_ota_event_outbox_load_result_t outbox =
+            backend_ota_event_outbox_load(
+                &s_runtime.ota_outbox_storage, &pending);
+        if (outbox == BACKEND_OTA_EVENT_OUTBOX_LOAD_CORRUPT ||
+            outbox == BACKEND_OTA_EVENT_OUTBOX_LOAD_IO_ERROR) {
+            lock_runtime();
+            s_runtime.ota_client_blocked = true;
+            unlock_runtime();
+            continue;
+        }
+        if (outbox == BACKEND_OTA_EVENT_OUTBOX_LOAD_PENDING) {
+            (void)ota_drain_pending_outbox(base_url, device_id, &pending);
+            vTaskDelay(pdMS_TO_TICKS(UPLINK_OTA_CLIENT_PERIOD_MS));
+            continue;
+        }
+        if (s_runtime.ota_workflow.command_active &&
+            s_runtime.ota_workflow.begin_acked &&
+            !s_runtime.ota_terminal_event_pending &&
+            !s_runtime.ota_progress_event_pending) {
+            backend_ota_progress_update_t progress_update;
+            if (xQueueReceive(
+                    s_runtime.ota_progress_queue,
+                    &progress_update, 0) == pdTRUE) {
+                backend_ota_progress_event_t progress_event;
+                backend_ota_progress_state_t progress_candidate =
+                    s_runtime.ota_workflow.progress;
+                backend_ota_request_t request;
+                char progress_body[BACKEND_OTA_EVENT_MAX_BYTES];
+                const uint32_t sequence =
+                    s_runtime.ota_workflow.expected_sequence;
+                const bool progress_ok = ota_progress_event(
+                        &progress_update, sequence, &progress_event) &&
+                    backend_ota_event_progress_encode(
+                        &progress_candidate, &progress_event,
+                        progress_body, sizeof(progress_body)) != 0U &&
+                    ota_command_request(
+                        &s_runtime.ota_workflow.command, &request);
+                const size_t progress_length = progress_ok
+                    ? strlen(progress_body) : 0U;
+                const bool progress_durable = progress_ok &&
+                    backend_ota_maintenance_persist_fullsize_progress(
+                        &s_runtime.maintenance, &request,
+                        &progress_update, sequence);
+                if (!progress_durable ||
+                    backend_ota_event_outbox_enqueue(
+                        &s_runtime.ota_outbox_storage,
+                        &progress_update.operation_id, sequence,
+                        (const uint8_t *)progress_body,
+                        progress_length) !=
+                    BACKEND_OTA_EVENT_OUTBOX_ENQUEUE_COMMITTED) {
+                    lock_runtime();
+                    s_runtime.ota_client_blocked = true;
+                    unlock_runtime();
+                    continue;
+                }
+                s_runtime.ota_pending_progress = progress_update;
+                s_runtime.ota_progress_event_pending = true;
+                s_runtime.ota_progress_waiter = true;
+                continue;
+            }
+            uplink_ota_result_item_t result;
+            if (xQueueReceive(
+                    s_runtime.ota_result_queue, &result, 0) == pdTRUE) {
+                char terminal_body[BACKEND_OTA_EVENT_MAX_BYTES];
+                backend_ota_built_end_t built;
+                backend_ota_terminal_outcome_t outcome =
+                    BACKEND_OTA_TERMINAL_FAILED;
+                uint8_t receipt_sha256[32];
+                const bool built_ok = ota_build_terminal_event(
+                        &result, s_runtime.ota_workflow.expected_sequence,
+                        terminal_body, sizeof(terminal_body),
+                        &outcome, &built);
+                const bool receipt_ok = built_ok && ota_lower_hex_decode_32(
+                    built.receipt_sha256, receipt_sha256);
+                const bool complete =
+                    outcome == BACKEND_OTA_TERMINAL_ELIGIBLE ||
+                    outcome == BACKEND_OTA_TERMINAL_NO_UPDATE ||
+                    outcome == BACKEND_OTA_TERMINAL_APPLIED;
+                (void)xSemaphoreTake(s_runtime.ota_lock, portMAX_DELAY);
+                const bool terminal_durable = receipt_ok &&
+                    backend_ota_maintenance_persist_fullsize_terminal(
+                        &s_runtime.maintenance, &result.evidence,
+                        s_runtime.ota_workflow.expected_sequence, complete,
+                        outcome == BACKEND_OTA_TERMINAL_ELIGIBLE,
+                        receipt_sha256);
+                (void)xSemaphoreGive(s_runtime.ota_lock);
+                if (!terminal_durable ||
+                    backend_ota_event_outbox_enqueue(
+                        &s_runtime.ota_outbox_storage,
+                        &result.command.operation_id,
+                        s_runtime.ota_workflow.expected_sequence,
+                        (const uint8_t *)terminal_body,
+                        built.body_length) !=
+                    BACKEND_OTA_EVENT_OUTBOX_ENQUEUE_COMMITTED) {
+                    lock_runtime();
+                    s_runtime.ota_client_blocked = true;
+                    unlock_runtime();
+                    continue;
+                }
+                s_runtime.ota_terminal_outcome = outcome;
+                copy_text(
+                    s_runtime.ota_terminal_receipt_sha256,
+                    sizeof(s_runtime.ota_terminal_receipt_sha256),
+                    built.receipt_sha256);
+                s_runtime.ota_terminal_event_pending = true;
+            }
+            vTaskDelay(pdMS_TO_TICKS(UPLINK_OTA_CLIENT_PERIOD_MS));
+            continue;
+        }
+        if (s_runtime.ota_workflow.command_active) {
+            vTaskDelay(pdMS_TO_TICKS(UPLINK_OTA_CLIENT_PERIOD_MS));
+            continue;
+        }
+
+        backend_ota_command_local_t local;
+        if (!ota_command_local(&s_runtime.ota_workflow, &local)) {
+            vTaskDelay(pdMS_TO_TICKS(UPLINK_OTA_CLIENT_PERIOD_MS));
+            continue;
+        }
+        char path[UPLINK_OTA_CLIENT_PATH_CAPACITY];
+        const int path_length = snprintf(
+            path, sizeof(path), "/nodes/%s/backend-ota/next", device_id);
+        if (path_length <= 0 || path_length >= (int)sizeof(path)) {
+            vTaskDelay(pdMS_TO_TICKS(UPLINK_OTA_CLIENT_PERIOD_MS));
+            continue;
+        }
+        (void)xSemaphoreTake(s_runtime.http_lock, portMAX_DELAY);
+        const backend_http_result_t http = backend_http_get_json(
+            base_url, path, s_runtime.ota_client_http_response,
+            sizeof(s_runtime.ota_client_http_response));
+        (void)xSemaphoreGive(s_runtime.http_lock);
+        if (!http.transport_complete || http.status_code != 200) {
+            vTaskDelay(pdMS_TO_TICKS(UPLINK_OTA_CLIENT_PERIOD_MS));
+            continue;
+        }
+        backend_ota_command_envelope_t command;
+        if (backend_ota_command_decode(
+                s_runtime.ota_client_http_response, http.body_length,
+                &local, &command) != BACKEND_OTA_COMMAND_DECODE_OK) {
+            vTaskDelay(pdMS_TO_TICKS(UPLINK_OTA_CLIENT_PERIOD_MS));
+            continue;
+        }
+        backend_ota_workflow_t candidate = s_runtime.ota_workflow;
+        if (backend_ota_workflow_admit(&candidate, &command) !=
+            BACKEND_OTA_WORKFLOW_ADMITTED) {
+            vTaskDelay(pdMS_TO_TICKS(UPLINK_OTA_CLIENT_PERIOD_MS));
+            continue;
+        }
+        backend_ota_request_t request;
+        if (!ota_command_request(&command, &request)) {
+            continue;
+        }
+        (void)xSemaphoreTake(s_runtime.ota_lock, portMAX_DELAY);
+        const backend_ota_journal_persist_result_t persisted =
+            backend_ota_maintenance_accept_fullsize_command(
+                &s_runtime.maintenance, &request);
+        (void)xSemaphoreGive(s_runtime.ota_lock);
+        if (persisted != BACKEND_OTA_JOURNAL_PERSIST_COMMITTED &&
+            persisted != BACKEND_OTA_JOURNAL_PERSIST_ALREADY_DURABLE) {
+            lock_runtime();
+            s_runtime.ota_client_blocked = true;
+            unlock_runtime();
+            continue;
+        }
+        char begin_body[BACKEND_OTA_EVENT_MAX_BYTES];
+        const backend_ota_event_prefix_t begin = {
+            .has_operation_id = true,
+            .operation_id = command.operation_id,
+            .is_apply = command.is_apply,
+            .sequence = command.next_sequence,
+            .component = command.component,
+            .catalog_name = command.catalog_name,
+        };
+        const size_t begin_length = backend_ota_event_begin_encode(
+            &begin, begin_body, sizeof(begin_body));
+        if (begin_length == 0U ||
+            backend_ota_event_outbox_enqueue(
+                &s_runtime.ota_outbox_storage, &command.operation_id,
+                command.next_sequence, (const uint8_t *)begin_body,
+                begin_length) != BACKEND_OTA_EVENT_OUTBOX_ENQUEUE_COMMITTED) {
+            lock_runtime();
+            s_runtime.ota_client_blocked = true;
+            unlock_runtime();
+            continue;
+        }
+        backend_ota_command_envelope_t queued;
+        if (!backend_ota_workflow_take_work(&candidate, &queued)) {
+            continue;
+        }
+        const uplink_ota_work_item_t item = {.command = queued};
+        if (xQueueSend(s_runtime.ota_work_queue, &item, 0) != pdTRUE) {
+            lock_runtime();
+            s_runtime.ota_client_blocked = true;
+            unlock_runtime();
+            continue;
+        }
+        s_runtime.ota_workflow = candidate;
+    }
+}
+#endif
+
 static void ota_worker(void *argument)
 {
     (void)argument;
     lock_runtime();
     s_runtime.ota_worker_live = true;
     unlock_runtime();
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    for (;;) {
+        uplink_ota_work_item_t item;
+        if (xQueueReceive(
+                s_runtime.ota_work_queue, &item, portMAX_DELAY) != pdTRUE) {
+            continue;
+        }
+        uplink_ota_result_item_t result;
+        memset(&result, 0, sizeof(result));
+        result.command = item.command;
+        char running_version[65];
+        memset(running_version, 0, sizeof(running_version));
+        const char *running = ota_running_version(
+            NULL, item.command.component);
+        if (running != NULL) {
+            copy_text(running_version, sizeof(running_version), running);
+            copy_text(result.running_version,
+                      sizeof(result.running_version), running);
+        }
+        (void)xSemaphoreTake(s_runtime.ota_lock, portMAX_DELAY);
+        if (item.resume) {
+            const int64_t deadline = monotonic_ms() + UPLINK_RELAY_WAIT_MS;
+            while (!backend_ota_maintenance_available(
+                       &s_runtime.maintenance) &&
+                   monotonic_ms() < deadline) {
+                result.call_succeeded = backend_ota_maintenance_resume(
+                    &s_runtime.maintenance, false);
+                if (!backend_ota_maintenance_available(
+                        &s_runtime.maintenance)) {
+                    vTaskDelay(pdMS_TO_TICKS(UPLINK_OTA_PERIOD_MS));
+                }
+            }
+            if (!backend_ota_maintenance_available(&s_runtime.maintenance)) {
+                result.call_succeeded = backend_ota_maintenance_resume(
+                    &s_runtime.maintenance, true);
+            }
+            (void)backend_ota_maintenance_last_evidence(
+                &s_runtime.maintenance, &result.evidence);
+        } else if (item.restart) {
+            backend_ota_request_t request;
+            result.call_succeeded = ota_command_request(
+                    &item.command, &request) &&
+                backend_ota_maintenance_restart_fullsize_command(
+                    &s_runtime.maintenance, &request, &result.evidence);
+            if (result.call_succeeded && item.command.is_apply &&
+                item.command.component != BACKEND_OTA_COMPONENT_UPLINK) {
+                const int64_t deadline =
+                    monotonic_ms() + UPLINK_RELAY_WAIT_MS;
+                while (!backend_ota_maintenance_available(
+                           &s_runtime.maintenance) &&
+                       monotonic_ms() < deadline) {
+                    (void)backend_ota_maintenance_resume(
+                        &s_runtime.maintenance, false);
+                    if (!backend_ota_maintenance_available(
+                            &s_runtime.maintenance)) {
+                        vTaskDelay(pdMS_TO_TICKS(UPLINK_OTA_PERIOD_MS));
+                    }
+                }
+                if (!backend_ota_maintenance_available(
+                        &s_runtime.maintenance)) {
+                    (void)backend_ota_maintenance_resume(
+                        &s_runtime.maintenance, true);
+                }
+                (void)backend_ota_maintenance_last_evidence(
+                    &s_runtime.maintenance, &result.evidence);
+            }
+        } else if (!item.command.is_apply) {
+            result.call_succeeded = backend_ota_maintenance_run_fullsize_probe(
+                &s_runtime.maintenance, item.command.has_operation_id,
+                &item.command.operation_id, item.command.expected_size,
+                item.command.component, item.command.catalog_name,
+                item.command.expected_sha256, item.command.apply_mode,
+                &result.evidence);
+        } else {
+            backend_ota_request_t request;
+            result.call_succeeded = ota_command_request(
+                    &item.command, &request) &&
+                backend_ota_maintenance_request_apply(
+                    &s_runtime.maintenance, &request);
+            if (result.call_succeeded &&
+                item.command.component != BACKEND_OTA_COMPONENT_UPLINK) {
+                const int64_t deadline =
+                    monotonic_ms() + UPLINK_RELAY_WAIT_MS;
+                while (!backend_ota_maintenance_available(
+                           &s_runtime.maintenance) &&
+                       monotonic_ms() < deadline) {
+                    (void)backend_ota_maintenance_resume(
+                        &s_runtime.maintenance, false);
+                    if (!backend_ota_maintenance_available(
+                            &s_runtime.maintenance)) {
+                        vTaskDelay(pdMS_TO_TICKS(UPLINK_OTA_PERIOD_MS));
+                    }
+                }
+                if (!backend_ota_maintenance_available(
+                        &s_runtime.maintenance)) {
+                    (void)backend_ota_maintenance_resume(
+                        &s_runtime.maintenance, true);
+                }
+            }
+            (void)backend_ota_maintenance_last_evidence(
+                &s_runtime.maintenance, &result.evidence);
+        }
+        result.relation = running_version[0] == '\0' ||
+                result.evidence.manifest.version[0] == '\0'
+            ? FOF_VERSION_INVALID
+            : fof_firmware_version_compare(
+                  result.evidence.manifest.version, running_version);
+        (void)xSemaphoreGive(s_runtime.ota_lock);
+        (void)xQueueSend(
+            s_runtime.ota_result_queue, &result, portMAX_DELAY);
+    }
+#else
     for (;;) {
         const int64_t now_ms = monotonic_ms();
         bool connected;
@@ -2097,6 +3617,7 @@ static void ota_worker(void *argument)
         }
         vTaskDelay(pdMS_TO_TICKS(UPLINK_OTA_PERIOD_MS));
     }
+#endif
 }
 
 static void emit_status_lines(void)
@@ -2155,6 +3676,7 @@ static void usb_worker(void *argument)
             (void)xSemaphoreGive(s_runtime.ota_lock);
             continue;
         }
+#if defined(FOF_BACKEND_PROFILE_BADGE_LITE)
         backend_ota_request_t request;
         if (s_runtime.ota_ready &&
             backend_ota_maintenance_parse_usb(line, length, &request)) {
@@ -2175,6 +3697,7 @@ static void usb_worker(void *argument)
             (void)xSemaphoreGive(s_runtime.ota_lock);
             continue;
         }
+#endif
         (void)print_line(
             "FOF_BACKEND_ERROR {\"reason\":\"unknown_command\"}");
     }
@@ -2203,6 +3726,11 @@ static bool create_runtime_tasks(void)
     created = created == pdPASS ? xTaskCreate(
         command_worker, "commands_backend", 14336U,
         NULL, 5U, NULL) : created;
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    created = created == pdPASS ? xTaskCreate(
+        backend_ota_client_worker, "ota_client_backend", 14336U,
+        NULL, 5U, NULL) : created;
+#endif
     created = created == pdPASS ? xTaskCreate(
         ota_worker, "ota_backend", 8192U,
         NULL, 4U, NULL) : created;
@@ -2222,6 +3750,9 @@ static bool workers_ready(void)
         s_runtime.uploader_worker_live &&
         s_runtime.time_worker_live &&
         s_runtime.command_worker_live &&
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+        s_runtime.ota_client_worker_live &&
+#endif
         s_runtime.ota_worker_live &&
         s_runtime.usb_worker_live;
     unlock_runtime();
@@ -2237,11 +3768,28 @@ static bool init_sync_objects(void)
     s_runtime.uart_tx_lock[0] = xSemaphoreCreateMutex();
     s_runtime.uart_tx_lock[1] = xSemaphoreCreateMutex();
     s_runtime.relay_complete = xSemaphoreCreateBinary();
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    s_runtime.ota_work_queue = xQueueCreate(
+        1U, sizeof(uplink_ota_work_item_t));
+    s_runtime.ota_result_queue = xQueueCreate(
+        UPLINK_OTA_RESULT_QUEUE_LENGTH, sizeof(uplink_ota_result_item_t));
+    s_runtime.ota_progress_queue = xQueueCreate(
+        UPLINK_OTA_PROGRESS_QUEUE_LENGTH,
+        sizeof(backend_ota_progress_update_t));
+    s_runtime.ota_progress_ack = xSemaphoreCreateBinary();
+#endif
     return s_runtime.lock != NULL && s_runtime.http_lock != NULL &&
            s_runtime.usb_lock != NULL && s_runtime.ota_lock != NULL &&
            s_runtime.uart_tx_lock[0] != NULL &&
            s_runtime.uart_tx_lock[1] != NULL &&
-           s_runtime.relay_complete != NULL;
+           s_runtime.relay_complete != NULL
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+           && s_runtime.ota_work_queue != NULL &&
+           s_runtime.ota_result_queue != NULL &&
+           s_runtime.ota_progress_queue != NULL &&
+           s_runtime.ota_progress_ack != NULL
+#endif
+           ;
 }
 
 static bool load_or_create_config(void)
@@ -2316,7 +3864,19 @@ static bool init_ota_runtime(void)
         .context = NULL,
         .load = journal_load,
         .store = journal_store,
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+        .erase_exact = journal_erase_exact,
+#endif
     };
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    s_runtime.ota_startup_action = backend_ota_journal_startup_recover(
+        &journal, &s_runtime.ota_startup_journal);
+    if (!topology_epoch_restore(
+            s_runtime.ota_startup_action,
+            &s_runtime.ota_startup_journal)) {
+        return false;
+    }
+#endif
     const backend_ota_maintenance_adapters_t adapters = {
         .context = NULL,
         .fetch_metadata = ota_fetch_metadata,
@@ -2332,6 +3892,10 @@ static bool init_ota_runtime(void)
         .mutate_staged_image = ota_mutate_staged,
         .request_reboot = ota_request_reboot,
         .read_convergence = ota_read_convergence,
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+        .report_progress = ota_report_progress,
+        .relay_retry_count = ota_relay_retry_count,
+#endif
         .emit_and_flush = ota_emit,
     };
     if (!backend_ota_maintenance_init(
@@ -2345,6 +3909,23 @@ static bool init_ota_runtime(void)
     }
     backend_ota_maintenance_on_boot(
         &s_runtime.maintenance, s_runtime.boot_id);
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    backend_ota_workflow_init(&s_runtime.ota_workflow);
+    s_runtime.ota_outbox_storage =
+        (backend_ota_event_outbox_storage_t) {
+            .context = NULL,
+            .load_slot = ota_outbox_load_slot,
+            .store_slot = ota_outbox_store_slot,
+            .clear_exact_slot = ota_outbox_clear_exact_slot,
+        };
+    const backend_ota_event_outbox_load_result_t outbox_state =
+        backend_ota_event_outbox_load(
+            &s_runtime.ota_outbox_storage, &s_runtime.ota_startup_outbox);
+    s_runtime.ota_client_blocked =
+        outbox_state == BACKEND_OTA_EVENT_OUTBOX_LOAD_CORRUPT ||
+        outbox_state == BACKEND_OTA_EVENT_OUTBOX_LOAD_IO_ERROR ||
+        !ota_startup_restore(outbox_state);
+#endif
     for (size_t index = 0U; index < 3U; ++index) {
         backend_ota_poll_init(
             &s_runtime.ota_poll[index], s_runtime.boot_monotonic_ms);

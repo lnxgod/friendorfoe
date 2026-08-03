@@ -30,6 +30,9 @@ typedef enum {
     BACKEND_SCANNER_RELAY_END_SENT,
     BACKEND_SCANNER_RELAY_REBOOT_WAIT,
     BACKEND_SCANNER_RELAY_CONVERGENCE_WAIT,
+    BACKEND_SCANNER_RELAY_ABORT_REQUESTED,
+    BACKEND_SCANNER_RELAY_RESTORE_REQUESTED,
+    BACKEND_SCANNER_RELAY_RESTORE_WAIT,
     BACKEND_SCANNER_RELAY_COMPLETE,
     BACKEND_SCANNER_RELAY_FAILED,
 } backend_scanner_relay_state_kind_t;
@@ -41,6 +44,8 @@ typedef enum {
     BACKEND_SCANNER_RELAY_ACTION_SEND_CHUNK,
     BACKEND_SCANNER_RELAY_ACTION_SEND_END,
     BACKEND_SCANNER_RELAY_ACTION_REQUEST_STATUS,
+    BACKEND_SCANNER_RELAY_ACTION_SEND_ABORT,
+    BACKEND_SCANNER_RELAY_ACTION_SEND_RESTORE,
 } backend_scanner_relay_action_kind_t;
 
 typedef struct {
@@ -97,6 +102,11 @@ typedef struct {
     backend_scanner_slot_t slot;
     backend_scan_profile_t expected_profile;
     uint8_t expected_mac[6];
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    backend_ota_operation_id_t operation_id;
+    bool has_operation_id;
+    uint32_t session_generation;
+#endif
     uint32_t session_id;
     uint32_t generation;
     uint32_t old_boot_id;
@@ -107,6 +117,9 @@ typedef struct {
     size_t acknowledged_bytes;
     uint8_t retry_count;
     bool dry_run;
+    bool quiet_sent;
+    bool remote_begin_sent;
+    bool cleanup_success;
     bool awaiting_receipt;
     bool action_pending;
     bool retry_pending;
@@ -128,6 +141,11 @@ bool backend_scanner_relay_can_begin(
 bool backend_scanner_relay_begin(
     backend_scanner_relay_t *relay,
     backend_firmware_store_t *store,
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    bool has_operation_id,
+    const backend_ota_operation_id_t *operation_id,
+    uint32_t session_generation,
+#endif
     backend_scanner_slot_t slot,
     const backend_ota_manifest_t *manifest,
     const uint8_t expected_mac[6],
@@ -157,6 +175,10 @@ backend_scanner_relay_event_result_t backend_scanner_relay_on_status(
     backend_scanner_relay_t *relay,
     const backend_scanner_status_t *status,
     uint32_t live_topology_generation,
+    int64_t now_ms);
+
+backend_scanner_relay_event_result_t backend_scanner_relay_abort(
+    backend_scanner_relay_t *relay,
     int64_t now_ms);
 
 bool backend_scanner_relay_reset(backend_scanner_relay_t *relay);

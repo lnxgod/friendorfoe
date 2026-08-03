@@ -1,8 +1,210 @@
 from configparser import ConfigParser
 from pathlib import Path
+import subprocess
 
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_operation_id_header_fails_closed_without_exactly_one_profile(
+    tmp_path: Path,
+) -> None:
+    header = ROOT / "shared/backend_ota_operation_id.h"
+    source = tmp_path / "operation_id_fixture.c"
+    source.write_text(
+        '#include "backend_ota_operation_id.h"\nint main(void) { return 0; }\n',
+        encoding="utf-8",
+    )
+
+    header_text = header.read_text(encoding="utf-8")
+    assert '#include "backend_hardware_profile.h"' in header_text
+    for flags in ((), ("-DFOF_BACKEND_PROFILE_BADGE_LITE=1", "-DFOF_BACKEND_PROFILE_S3_FULLSIZE=1")):
+        result = subprocess.run(
+            ["cc", "-std=c11", "-I", str(ROOT / "shared"), *flags, "-c", str(source),
+             "-o", str(tmp_path / "operation_id_fixture.o")],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        assert result.returncode != 0
+        assert "select exactly one backend hardware profile" in result.stderr
+
+
+def test_fullsize_native_receipt_fixture_path_is_explicit_and_fixture_exists() -> None:
+    platformio = (ROOT / "platformio.ini").read_text(encoding="utf-8")
+    fixture = ROOT / "test/fixtures/backend_ota_receipt_v1.json"
+
+    assert fixture.is_file()
+    assert "BACKEND_OTA_RECEIPT_FIXTURE_PATH" in platformio
+    fullsize = platformio.split("[env:backend-native-fullsize]", 1)[1]
+    assert "$PROJECT_DIR/test/fixtures/backend_ota_receipt_v1.json" in fullsize
+    assert "BACKEND_OTA_RECEIPT_FIXTURE_PATH" not in platformio.split(
+        "[env:backend-native-fullsize]", 1
+    )[0]
+
+
+def test_fullsize_probe_api_is_absent_from_lite_headers(tmp_path: Path) -> None:
+    source = tmp_path / "fullsize_probe_fixture.c"
+    source.write_text(
+        '#include "backend_ota_maintenance.h"\n'
+        'int main(void) { return backend_ota_maintenance_run_fullsize_probe('
+        '0, 0, 0, 0, 0, 0, 0, 0, 0); }\n',
+        encoding="utf-8",
+    )
+    include_args = [
+        "-I", str(ROOT / "shared"),
+        "-I", str(ROOT / "uplink/main/ota"),
+        "-I", str(ROOT / "uplink/main/storage"),
+    ]
+    lite = subprocess.run(
+        ["cc", "-std=c11", "-Werror=implicit-function-declaration", *include_args,
+         "-DFOF_BACKEND_PROFILE_BADGE_LITE=1", "-c", str(source),
+         "-o", str(tmp_path / "lite_fullsize_probe_fixture.o")],
+        text=True, capture_output=True, check=False,
+    )
+    assert lite.returncode != 0
+    fullsize = subprocess.run(
+        ["cc", "-std=c11", "-Werror=implicit-function-declaration", *include_args,
+         "-DFOF_BACKEND_PROFILE_S3_FULLSIZE=1", "-c", str(source),
+         "-o", str(tmp_path / "fullsize_probe_fixture.o")],
+        text=True, capture_output=True, check=False,
+    )
+    assert fullsize.returncode == 0, fullsize.stderr
+
+
+def test_command_client_public_api_is_guarded_from_lite_at_compile_time(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "command_client_fixture.c"
+    source.write_text(
+        '#include "backend_ota_command_client.h"\n'
+        "int main(void) { return (int)(sizeof(backend_ota_accepted_probe_t) + "
+        "sizeof(backend_ota_terminal_evidence_t) + "
+        "sizeof(backend_ota_built_end_t)); }\n",
+        encoding="utf-8",
+    )
+    include_args = [
+        "-I", str(ROOT / "shared"),
+        "-I", str(ROOT / "uplink/main/network"),
+        "-I", str(ROOT / "uplink/main/ota"),
+        "-I", str(ROOT / "uplink/main/storage"),
+    ]
+    lite = subprocess.run(
+        ["cc", "-std=c11", *include_args, "-DFOF_BACKEND_PROFILE_BADGE_LITE=1",
+         "-c", str(source), "-o", str(tmp_path / "lite_command_client_fixture.o")],
+        text=True, capture_output=True, check=False,
+    )
+    assert lite.returncode != 0
+    assert "backend_ota_command_client is available only on the Fullsize profile" in lite.stderr
+
+    fullsize = subprocess.run(
+        ["cc", "-std=c11", *include_args, "-DFOF_BACKEND_PROFILE_S3_FULLSIZE=1",
+         "-c", str(source), "-o", str(tmp_path / "fullsize_command_client_fixture.o")],
+        text=True, capture_output=True, check=False,
+    )
+    assert fullsize.returncode == 0, fullsize.stderr
+
+    header = (ROOT / "uplink/main/network/backend_ota_command_client.h").read_text(
+        encoding="utf-8"
+    )
+    assert "backend_ota_event_end_build" in header
+    assert "backend_ota_end_event_t" not in header
+    assert "backend_ota_event_end_encode" not in header
+
+
+def test_lite_operation_id_abi_and_client_source_contract_are_exact(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "lite_operation_id_abi.c"
+    source.write_text(
+        '#include "backend_ota_operation_id.h"\n'
+        "_Static_assert(sizeof(backend_ota_operation_id_t) == 4, \"Lite operation ID ABI\");\n"
+        "_Static_assert(_Generic((backend_ota_operation_id_t)0, uint32_t: 1, default: 0), "
+        "\"Lite operation ID type\");\n"
+        "int main(void) { return 0; }\n",
+        encoding="utf-8",
+    )
+    result = subprocess.run(
+        ["cc", "-std=c11", "-I", str(ROOT / "shared"),
+         "-DFOF_BACKEND_PROFILE_BADGE_LITE=1", "-c", str(source),
+         "-o", str(tmp_path / "lite_operation_id_abi.o")],
+        text=True, capture_output=True, check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+    platformio = (ROOT / "platformio.ini").read_text(encoding="utf-8")
+    lite_contract = platformio.split("[env:backend-native-fullsize]", 1)[0]
+    command_test = (
+        ROOT / "test/test_backend_ota_command_client/test_main.c"
+    ).read_text(encoding="utf-8")
+    guarded_body = command_test.split(
+        "#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)", 2
+    )[2]
+    lite_test_body = guarded_body.split("\n#else\n", 1)[1].split(
+        "\n#endif\n", 1
+    )[0]
+    for fullsize_only in (
+        "backend_ota_command_client.h",
+        "backend_ota_command_client.c",
+        "BACKEND_OTA_RECEIPT_FIXTURE_PATH",
+        "backend_ota_receipt_v1_preimage",
+        "backend_ota_receipt_end_t",
+        "backend_ota_accepted_probe_t",
+        "backend_ota_accepted_probe_capture",
+        "backend_ota_apply_matches_accepted_probe",
+        "backend_ota_terminal_evidence_t",
+        "backend_ota_event_end_build",
+        "fof-backend-ota-end-receipt-v1",
+    ):
+        assert fullsize_only not in lite_contract
+        assert fullsize_only not in lite_test_body
+
+
+def test_fullsize_outbox_sources_are_profile_scoped() -> None:
+    platformio = (ROOT / "platformio.ini").read_text(encoding="utf-8")
+    lite_native, fullsize_native = platformio.split(
+        "[env:backend-native-fullsize]", 1
+    )
+    assert "backend_ota_event_outbox.c" not in lite_native
+    assert "+<uplink/main/storage/backend_ota_event_outbox.c>" in fullsize_native
+
+    cmake = (ROOT / "uplink/main/CMakeLists.txt").read_text(encoding="utf-8")
+    fullsize_branch = cmake.split(
+        'elseif("${BACKEND_STATUS_PROJECT_NAME}" STREQUAL '
+        '"fof_backend_uplink_fullsize")',
+        1,
+    )[1].split("else()", 1)[0]
+    lite_branch = cmake.split(
+        'if("${BACKEND_STATUS_PROJECT_NAME}" STREQUAL "fof_backend_uplink")',
+        1,
+    )[1].split("elseif", 1)[0]
+    for source in (
+        "network/backend_ota_command_client.c",
+        "network/backend_ota_workflow.c",
+        "storage/backend_ota_event_outbox.c",
+    ):
+        assert source in fullsize_branch
+        assert source not in lite_branch
+    assert "${BACKEND_OTA_FULLSIZE_SRCS}" in cmake
+
+
+def test_terminal_startup_classifies_progress_and_terminal_tombstone_cuts() -> None:
+    main = (ROOT / "uplink/main/main.c").read_text(encoding="utf-8")
+    startup = main.split("static bool ota_startup_restore(", 1)[1]
+    terminal = startup.split("if (terminal) {", 1)[1].split(
+        "uplink_ota_work_item_t work", 1
+    )[0]
+
+    assert "ota_running_version(" in terminal
+    assert "copy_text(result.running_version" in terminal
+    assert "terminal_matches" in terminal
+    assert "ota_restore_pending_progress(" in terminal
+    assert terminal.index("terminal_matches") < terminal.index(
+        "ota_restore_pending_progress("
+    )
+    assert "terminal_tombstoned" in terminal
+    assert "pending.body_sha256" in terminal
+    assert "backend_ota_workflow_note_terminal_ack(" in terminal
 
 
 def _environment(project: str, name: str) -> tuple[ConfigParser, str]:
@@ -78,7 +280,7 @@ def test_projects_reject_identity_pairs_that_could_mislabel_app_descriptors() ->
         "scanner": (
             "fof_backend_scanner",
             "scanner-s3-combo-backend",
-            "scanner-s3-combo-backend",
+            "BACKEND_IMAGE_SCANNER",
         ),
         "uplink": (
             "fof_backend_uplink",

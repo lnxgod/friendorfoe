@@ -155,6 +155,9 @@ static bool valid_control(const backend_scanner_control_t *control)
     case BACKEND_SCANNER_CONTROL_ROLE:
         return control->payload.role.boot_id != 0U &&
                control->payload.role.generation != 0U &&
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+               control->payload.role.topology_generation != 0U &&
+#endif
                profile_name(control->payload.role.profile) != NULL;
     case BACKEND_SCANNER_CONTROL_TIME:
         if (control->payload.time.generation == 0U ||
@@ -201,6 +204,9 @@ static bool valid_control(const backend_scanner_control_t *control)
     case BACKEND_SCANNER_CONTROL_OTA_BEGIN:
         return control->payload.ota_begin.session_id != 0U &&
                control->payload.ota_begin.generation != 0U &&
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+               control->payload.ota_begin.manifest_generation != 0U &&
+#endif
                control->payload.ota_begin.component_slot < 2U &&
                terminated(control->payload.ota_begin.expected_mac,
                           sizeof(control->payload.ota_begin.expected_mac)) &&
@@ -294,6 +300,10 @@ size_t backend_scanner_control_encode(
         initialize_writer(&writer, output, capacity, "role");
         append_u32(&writer, "boot_id", control->payload.role.boot_id);
         append_u32(&writer, "generation", control->payload.role.generation);
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+        append_u32(&writer, "topology_generation",
+                   control->payload.role.topology_generation);
+#endif
         append_string(&writer, "profile",
                       profile_name(control->payload.role.profile));
         break;
@@ -357,6 +367,10 @@ size_t backend_scanner_control_encode(
                    control->payload.ota_begin.session_id);
         append_u32(&writer, "generation",
                    control->payload.ota_begin.generation);
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+        append_u32(&writer, "manifest_generation",
+                   control->payload.ota_begin.manifest_generation);
+#endif
         append_u32(&writer, "component_slot",
                    control->payload.ota_begin.component_slot);
         append_string(&writer, "expected_mac",
@@ -412,7 +426,11 @@ static size_t control_field_count(backend_scanner_control_kind_t type)
 {
     switch (type) {
     case BACKEND_SCANNER_CONTROL_ROLE:
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+        return 5U;
+#else
         return 4U;
+#endif
     case BACKEND_SCANNER_CONTROL_TIME:
         return 5U;
     case BACKEND_SCANNER_CONTROL_FLOW:
@@ -428,7 +446,11 @@ static size_t control_field_count(backend_scanner_control_kind_t type)
     case BACKEND_SCANNER_CONTROL_CANCEL:
         return 2U;
     case BACKEND_SCANNER_CONTROL_OTA_BEGIN:
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+        return 17U;
+#else
         return 16U;
+#endif
     case BACKEND_SCANNER_CONTROL_OTA_END:
     case BACKEND_SCANNER_CONTROL_OTA_ABORT:
         return 4U;
@@ -520,6 +542,10 @@ backend_scanner_control_decode_result_t backend_scanner_control_decode(
                       &control.payload.role.boot_id) ||
             !read_u32(json, tokens, token_count, "generation",
                       &control.payload.role.generation) ||
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+            !read_u32(json, tokens, token_count, "topology_generation",
+                      &control.payload.role.topology_generation) ||
+#endif
             !read_string(json, tokens, token_count, "profile", profile,
                          sizeof(profile)) ||
             !parse_profile(profile, &control.payload.role.profile)) {
@@ -619,6 +645,10 @@ backend_scanner_control_decode_result_t backend_scanner_control_decode(
                       &control.payload.ota_begin.session_id) ||
             !read_u32(json, tokens, token_count, "generation",
                       &control.payload.ota_begin.generation) ||
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+            !read_u32(json, tokens, token_count, "manifest_generation",
+                      &control.payload.ota_begin.manifest_generation) ||
+#endif
             !read_u32(json, tokens, token_count, "component_slot",
                       &component_slot) || component_slot > UINT8_MAX ||
             !read_string(json, tokens, token_count, "expected_mac",

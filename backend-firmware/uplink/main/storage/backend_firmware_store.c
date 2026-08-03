@@ -106,6 +106,18 @@ static bool manifests_equal(
            left->allow_same_version == right->allow_same_version;
 }
 
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+static bool store_operation_matches(
+    const backend_firmware_store_t *store,
+    bool has_operation_id,
+    const backend_ota_operation_id_t *operation_id)
+{
+    return store != NULL && store->has_operation_id && has_operation_id &&
+           operation_id != NULL && backend_ota_operation_id_equal(
+               &store->operation_id, operation_id);
+}
+#endif
+
 static bool read_persisted_image(
     void *context, size_t offset, uint8_t *output, size_t length)
 {
@@ -137,12 +149,20 @@ void backend_firmware_store_init(
 
 backend_firmware_store_result_t backend_firmware_store_stage(
     backend_firmware_store_t *store,
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    bool has_operation_id,
+    const backend_ota_operation_id_t *operation_id,
+#endif
     const backend_ota_manifest_t *manifest,
     backend_ota_read_fn source_read,
     void *source_context,
     bool persist)
 {
-    if (store == NULL || manifest == NULL || source_read == NULL) {
+    if (store == NULL || manifest == NULL || source_read == NULL
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+        || !has_operation_id || operation_id == NULL
+#endif
+        ) {
         return BACKEND_FIRMWARE_STORE_INVALID_ARGUMENT;
     }
     if (store->available || store->relay_claimed) {
@@ -170,6 +190,10 @@ backend_firmware_store_result_t backend_firmware_store_stage(
 
     if (!persist) {
         store->manifest = admitted;
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+        store->operation_id = *operation_id;
+        store->has_operation_id = true;
+#endif
         store->source_read = source_read;
         store->source_context = source_context;
         store->persisted = false;
@@ -218,6 +242,10 @@ backend_firmware_store_result_t backend_firmware_store_stage(
 
     store->source_read = NULL;
     store->source_context = NULL;
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    store->operation_id = *operation_id;
+    store->has_operation_id = true;
+#endif
     store->persisted = true;
     store->available = true;
     return BACKEND_FIRMWARE_STORE_OK;
@@ -225,20 +253,34 @@ backend_firmware_store_result_t backend_firmware_store_stage(
 
 bool backend_firmware_store_matches(
     const backend_firmware_store_t *store,
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    bool has_operation_id,
+    const backend_ota_operation_id_t *operation_id,
+#endif
     const backend_ota_manifest_t *manifest)
 {
     return store != NULL && store->available &&
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+           store_operation_matches(store, has_operation_id, operation_id) &&
+#endif
            manifests_equal(&store->manifest, manifest);
 }
 
 bool backend_firmware_store_read(
     const backend_firmware_store_t *store,
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    bool has_operation_id,
+    const backend_ota_operation_id_t *operation_id,
+#endif
     uint32_t generation,
     size_t offset,
     uint8_t *output,
     size_t length)
 {
     if (store == NULL || !store->available || output == NULL || length == 0U ||
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+        !store_operation_matches(store, has_operation_id, operation_id) ||
+#endif
         generation == 0U || generation != store->manifest.generation ||
         offset > store->manifest.image_size ||
         length > (size_t)store->manifest.image_size - offset) {
@@ -256,10 +298,17 @@ bool backend_firmware_store_read(
 
 bool backend_firmware_store_claim_relay(
     backend_firmware_store_t *store,
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    bool has_operation_id,
+    const backend_ota_operation_id_t *operation_id,
+#endif
     uint32_t generation,
     uint32_t session_id)
 {
     if (store == NULL || !store->available || store->relay_claimed ||
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+        !store_operation_matches(store, has_operation_id, operation_id) ||
+#endif
         generation == 0U || generation != store->manifest.generation ||
         session_id == 0U) {
         return false;
@@ -271,21 +320,36 @@ bool backend_firmware_store_claim_relay(
 
 bool backend_firmware_store_relay_claim_matches(
     const backend_firmware_store_t *store,
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    bool has_operation_id,
+    const backend_ota_operation_id_t *operation_id,
+#endif
     uint32_t generation,
     uint32_t session_id)
 {
     return store != NULL && store->available && store->relay_claimed &&
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+           store_operation_matches(store, has_operation_id, operation_id) &&
+#endif
            generation != 0U && generation == store->manifest.generation &&
            session_id != 0U && session_id == store->relay_session_id;
 }
 
 void backend_firmware_store_release_relay(
     backend_firmware_store_t *store,
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    bool has_operation_id,
+    const backend_ota_operation_id_t *operation_id,
+#endif
     uint32_t generation,
     uint32_t session_id)
 {
     if (backend_firmware_store_relay_claim_matches(
-            store, generation, session_id)) {
+            store,
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+            has_operation_id, operation_id,
+#endif
+            generation, session_id)) {
         store->relay_claimed = false;
         store->relay_session_id = 0U;
     }
@@ -293,15 +357,26 @@ void backend_firmware_store_release_relay(
 
 bool backend_firmware_store_discard(
     backend_firmware_store_t *store,
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    bool has_operation_id,
+    const backend_ota_operation_id_t *operation_id,
+#endif
     uint32_t generation)
 {
     if (store == NULL || !store->available || store->relay_claimed ||
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+        !store_operation_matches(store, has_operation_id, operation_id) ||
+#endif
         generation == 0U || generation != store->manifest.generation) {
         return false;
     }
     memset(&store->manifest, 0, sizeof(store->manifest));
     store->source_read = NULL;
     store->source_context = NULL;
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    memset(&store->operation_id, 0, sizeof(store->operation_id));
+    store->has_operation_id = false;
+#endif
     store->available = false;
     store->persisted = false;
     return true;

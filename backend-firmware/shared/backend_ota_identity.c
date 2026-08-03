@@ -201,6 +201,19 @@ static void sha256_finish(backend_sha256_t *sha, uint8_t output[32])
     }
 }
 
+bool backend_ota_sha256(
+    const uint8_t *bytes, size_t length, uint8_t output[32])
+{
+    if (output == NULL || (bytes == NULL && length != 0U)) {
+        return false;
+    }
+    backend_sha256_t sha;
+    sha256_init(&sha);
+    sha256_update(&sha, bytes, length);
+    sha256_finish(&sha, output);
+    return true;
+}
+
 static bool fixed_string_is_exact(
     const char *field, size_t capacity, const char *expected)
 {

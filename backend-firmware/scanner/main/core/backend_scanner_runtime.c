@@ -47,13 +47,20 @@ backend_scanner_role_result_t backend_scanner_runtime_apply_role(
     backend_scanner_runtime_t *runtime,
     uint32_t boot_id,
     uint32_t generation,
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    uint32_t topology_generation,
+#endif
     backend_scan_profile_t profile)
 {
     if (!runtime) {
         return BACKEND_ROLE_INVALID_BOOT;
     }
     const backend_scanner_role_result_t result = backend_scanner_role_apply(
-        &runtime->role, boot_id, generation, profile);
+        &runtime->role, boot_id, generation,
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+        topology_generation,
+#endif
+        profile);
     if (result == BACKEND_ROLE_APPLIED) {
         runtime->state_changed = true;
     }

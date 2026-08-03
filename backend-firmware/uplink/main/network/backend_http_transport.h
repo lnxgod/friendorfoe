@@ -105,8 +105,8 @@ typedef struct {
     backend_http_monotonic_ms_fn monotonic_ms;
 } backend_http_io_t;
 
-/* Internal DNS lifetime policy. Callers provide synchronization. */
-bool backend_http_dns_caller_allowed(
+/* Platform sockets require an initialized lwIP stack and a non-lwIP caller. */
+bool backend_http_platform_caller_allowed(
     bool tcpip_initialized, bool caller_holds_lwip_core);
 void backend_http_dns_guard_pool_init(backend_http_dns_guard_pool_t *pool);
 int backend_http_dns_guard_reserve(

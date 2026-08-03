@@ -242,7 +242,11 @@ static bool ota_read_binding(void *context, uart_ota_local_binding_t *out)
     out->component_slot = (uint8_t)app->component_slot;
     memcpy(out->mac, app->mac, sizeof(out->mac));
     out->boot_id = app->boot_id;
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    out->topology_generation = app->runtime.role.topology_generation;
+#else
     out->topology_generation = app->runtime.role.generation;
+#endif
     return true;
 }
 
@@ -687,7 +691,11 @@ static void process_control(
         if (app_lock()) {
             result = backend_scanner_runtime_apply_role(
                 &s_app.runtime, role->boot_id,
-                role->generation, role->profile);
+                role->generation,
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+                role->topology_generation,
+#endif
+                role->profile);
             if (result == BACKEND_ROLE_APPLIED) {
                 s_app.role_acked = false;
                 if (s_app.component_slot < 0 &&

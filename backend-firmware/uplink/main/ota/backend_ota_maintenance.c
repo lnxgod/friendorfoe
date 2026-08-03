@@ -417,6 +417,17 @@ static void append_u32_field(
         writer, ",\"%s\":%" PRIu32, key, value);
 }
 
+static bool evidence_operation_is_present(
+    const backend_ota_evidence_t *evidence)
+{
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    return evidence != NULL && evidence->has_operation_id;
+#else
+    return evidence != NULL &&
+           !backend_ota_operation_id_is_zero(&evidence->operation_id);
+#endif
+}
+
 size_t backend_ota_evidence_encode(
     const backend_ota_evidence_t *evidence, char *output, size_t capacity)
 {
@@ -428,7 +439,8 @@ size_t backend_ota_evidence_encode(
     const char *decision = evidence == NULL
         ? NULL : decision_name(evidence->decision);
     if (evidence == NULL || output == NULL || capacity == 0U ||
-        evidence->operation_id == 0U || component == NULL || decision == NULL ||
+        !evidence_operation_is_present(evidence) ||
+        component == NULL || decision == NULL ||
         backend_ota_component_slot(evidence->component) !=
             evidence->component_slot ||
         !evidence_strings_are_bounded(evidence)) {
@@ -453,10 +465,23 @@ size_t backend_ota_evidence_encode(
 
     backend_json_writer_t writer;
     backend_json_writer_init(&writer, output, capacity);
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    char operation_id[BACKEND_OTA_OPERATION_ID_HEX_LENGTH + 1U];
+    if (!backend_ota_operation_id_encode(
+            &evidence->operation_id, operation_id,
+            sizeof(operation_id))) {
+        return 0U;
+    }
+    backend_json_append_format(
+        &writer,
+        "FOF_BACKEND_OTA_EVIDENCE {\"schema\":1,\"operation_id\":\"%s\"",
+        operation_id);
+#else
     backend_json_append_format(
         &writer,
         "FOF_BACKEND_OTA_EVIDENCE {\"schema\":1,\"operation_id\":%" PRIu32,
         evidence->operation_id);
+#endif
     append_string_field(&writer, "mode", mode);
     append_string_field(&writer, "component", component);
     backend_json_append_format(
@@ -538,10 +563,24 @@ size_t backend_ota_accepted_encode(
 
     backend_json_writer_t writer;
     backend_json_writer_init(&writer, output, capacity);
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    char operation_id[BACKEND_OTA_OPERATION_ID_HEX_LENGTH + 1U];
+    if (!accepted->has_operation_id ||
+        !backend_ota_operation_id_encode(
+            &accepted->operation_id, operation_id,
+            sizeof(operation_id))) {
+        return 0U;
+    }
+    backend_json_append_format(
+        &writer,
+        "FOF_BACKEND_OTA_ACCEPTED {\"schema\":1,\"operation_id\":\"%s\"",
+        operation_id);
+#else
     backend_json_append_format(
         &writer,
         "FOF_BACKEND_OTA_ACCEPTED {\"schema\":1,\"operation_id\":%" PRIu32,
         accepted->operation_id);
+#endif
     append_string_field(&writer, "component", component);
     backend_json_append_format(
         &writer, ",\"component_slot\":%d", (int)accepted->component_slot);
@@ -597,7 +636,9 @@ static bool maintenance_adapters_valid(
            adapters->emit_and_flush != NULL;
 }
 
-static uint32_t next_operation_id(backend_ota_maintenance_t *state)
+#if defined(FOF_BACKEND_PROFILE_BADGE_LITE)
+static backend_ota_operation_id_t next_operation_id(
+    backend_ota_maintenance_t *state)
 {
     if (state->next_operation_id == UINT32_MAX) {
         state->busy = true;
@@ -606,6 +647,7 @@ static uint32_t next_operation_id(backend_ota_maintenance_t *state)
     state->next_operation_id++;
     return state->next_operation_id;
 }
+#endif
 
 bool backend_ota_maintenance_init(
     backend_ota_maintenance_t *state,
@@ -636,12 +678,16 @@ bool backend_ota_maintenance_init(
     const backend_ota_journal_load_result_t load =
         backend_ota_journal_load(&state->journal_storage, &existing);
     if (load == BACKEND_OTA_JOURNAL_LOAD_PRESENT) {
+#if defined(FOF_BACKEND_PROFILE_BADGE_LITE)
         state->next_operation_id = existing.operation_id;
+#endif
         state->busy = existing.phase != BACKEND_OTA_PHASE_COMPLETE &&
                       existing.phase != BACKEND_OTA_PHASE_FAILED;
+#if defined(FOF_BACKEND_PROFILE_BADGE_LITE)
         if (existing.operation_id == UINT32_MAX) {
             state->busy = true;
         }
+#endif
     } else if (load == BACKEND_OTA_JOURNAL_LOAD_CORRUPT ||
                load == BACKEND_OTA_JOURNAL_LOAD_IO_ERROR) {
         state->busy = true;
@@ -663,10 +709,12 @@ void backend_ota_maintenance_on_boot(
                   !(load == BACKEND_OTA_JOURNAL_LOAD_PRESENT &&
                     (record.phase == BACKEND_OTA_PHASE_COMPLETE ||
                      record.phase == BACKEND_OTA_PHASE_FAILED));
+#if defined(FOF_BACKEND_PROFILE_BADGE_LITE)
     if (load == BACKEND_OTA_JOURNAL_LOAD_PRESENT &&
         record.operation_id > state->next_operation_id) {
         state->next_operation_id = record.operation_id;
     }
+#endif
 }
 
 typedef struct {
@@ -733,13 +781,24 @@ static backend_ota_decision_t admission_decision(
 
 static void evidence_begin(
     backend_ota_maintenance_t *state,
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    bool has_operation_id,
+    const backend_ota_operation_id_t *operation_id,
+#endif
     backend_ota_component_t component,
     const char *catalog_name,
     bool probe,
     backend_ota_evidence_t *evidence)
 {
     memset(evidence, 0, sizeof(*evidence));
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    evidence->has_operation_id = has_operation_id;
+    if (has_operation_id && operation_id != NULL) {
+        evidence->operation_id = *operation_id;
+    }
+#else
     evidence->operation_id = next_operation_id(state);
+#endif
     evidence->probe = probe;
     evidence->component = component;
     evidence->apply_mode = BACKEND_OTA_NEWER_ONLY;
@@ -768,13 +827,56 @@ static bool emit_evidence(
 }
 
 static void release_buffer(
-    backend_ota_maintenance_t *state, uint32_t operation_id)
+    backend_ota_maintenance_t *state,
+    bool has_operation_id,
+    const backend_ota_operation_id_t *operation_id)
 {
     if (state->buffer_owned) {
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
         backend_firmware_buffer_release(
-            state->firmware_buffer, operation_id);
+            state->firmware_buffer, has_operation_id, operation_id);
+#else
+        (void)has_operation_id;
+        backend_firmware_buffer_release(
+            state->firmware_buffer,
+            operation_id == NULL ? 0U : *operation_id);
+#endif
         state->buffer_owned = false;
     }
+}
+
+static void release_evidence_buffer(
+    backend_ota_maintenance_t *state,
+    const backend_ota_evidence_t *evidence)
+{
+    if (evidence == NULL) {
+        return;
+    }
+    release_buffer(
+        state,
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+        evidence->has_operation_id,
+#else
+        !backend_ota_operation_id_is_zero(&evidence->operation_id),
+#endif
+        &evidence->operation_id);
+}
+
+static void release_journal_buffer(
+    backend_ota_maintenance_t *state,
+    const backend_ota_journal_record_t *record)
+{
+    if (record == NULL) {
+        return;
+    }
+    release_buffer(
+        state,
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+        record->has_operation_id,
+#else
+        !backend_ota_operation_id_is_zero(&record->operation_id),
+#endif
+        &record->operation_id);
 }
 
 static bool snapshot_to_evidence(
@@ -818,10 +920,84 @@ static bool binding_is_same(
            left->topology_generation == right->topology_generation;
 }
 
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+static bool publish_progress(
+    backend_ota_maintenance_t *state,
+    bool has_operation_id,
+    const backend_ota_operation_id_t *operation_id,
+    bool probe,
+    backend_ota_component_t component,
+    const char *catalog_name,
+    const backend_ota_manifest_t *manifest,
+    backend_ota_journal_progress_stage_t stage,
+    uint32_t received,
+    uint32_t total,
+    uint32_t retry_count)
+{
+    if (state->adapters.report_progress == NULL) {
+        return true;
+    }
+    if (!has_operation_id || operation_id == NULL || catalog_name == NULL ||
+        manifest == NULL || received > total ||
+        retry_count > BACKEND_OTA_PROGRESS_MAX_RETRIES) {
+        return false;
+    }
+    if (state->restart_authorized &&
+        state->restart_record.progress_initialized &&
+        (stage < state->restart_record.progress_stage ||
+         (stage == state->restart_record.progress_stage &&
+          received <= state->restart_record.progress_received &&
+          retry_count <= state->restart_record.progress_retry_count))) {
+        return true;
+    }
+    backend_ota_progress_update_t update;
+    memset(&update, 0, sizeof(update));
+    update.has_operation_id = true;
+    update.operation_id = *operation_id;
+    update.probe = probe;
+    update.component = component;
+    memcpy(update.catalog_name, catalog_name,
+           strlen(catalog_name) + 1U);
+    update.manifest = *manifest;
+    update.stage = stage;
+    update.received = received;
+    update.total = total;
+    update.retry_count = retry_count;
+    return state->adapters.report_progress(
+        state->adapters.context, &update);
+}
+
+static bool publish_evidence_progress(
+    backend_ota_maintenance_t *state,
+    const backend_ota_evidence_t *evidence,
+    backend_ota_journal_progress_stage_t stage,
+    uint32_t received,
+    uint32_t total,
+    uint32_t retry_count)
+{
+    return publish_progress(
+        state, evidence->has_operation_id, &evidence->operation_id,
+        evidence->probe, evidence->component, evidence->catalog_name,
+        &evidence->manifest, stage, received, total, retry_count);
+}
+
+static uint32_t relay_retry_count(
+    backend_ota_maintenance_t *state,
+    backend_ota_component_t component)
+{
+    const uint32_t count = state->adapters.relay_retry_count == NULL
+        ? 0U : state->adapters.relay_retry_count(
+            state->adapters.context, component);
+    return count <= BACKEND_OTA_PROGRESS_MAX_RETRIES
+        ? count : BACKEND_OTA_PROGRESS_MAX_RETRIES + 1U;
+}
+#endif
+
 static bool stage_complete_image(
     backend_ota_maintenance_t *state,
     backend_ota_component_t component,
     const char *expected_sha256_or_null,
+    uint32_t expected_size,
     bool allow_same_version,
     backend_ota_evidence_t *evidence)
 {
@@ -869,8 +1045,26 @@ static bool stage_complete_image(
         evidence->decision = BACKEND_OTA_DECISION_REJECT_DIGEST;
         return false;
     }
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    if (expected_size == 0U ||
+        evidence->manifest.image_size != expected_size) {
+        evidence->decision = BACKEND_OTA_DECISION_REJECT_SIZE;
+        return false;
+    }
+    if (!publish_evidence_progress(
+            state, evidence, BACKEND_OTA_JOURNAL_PROGRESS_METADATA,
+            0U, expected_size, 0U)) {
+        evidence->decision = BACKEND_OTA_DECISION_FAILED;
+        return false;
+    }
+    if (!backend_firmware_buffer_acquire(
+            state->firmware_buffer, evidence->has_operation_id,
+            &evidence->operation_id)) {
+#else
+    (void)expected_size;
     if (!backend_firmware_buffer_acquire(
             state->firmware_buffer, evidence->operation_id)) {
+#endif
         evidence->decision = BACKEND_OTA_DECISION_FAILED;
         return false;
     }
@@ -887,6 +1081,14 @@ static bool stage_complete_image(
         evidence->decision = BACKEND_OTA_DECISION_FAILED;
         return false;
     }
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    if (!publish_evidence_progress(
+            state, evidence, BACKEND_OTA_JOURNAL_PROGRESS_DOWNLOAD,
+            (uint32_t)downloaded, expected_size, 0U)) {
+        evidence->decision = BACKEND_OTA_DECISION_FAILED;
+        return false;
+    }
+#endif
     const backend_ota_image_result_t image_result = validate_staged(
         state, &evidence->manifest, component_image_kind(component),
         bytes, downloaded);
@@ -898,16 +1100,33 @@ static bool stage_complete_image(
             : BACKEND_OTA_DECISION_REJECT_IDENTITY;
         return false;
     }
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    if (!publish_evidence_progress(
+            state, evidence, BACKEND_OTA_JOURNAL_PROGRESS_VALIDATE,
+            (uint32_t)downloaded, expected_size, 0U) ||
+        !publish_evidence_progress(
+            state, evidence, BACKEND_OTA_JOURNAL_PROGRESS_STAGE,
+            (uint32_t)downloaded, expected_size, 0U)) {
+        evidence->decision = BACKEND_OTA_DECISION_FAILED;
+        return false;
+    }
+#endif
     evidence->complete_image_validated = true;
     evidence->decision = BACKEND_OTA_DECISION_ADMIT;
     return true;
 }
 
-bool backend_ota_maintenance_run_probe(
+static bool run_probe_mode_aware(
     backend_ota_maintenance_t *state,
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    bool has_operation_id,
+    const backend_ota_operation_id_t *operation_id,
+    uint32_t expected_size,
+#endif
     backend_ota_component_t component,
     const char *catalog_name,
     const char *expected_sha256_or_null,
+    backend_ota_apply_mode_t apply_mode,
     backend_ota_evidence_t *out)
 {
     if (out != NULL) {
@@ -918,10 +1137,21 @@ bool backend_ota_maintenance_run_probe(
         return false;
     }
     backend_ota_evidence_t evidence;
-    evidence_begin(state, component, catalog_name, true, &evidence);
-    if (evidence.operation_id == 0U) {
+    evidence_begin(
+        state,
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+        has_operation_id, operation_id,
+#endif
+        component, catalog_name, true, &evidence);
+    evidence.apply_mode = apply_mode;
+    if (!evidence_operation_is_present(&evidence)) {
         return false;
     }
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    if (operation_id == NULL || expected_size == 0U) {
+        return false;
+    }
+#endif
     const char *expected_catalog = backend_ota_component_catalog_name(component);
     if (catalog_name == NULL || expected_catalog == NULL ||
         strcmp(catalog_name, expected_catalog) != 0) {
@@ -937,7 +1167,12 @@ bool backend_ota_maintenance_run_probe(
         *out = evidence;
         return true;
     }
-    if (state->busy) {
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    const bool journal_restart = state->restart_authorized;
+#else
+    const bool journal_restart = false;
+#endif
+    if (state->busy && !journal_restart) {
         evidence.decision = BACKEND_OTA_DECISION_REJECT_BUSY;
         emit_evidence(state, &evidence);
         *out = evidence;
@@ -948,20 +1183,43 @@ bool backend_ota_maintenance_run_probe(
     if (!snapshot_to_evidence(
             state, component, &binding, &evidence, true) ||
         !stage_complete_image(
-            state, component, expected_sha256_or_null, false, &evidence)) {
+            state, component, expected_sha256_or_null,
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+            expected_size,
+#else
+            0U,
+#endif
+            apply_mode == BACKEND_OTA_SAME_VERSION_RECOVERY, &evidence)) {
         evidence.image_writes_after = state->adapters.image_write_count(
             state->adapters.context);
-        release_buffer(state, evidence.operation_id);
+        release_evidence_buffer(state, &evidence);
         state->busy = false;
         emit_evidence(state, &evidence);
         *out = evidence;
         return true;
     }
-    if (component != BACKEND_OTA_COMPONENT_UPLINK &&
-        !state->adapters.scanner_dry_run(
-            state->adapters.context, component, &evidence.manifest,
+    bool scanner_dry_run_ok = true;
+    if (component != BACKEND_OTA_COMPONENT_UPLINK) {
+        scanner_dry_run_ok = state->adapters.scanner_dry_run(
+            state->adapters.context, component,
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+            evidence.has_operation_id, &evidence.operation_id,
+#endif
+            &evidence.manifest,
             backend_firmware_buffer_data(state->firmware_buffer),
-            evidence.manifest.image_size)) {
+            evidence.manifest.image_size);
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+        if (scanner_dry_run_ok) {
+            scanner_dry_run_ok = publish_evidence_progress(
+                state, &evidence,
+                BACKEND_OTA_JOURNAL_PROGRESS_UART_RELAY,
+                evidence.manifest.image_size,
+                evidence.manifest.image_size,
+                relay_retry_count(state, component));
+        }
+#endif
+    }
+    if (!scanner_dry_run_ok) {
         evidence.decision = BACKEND_OTA_DECISION_FAILED;
     }
     evidence.image_writes_after = state->adapters.image_write_count(
@@ -975,18 +1233,479 @@ bool backend_ota_maintenance_run_probe(
         !binding_is_same(&binding, &closing_binding)) {
         evidence.decision = BACKEND_OTA_DECISION_REJECT_TARGET_BINDING;
     }
-    release_buffer(state, evidence.operation_id);
+    release_evidence_buffer(state, &evidence);
     state->busy = false;
     emit_evidence(state, &evidence);
     *out = evidence;
     return true;
 }
 
+bool backend_ota_maintenance_run_probe(
+    backend_ota_maintenance_t *state,
+    backend_ota_component_t component,
+    const char *catalog_name,
+    const char *expected_sha256_or_null,
+    backend_ota_evidence_t *out)
+{
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    if (out != NULL) {
+        memset(out, 0, sizeof(*out));
+    }
+    (void)state;
+    (void)component;
+    (void)catalog_name;
+    (void)expected_sha256_or_null;
+    return false;
+#else
+    return run_probe_mode_aware(
+        state, component, catalog_name, expected_sha256_or_null,
+        BACKEND_OTA_NEWER_ONLY, out);
+#endif
+}
+
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+bool backend_ota_maintenance_run_fullsize_probe(
+    backend_ota_maintenance_t *state,
+    bool has_operation_id,
+    const backend_ota_operation_id_t *operation_id,
+    uint32_t expected_size,
+    backend_ota_component_t component,
+    const char *catalog_name,
+    const char *expected_sha256_or_null,
+    backend_ota_apply_mode_t apply_mode,
+    backend_ota_evidence_t *out)
+{
+    if (apply_mode != BACKEND_OTA_NEWER_ONLY &&
+        apply_mode != BACKEND_OTA_SAME_VERSION_RECOVERY) {
+        return false;
+    }
+    return run_probe_mode_aware(
+        state, has_operation_id, operation_id, expected_size,
+        component, catalog_name, expected_sha256_or_null,
+        apply_mode, out);
+}
+#endif
+
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+static bool fullsize_bytes_are_zero(const uint8_t *bytes, size_t length)
+{
+    uint8_t combined = 0U;
+    if (bytes == NULL) {
+        return false;
+    }
+    for (size_t index = 0U; index < length; ++index) {
+        combined = (uint8_t)(combined | bytes[index]);
+    }
+    return combined == 0U;
+}
+
+static bool fullsize_command_request_is_valid(
+    const backend_ota_request_t *request)
+{
+    const char *catalog = request == NULL ? NULL :
+        backend_ota_component_catalog_name(request->component);
+    if (request == NULL || !request->has_operation_id ||
+        request->expected_size == 0U ||
+        request->command_next_sequence == UINT32_MAX || catalog == NULL ||
+        !bounded_string(request->catalog_name, sizeof(request->catalog_name)) ||
+        strcmp(request->catalog_name, catalog) != 0 ||
+        !lowercase_sha256(request->expected_sha256) ||
+        request->apply_mode < BACKEND_OTA_NEWER_ONLY ||
+        request->apply_mode > BACKEND_OTA_SAME_VERSION_RECOVERY ||
+        !hardware_mac_is_valid(request->expected_mac) ||
+        request->expected_boot_id == 0U ||
+        request->expected_topology_generation == 0U) {
+        return false;
+    }
+    if (request->probe) {
+        return !request->has_accepted_probe_receipt &&
+               fullsize_bytes_are_zero(
+                   request->accepted_probe_receipt_sha256,
+                   sizeof(request->accepted_probe_receipt_sha256));
+    }
+    return request->has_accepted_probe_receipt;
+}
+
+static bool fullsize_request_matches_record(
+    const backend_ota_maintenance_t *state,
+    const backend_ota_request_t *request,
+    const backend_ota_journal_record_t *record)
+{
+    if (state == NULL || request == NULL || record == NULL ||
+        backend_ota_journal_validate(record) != BACKEND_OTA_JOURNAL_VALID ||
+        !record->has_operation_id || !request->has_operation_id ||
+        !backend_ota_operation_id_equal(
+            &record->operation_id, &request->operation_id) ||
+        record->action != (request->probe
+            ? BACKEND_OTA_JOURNAL_ACTION_PROBE
+            : BACKEND_OTA_JOURNAL_ACTION_APPLY) ||
+        record->component != request->component ||
+        record->component_slot !=
+            backend_ota_component_slot(request->component) ||
+        record->apply_mode != request->apply_mode ||
+        record->expected_size != request->expected_size ||
+        record->command_next_sequence != request->command_next_sequence ||
+        strcmp(record->catalog_name, request->catalog_name) != 0 ||
+        strcmp(record->expected_sha256, request->expected_sha256) != 0 ||
+        memcmp(record->expected_uplink_mac, state->uplink_mac, 6U) != 0 ||
+        memcmp(record->expected_target_mac, request->expected_mac, 6U) != 0 ||
+        record->expected_target_boot_id != request->expected_boot_id ||
+        record->expected_topology_generation !=
+            request->expected_topology_generation ||
+        record->has_accepted_probe_receipt !=
+            request->has_accepted_probe_receipt ||
+        memcmp(record->accepted_probe_receipt_sha256,
+               request->accepted_probe_receipt_sha256,
+               sizeof(record->accepted_probe_receipt_sha256)) != 0) {
+        return false;
+    }
+    return true;
+}
+
+static bool fullsize_restart_request_matches(
+    const backend_ota_maintenance_t *state,
+    const backend_ota_request_t *request,
+    const backend_ota_journal_record_t *record)
+{
+    if (!fullsize_request_matches_record(state, request, record) ||
+        record->phase != BACKEND_OTA_PHASE_ACCEPTED ||
+        (record->checkpoint > BACKEND_OTA_JOURNAL_CHECKPOINT_IMAGE_STAGED &&
+         !(request->probe && record->checkpoint ==
+             BACKEND_OTA_JOURNAL_CHECKPOINT_UART_RELAY))) {
+        return false;
+    }
+    backend_ota_target_binding_t actual;
+    return state->adapters.snapshot_binding(
+               state->adapters.context, request->component, &actual) &&
+           actual.component == record->component &&
+           actual.component_slot == record->component_slot &&
+           memcmp(actual.target_mac, record->expected_target_mac, 6U) == 0 &&
+           actual.target_boot_id == record->expected_target_boot_id &&
+           actual.topology_generation ==
+               record->expected_topology_generation;
+}
+
+backend_ota_journal_persist_result_t
+backend_ota_maintenance_accept_fullsize_command(
+    backend_ota_maintenance_t *state,
+    const backend_ota_request_t *request)
+{
+    if (state == NULL || !state->initialized ||
+        !fullsize_command_request_is_valid(request)) {
+        return BACKEND_OTA_JOURNAL_PERSIST_INVALID;
+    }
+    backend_ota_target_binding_t actual;
+    if (!state->adapters.snapshot_binding(
+            state->adapters.context, request->component, &actual) ||
+        actual.component != request->component ||
+        actual.component_slot != backend_ota_component_slot(request->component) ||
+        memcmp(actual.target_mac, request->expected_mac, 6U) != 0 ||
+        actual.target_boot_id != request->expected_boot_id ||
+        actual.topology_generation != request->expected_topology_generation) {
+        return BACKEND_OTA_JOURNAL_PERSIST_CONFLICT;
+    }
+
+    backend_ota_journal_record_t record;
+    memset(&record, 0, sizeof(record));
+    record.schema = BACKEND_OTA_JOURNAL_SCHEMA;
+    record.has_operation_id = true;
+    record.operation_id = request->operation_id;
+    record.action = request->probe
+        ? BACKEND_OTA_JOURNAL_ACTION_PROBE
+        : BACKEND_OTA_JOURNAL_ACTION_APPLY;
+    record.expected_size = request->expected_size;
+    memcpy(record.expected_sha256, request->expected_sha256,
+           sizeof(record.expected_sha256));
+    memcpy(record.expected_uplink_mac, state->uplink_mac, 6U);
+    record.expected_uplink_boot_id = state->uplink_boot_id;
+    record.has_accepted_probe_receipt =
+        request->has_accepted_probe_receipt;
+    memcpy(record.accepted_probe_receipt_sha256,
+           request->accepted_probe_receipt_sha256,
+           sizeof(record.accepted_probe_receipt_sha256));
+    record.command_next_sequence = request->command_next_sequence;
+    record.event_sequence = request->command_next_sequence;
+    record.checkpoint = BACKEND_OTA_JOURNAL_CHECKPOINT_COMMAND_ACCEPTED;
+    record.component = request->component;
+    record.component_slot = backend_ota_component_slot(request->component);
+    record.apply_mode = request->apply_mode;
+    memcpy(record.catalog_name, request->catalog_name,
+           sizeof(record.catalog_name));
+    memcpy(record.uplink_mac, state->uplink_mac, 6U);
+    record.uplink_boot_id = state->uplink_boot_id;
+    memcpy(record.expected_target_mac, request->expected_mac, 6U);
+    memcpy(record.actual_target_mac, actual.target_mac, 6U);
+    record.expected_target_boot_id = request->expected_boot_id;
+    record.actual_target_boot_id = actual.target_boot_id;
+    record.expected_topology_generation =
+        request->expected_topology_generation;
+    record.actual_topology_generation = actual.topology_generation;
+    record.phase = BACKEND_OTA_PHASE_ACCEPTED;
+    record.image_writes_before = state->adapters.image_write_count(
+        state->adapters.context);
+    record.image_writes_after = record.image_writes_before;
+    return backend_ota_journal_persist_accepted(
+        &state->journal_storage, &record);
+}
+
+bool backend_ota_maintenance_restart_fullsize_command(
+    backend_ota_maintenance_t *state,
+    const backend_ota_request_t *request,
+    backend_ota_evidence_t *out)
+{
+    if (out != NULL) {
+        memset(out, 0, sizeof(*out));
+    }
+    backend_ota_journal_record_t record;
+    if (state == NULL || !state->initialized || !state->busy ||
+        !fullsize_command_request_is_valid(request) ||
+        backend_ota_journal_load(&state->journal_storage, &record) !=
+            BACKEND_OTA_JOURNAL_LOAD_PRESENT ||
+        !fullsize_restart_request_matches(state, request, &record)) {
+        return false;
+    }
+    state->restart_record = record;
+    state->restart_authorized = true;
+    bool result;
+    if (request->probe) {
+        result = run_probe_mode_aware(
+            state, request->has_operation_id, &request->operation_id,
+            request->expected_size, request->component,
+            request->catalog_name, request->expected_sha256,
+            request->apply_mode, out);
+    } else {
+        result = backend_ota_maintenance_request_apply(state, request);
+        if (out != NULL) {
+            (void)backend_ota_maintenance_last_evidence(state, out);
+        }
+    }
+    state->restart_authorized = false;
+    memset(&state->restart_record, 0, sizeof(state->restart_record));
+    return result;
+}
+
+static bool fullsize_manifests_equal(
+    const backend_ota_manifest_t *left,
+    const backend_ota_manifest_t *right)
+{
+    return left != NULL && right != NULL &&
+        strcmp(left->target, right->target) == 0 &&
+        strcmp(left->project, right->project) == 0 &&
+        strcmp(left->hardware, right->hardware) == 0 &&
+        strcmp(left->version, right->version) == 0 &&
+        strcmp(left->sha256, right->sha256) == 0 &&
+        left->image_size == right->image_size &&
+        left->crc32 == right->crc32 &&
+        left->generation == right->generation &&
+        left->allow_same_version == right->allow_same_version;
+}
+
+static bool fullsize_progress_update_valid(
+    const backend_ota_request_t *request,
+    const backend_ota_progress_update_t *update)
+{
+    if (request == NULL || update == NULL || !update->has_operation_id ||
+        !backend_ota_operation_id_equal(
+            &request->operation_id, &update->operation_id) ||
+        update->probe != request->probe ||
+        update->component != request->component ||
+        strcmp(update->catalog_name, request->catalog_name) != 0 ||
+        strcmp(update->manifest.sha256, request->expected_sha256) != 0 ||
+        update->manifest.image_size != request->expected_size ||
+        update->stage < BACKEND_OTA_JOURNAL_PROGRESS_METADATA ||
+        update->stage > BACKEND_OTA_JOURNAL_PROGRESS_CONVERGENCE ||
+        update->total != request->expected_size ||
+        update->received > update->total ||
+        update->retry_count > BACKEND_OTA_PROGRESS_MAX_RETRIES ||
+        (update->stage == BACKEND_OTA_JOURNAL_PROGRESS_METADATA &&
+         update->received != 0U) ||
+        (update->stage != BACKEND_OTA_JOURNAL_PROGRESS_METADATA &&
+         update->received != update->total) ||
+        (update->stage != BACKEND_OTA_JOURNAL_PROGRESS_UART_RELAY &&
+         update->stage != BACKEND_OTA_JOURNAL_PROGRESS_REBOOT_WAIT &&
+         update->stage != BACKEND_OTA_JOURNAL_PROGRESS_CONVERGENCE &&
+         update->retry_count != 0U) ||
+        (request->probe &&
+         update->stage > BACKEND_OTA_JOURNAL_PROGRESS_UART_RELAY) ||
+        (request->component == BACKEND_OTA_COMPONENT_UPLINK &&
+         update->stage == BACKEND_OTA_JOURNAL_PROGRESS_UART_RELAY)) {
+        return false;
+    }
+    return true;
+}
+
+static bool fullsize_progress_phase_valid(
+    const backend_ota_journal_record_t *record,
+    backend_ota_journal_progress_stage_t stage)
+{
+    if (stage <= BACKEND_OTA_JOURNAL_PROGRESS_STAGE) {
+        return record->phase == BACKEND_OTA_PHASE_ACCEPTED;
+    }
+    if (stage == BACKEND_OTA_JOURNAL_PROGRESS_UART_RELAY) {
+        return record->phase == (record->action ==
+                BACKEND_OTA_JOURNAL_ACTION_PROBE
+            ? BACKEND_OTA_PHASE_ACCEPTED : BACKEND_OTA_PHASE_WRITING);
+    }
+    if (stage == BACKEND_OTA_JOURNAL_PROGRESS_REBOOT_WAIT) {
+        return record->phase == BACKEND_OTA_PHASE_REBOOT_PENDING;
+    }
+    return record->phase == BACKEND_OTA_PHASE_CONVERGENCE_PENDING;
+}
+
+static backend_ota_journal_checkpoint_t fullsize_progress_checkpoint(
+    backend_ota_journal_progress_stage_t stage)
+{
+    switch (stage) {
+    case BACKEND_OTA_JOURNAL_PROGRESS_METADATA:
+        return BACKEND_OTA_JOURNAL_CHECKPOINT_METADATA_VALIDATED;
+    case BACKEND_OTA_JOURNAL_PROGRESS_DOWNLOAD:
+    case BACKEND_OTA_JOURNAL_PROGRESS_VALIDATE:
+        return BACKEND_OTA_JOURNAL_CHECKPOINT_DOWNLOAD;
+    case BACKEND_OTA_JOURNAL_PROGRESS_STAGE:
+        return BACKEND_OTA_JOURNAL_CHECKPOINT_IMAGE_STAGED;
+    case BACKEND_OTA_JOURNAL_PROGRESS_UART_RELAY:
+        return BACKEND_OTA_JOURNAL_CHECKPOINT_UART_RELAY;
+    case BACKEND_OTA_JOURNAL_PROGRESS_REBOOT_WAIT:
+        return BACKEND_OTA_JOURNAL_CHECKPOINT_REBOOT_WAIT;
+    case BACKEND_OTA_JOURNAL_PROGRESS_CONVERGENCE:
+    default:
+        return BACKEND_OTA_JOURNAL_CHECKPOINT_CONVERGENCE;
+    }
+}
+
+bool backend_ota_maintenance_persist_fullsize_progress(
+    backend_ota_maintenance_t *state,
+    const backend_ota_request_t *request,
+    const backend_ota_progress_update_t *update,
+    uint32_t event_sequence)
+{
+    backend_ota_journal_record_t record;
+    if (state == NULL || !state->initialized || event_sequence == UINT32_MAX ||
+        !fullsize_command_request_is_valid(request) ||
+        !fullsize_progress_update_valid(request, update) ||
+        backend_ota_journal_load(&state->journal_storage, &record) !=
+            BACKEND_OTA_JOURNAL_LOAD_PRESENT ||
+        !fullsize_request_matches_record(state, request, &record) ||
+        !fullsize_progress_phase_valid(&record, update->stage) ||
+        record.event_sequence > event_sequence ||
+        (record.has_manifest &&
+         !fullsize_manifests_equal(&record.manifest, &update->manifest))) {
+        return false;
+    }
+    record.manifest = update->manifest;
+    record.has_manifest = true;
+    record.event_sequence = event_sequence;
+    record.progress_initialized = true;
+    record.progress_stage = update->stage;
+    record.progress_received = update->received;
+    record.progress_total = update->total;
+    record.progress_retry_count = update->retry_count;
+    record.checkpoint = fullsize_progress_checkpoint(update->stage);
+    const backend_ota_journal_persist_result_t persisted =
+        backend_ota_journal_persist_transition(
+            &state->journal_storage, &record, state->uplink_boot_id);
+    return persisted == BACKEND_OTA_JOURNAL_PERSIST_COMMITTED ||
+           persisted == BACKEND_OTA_JOURNAL_PERSIST_ALREADY_DURABLE;
+}
+
+bool backend_ota_maintenance_ack_fullsize_progress(
+    backend_ota_maintenance_t *state,
+    const backend_ota_request_t *request,
+    const backend_ota_progress_update_t *update,
+    uint32_t accepted_sequence,
+    uint32_t next_sequence)
+{
+    backend_ota_journal_record_t record;
+    if (state == NULL || !state->initialized ||
+        accepted_sequence == UINT32_MAX ||
+        next_sequence != accepted_sequence + 1U ||
+        !fullsize_command_request_is_valid(request) ||
+        !fullsize_progress_update_valid(request, update) ||
+        backend_ota_journal_load(&state->journal_storage, &record) !=
+            BACKEND_OTA_JOURNAL_LOAD_PRESENT ||
+        !fullsize_request_matches_record(state, request, &record) ||
+        !record.progress_initialized ||
+        record.progress_stage != update->stage ||
+        record.progress_received != update->received ||
+        record.progress_total != update->total ||
+        record.progress_retry_count != update->retry_count ||
+        (record.event_sequence != accepted_sequence &&
+         record.event_sequence != next_sequence)) {
+        return false;
+    }
+    if (record.event_sequence == next_sequence) {
+        return true;
+    }
+    record.event_sequence = next_sequence;
+    const backend_ota_journal_persist_result_t persisted =
+        backend_ota_journal_persist_transition(
+            &state->journal_storage, &record, state->uplink_boot_id);
+    return persisted == BACKEND_OTA_JOURNAL_PERSIST_COMMITTED ||
+           persisted == BACKEND_OTA_JOURNAL_PERSIST_ALREADY_DURABLE;
+}
+
+bool backend_ota_maintenance_persist_fullsize_terminal(
+    backend_ota_maintenance_t *state,
+    const backend_ota_evidence_t *evidence,
+    uint32_t event_sequence,
+    bool complete,
+    bool has_accepted_probe_receipt,
+    const uint8_t accepted_probe_receipt_sha256[32])
+{
+    if (state == NULL || !state->initialized || evidence == NULL ||
+        !evidence->has_operation_id || event_sequence == UINT32_MAX ||
+        (has_accepted_probe_receipt &&
+         accepted_probe_receipt_sha256 == NULL)) {
+        return false;
+    }
+    backend_ota_journal_record_t record;
+    if (backend_ota_journal_load(&state->journal_storage, &record) !=
+            BACKEND_OTA_JOURNAL_LOAD_PRESENT ||
+        !backend_ota_operation_id_equal(
+            &record.operation_id, &evidence->operation_id) ||
+        record.component != evidence->component) {
+        return false;
+    }
+    record.event_sequence = event_sequence;
+    record.checkpoint = BACKEND_OTA_JOURNAL_CHECKPOINT_TERMINAL;
+    record.phase = complete
+        ? BACKEND_OTA_PHASE_COMPLETE : BACKEND_OTA_PHASE_FAILED;
+    if (evidence->manifest.target[0] != '\0') {
+        record.manifest = evidence->manifest;
+        record.has_manifest = true;
+    }
+    if (record.action == BACKEND_OTA_JOURNAL_ACTION_PROBE && complete) {
+        record.image_writes_after = record.image_writes_before;
+        record.boot_id_after = record.actual_target_boot_id;
+        record.rollback_clear = false;
+        record.converged = true;
+    } else if (!complete) {
+        record.converged = false;
+    }
+    if (has_accepted_probe_receipt) {
+        record.has_accepted_probe_receipt = true;
+        memcpy(record.accepted_probe_receipt_sha256,
+               accepted_probe_receipt_sha256,
+               sizeof(record.accepted_probe_receipt_sha256));
+    }
+    const backend_ota_journal_persist_result_t persisted =
+        backend_ota_journal_persist_transition(
+            &state->journal_storage, &record, state->uplink_boot_id);
+    return persisted == BACKEND_OTA_JOURNAL_PERSIST_COMMITTED ||
+           persisted == BACKEND_OTA_JOURNAL_PERSIST_ALREADY_DURABLE;
+}
+#endif
+
 static bool request_is_valid(const backend_ota_request_t *request)
 {
     const char *catalog = request == NULL ? NULL :
         backend_ota_component_catalog_name(request->component);
     return request != NULL && !request->probe && catalog != NULL &&
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+           request->has_operation_id && request->expected_size != 0U &&
+           request->has_accepted_probe_receipt &&
+           request->command_next_sequence != UINT32_MAX &&
+#endif
            bounded_string(
                request->catalog_name, sizeof(request->catalog_name)) &&
            strcmp(request->catalog_name, catalog) == 0 &&
@@ -1018,6 +1737,29 @@ static backend_ota_journal_record_t accepted_record(
     backend_ota_journal_record_t record;
     memset(&record, 0, sizeof(record));
     record.schema = BACKEND_OTA_JOURNAL_SCHEMA;
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    record.has_operation_id = evidence->has_operation_id;
+    record.action = BACKEND_OTA_JOURNAL_ACTION_APPLY;
+    record.expected_size = request->expected_size;
+    memcpy(record.expected_sha256, request->expected_sha256,
+           sizeof(record.expected_sha256));
+    memcpy(record.expected_uplink_mac, state->uplink_mac,
+           sizeof(record.expected_uplink_mac));
+    record.expected_uplink_boot_id = state->uplink_boot_id;
+    record.has_accepted_probe_receipt =
+        request->has_accepted_probe_receipt;
+    memcpy(record.accepted_probe_receipt_sha256,
+           request->accepted_probe_receipt_sha256,
+           sizeof(record.accepted_probe_receipt_sha256));
+    record.command_next_sequence = request->command_next_sequence;
+    record.event_sequence = request->command_next_sequence;
+    record.progress_initialized = true;
+    record.progress_stage = BACKEND_OTA_JOURNAL_PROGRESS_STAGE;
+    record.progress_received = request->expected_size;
+    record.progress_total = request->expected_size;
+    record.checkpoint = BACKEND_OTA_JOURNAL_CHECKPOINT_IMAGE_STAGED;
+    record.has_manifest = true;
+#endif
     record.operation_id = evidence->operation_id;
     record.component = request->component;
     record.component_slot = backend_ota_component_slot(request->component);
@@ -1041,6 +1783,40 @@ static backend_ota_journal_record_t accepted_record(
     return record;
 }
 
+static void set_journal_phase(
+    backend_ota_journal_record_t *record, backend_ota_phase_t phase)
+{
+    if (record == NULL) {
+        return;
+    }
+    record->phase = phase;
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    switch (phase) {
+    case BACKEND_OTA_PHASE_ACCEPTED:
+        break;
+    case BACKEND_OTA_PHASE_WRITING:
+        if (record->checkpoint <
+            BACKEND_OTA_JOURNAL_CHECKPOINT_IMAGE_STAGED) {
+            record->checkpoint =
+                BACKEND_OTA_JOURNAL_CHECKPOINT_IMAGE_STAGED;
+        }
+        break;
+    case BACKEND_OTA_PHASE_REBOOT_PENDING:
+        record->checkpoint = BACKEND_OTA_JOURNAL_CHECKPOINT_REBOOT_WAIT;
+        break;
+    case BACKEND_OTA_PHASE_CONVERGENCE_PENDING:
+        record->checkpoint = BACKEND_OTA_JOURNAL_CHECKPOINT_CONVERGENCE;
+        break;
+    case BACKEND_OTA_PHASE_COMPLETE:
+    case BACKEND_OTA_PHASE_FAILED:
+        record->checkpoint = BACKEND_OTA_JOURNAL_CHECKPOINT_TERMINAL;
+        break;
+    default:
+        break;
+    }
+#endif
+}
+
 static void fail_apply(
     backend_ota_maintenance_t *state,
     backend_ota_evidence_t *evidence,
@@ -1051,7 +1827,7 @@ static void fail_apply(
         state->adapters.context);
     evidence->decision = BACKEND_OTA_DECISION_FAILED;
     if (release_owned_buffer) {
-        release_buffer(state, evidence->operation_id);
+        release_evidence_buffer(state, evidence);
     }
     state->busy = !durably_terminal;
     emit_evidence(state, evidence);
@@ -1068,13 +1844,22 @@ bool backend_ota_maintenance_request_apply(
     request = &immutable_request;
     backend_ota_evidence_t evidence;
     evidence_begin(
-        state, request->component, request->catalog_name, false, &evidence);
-    if (evidence.operation_id == 0U) {
+        state,
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+        request->has_operation_id, &request->operation_id,
+#endif
+        request->component, request->catalog_name, false, &evidence);
+    if (!evidence_operation_is_present(&evidence)) {
         return false;
     }
     evidence.apply_mode = request->apply_mode;
     fill_request_binding_evidence(request, &evidence);
-    if (state->busy) {
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    const bool journal_restart = state->restart_authorized;
+#else
+    const bool journal_restart = false;
+#endif
+    if (state->busy && !journal_restart) {
         evidence.decision = BACKEND_OTA_DECISION_REJECT_BUSY;
         emit_evidence(state, &evidence);
         return false;
@@ -1084,10 +1869,15 @@ bool backend_ota_maintenance_request_apply(
         request->apply_mode == BACKEND_OTA_SAME_VERSION_RECOVERY;
     if (!stage_complete_image(
             state, request->component, request->expected_sha256,
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+            request->expected_size,
+#else
+            0U,
+#endif
             allow_same, &evidence)) {
         evidence.image_writes_after = state->adapters.image_write_count(
             state->adapters.context);
-        release_buffer(state, evidence.operation_id);
+        release_evidence_buffer(state, &evidence);
         state->busy = false;
         emit_evidence(state, &evidence);
         return false;
@@ -1107,17 +1897,44 @@ bool backend_ota_maintenance_request_apply(
         evidence.decision = BACKEND_OTA_DECISION_REJECT_TARGET_BINDING;
         evidence.image_writes_after = state->adapters.image_write_count(
             state->adapters.context);
-        release_buffer(state, evidence.operation_id);
+        release_evidence_buffer(state, &evidence);
         state->busy = false;
         emit_evidence(state, &evidence);
         return false;
     }
 
-    backend_ota_journal_record_t journal = accepted_record(
-        state, request, &evidence);
-    if (backend_ota_journal_persist_accepted(
-            &state->journal_storage, &journal) !=
-            BACKEND_OTA_JOURNAL_PERSIST_COMMITTED) {
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    backend_ota_journal_record_t journal;
+    bool journal_exists = backend_ota_journal_load(
+            &state->journal_storage, &journal) ==
+            BACKEND_OTA_JOURNAL_LOAD_PRESENT &&
+        fullsize_request_matches_record(state, request, &journal) &&
+        journal.phase == BACKEND_OTA_PHASE_ACCEPTED;
+    if (!journal_exists) {
+        journal = accepted_record(state, request, &evidence);
+    } else {
+        journal.manifest = evidence.manifest;
+        journal.has_manifest = true;
+        journal.checkpoint = BACKEND_OTA_JOURNAL_CHECKPOINT_IMAGE_STAGED;
+        journal.phase = BACKEND_OTA_PHASE_ACCEPTED;
+    }
+    backend_ota_journal_persist_result_t accepted_result = journal_exists
+        ? backend_ota_journal_persist_transition(
+              &state->journal_storage, &journal, state->uplink_boot_id)
+        : backend_ota_journal_persist_accepted(
+              &state->journal_storage, &journal);
+    const bool accepted_durable =
+        accepted_result == BACKEND_OTA_JOURNAL_PERSIST_COMMITTED ||
+        accepted_result == BACKEND_OTA_JOURNAL_PERSIST_ALREADY_DURABLE;
+#else
+    backend_ota_journal_record_t journal =
+        accepted_record(state, request, &evidence);
+    const bool accepted_durable =
+        backend_ota_journal_persist_accepted(
+            &state->journal_storage, &journal) ==
+        BACKEND_OTA_JOURNAL_PERSIST_COMMITTED;
+#endif
+    if (!accepted_durable) {
         state->adapters.release_target_claim(
             state->adapters.context, request->component);
         fail_apply(state, &evidence, true, false);
@@ -1128,7 +1945,7 @@ bool backend_ota_maintenance_request_apply(
     if (accepted_length == 0U || !state->adapters.emit_and_flush(
             state->adapters.context, state->evidence_line,
             accepted_length)) {
-        journal.phase = BACKEND_OTA_PHASE_FAILED;
+        set_journal_phase(&journal, BACKEND_OTA_PHASE_FAILED);
         const backend_ota_journal_persist_result_t failed_result =
             backend_ota_journal_persist_transition(
                 &state->journal_storage, &journal, state->uplink_boot_id);
@@ -1141,11 +1958,17 @@ bool backend_ota_maintenance_request_apply(
         return false;
     }
 
-    journal.phase = BACKEND_OTA_PHASE_WRITING;
+    set_journal_phase(&journal, BACKEND_OTA_PHASE_WRITING);
     if (backend_ota_journal_persist_transition(
-            &state->journal_storage, &journal, state->uplink_boot_id) !=
+            &state->journal_storage, &journal,
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+            journal_restart ? journal.uplink_boot_id : state->uplink_boot_id
+#else
+            state->uplink_boot_id
+#endif
+            ) !=
             BACKEND_OTA_JOURNAL_PERSIST_MUTATION_AUTHORIZED) {
-        journal.phase = BACKEND_OTA_PHASE_FAILED;
+        set_journal_phase(&journal, BACKEND_OTA_PHASE_FAILED);
         const backend_ota_journal_persist_result_t failed_result =
             backend_ota_journal_persist_transition(
                 &state->journal_storage, &journal, state->uplink_boot_id);
@@ -1158,16 +1981,39 @@ bool backend_ota_maintenance_request_apply(
         return false;
     }
     const bool mutation_ok = state->adapters.mutate_staged_image(
-        state->adapters.context, request->component, &evidence.manifest,
+        state->adapters.context, request->component,
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+        evidence.has_operation_id, &evidence.operation_id,
+#endif
+        &evidence.manifest,
         backend_firmware_buffer_data(state->firmware_buffer),
         evidence.manifest.image_size);
     evidence.image_writes_after = state->adapters.image_write_count(
         state->adapters.context);
     state->adapters.release_target_claim(
         state->adapters.context, request->component);
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    bool mutation_progress_ok = true;
+    if (mutation_ok &&
+        evidence.image_writes_after > evidence.image_writes_before &&
+        request->component != BACKEND_OTA_COMPONENT_UPLINK) {
+        mutation_progress_ok = publish_evidence_progress(
+            state, &evidence, BACKEND_OTA_JOURNAL_PROGRESS_UART_RELAY,
+            request->expected_size, request->expected_size,
+            relay_retry_count(state, request->component));
+        if (mutation_progress_ok) {
+            mutation_progress_ok = backend_ota_journal_load(
+                    &state->journal_storage, &journal) ==
+                BACKEND_OTA_JOURNAL_LOAD_PRESENT;
+        }
+    }
+#else
+    const bool mutation_progress_ok = true;
+#endif
     if (!mutation_ok ||
-        evidence.image_writes_after <= evidence.image_writes_before) {
-        journal.phase = BACKEND_OTA_PHASE_FAILED;
+        evidence.image_writes_after <= evidence.image_writes_before ||
+        !mutation_progress_ok) {
+        set_journal_phase(&journal, BACKEND_OTA_PHASE_FAILED);
         journal.image_writes_after = evidence.image_writes_after;
         const backend_ota_journal_persist_result_t failed_result =
             backend_ota_journal_persist_transition(
@@ -1179,17 +2025,29 @@ bool backend_ota_maintenance_request_apply(
         return false;
     }
 
-    journal.phase = BACKEND_OTA_PHASE_REBOOT_PENDING;
+    set_journal_phase(&journal, BACKEND_OTA_PHASE_REBOOT_PENDING);
     journal.image_writes_after = evidence.image_writes_after;
     const backend_ota_journal_persist_result_t reboot_phase_result =
         backend_ota_journal_persist_transition(
             &state->journal_storage, &journal, state->uplink_boot_id);
-    const bool reboot_requested =
-        reboot_phase_result == BACKEND_OTA_JOURNAL_PERSIST_COMMITTED &&
+    bool reboot_progress_ok =
+        reboot_phase_result == BACKEND_OTA_JOURNAL_PERSIST_COMMITTED;
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    if (reboot_progress_ok) {
+        reboot_progress_ok = publish_evidence_progress(
+            state, &evidence, BACKEND_OTA_JOURNAL_PROGRESS_REBOOT_WAIT,
+            request->expected_size, request->expected_size,
+            journal.progress_retry_count) &&
+            backend_ota_journal_load(
+                &state->journal_storage, &journal) ==
+                BACKEND_OTA_JOURNAL_LOAD_PRESENT;
+    }
+#endif
+    const bool reboot_requested = reboot_progress_ok &&
         state->adapters.request_reboot(
             state->adapters.context, request->component);
     if (!reboot_requested) {
-        journal.phase = BACKEND_OTA_PHASE_FAILED;
+        set_journal_phase(&journal, BACKEND_OTA_PHASE_FAILED);
         const backend_ota_journal_persist_result_t failed_result =
             backend_ota_journal_persist_transition(
                 &state->journal_storage, &journal, state->uplink_boot_id);
@@ -1285,6 +2143,9 @@ static void journal_to_evidence(
     backend_ota_evidence_t *evidence)
 {
     memset(evidence, 0, sizeof(*evidence));
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    evidence->has_operation_id = record->has_operation_id;
+#endif
     evidence->operation_id = record->operation_id;
     evidence->component = record->component;
     evidence->component_slot = record->component_slot;
@@ -1319,7 +2180,7 @@ static bool persist_failed(
     backend_ota_maintenance_t *state,
     backend_ota_journal_record_t *record)
 {
-    record->phase = BACKEND_OTA_PHASE_FAILED;
+    set_journal_phase(record, BACKEND_OTA_PHASE_FAILED);
     const backend_ota_journal_persist_result_t result =
         backend_ota_journal_persist_transition(
             &state->journal_storage, record, state->uplink_boot_id);
@@ -1338,7 +2199,7 @@ static void close_failed_only_if_durable(
     backend_ota_evidence_t evidence;
     journal_to_evidence(record, BACKEND_OTA_DECISION_FAILED, &evidence);
     emit_evidence(state, &evidence);
-    release_buffer(state, record->operation_id);
+    release_journal_buffer(state, record);
     state->busy = false;
 }
 
@@ -1356,6 +2217,35 @@ static bool convergence_binding_valid(
            convergence->binding.target_boot_id !=
                record->actual_target_boot_id;
 }
+
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+static bool publish_record_progress(
+    backend_ota_maintenance_t *state,
+    backend_ota_journal_record_t *record,
+    backend_ota_journal_progress_stage_t stage)
+{
+    uint32_t retry_count = record->progress_initialized
+        ? record->progress_retry_count : 0U;
+    if (record->progress_initialized && record->progress_stage == stage) {
+        if (record->progress_retry_count >=
+            BACKEND_OTA_PROGRESS_MAX_RETRIES) {
+            return true;
+        }
+        retry_count = record->progress_retry_count + 1U;
+    }
+    if (!publish_progress(
+            state, record->has_operation_id, &record->operation_id,
+            record->action == BACKEND_OTA_JOURNAL_ACTION_PROBE,
+            record->component, record->catalog_name, &record->manifest,
+            stage, record->expected_size, record->expected_size,
+            retry_count)) {
+        return false;
+    }
+    return state->adapters.report_progress == NULL ||
+        backend_ota_journal_load(&state->journal_storage, record) ==
+            BACKEND_OTA_JOURNAL_LOAD_PRESENT;
+}
+#endif
 
 bool backend_ota_maintenance_resume(
     backend_ota_maintenance_t *state, bool convergence_deadline_expired)
@@ -1381,7 +2271,7 @@ bool backend_ota_maintenance_resume(
                 : BACKEND_OTA_DECISION_FAILED,
             &evidence);
         emit_evidence(state, &evidence);
-        release_buffer(state, record.operation_id);
+        release_journal_buffer(state, &record);
         state->busy = false;
         return record.phase == BACKEND_OTA_PHASE_COMPLETE;
     }
@@ -1389,6 +2279,19 @@ bool backend_ota_maintenance_resume(
         close_failed_only_if_durable(state, &record);
         return false;
     }
+
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    if (record.phase == BACKEND_OTA_PHASE_REBOOT_PENDING &&
+        !publish_record_progress(
+            state, &record, BACKEND_OTA_JOURNAL_PROGRESS_REBOOT_WAIT)) {
+        return false;
+    }
+    if (record.phase == BACKEND_OTA_PHASE_CONVERGENCE_PENDING &&
+        !publish_record_progress(
+            state, &record, BACKEND_OTA_JOURNAL_PROGRESS_CONVERGENCE)) {
+        return false;
+    }
+#endif
 
     backend_ota_convergence_t convergence;
     memset(&convergence, 0, sizeof(convergence));
@@ -1413,7 +2316,7 @@ bool backend_ota_maintenance_resume(
             close_failed_only_if_durable(state, &record);
             return false;
         }
-        record.phase = BACKEND_OTA_PHASE_REBOOT_PENDING;
+        set_journal_phase(&record, BACKEND_OTA_PHASE_REBOOT_PENDING);
         if (backend_ota_journal_persist_transition(
                 &state->journal_storage, &record, state->uplink_boot_id) !=
             BACKEND_OTA_JOURNAL_PERSIST_COMMITTED) {
@@ -1421,13 +2324,20 @@ bool backend_ota_maintenance_resume(
         }
     }
     if (record.phase == BACKEND_OTA_PHASE_REBOOT_PENDING) {
-        record.phase = BACKEND_OTA_PHASE_CONVERGENCE_PENDING;
+        set_journal_phase(&record, BACKEND_OTA_PHASE_CONVERGENCE_PENDING);
         record.boot_id_after = convergence.binding.target_boot_id;
         if (backend_ota_journal_persist_transition(
                 &state->journal_storage, &record, state->uplink_boot_id) !=
             BACKEND_OTA_JOURNAL_PERSIST_COMMITTED) {
             return false;
         }
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+        if (!publish_record_progress(
+                state, &record,
+                BACKEND_OTA_JOURNAL_PROGRESS_CONVERGENCE)) {
+            return false;
+        }
+#endif
     }
     const bool healthy = convergence.identity_exact &&
                          convergence.command_ingress_healthy &&
@@ -1442,7 +2352,7 @@ bool backend_ota_maintenance_resume(
         close_failed_only_if_durable(state, &record);
         return false;
     }
-    record.phase = BACKEND_OTA_PHASE_COMPLETE;
+    set_journal_phase(&record, BACKEND_OTA_PHASE_COMPLETE);
     record.rollback_clear = true;
     record.converged = true;
     const uint32_t live_write_count = state->adapters.image_write_count(
@@ -1458,7 +2368,7 @@ bool backend_ota_maintenance_resume(
     backend_ota_evidence_t evidence;
     journal_to_evidence(&record, BACKEND_OTA_DECISION_APPLIED, &evidence);
     emit_evidence(state, &evidence);
-    release_buffer(state, record.operation_id);
+    release_journal_buffer(state, &record);
     state->busy = false;
     return true;
 }

@@ -52,6 +52,10 @@ typedef enum {
 typedef bool (*backend_ota_read_fn)(
     void *context, size_t offset, uint8_t *output, size_t length);
 
+/* Shared one-shot SHA-256 for canonical OTA protocol bodies. */
+bool backend_ota_sha256(
+    const uint8_t *bytes, size_t length, uint8_t output[32]);
+
 backend_ota_admission_result_t backend_ota_manifest_admit(
     const backend_ota_manifest_t *manifest,
     backend_image_kind_t expected_kind,

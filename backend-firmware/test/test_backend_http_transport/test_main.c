@@ -242,6 +242,17 @@ static scripted_socket_t response_script(const char *response)
     return script;
 }
 
+static scripted_socket_t response_script_bytes(
+    const uint8_t *response, size_t response_length)
+{
+    scripted_socket_t script;
+    memset(&script, 0, sizeof(script));
+    script.response = response;
+    script.response_length = response_length;
+    script.split_at = SIZE_MAX;
+    return script;
+}
+
 static bool collecting_sink(
     void *context, const uint8_t *bytes, size_t length)
 {
@@ -720,8 +731,13 @@ void test_header_limit_rejects_only_responses_over_2048_bytes(void)
 
 void test_json_body_limit_capacity_truncation_and_trailing_bytes_are_rejected(void)
 {
-    static const char oversized[] =
-        "HTTP/1.1 200 OK\r\nContent-Length: 4097\r\n\r\n";
+    char oversized[128];
+    const int oversized_length = snprintf(
+        oversized, sizeof(oversized),
+        "HTTP/1.1 200 OK\r\nContent-Length: %u\r\n\r\n",
+        (unsigned)(BACKEND_HTTP_MAX_JSON_BODY + 1U));
+    TEST_ASSERT_GREATER_THAN_INT(0, oversized_length);
+    TEST_ASSERT_LESS_THAN_UINT(sizeof(oversized), (size_t)oversized_length);
     static const char too_small[] =
         "HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nabc";
     static const char truncated[] =
@@ -729,7 +745,7 @@ void test_json_body_limit_capacity_truncation_and_trailing_bytes_are_rejected(vo
     static const char trailing[] =
         "HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nabcd";
     assert_json_error(
-        oversized, sizeof(oversized) - 1U,
+        oversized, (size_t)oversized_length,
         BACKEND_HTTP_MAX_JSON_BODY + 1U,
         BACKEND_HTTP_ERROR_BODY_TOO_LARGE);
     assert_json_error(
@@ -854,11 +870,16 @@ void test_malformed_forbidden_or_oversized_trailers_are_rejected(void)
 
 void test_decoded_chunked_json_over_4096_is_rejected_before_copy(void)
 {
-    static const char response[] =
+    char response[128];
+    const int response_length = snprintf(
+        response, sizeof(response),
         "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n"
-        "1001\r\n";
+        "%zx\r\n",
+        (size_t)BACKEND_HTTP_MAX_JSON_BODY + 1U);
+    TEST_ASSERT_GREATER_THAN_INT(0, response_length);
+    TEST_ASSERT_LESS_THAN_UINT(sizeof(response), (size_t)response_length);
     assert_json_error(
-        response, sizeof(response) - 1U,
+        response, (size_t)response_length,
         BACKEND_HTTP_MAX_JSON_BODY + 1U,
         BACKEND_HTTP_ERROR_BODY_TOO_LARGE);
 }
@@ -892,34 +913,54 @@ void test_json_total_deadline_accepts_4999_and_rejects_5000_ms(void)
     TEST_ASSERT_EQUAL_CHAR('\0', body[0]);
 }
 
-void test_binary_content_length_and_chunked_stream_exact_bytes_to_sink(void)
+void test_binary_request_and_framing_preserve_arbitrary_bytes_exactly(void)
 {
-    static const char fixed[] =
-        "HTTP/1.1 200 OK\r\nContent-Length: 6\r\n\r\nabcdef";
-    scripted_socket_t fixed_script = response_script(fixed);
-    fixed_script.receive_limit = 2U;
+    static const uint8_t expected[] = {
+        UINT8_C(0x00), UINT8_C(0x80), UINT8_C(0xFF),
+    };
+    static const uint8_t fixed[] =
+        "HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\n"
+        "\x00\x80\xff";
+    scripted_socket_t fixed_script = response_script_bytes(
+        fixed, sizeof(fixed) - 1U);
+    fixed_script.receive_limit = 1U;
     sink_fixture_t fixed_sink = {0};
     install_script(&fixed_script);
     backend_http_result_t result = backend_http_get_binary(
-        "http://host/base", "/firmware.bin", 6U,
+        "http://host/base", "/firmware.bin", sizeof(expected),
         collecting_sink, &fixed_sink);
     TEST_ASSERT_TRUE(result.transport_complete);
-    TEST_ASSERT_EQUAL_UINT(6U, result.body_length);
-    TEST_ASSERT_EQUAL_UINT8_ARRAY("abcdef", fixed_sink.bytes, 6U);
+    TEST_ASSERT_EQUAL_UINT(sizeof(expected), result.body_length);
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(
+        expected, fixed_sink.bytes, sizeof(expected));
 
-    static const char chunked[] =
+    static const char expected_request[] =
+        "GET /base/firmware.bin HTTP/1.1\r\n"
+        "Host: host\r\n"
+        "Accept: application/octet-stream\r\n"
+        "Connection: close\r\n\r\n";
+    TEST_ASSERT_EQUAL_UINT(
+        sizeof(expected_request) - 1U, fixed_script.sent_length);
+    TEST_ASSERT_EQUAL_MEMORY(
+        expected_request,
+        fixed_script.sent,
+        sizeof(expected_request) - 1U);
+
+    static const uint8_t chunked[] =
         "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n"
-        "2\r\nab\r\n4\r\ncdef\r\n0\r\n\r\n";
-    scripted_socket_t chunked_script = response_script(chunked);
+        "1\r\n\x00\r\n2\r\n\x80\xff\r\n0\r\n\r\n";
+    scripted_socket_t chunked_script = response_script_bytes(
+        chunked, sizeof(chunked) - 1U);
     chunked_script.receive_limit = 1U;
     sink_fixture_t chunked_sink = {0};
     install_script(&chunked_script);
     result = backend_http_get_binary(
-        "http://host/base", "/firmware.bin", 6U,
+        "http://host/base", "/firmware.bin", sizeof(expected),
         collecting_sink, &chunked_sink);
     TEST_ASSERT_TRUE(result.transport_complete);
-    TEST_ASSERT_EQUAL_UINT(6U, result.body_length);
-    TEST_ASSERT_EQUAL_UINT8_ARRAY("abcdef", chunked_sink.bytes, 6U);
+    TEST_ASSERT_EQUAL_UINT(sizeof(expected), result.body_length);
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(
+        expected, chunked_sink.bytes, sizeof(expected));
 }
 
 void test_binary_fixed_404_discards_body_without_firmware_sink(void)
@@ -966,13 +1007,16 @@ void test_binary_chunked_404_discards_body_without_firmware_sink(void)
 
 void test_binary_error_discard_rejects_body_over_4096_without_sink(void)
 {
-    char response[4200];
-    static const char headers[] =
-        "HTTP/1.1 404 Not Found\r\nContent-Length: 4097\r\n\r\n";
-    size_t response_length = sizeof(headers) - 1U;
-    memcpy(response, headers, response_length);
-    memset(response + response_length, 'x', 4097U);
-    response_length += 4097U;
+    char response[BACKEND_HTTP_MAX_JSON_BODY + 128U];
+    const int header_length = snprintf(
+        response, sizeof(response),
+        "HTTP/1.1 404 Not Found\r\nContent-Length: %u\r\n\r\n",
+        (unsigned)(BACKEND_HTTP_MAX_JSON_BODY + 1U));
+    TEST_ASSERT_GREATER_THAN_INT(0, header_length);
+    TEST_ASSERT_LESS_THAN_UINT(sizeof(response), (size_t)header_length);
+    size_t response_length = (size_t)header_length;
+    memset(response + response_length, 'x', BACKEND_HTTP_MAX_JSON_BODY + 1U);
+    response_length += BACKEND_HTTP_MAX_JSON_BODY + 1U;
 
     scripted_socket_t script = response_script("");
     script.response = (const uint8_t *)response;
@@ -1282,12 +1326,12 @@ void test_dns_guard_pool_exhausts_then_reuses_without_late_callback_corruption(v
     }
 }
 
-void test_dns_caller_guard_requires_initialized_non_lwip_task(void)
+void test_platform_request_guard_requires_initialized_non_lwip_task(void)
 {
-    TEST_ASSERT_FALSE(backend_http_dns_caller_allowed(false, false));
-    TEST_ASSERT_FALSE(backend_http_dns_caller_allowed(false, true));
-    TEST_ASSERT_FALSE(backend_http_dns_caller_allowed(true, true));
-    TEST_ASSERT_TRUE(backend_http_dns_caller_allowed(true, false));
+    TEST_ASSERT_FALSE(backend_http_platform_caller_allowed(false, false));
+    TEST_ASSERT_FALSE(backend_http_platform_caller_allowed(false, true));
+    TEST_ASSERT_FALSE(backend_http_platform_caller_allowed(true, true));
+    TEST_ASSERT_TRUE(backend_http_platform_caller_allowed(true, false));
 }
 
 int main(void)
@@ -1344,7 +1388,7 @@ int main(void)
     BACKEND_RUN_TEST(
         test_json_total_deadline_accepts_4999_and_rejects_5000_ms);
     BACKEND_RUN_TEST(
-        test_binary_content_length_and_chunked_stream_exact_bytes_to_sink);
+        test_binary_request_and_framing_preserve_arbitrary_bytes_exactly);
     BACKEND_RUN_TEST(
         test_binary_fixed_404_discards_body_without_firmware_sink);
     BACKEND_RUN_TEST(
@@ -1368,6 +1412,6 @@ int main(void)
     BACKEND_RUN_TEST(
         test_dns_guard_pool_exhausts_then_reuses_without_late_callback_corruption);
     BACKEND_RUN_TEST(
-        test_dns_caller_guard_requires_initialized_non_lwip_task);
+        test_platform_request_guard_requires_initialized_non_lwip_task);
     return UNITY_END();
 }

@@ -196,6 +196,125 @@ static backend_firmware_store_partition_t partition_adapter(void)
     return adapter;
 }
 
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+static backend_ota_operation_id_t test_store_operation_id(void)
+{
+    backend_ota_operation_id_t operation_id;
+    TEST_ASSERT_TRUE(backend_ota_operation_id_decode(
+        "0123456789abcdef0123456789abcdef", &operation_id));
+    return operation_id;
+}
+#endif
+
+static backend_firmware_store_result_t test_store_stage(
+    backend_firmware_store_t *store,
+    const backend_ota_manifest_t *manifest,
+    backend_ota_read_fn source_read,
+    void *source_context,
+    bool persist)
+{
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    const backend_ota_operation_id_t operation_id = test_store_operation_id();
+    return backend_firmware_store_stage(
+        store, true, &operation_id, manifest, source_read, source_context,
+        persist);
+#else
+    return backend_firmware_store_stage(
+        store, manifest, source_read, source_context, persist);
+#endif
+}
+
+static bool test_store_read(
+    const backend_firmware_store_t *store,
+    uint32_t generation,
+    size_t offset,
+    uint8_t *output,
+    size_t length)
+{
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    return backend_firmware_store_read(
+        store, store != NULL && store->has_operation_id,
+        store != NULL ? &store->operation_id : NULL,
+        generation, offset, output, length);
+#else
+    return backend_firmware_store_read(
+        store, generation, offset, output, length);
+#endif
+}
+
+static bool test_store_claim_relay(
+    backend_firmware_store_t *store,
+    uint32_t generation,
+    uint32_t session_id)
+{
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    return backend_firmware_store_claim_relay(
+        store, store != NULL && store->has_operation_id,
+        store != NULL ? &store->operation_id : NULL,
+        generation, session_id);
+#else
+    return backend_firmware_store_claim_relay(store, generation, session_id);
+#endif
+}
+
+static void test_store_release_relay(
+    backend_firmware_store_t *store,
+    uint32_t generation,
+    uint32_t session_id)
+{
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    backend_firmware_store_release_relay(
+        store, store != NULL && store->has_operation_id,
+        store != NULL ? &store->operation_id : NULL,
+        generation, session_id);
+#else
+    backend_firmware_store_release_relay(store, generation, session_id);
+#endif
+}
+
+static bool test_store_discard(
+    backend_firmware_store_t *store,
+    uint32_t generation)
+{
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    return backend_firmware_store_discard(
+        store, store != NULL && store->has_operation_id,
+        store != NULL ? &store->operation_id : NULL, generation);
+#else
+    return backend_firmware_store_discard(store, generation);
+#endif
+}
+
+static bool test_scanner_relay_begin(
+    backend_scanner_relay_t *relay,
+    backend_firmware_store_t *store,
+    backend_scanner_slot_t slot,
+    const backend_ota_manifest_t *manifest,
+    const uint8_t expected_mac[6],
+    uint32_t session_id,
+    uint32_t generation,
+    uint32_t old_boot_id,
+    uint32_t expected_topology_generation,
+    backend_scan_profile_t expected_profile,
+    uint32_t expected_role_generation,
+    bool dry_run)
+{
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    return backend_scanner_relay_begin(
+        relay, store, store != NULL && store->has_operation_id,
+        store != NULL ? &store->operation_id : NULL,
+        generation + 100U,
+        slot, manifest, expected_mac, session_id, generation, old_boot_id,
+        expected_topology_generation, expected_profile,
+        expected_role_generation, dry_run);
+#else
+    return backend_scanner_relay_begin(
+        relay, store, slot, manifest, expected_mac, session_id, generation,
+        old_boot_id, expected_topology_generation, expected_profile,
+        expected_role_generation, dry_run);
+#endif
+}
+
 static backend_firmware_store_t staged_store(
     backend_ota_manifest_t *manifest, bool persist)
 {
@@ -205,7 +324,7 @@ static backend_firmware_store_t staged_store(
     backend_firmware_store_t store;
     backend_firmware_store_init(&store, &adapter);
     TEST_ASSERT_EQUAL(BACKEND_FIRMWARE_STORE_OK,
-        backend_firmware_store_stage(
+        test_store_stage(
             &store, manifest, source_read, &s_source, persist));
     return store;
 }
@@ -219,7 +338,7 @@ static bool relay_begin(
     bool dry_run)
 {
     backend_scanner_relay_init(relay);
-    return backend_scanner_relay_begin(
+    return test_scanner_relay_begin(
         relay, store, BACKEND_SCANNER_SLOT_BLE, manifest, SCANNER0_MAC,
         77U, manifest->generation, 100U, 4U,
         BACKEND_SCAN_PROFILE_BLE_PRIMARY, 9U, dry_run);
@@ -242,7 +361,11 @@ static backend_scanner_relay_receipt_t receipt(
     backend_scanner_relay_receipt_t value = {
         .kind = kind,
         .session_id = relay->session_id,
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+        .generation = relay->session_generation,
+#else
         .generation = relay->generation,
+#endif
         .sequence = relay->next_sequence,
         .next_sequence = relay->next_sequence,
         .received = (uint32_t)relay->acknowledged_bytes,
@@ -273,8 +396,17 @@ static void reach_streaming(backend_scanner_relay_t *relay)
         begin.control.payload.ota_begin.component_slot);
     TEST_ASSERT_EQUAL_UINT32(relay->session_id,
         begin.control.payload.ota_begin.session_id);
-    TEST_ASSERT_EQUAL_UINT32(relay->generation,
+    TEST_ASSERT_EQUAL_UINT32(
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+        relay->session_generation,
+#else
+        relay->generation,
+#endif
         begin.control.payload.ota_begin.generation);
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    TEST_ASSERT_EQUAL_UINT32(relay->generation,
+        begin.control.payload.ota_begin.manifest_generation);
+#endif
     TEST_ASSERT_EQUAL_UINT32(relay->expected_topology_generation,
         begin.control.payload.ota_begin.expected_topology_generation);
     TEST_ASSERT_EQUAL_UINT32(relay->manifest.crc32,
@@ -344,7 +476,12 @@ static void reach_end_sent(backend_scanner_relay_t *relay)
     backend_scanner_control_t decoded;
     TEST_ASSERT_EQUAL(BACKEND_SCANNER_CONTROL_DECODE_OK,
         backend_scanner_control_decode(encoded, encoded_length, &decoded));
-    TEST_ASSERT_EQUAL_UINT32(relay->generation,
+    TEST_ASSERT_EQUAL_UINT32(
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+        relay->session_generation,
+#else
+        relay->generation,
+#endif
         decoded.payload.ota_finish.generation);
 }
 
@@ -372,6 +509,29 @@ static backend_scanner_status_t converged_status(
     return status;
 }
 
+static void complete_abort_restore_failure(
+    backend_scanner_relay_t *relay,
+    backend_firmware_store_t *store,
+    int64_t now_ms)
+{
+    TEST_ASSERT_EQUAL(BACKEND_SCANNER_RELAY_ABORT_REQUESTED, relay->state);
+    backend_scanner_relay_action_t abort = take_action(relay, now_ms);
+    TEST_ASSERT_EQUAL(BACKEND_SCANNER_RELAY_ACTION_SEND_ABORT, abort.kind);
+    backend_scanner_relay_receipt_t aborted =
+        receipt(BACKEND_SCANNER_RELAY_RECEIPT_ERROR, relay);
+    TEST_ASSERT_EQUAL(BACKEND_SCANNER_RELAY_EVENT_ACCEPTED,
+        backend_scanner_relay_receive(relay, &aborted, now_ms + 1));
+    backend_scanner_relay_action_t restore = take_action(relay, now_ms + 2);
+    TEST_ASSERT_EQUAL(BACKEND_SCANNER_RELAY_ACTION_SEND_RESTORE, restore.kind);
+    backend_scanner_status_t restored = converged_status(relay);
+    TEST_ASSERT_EQUAL(BACKEND_SCANNER_RELAY_EVENT_FAILED,
+        backend_scanner_relay_on_status(
+            relay, &restored, 4U, now_ms + 3));
+    TEST_ASSERT_EQUAL(BACKEND_SCANNER_RELAY_FAILED, relay->state);
+    TEST_ASSERT_FALSE(store->relay_claimed);
+    TEST_ASSERT_FALSE(store->available);
+}
+
 void setUp(void)
 {
     memset(&s_source, 0, sizeof(s_source));
@@ -397,7 +557,7 @@ void test_store_accepts_only_validated_backend_scanner_and_exact_partition(void)
     TEST_ASSERT_EQUAL_UINT32(4U,
         backend_firmware_store_image_mutation_count(&store));
     uint8_t bytes[17];
-    TEST_ASSERT_TRUE(backend_firmware_store_read(
+    TEST_ASSERT_TRUE(test_store_read(
         &store, manifest.generation, 500U, bytes, sizeof(bytes)));
     TEST_ASSERT_EQUAL_UINT8_ARRAY(s_source.bytes + 500U,
                                  bytes, sizeof(bytes));
@@ -407,7 +567,7 @@ void test_store_accepts_only_validated_backend_scanner_and_exact_partition(void)
     backend_firmware_store_init(&rejected, &adapter);
     strcpy(manifest.target, "scanner-s3-combo-fof_badge");
     TEST_ASSERT_EQUAL(BACKEND_FIRMWARE_STORE_REJECT_IDENTITY,
-        backend_firmware_store_stage(
+        test_store_stage(
             &rejected, &manifest, source_read, &s_source, true));
     TEST_ASSERT_EQUAL_UINT32(1U, s_partition.erase_calls);
 }
@@ -422,17 +582,52 @@ void test_dry_run_store_binds_validated_arena_without_partition_mutation(void)
         backend_firmware_store_image_mutation_count(&store));
     TEST_ASSERT_EQUAL_UINT32(0U, s_partition.erase_calls);
     TEST_ASSERT_EQUAL_UINT32(0U, s_partition.write_calls);
-    TEST_ASSERT_TRUE(backend_firmware_store_claim_relay(
+    TEST_ASSERT_TRUE(test_store_claim_relay(
         &store, manifest.generation, 77U));
-    TEST_ASSERT_FALSE(backend_firmware_store_claim_relay(
+    TEST_ASSERT_FALSE(test_store_claim_relay(
         &store, manifest.generation, 78U));
-    TEST_ASSERT_FALSE(backend_firmware_store_discard(
+    TEST_ASSERT_FALSE(test_store_discard(
         &store, manifest.generation));
-    backend_firmware_store_release_relay(
+    test_store_release_relay(
         &store, manifest.generation, 77U);
-    TEST_ASSERT_TRUE(backend_firmware_store_discard(
+    TEST_ASSERT_TRUE(test_store_discard(
         &store, manifest.generation));
 }
+
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+void test_fullsize_store_claims_are_bound_to_every_operation_id_byte(void)
+{
+    backend_ota_manifest_t manifest = build_valid_image(&s_source);
+    backend_firmware_store_partition_t adapter = partition_adapter();
+    backend_firmware_store_t store;
+    backend_firmware_store_init(&store, &adapter);
+    backend_ota_operation_id_t owner;
+    TEST_ASSERT_TRUE(backend_ota_operation_id_decode(
+        "0123456789abcdef0123456789abcdef", &owner));
+    TEST_ASSERT_EQUAL(BACKEND_FIRMWARE_STORE_OK,
+        backend_firmware_store_stage(
+            &store, true, &owner, &manifest, source_read, &s_source, false));
+
+    uint8_t output[1];
+    for (size_t byte = 0U; byte < sizeof(owner.bytes); ++byte) {
+        backend_ota_operation_id_t different = owner;
+        different.bytes[byte] ^= UINT8_C(1);
+        TEST_ASSERT_FALSE(backend_firmware_store_read(
+            &store, true, &different, manifest.generation,
+            0U, output, sizeof(output)));
+        TEST_ASSERT_FALSE(backend_firmware_store_claim_relay(
+            &store, true, &different, manifest.generation, 77U));
+        TEST_ASSERT_FALSE(backend_firmware_store_discard(
+            &store, true, &different, manifest.generation));
+    }
+    TEST_ASSERT_TRUE(backend_firmware_store_claim_relay(
+        &store, true, &owner, manifest.generation, 77U));
+    backend_firmware_store_release_relay(
+        &store, true, &owner, manifest.generation, 77U);
+    TEST_ASSERT_TRUE(backend_firmware_store_discard(
+        &store, true, &owner, manifest.generation));
+}
+#endif
 
 void test_store_failures_never_expose_partial_image(void)
 {
@@ -442,7 +637,7 @@ void test_store_failures_never_expose_partial_image(void)
     backend_firmware_store_init(&store, &adapter);
     s_partition.fail_erase = true;
     TEST_ASSERT_EQUAL(BACKEND_FIRMWARE_STORE_ERASE_FAILED,
-        backend_firmware_store_stage(
+        test_store_stage(
             &store, &manifest, source_read, &s_source, true));
     TEST_ASSERT_FALSE(store.available);
     TEST_ASSERT_EQUAL_UINT32(1U,
@@ -452,7 +647,7 @@ void test_store_failures_never_expose_partial_image(void)
     memset(&s_partition, 0, sizeof(s_partition));
     s_partition.fail_write = true;
     TEST_ASSERT_EQUAL(BACKEND_FIRMWARE_STORE_WRITE_FAILED,
-        backend_firmware_store_stage(
+        test_store_stage(
             &store, &manifest, source_read, &s_source, true));
     TEST_ASSERT_FALSE(store.available);
     TEST_ASSERT_EQUAL_UINT32(2U,
@@ -476,7 +671,7 @@ void test_relay_binds_one_physical_scanner_and_immutable_manifest(void)
     changed.crc32 ^= 1U;
     backend_scanner_relay_t wrong;
     backend_scanner_relay_init(&wrong);
-    TEST_ASSERT_FALSE(backend_scanner_relay_begin(
+    TEST_ASSERT_FALSE(test_scanner_relay_begin(
         &wrong, &store, BACKEND_SCANNER_SLOT_BLE, &changed, SCANNER0_MAC,
         78U, changed.generation, 100U, 4U,
         BACKEND_SCAN_PROFILE_BLE_PRIMARY, 9U, true));
@@ -546,10 +741,36 @@ void test_chunk_ack_nack_and_timeout_never_advance_or_change_retry_bytes(void)
         backend_scanner_relay_tick(&relay, 10103));
     retry = take_action(&relay, 10103);
     TEST_ASSERT_EQUAL_MEMORY(&original, &retry, sizeof(original));
-    TEST_ASSERT_EQUAL(BACKEND_SCANNER_RELAY_EVENT_FAILED,
+    TEST_ASSERT_EQUAL(BACKEND_SCANNER_RELAY_EVENT_ACCEPTED,
         backend_scanner_relay_tick(&relay, 15103));
+    TEST_ASSERT_EQUAL(BACKEND_SCANNER_RELAY_ABORT_REQUESTED, relay.state);
+    TEST_ASSERT_TRUE(store.relay_claimed);
+    backend_scanner_relay_action_t abort = take_action(&relay, 15104);
+    TEST_ASSERT_EQUAL(BACKEND_SCANNER_RELAY_ACTION_SEND_ABORT, abort.kind);
+    TEST_ASSERT_EQUAL(BACKEND_SCANNER_CONTROL_OTA_ABORT, abort.control.type);
+    TEST_ASSERT_EQUAL_UINT32(relay.session_id,
+        abort.control.payload.ota_finish.session_id);
+    TEST_ASSERT_EQUAL_UINT32(
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+        relay.session_generation,
+#else
+        relay.generation,
+#endif
+        abort.control.payload.ota_finish.generation);
+    backend_scanner_relay_receipt_t aborted =
+        receipt(BACKEND_SCANNER_RELAY_RECEIPT_ERROR, &relay);
+    TEST_ASSERT_EQUAL(BACKEND_SCANNER_RELAY_EVENT_ACCEPTED,
+        backend_scanner_relay_receive(&relay, &aborted, 15105));
+    TEST_ASSERT_EQUAL(BACKEND_SCANNER_RELAY_RESTORE_REQUESTED, relay.state);
+    backend_scanner_relay_action_t restore = take_action(&relay, 15106);
+    TEST_ASSERT_EQUAL(BACKEND_SCANNER_RELAY_ACTION_SEND_RESTORE, restore.kind);
+    backend_scanner_status_t restored = converged_status(&relay);
+    restored.boot_id = relay.old_boot_id;
+    TEST_ASSERT_EQUAL(BACKEND_SCANNER_RELAY_EVENT_FAILED,
+        backend_scanner_relay_on_status(&relay, &restored, 4U, 15107));
     TEST_ASSERT_EQUAL(BACKEND_SCANNER_RELAY_FAILED, relay.state);
     TEST_ASSERT_FALSE(store.relay_claimed);
+    TEST_ASSERT_FALSE(store.available);
 }
 
 void test_duplicate_ack_and_wrong_staged_sequence_are_stale_not_fatal(void)
@@ -624,12 +845,28 @@ void test_dry_run_reaches_complete_without_reboot_or_partition_mutation(void)
     done.sequence = relay.next_sequence - 1U;
     done.received = manifest.image_size;
     done.next_sequence = relay.next_sequence;
-    TEST_ASSERT_EQUAL(BACKEND_SCANNER_RELAY_EVENT_COMPLETE,
+    TEST_ASSERT_EQUAL(BACKEND_SCANNER_RELAY_EVENT_ACCEPTED,
         backend_scanner_relay_receive(&relay, &done, 22));
+    TEST_ASSERT_EQUAL(BACKEND_SCANNER_RELAY_RESTORE_REQUESTED, relay.state);
+    TEST_ASSERT_TRUE(store.relay_claimed);
+    backend_scanner_relay_action_t restore = take_action(&relay, 23);
+    TEST_ASSERT_EQUAL(BACKEND_SCANNER_RELAY_ACTION_SEND_RESTORE, restore.kind);
+    TEST_ASSERT_EQUAL(BACKEND_SCANNER_CONTROL_ROLE, restore.control.type);
+    TEST_ASSERT_EQUAL_UINT32(relay.old_boot_id,
+        restore.control.payload.role.boot_id);
+    TEST_ASSERT_EQUAL_UINT32(relay.expected_role_generation,
+        restore.control.payload.role.generation);
+    TEST_ASSERT_EQUAL(relay.expected_profile,
+        restore.control.payload.role.profile);
+    backend_scanner_status_t restored = converged_status(&relay);
+    restored.boot_id = relay.old_boot_id;
+    TEST_ASSERT_EQUAL(BACKEND_SCANNER_RELAY_EVENT_COMPLETE,
+        backend_scanner_relay_on_status(&relay, &restored, 4U, 24));
     TEST_ASSERT_EQUAL(BACKEND_SCANNER_RELAY_COMPLETE, relay.state);
     TEST_ASSERT_EQUAL_UINT32(0U,
         backend_firmware_store_image_mutation_count(&store));
     TEST_ASSERT_FALSE(store.relay_claimed);
+    TEST_ASSERT_FALSE(store.available);
 }
 
 void test_apply_requires_changed_boot_exact_identity_and_full_convergence(void)
@@ -663,6 +900,7 @@ void test_apply_requires_changed_boot_exact_identity_and_full_convergence(void)
     TEST_ASSERT_EQUAL(BACKEND_SCANNER_RELAY_EVENT_COMPLETE,
         backend_scanner_relay_on_status(&relay, &status, 4U, 25));
     TEST_ASSERT_EQUAL(BACKEND_SCANNER_RELAY_COMPLETE, relay.state);
+    TEST_ASSERT_FALSE(store.available);
 }
 
 void test_wrong_binding_and_illegal_transitions_fail_closed(void)
@@ -676,8 +914,10 @@ void test_wrong_binding_and_illegal_transitions_fail_closed(void)
     TEST_ASSERT_EQUAL(BACKEND_SCANNER_RELAY_EVENT_INVALID_TRANSITION,
         backend_scanner_relay_receive(&relay, &staged, 0));
     TEST_ASSERT_EQUAL(BACKEND_SCANNER_RELAY_FAILED, relay.state);
+    TEST_ASSERT_FALSE(store.available);
 
     TEST_ASSERT_TRUE(backend_scanner_relay_reset(&relay));
+    store = staged_store(&manifest, true);
     TEST_ASSERT_TRUE(relay_begin(&relay, &store, &manifest, false));
     reach_end_sent(&relay);
     backend_scanner_relay_receipt_t done =
@@ -689,11 +929,12 @@ void test_wrong_binding_and_illegal_transitions_fail_closed(void)
         backend_scanner_relay_receive(&relay, &done, 22));
     backend_scanner_status_t status = converged_status(&relay);
     strcpy(status.mac, "AA:BB:CC:DD:EE:02");
-    TEST_ASSERT_EQUAL(BACKEND_SCANNER_RELAY_EVENT_FAILED,
+    TEST_ASSERT_EQUAL(BACKEND_SCANNER_RELAY_EVENT_ACCEPTED,
         backend_scanner_relay_on_status(&relay, &status, 4U, 23));
-    TEST_ASSERT_EQUAL(BACKEND_SCANNER_RELAY_FAILED, relay.state);
+    complete_abort_restore_failure(&relay, &store, 24);
 
     TEST_ASSERT_TRUE(backend_scanner_relay_reset(&relay));
+    store = staged_store(&manifest, true);
     TEST_ASSERT_TRUE(relay_begin(&relay, &store, &manifest, false));
     reach_end_sent(&relay);
     done = receipt(BACKEND_SCANNER_RELAY_RECEIPT_DONE, &relay);
@@ -703,9 +944,9 @@ void test_wrong_binding_and_illegal_transitions_fail_closed(void)
     TEST_ASSERT_EQUAL(BACKEND_SCANNER_RELAY_EVENT_ACCEPTED,
         backend_scanner_relay_receive(&relay, &done, 22));
     status = converged_status(&relay);
-    TEST_ASSERT_EQUAL(BACKEND_SCANNER_RELAY_EVENT_FAILED,
+    TEST_ASSERT_EQUAL(BACKEND_SCANNER_RELAY_EVENT_ACCEPTED,
         backend_scanner_relay_on_status(&relay, &status, 5U, 23));
-    TEST_ASSERT_EQUAL(BACKEND_SCANNER_RELAY_FAILED, relay.state);
+    complete_abort_restore_failure(&relay, &store, 24);
 }
 
 int main(void)
@@ -715,6 +956,10 @@ int main(void)
         test_store_accepts_only_validated_backend_scanner_and_exact_partition);
     BACKEND_RUN_TEST(
         test_dry_run_store_binds_validated_arena_without_partition_mutation);
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    BACKEND_RUN_TEST(
+        test_fullsize_store_claims_are_bound_to_every_operation_id_byte);
+#endif
     BACKEND_RUN_TEST(test_store_failures_never_expose_partial_image);
     BACKEND_RUN_TEST(
         test_relay_binds_one_physical_scanner_and_immutable_manifest);
