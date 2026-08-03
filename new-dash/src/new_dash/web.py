@@ -386,7 +386,7 @@ class _NewDashRequestHandler(BaseHTTPRequestHandler):
                 object_pairs_hook=_object_without_duplicate_keys,
                 parse_constant=_reject_json_constant,
             )
-        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        except (UnicodeDecodeError, json.JSONDecodeError, RecursionError) as error:
             raise ValueError("invalid JSON request body") from error
         if type(payload) is not dict:
             raise ValueError("JSON request body must be an object")

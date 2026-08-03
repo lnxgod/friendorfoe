@@ -14,6 +14,34 @@ const MAX_TRAIL_PAGES = 4;
 const MAX_TRAIL_ROWS = 2000;
 const MAX_TRAIL_ATTEMPTS = 2;
 
+export function createRequestStatusChannels({ render }) {
+  let stateMessage = "";
+  let trailMessage = "";
+
+  function publish() {
+    render([stateMessage, trailMessage].filter(Boolean).join(" "));
+  }
+
+  return {
+    setState(message) {
+      stateMessage = message;
+      publish();
+    },
+    clearState() {
+      stateMessage = "";
+      publish();
+    },
+    setTrail(message) {
+      trailMessage = message;
+      publish();
+    },
+    clearTrail() {
+      trailMessage = "";
+      publish();
+    },
+  };
+}
+
 let map = null;
 let tileLayer = null;
 let entityLayer = null;
@@ -221,7 +249,7 @@ export function renderTrail(points) {
   void TRAIL_LABEL;
 }
 
-export function createTrailController({ getHistory, render, reportError }) {
+export function createTrailController({ getHistory, render, reportError, clearError = () => {} }) {
   let generation = 0;
   let signature = "";
   let currentKeys = [];
@@ -262,6 +290,7 @@ export function createTrailController({ getHistory, render, reportError }) {
       }
       if (loadGeneration === generation && !controller.signal.aborted) {
         state = "loaded";
+        clearError();
         render(points);
       }
     } catch (error) {
@@ -288,30 +317,38 @@ export function createTrailController({ getHistory, render, reportError }) {
     return promise;
   }
 
+  function updateKeys(keys, forceReset = false) {
+    const nextKeys = [...new Set(
+      (Array.isArray(keys) ? keys : []).filter((key) => typeof key === "string" && key),
+    )].sort();
+    const nextSignature = JSON.stringify(nextKeys);
+    if (forceReset || nextSignature !== signature) {
+      generation += 1;
+      activeController?.abort();
+      activeController = null;
+      activePromise = null;
+      signature = nextSignature;
+      currentKeys = nextKeys;
+      attempts = 0;
+      state = "idle";
+      clearError();
+      render([]);
+    }
+    if (!currentKeys.length || state === "loaded" || attempts >= MAX_TRAIL_ATTEMPTS) {
+      return Promise.resolve();
+    }
+    if (activePromise) {
+      return activePromise;
+    }
+    return startLoad();
+  }
+
   return {
     update(keys) {
-      const nextKeys = [...new Set(
-        (Array.isArray(keys) ? keys : []).filter((key) => typeof key === "string" && key),
-      )].sort();
-      const nextSignature = JSON.stringify(nextKeys);
-      if (nextSignature !== signature) {
-        generation += 1;
-        activeController?.abort();
-        activeController = null;
-        activePromise = null;
-        signature = nextSignature;
-        currentKeys = nextKeys;
-        attempts = 0;
-        state = "idle";
-        render([]);
-      }
-      if (!currentKeys.length || state === "loaded" || attempts >= MAX_TRAIL_ATTEMPTS) {
-        return Promise.resolve();
-      }
-      if (activePromise) {
-        return activePromise;
-      }
-      return startLoad();
+      return updateKeys(keys);
+    },
+    refresh(keys) {
+      return updateKeys(keys, true);
     },
   };
 }

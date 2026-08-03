@@ -492,6 +492,37 @@ class NewDashApplicationHealthTest(unittest.TestCase):
             "unknown",
         )
 
+    def test_missing_status_arrays_remain_unavailable_not_explicit_zero(self) -> None:
+        initial = self.application.snapshot(now=10.0)["status"]
+        self.assertIsNone(initial["entities"])
+        self.assertIsNone(initial["scanners"])
+
+        self.application.handle_connection(ConnectionUpdate("live", "status_valid"))
+        status = BadgeStatus.from_payload({"version": "minimal", "uptime_s": 1})
+        self.application.handle_frame(MachineFrame("status", status), 10.0)
+        rendered = self.application.snapshot(now=10.0)["status"]
+
+        self.assertNotIn("entities", rendered)
+        self.assertNotIn("scanners", rendered)
+        self.assertNotIn("remote_id_entities", rendered)
+        self.assertEqual(rendered["sensing_health"], "unknown")
+
+    def test_non_string_scanner_health_is_unknown_without_breaking_snapshot(self) -> None:
+        self.application.handle_connection(ConnectionUpdate("live", "status_valid"))
+        for health in ({"future": 1}, ["future"]):
+            with self.subTest(health=health):
+                status = BadgeStatus.from_payload({
+                    "version": "future-health",
+                    "uptime_s": 2,
+                    "scanners": [{"connected": True, "health": health}],
+                })
+                self.application.handle_frame(MachineFrame("status", status), 10.0)
+
+                rendered = self.application.snapshot(now=10.0)["status"]
+
+                self.assertEqual(rendered["sensing_health"], "unknown")
+                self.assertEqual(rendered["scanners"][0]["health"], health)
+
     def test_latest_connection_protocol_counters_are_diagnostics(self) -> None:
         update = ConnectionUpdate(
             "reconnecting", "read_error", port="/dev/cu.usb-data",
@@ -765,7 +796,7 @@ class NewDashApplicationPersistenceTest(unittest.TestCase):
             self.assertLess(elapsed, 0.5)
             self.assertGreaterEqual(store.cancel_calls, 1)
             self.assertFalse(application._worker.is_alive())
-            self.assertTrue(application._worker.daemon)
+            self.assertFalse(application._worker.daemon)
             with self.assertRaises(RuntimeError):
                 store.query(HistoryQuery())
 
@@ -810,7 +841,7 @@ class NewDashApplicationPersistenceTest(unittest.TestCase):
                 self.assertEqual(raised.exception.code, "stop_timeout")
                 self.assertLess(elapsed, 0.4)
                 self.assertTrue(application._worker.is_alive())
-                self.assertTrue(application._worker.daemon)
+                self.assertFalse(application._worker.daemon)
             finally:
                 store.release_prune.set()
                 application._worker_stop.set()

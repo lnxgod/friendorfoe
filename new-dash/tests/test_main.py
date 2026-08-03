@@ -11,6 +11,9 @@ import unittest
 from unittest.mock import patch
 
 from new_dash import __main__ as launcher
+from new_dash.application import ApplicationError, NewDashApplication
+from new_dash.models import DetectionEvent, MachineFrame
+from new_dash.storage import HistoryQuery
 
 
 class _Lifecycle:
@@ -145,6 +148,24 @@ class _BlockingShutdownServer(_Server):
         self.shutdown_finished.set()
 
 
+class _BlockingStartupFailureStore:
+    def __init__(self) -> None:
+        self.startup_error = OSError("history startup failed " + "x" * 400)
+        self.prune_started = threading.Event()
+        self.release_prune = threading.Event()
+
+    def prune(self, now: float | None = None) -> int:
+        self.prune_started.set()
+        self.release_prune.wait(1.0)
+        raise self.startup_error
+
+    def cancel_pending(self) -> None:
+        self.release_prune.set()
+
+    def close(self, timeout: float = 3.0) -> None:
+        self.release_prune.set()
+
+
 class LauncherArgumentTest(unittest.TestCase):
     def test_python_below_311_receives_clear_startup_error(self) -> None:
         stderr = io.StringIO()
@@ -250,6 +271,69 @@ class LauncherArgumentTest(unittest.TestCase):
                 launcher.parse_args(["--host", "0.0.0.0"])
 
 
+class LauncherHistoryFallbackTest(unittest.TestCase):
+    def test_startup_failure_is_immediately_bounded_in_diagnostics(self) -> None:
+        store = _BlockingStartupFailureStore()
+        application = NewDashApplication(store)  # type: ignore[arg-type]
+        try:
+            self.assertTrue(store.prune_started.wait(1.0))
+
+            diagnostics = application.snapshot(now=0.0)["diagnostics"]
+
+            self.assertFalse(diagnostics["history_available"])
+            self.assertIn("OSError: history startup failed", diagnostics["history_error"])
+            self.assertLessEqual(len(diagnostics["history_error"]), 256)
+        finally:
+            store.release_prune.set()
+            application.close(timeout=0.5)
+
+    def test_degraded_store_keeps_live_data_and_rejects_every_history_path(self) -> None:
+        startup_error = OSError("history database could not be opened " + "x" * 400)
+        store = launcher._UnavailableObservationStore(startup_error)
+        application = NewDashApplication(store)  # type: ignore[arg-type]
+        event = DetectionEvent(
+            detection_id="live-only",
+            manufacturer="DJI",
+            badge_label="REMOTE ID",
+            badge_class="drone",
+            badge_entity_key="rid:live-only",
+            source_id=0,
+            source="ble_rid",
+            confidence=0.95,
+            threat_score=80.0,
+            rssi=-48,
+        )
+        try:
+            application.handle_frame(MachineFrame("detection", event), 20.0)
+
+            with self.assertRaises(ApplicationError) as clear_error:
+                application.clear_history(timeout=0.5)
+            self.assertEqual(clear_error.exception.code, "history_unavailable")
+            self.assertIn("OSError: history database could not be opened", str(clear_error.exception))
+
+            with self.assertRaisesRegex(
+                RuntimeError, "OSError: history database could not be opened"
+            ):
+                application.query_history(HistoryQuery())
+            with self.assertRaisesRegex(
+                RuntimeError, "OSError: history database could not be opened"
+            ):
+                list(application.export_history(HistoryQuery()))
+            with self.assertRaises(ApplicationError) as prune_error:
+                application.prune_history(now=20.0, timeout=0.5)
+            self.assertEqual(prune_error.exception.code, "history_unavailable")
+
+            snapshot = application.snapshot(now=20.0)
+            self.assertEqual(snapshot["recent_events"][0]["detection_id"], "live-only")
+            self.assertFalse(snapshot["diagnostics"]["history_available"])
+            self.assertEqual(snapshot["diagnostics"]["persistence_drops"], 1)
+            self.assertLessEqual(len(snapshot["diagnostics"]["history_error"]), 256)
+        finally:
+            started = time.monotonic()
+            application.close(timeout=0.5)
+            self.assertLess(time.monotonic() - started, 0.5)
+
+
 class LauncherLifecycleTest(unittest.TestCase):
     def setUp(self) -> None:
         self.lifecycle = _Lifecycle()
@@ -341,6 +425,29 @@ class LauncherLifecycleTest(unittest.TestCase):
         self.assertLessEqual(self.lifecycle.transport.stop_timeout, 3.0)
         self.assertIn("http://127.0.0.1:8765", output.getvalue())
         self.assertIn("/private/tmp/new-dash/new-dash.sqlite3", output.getvalue())
+
+    def test_store_startup_failure_keeps_the_live_stack_running_and_closes_cleanly(self) -> None:
+        args = launcher.parse_args(["--no-browser"])
+
+        def fail_to_open_store(path: Path, **options: object) -> object:
+            self.lifecycle.events.append("store.create.failed")
+            raise OSError("history database could not be opened " + "x" * 400)
+
+        with patch.object(launcher, "ObservationStore", side_effect=fail_to_open_store):
+            with patch.object(launcher, "_wait_for_shutdown", return_value=None):
+                with redirect_stdout(io.StringIO()):
+                    launcher.run(args)
+
+        self.assertIsNotNone(self.lifecycle.application)
+        self.assertIsNotNone(self.lifecycle.transport)
+        self.assertIn("application.create", self.lifecycle.events)
+        self.assertIn("transport.start", self.lifecycle.events)
+        self.assertIn("server.start", self.lifecycle.events)
+        self.assertIn("server.shutdown", self.lifecycle.events)
+        self.assertIn("transport.stop", self.lifecycle.events)
+        self.assertIn("application.close", self.lifecycle.events)
+        self.assertFalse(self.lifecycle.transport.alive)
+        self.assertTrue(hasattr(self.lifecycle.application.store, "startup_error"))
 
     def test_cleanup_components_share_one_deadline(self) -> None:
         args = launcher.parse_args(["--no-browser"])

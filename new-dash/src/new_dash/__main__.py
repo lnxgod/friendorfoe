@@ -9,7 +9,7 @@ import sys
 import threading
 import time
 from types import FrameType
-from typing import Any, Sequence
+from typing import Any, NoReturn, Sequence
 import webbrowser
 
 _DATABASE_NAME = "new-dash.sqlite3"
@@ -21,6 +21,46 @@ NewDashApplication: Any = None
 BadgeSerialTransport: Any = None
 ObservationStore: Any = None
 create_http_server: Any = None
+
+
+class _HistoryUnavailable(RuntimeError):
+    """Stable failure raised by the startup-degraded history facade."""
+
+
+class _UnavailableObservationStore:
+    """Fail-closed history facade used when the persistent store cannot open."""
+
+    def __init__(self, startup_error: BaseException) -> None:
+        message = f"{type(startup_error).__name__}: {startup_error}"[:200]
+        self._message = message
+        self.startup_error = _HistoryUnavailable(message)
+
+    def _fail(self) -> NoReturn:
+        raise _HistoryUnavailable(self._message)
+
+    def add_event(self, event: object, received_at: float) -> int:
+        self._fail()
+
+    def add_track(self, entity: object, received_at: float) -> int:
+        self._fail()
+
+    def query(self, query: object) -> object:
+        self._fail()
+
+    def iter_export(self, query: object) -> Any:
+        self._fail()
+
+    def prune(self, now: float | None = None) -> int:
+        self._fail()
+
+    def clear(self) -> int:
+        self._fail()
+
+    def cancel_pending(self) -> None:
+        pass
+
+    def close(self, timeout: float = 3.0) -> None:
+        pass
 
 
 def _positive_integer(value: str) -> int:
@@ -159,11 +199,14 @@ def run(arguments: argparse.Namespace) -> None:
             previous_handlers.append(
                 (shutdown_signal, signal.signal(shutdown_signal, request_shutdown))
             )
-        store = ObservationStore(
-            path,
-            retention_days=arguments.retention_days,
-            max_observations=arguments.max_observations,
-        )
+        try:
+            store = ObservationStore(
+                path,
+                retention_days=arguments.retention_days,
+                max_observations=arguments.max_observations,
+            )
+        except Exception as error:
+            store = _UnavailableObservationStore(error)
         application = NewDashApplication(store)
         transport = BadgeSerialTransport(
             explicit_port=arguments.port,

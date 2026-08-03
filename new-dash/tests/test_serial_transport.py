@@ -631,6 +631,45 @@ class PollingTest(unittest.TestCase):
         self.assertTrue(any(update.overlong_lines == 1 for update in updates))
         self.assertTrue(any(update.state == "live" for update in updates))
 
+    def test_numeric_and_depth_failures_do_not_churn_the_live_session(self) -> None:
+        fake = FakeSerial([b"FOF_PONG:v-live\n"])
+        frames: list[object] = []
+        updates: list[ConnectionUpdate] = []
+        valid_frame = threading.Event()
+        huge_integer = b"9" * 400
+        deep_value = b"[" * 500 + b"0" + b"]" * 500
+
+        def on_frame(frame: object, _received_at: float) -> None:
+            frames.append(frame)
+            valid_frame.set()
+
+        transport = BadgeSerialTransport(
+            enumerate_ports=lambda: [espressif("101", serial_number="ABC")],
+            serial_factory=lambda: fake,
+            on_frame=on_frame,
+            on_connection=updates.append,
+        )
+        self.addCleanup(transport.stop)
+        transport.start()
+        self._wait_for_write_count(fake, 2)
+        fake.feed(
+            b'FOF_STATUS:{"version":"v1","uptime_s":'
+            + huge_integer
+            + b',"entities":[]}\n',
+            b'FOF_STATUS:{"version":"v1","uptime_s":1e309,"entities":[]}\n',
+            b'FOF_STATUS:{"version":"v1","uptime_s":0,"future":'
+            + deep_value
+            + b'}\n',
+            b'FOF_DET:{"id":"still-live","source":3}\n',
+        )
+
+        self.assertTrue(valid_frame.wait(1.0), (frames, updates))
+        transport.stop()
+
+        self.assertEqual([frame.kind for frame in frames], ["detection"])
+        self.assertFalse(any(update.detail == "serial_error" for update in updates))
+        self.assertTrue(any(update.malformed_frames == 3 for update in updates))
+
     def _wait_for_write_count(self, fake: FakeSerial, count: int) -> None:
         self.assertTrue(self._write_count_reached(fake, count), fake.writes)
 

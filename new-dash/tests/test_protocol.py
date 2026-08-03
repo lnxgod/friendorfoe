@@ -83,7 +83,20 @@ class StatusParsingTest(unittest.TestCase):
         frame = parse_machine_line(f"FOF_STATUS:{json.dumps(payload)}")
         entity = frame.value.entities[0]
         self.assertFalse(entity.has_position)
+        self.assertIsNone(entity.latitude)
+        self.assertIsNone(entity.longitude)
         self.assertEqual(entity.label, "RID-ABC123")
+
+    def test_unpaired_operator_coordinates_are_normalized_as_unavailable(self) -> None:
+        frame = parse_machine_line(
+            'FOF_STATUS:{"version":"v1","uptime_s":1,"entities":['
+            '{"source":"ble_rid","operator_lat":37.7}]}'
+        )
+
+        entity = frame.value.entities[0]
+
+        self.assertIsNone(entity.operator_latitude)
+        self.assertIsNone(entity.operator_longitude)
 
     def test_status_rejects_invalid_roots_and_nonfinite_json(self) -> None:
         invalid_payloads = (
@@ -103,6 +116,20 @@ class StatusParsingTest(unittest.TestCase):
                 with self.assertRaises(MachineFrameError):
                     parse_machine_line(f'FOF_STATUS:{{"version":"v1","uptime_s":{token}}}')
 
+    def test_status_normalizes_numeric_overflow_and_excessive_nesting(self) -> None:
+        huge_integer = "9" * 400
+        deep_value = "[" * 500 + "0" + "]" * 500
+        invalid_lines = (
+            f'FOF_STATUS:{{"version":"v1","uptime_s":{huge_integer},"entities":[]}}',
+            'FOF_STATUS:{"version":"v1","uptime_s":1e309,"entities":[]}',
+            f'FOF_STATUS:{{"version":"v1","uptime_s":0,"future":{deep_value}}}',
+        )
+
+        for line in invalid_lines:
+            with self.subTest(case=line[:80]):
+                with self.assertRaises(MachineFrameError):
+                    parse_machine_line(line)
+
     def test_status_accepts_additive_objects(self) -> None:
         frame = parse_machine_line(
             'FOF_STATUS:{"version":"v1","uptime_s":1,"extra":{"future":true},'
@@ -111,6 +138,21 @@ class StatusParsingTest(unittest.TestCase):
         )
         self.assertEqual(frame.value.version, "v1")
         self.assertEqual(frame.value.entities[0].label, "added")
+
+    def test_status_preserves_missing_arrays_separately_from_explicit_empty_arrays(self) -> None:
+        missing = parse_machine_line('FOF_STATUS:{"version":"v1","uptime_s":1}').value
+        explicit = parse_machine_line(
+            'FOF_STATUS:{"version":"v1","uptime_s":1,"entities":[],"scanners":[]}'
+        ).value
+
+        self.assertIsNone(missing.entities)
+        self.assertIsNone(missing.scanners)
+        self.assertNotIn("entities", missing.to_dict())
+        self.assertNotIn("scanners", missing.to_dict())
+        self.assertEqual(explicit.entities, ())
+        self.assertEqual(explicit.scanners, ())
+        self.assertEqual(explicit.to_dict()["entities"], [])
+        self.assertEqual(explicit.to_dict()["scanners"], [])
 
 
 class ControlReplyParsingTest(unittest.TestCase):

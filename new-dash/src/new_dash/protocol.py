@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from math import isfinite
 
 from .models import BadgeStatus, ControlReply, DetectionEvent, MachineFrame
 
@@ -13,6 +14,13 @@ class MachineFrameError(ValueError):
 
 def _reject_json_constant(value: str) -> object:
     raise ValueError(f"non-finite JSON value: {value}")
+
+
+def _parse_finite_json_float(value: str) -> float:
+    parsed = float(value)
+    if not isfinite(parsed):
+        raise ValueError(f"non-finite JSON number: {value}")
+    return parsed
 
 
 class LineFramer:
@@ -88,8 +96,12 @@ def parse_machine_line(line: str) -> MachineFrame | None:
         if not line.startswith(prefix):
             continue
         try:
-            payload = json.loads(line.removeprefix(prefix), parse_constant=_reject_json_constant)
+            payload = json.loads(
+                line.removeprefix(prefix),
+                parse_constant=_reject_json_constant,
+                parse_float=_parse_finite_json_float,
+            )
             return MachineFrame(kind=kind, value=parser(payload))
-        except (TypeError, ValueError, json.JSONDecodeError) as error:
+        except (TypeError, ValueError, OverflowError, RecursionError) as error:
             raise MachineFrameError(f"invalid {kind} frame") from error
     return None

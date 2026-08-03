@@ -13,6 +13,7 @@ import {
 } from "../ui.js";
 
 const REMOTE_ID_SOURCES = new Set(["ble_rid", "wifi_rid"]);
+const NAMED_CLASS_FILTERS = new Set(["drone", "meta", "tracker", "wifi_attack"]);
 
 function isRemoteId(entity) {
   return REMOTE_ID_SOURCES.has(entity?.source);
@@ -26,8 +27,8 @@ export function visibleEntities(state, filters) {
       return false;
     }
     if (filters.class !== "all") {
-      const entityClass = entity.class || "other";
-      if (filters.class === "other" ? entityClass !== "other" : entityClass !== filters.class) {
+      const entityClass = entity.class || "";
+      if (filters.class === "other" ? NAMED_CLASS_FILTERS.has(entityClass) : entityClass !== filters.class) {
         return false;
       }
     }

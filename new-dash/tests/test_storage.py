@@ -9,7 +9,11 @@ from dataclasses import replace
 from pathlib import Path
 
 from new_dash.models import BadgeEntity, DetectionEvent
-from new_dash.storage import HistoryQuery, ObservationStore
+from new_dash.storage import (
+    HistoryQuery,
+    ObservationStore,
+    ObservationStoreSchemaError,
+)
 
 
 class TrackingObservationStore(ObservationStore):
@@ -88,6 +92,43 @@ class ObservationStoreTest(unittest.TestCase):
 
         self.assertIsNotNone(row_id)
         self.assertEqual(store.query(HistoryQuery(limit=1)).items[0].events, 8)
+
+    def test_out_of_range_device_integers_normalize_before_event_and_track_storage(self) -> None:
+        too_large = 10 ** 400
+        event = DetectionEvent.from_payload({
+            "id": "huge-source",
+            "source": too_large,
+            "rssi": -48,
+        })
+        entity = BadgeEntity.from_payload({
+            "display_id": "RID-HUGE",
+            "source": "ble_rid",
+            "source_id": too_large,
+            "rssi": too_large,
+            "events": too_large,
+            "seen_count": -too_large,
+            "lat": 37.7,
+            "lon": -122.4,
+        })
+        store = ObservationStore(self.path)
+
+        event_id = store.add_event(event, received_at=10.0)
+        track_id = store.add_track(entity, received_at=11.0)
+        rows = store.query(HistoryQuery(limit=10)).items
+
+        self.assertIsNotNone(event_id)
+        self.assertIsNotNone(track_id)
+        self.assertIsNone(event.source_id)
+        self.assertEqual(entity.source, "ble_rid")
+        self.assertIsNone(entity.source_id)
+        self.assertIsNone(entity.rssi)
+        self.assertIsNone(entity.events)
+        self.assertIsNone(entity.seen_count)
+        self.assertTrue(all(row.source_id is None for row in rows))
+        self.assertIsNone(rows[0].rssi)
+        self.assertIsNone(rows[0].events)
+        self.assertIsNone(rows[0].seen_count)
+        store.close()
 
     def test_rejects_stale_non_remote_id_and_unpositioned_tracks(self) -> None:
         entity = self._positioned_entity()
@@ -224,6 +265,44 @@ class ObservationStoreTest(unittest.TestCase):
 
         self.assertEqual(store.retention_days, 30)
         self.assertEqual(store.max_observations, 50_000)
+
+    def test_constructor_creates_exactly_one_supported_schema_version(self) -> None:
+        store = ObservationStore(self.path)
+        store.close()
+
+        with sqlite3.connect(self.path) as connection:
+            versions = connection.execute(
+                "SELECT version, typeof(version) FROM schema_meta"
+            ).fetchall()
+            tables = {
+                row[0]
+                for row in connection.execute(
+                    "SELECT name FROM sqlite_schema WHERE type = 'table'"
+                )
+            }
+
+        self.assertEqual(versions, [(1, "integer")])
+        self.assertIn("observations", tables)
+
+    def test_constructor_rejects_future_schema_without_mutating_database(self) -> None:
+        self._create_schema_metadata(2)
+
+        self._assert_constructor_rejects_schema_without_mutating()
+
+    def test_constructor_rejects_duplicate_schema_versions_without_mutating_database(self) -> None:
+        self._create_schema_metadata(1, 1)
+
+        self._assert_constructor_rejects_schema_without_mutating()
+
+    def test_constructor_rejects_missing_schema_version_without_mutating_database(self) -> None:
+        self._create_schema_metadata()
+
+        self._assert_constructor_rejects_schema_without_mutating()
+
+    def test_constructor_rejects_malformed_schema_version_without_mutating_database(self) -> None:
+        self._create_schema_metadata("not-an-integer")
+
+        self._assert_constructor_rejects_schema_without_mutating()
 
     def test_public_operations_close_their_real_sqlite_connections(self) -> None:
         store = TrackingObservationStore(self.path)
@@ -375,6 +454,40 @@ class ObservationStoreTest(unittest.TestCase):
     def _positioned_entity(self) -> BadgeEntity:
         fixture = Path(__file__).parent / "fixtures" / "badge_status_remote_id.json"
         return BadgeEntity.from_payload(json.loads(fixture.read_text())["entities"][0])
+
+    def _create_schema_metadata(self, *versions: object) -> None:
+        with sqlite3.connect(self.path) as connection:
+            connection.execute(
+                "CREATE TABLE schema_meta (version INTEGER NOT NULL)"
+            )
+            connection.executemany(
+                "INSERT INTO schema_meta (version) VALUES (?)",
+                ((version,) for version in versions),
+            )
+
+    def _assert_constructor_rejects_schema_without_mutating(self) -> None:
+        before = self._database_snapshot()
+
+        with self.assertRaises(ObservationStoreSchemaError):
+            ObservationStore(self.path)
+
+        self.assertEqual(self._database_snapshot(), before)
+
+    def _database_snapshot(
+        self,
+    ) -> tuple[str, list[tuple[object, ...]], list[tuple[object, ...]]]:
+        with sqlite3.connect(self.path) as connection:
+            journal_mode = connection.execute("PRAGMA journal_mode").fetchone()[0]
+            objects = connection.execute(
+                """SELECT type, name, tbl_name, sql
+                FROM sqlite_schema
+                WHERE name NOT LIKE 'sqlite_%'
+                ORDER BY type, name"""
+            ).fetchall()
+            versions = connection.execute(
+                "SELECT version, typeof(version) FROM schema_meta ORDER BY rowid"
+            ).fetchall()
+        return journal_mode, objects, versions
 
     @staticmethod
     def _event(

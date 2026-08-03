@@ -14,6 +14,7 @@ import socket
 import subprocess
 import threading
 import unittest
+from unittest.mock import patch
 from urllib.parse import quote
 
 from new_dash.controls import (
@@ -941,6 +942,28 @@ class MutationRouteTest(WebServerTestCase):
         )
         self.assertEqual(response.status, 400)
         self.assertEqual(json.loads(body)["error"]["code"], "invalid_request")
+
+    def test_deeply_nested_json_returns_structured_invalid_request(self) -> None:
+        depth = 2_000
+        raw = b'{"action":' + (b"[" * depth) + b"0" + (b"]" * depth) + b"}"
+
+        response, body = self.post("/api/control/display-nav", {}, raw=raw)
+
+        self.assertEqual(response.status, 400)
+        self.assertEqual(json.loads(body)["error"]["code"], "invalid_request")
+        self.assertEqual(self.application.control_calls, [])
+
+    def test_json_parser_recursion_error_returns_structured_invalid_request(self) -> None:
+        with patch("new_dash.web.json.loads", side_effect=RecursionError("too deep")):
+            response, body = self.post(
+                "/api/control/display-nav",
+                {},
+                raw=b'{"action":"next"}',
+            )
+
+        self.assertEqual(response.status, 400)
+        self.assertEqual(json.loads(body)["error"]["code"], "invalid_request")
+        self.assertEqual(self.application.control_calls, [])
 
     def test_exact_body_cap_is_accepted(self) -> None:
         body = b'{"action":"next"}'

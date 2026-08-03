@@ -3,6 +3,7 @@ import { nextTabIndex, scannerSummary, writePreference, readPreference } from ".
 import { filteredRemoteIdKeys, renderLive, visibleEntities } from "./views/live.js";
 import {
   createMap,
+  createRequestStatusChannels,
   createTrailController,
   invalidateSize,
   renderActiveEntities,
@@ -60,6 +61,7 @@ let selectedView = readPreference(VIEW_KEY, (value) => VIEWS.includes(value), "l
 let filters = readPreference(FILTER_KEY, validFilters, DEFAULT_FILTERS);
 let latestState = null;
 let mapCreated = false;
+let activeView = null;
 
 const historyView = createHistoryView({ getHistory, post });
 const badgeView = createBadgeView({ post });
@@ -97,6 +99,8 @@ function showRequestStatus(message = "") {
   requestStatus.hidden = !message;
   requestStatus.textContent = message;
 }
+
+const requestStatuses = createRequestStatusChannels({ render: showRequestStatus });
 
 function phaseLabel(connection) {
   const labels = {
@@ -147,7 +151,7 @@ function renderState(state) {
   }
 }
 
-function ensureMap() {
+function ensureMap(refreshTrails = false) {
   if (!mapCreated) {
     createMap(mapCanvas);
     mapCreated = true;
@@ -155,21 +159,23 @@ function ensureMap() {
   window.requestAnimationFrame(() => invalidateSize());
   if (latestState) {
     renderActiveEntities(mapEntities(latestState));
-    ensureMapTrails();
+    ensureMapTrails(refreshTrails);
   }
 }
 
-async function ensureMapTrails() {
+async function ensureMapTrails(refresh = false) {
   if (!latestState || selectedView !== "map") {
     return;
   }
-  await trailController.update(filteredRemoteIdKeys(latestState, filters));
+  const keys = filteredRemoteIdKeys(latestState, filters);
+  await (refresh ? trailController.refresh(keys) : trailController.update(keys));
 }
 
 function activateView(view, { focus = true, replaceHash = false, keyboard = false } = {}) {
   const validView = VIEWS.includes(view) ? view : "live";
-  const previousView = selectedView;
+  const previousView = activeView;
   selectedView = validView;
+  activeView = selectedView;
   writePreference(VIEW_KEY, selectedView);
   for (const tab of tabs) {
     const selected = tab.dataset.viewTarget === selectedView;
@@ -191,7 +197,7 @@ function activateView(view, { focus = true, replaceHash = false, keyboard = fals
     }
   }
   if (selectedView === "map") {
-    ensureMap();
+    ensureMap(previousView !== "map");
   }
   if (previousView === "history" && selectedView !== "history") {
     historyView.deactivate();
@@ -262,17 +268,22 @@ desktopFilterMedia.addEventListener("change", syncFilterDisclosure);
 const trailController = createTrailController({
   getHistory,
   render: renderTrail,
-  reportError: (error) => showRequestStatus(`Host-observed trail unavailable: ${error.message}`),
+  reportError: (error) => requestStatuses.setTrail(
+    `Host-observed trail unavailable: ${error.message}`,
+  ),
+  clearError: () => requestStatuses.clearTrail(),
 });
 
 const statePoller = createCompletionPoller({
   load: (signal) => getState({ signal }),
   onValue: (state) => {
     latestState = state;
-    showRequestStatus();
+    requestStatuses.clearState();
     renderState(state);
   },
-  onError: (error) => showRequestStatus(`${error.message} Last valid dashboard state is retained.`),
+  onError: (error) => requestStatuses.setState(
+    `${error.message} Last valid dashboard state is retained.`,
+  ),
   intervalMs: POLL_INTERVAL_MS,
 });
 

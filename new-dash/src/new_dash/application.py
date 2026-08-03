@@ -82,8 +82,13 @@ class NewDashApplication:
             str, deque[tuple[int, tuple[object, ...]]]
         ] = {}
         self._next_track_action_id = 1
-        self._history_available = True
-        self._history_error: str | None = None
+        startup_error = getattr(store, "startup_error", None)
+        self._history_available = not isinstance(startup_error, BaseException)
+        self._history_error: str | None = (
+            self._bounded_error(startup_error)
+            if isinstance(startup_error, BaseException)
+            else None
+        )
         self._persistence_drops = 0
         self._accepting = True
         self._closed = False
@@ -98,7 +103,7 @@ class NewDashApplication:
         self._worker = threading.Thread(
             target=self._run_persistence,
             name="new-dash-persistence",
-            daemon=True,
+            daemon=False,
         )
         self._worker.start()
         self._prune_if_due(self._now())
@@ -120,7 +125,7 @@ class NewDashApplication:
                     return
                 self._status = frame.value
                 self._status_received_at = received_at
-                for entity in frame.value.entities:
+                for entity in frame.value.entities or ():
                     if entity.stale or not entity.is_remote_id or not entity.has_position:
                         continue
                     fingerprint = self._track_fingerprint(entity)
@@ -542,9 +547,9 @@ class NewDashApplication:
                 "recovery_mode": None,
                 "threat_score": None,
                 "counts": None,
-                "scanners": [],
-                "entities": [],
-                "remote_id_entities": [],
+                "scanners": None,
+                "entities": None,
+                "remote_id_entities": None,
                 "reporting": None,
                 "memory": None,
                 "display_state": None,
@@ -570,15 +575,16 @@ class NewDashApplication:
             "display_policy": result.get("display_policy"),
             "sensing_health": sensing_health,
         })
-        entities = result["entities"]
-        for entity, rendered in zip(status.entities, entities):
-            rendered["is_remote_id"] = entity.is_remote_id
-            rendered["has_position"] = entity.has_position
-        result["remote_id_entities"] = [
-            rendered
-            for entity, rendered in zip(status.entities, entities)
-            if entity.is_remote_id
-        ]
+        if status.entities is not None:
+            entities = result["entities"]
+            for entity, rendered in zip(status.entities, entities):
+                rendered["is_remote_id"] = entity.is_remote_id
+                rendered["has_position"] = entity.has_position
+            result["remote_id_entities"] = [
+                rendered
+                for entity, rendered in zip(status.entities, entities)
+                if entity.is_remote_id
+            ]
         return result
 
     @staticmethod
@@ -644,10 +650,14 @@ class NewDashApplication:
             connected = scanner.get("connected")
             health = scanner.get("health")
             if connected is False or (
-                health is not None and health not in {"ok", "healthy"}
+                isinstance(health, str) and health not in {"ok", "healthy"}
             ):
                 return "degraded"
-            if connected is not True or health not in {"ok", "healthy"}:
+            if (
+                connected is not True
+                or not isinstance(health, str)
+                or health not in {"ok", "healthy"}
+            ):
                 has_incomplete_evidence = True
         if has_incomplete_evidence:
             return "unknown"

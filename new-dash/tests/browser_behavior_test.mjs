@@ -85,6 +85,27 @@ test("Live groups and Map keys derive from the same filtered entity set", () => 
   assert.deepEqual(live.filteredRemoteIdKeys(snapshot, ALL_FILTERS), ["ble_rid:RID-A"]);
 });
 
+test("Other class includes every class outside the four named filters for Live and Map", () => {
+  const snapshot = state([
+    entity("wifi_ssid", "FLOCK", { class: "flock" }),
+    entity("wifi_ssid", "SKIMMER", { class: "skimmer" }),
+    entity("wifi_ssid", "LITERAL", { class: "other" }),
+    entity("wifi_ssid", "MISSING", { class: null }),
+    entity("ble_rid", "RID-OTHER", { class: "auracast", lat: 1, lon: 2 }),
+    entity("wifi_ssid", "META", { class: "meta" }),
+    entity("wifi_ssid", "ATTACK", { class: "wifi_attack" }),
+  ]);
+  const otherFilters = { ...ALL_FILTERS, class: "other" };
+
+  const groups = live.groupVisibleEntities(snapshot, otherFilters);
+
+  assert.deepEqual(
+    groups.visible.map((item) => item.display_id),
+    ["FLOCK", "SKIMMER", "LITERAL", "MISSING", "RID-OTHER"],
+  );
+  assert.deepEqual(live.filteredRemoteIdKeys(snapshot, otherFilters), ["ble_rid:RID-OTHER"]);
+});
+
 test("scanner summary distinguishes explicit zero from unavailable data", () => {
   assert.equal(ui.scannerSummary({ scanners: [] }), "0 scanners");
   assert.equal(ui.scannerSummary({}), "Scanners unavailable");
@@ -282,6 +303,78 @@ test("trail generation retries one transient failure without latching forever", 
 
   await controller.update(["ble_rid:A"]);
   assert.equal(attempts, 2);
+});
+
+test("Map reactivation refetches unchanged trails once without poll refetches", async () => {
+  let calls = 0;
+  const controller = mapView.createTrailController({
+    getHistory: async () => {
+      calls += 1;
+      return {
+        items: [{ stable_key: "ble_rid:A", latitude: 1, longitude: 2 }],
+        next_cursor: null,
+      };
+    },
+    render: () => {},
+    reportError: assert.fail,
+  });
+
+  await controller.refresh(["ble_rid:A"]);
+  await controller.update(["ble_rid:A"]);
+  await controller.update(["ble_rid:A"]);
+  assert.equal(calls, 1);
+
+  await controller.refresh(["ble_rid:A"]);
+  await controller.update(["ble_rid:A"]);
+  assert.equal(calls, 2);
+});
+
+test("trail warning survives state success and retry exhaustion until a trail reset", async () => {
+  let calls = 0;
+  const recovery = deferred();
+  const renderedStatuses = [];
+  const statuses = mapView.createRequestStatusChannels({
+    render: (message) => renderedStatuses.push(message),
+  });
+  const controller = mapView.createTrailController({
+    getHistory: () => {
+      calls += 1;
+      if (calls === 1) throw new Error("temporary trail failure");
+      if (calls === 2) throw new Error("trail still unavailable");
+      return recovery.promise;
+    },
+    render: () => {},
+    reportError: (error) => statuses.setTrail(
+      `Host-observed trail unavailable: ${error.message}`,
+    ),
+    clearError: () => statuses.clearTrail(),
+  });
+
+  await controller.update(["ble_rid:A"]);
+  statuses.setState("State request failed.");
+  statuses.clearState();
+  assert.equal(
+    renderedStatuses.at(-1),
+    "Host-observed trail unavailable: temporary trail failure",
+  );
+
+  await controller.update(["ble_rid:A"]);
+  await controller.update(["ble_rid:A"]);
+  statuses.clearState();
+  assert.equal(calls, 2);
+  assert.equal(
+    renderedStatuses.at(-1),
+    "Host-observed trail unavailable: trail still unavailable",
+  );
+
+  statuses.setState("State request failed.");
+  const reload = controller.refresh(["ble_rid:A"]);
+  assert.equal(renderedStatuses.at(-1), "State request failed.");
+  recovery.resolve({ items: [], next_cursor: null });
+  await reload;
+  assert.equal(renderedStatuses.at(-1), "State request failed.");
+  statuses.clearState();
+  assert.equal(renderedStatuses.at(-1), "");
 });
 
 test("one trail generation shares a four-page and 2000-row global budget", async () => {

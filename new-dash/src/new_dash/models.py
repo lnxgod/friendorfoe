@@ -20,6 +20,9 @@ SOURCE_NAMES = {
     8: "wifi_inventory",
 }
 REMOTE_ID_SOURCES = frozenset({"ble_rid", "wifi_rid"})
+SQLITE_INTEGER_MIN = -(2 ** 63)
+SQLITE_INTEGER_MAX = (2 ** 63) - 1
+_MISSING = object()
 
 
 def _optional_text(value: Any) -> str | None:
@@ -39,13 +42,30 @@ def _optional_number(value: Any) -> float | None:
 
 
 def _optional_integer(value: Any) -> int | None:
-    if isinstance(value, int) and not isinstance(value, bool):
+    if (
+        isinstance(value, int)
+        and not isinstance(value, bool)
+        and SQLITE_INTEGER_MIN <= value <= SQLITE_INTEGER_MAX
+    ):
         return value
     return None
 
 
 def _optional_bool(value: Any) -> bool | None:
     return value if isinstance(value, bool) else None
+
+
+def _coordinate_pair(latitude: Any, longitude: Any) -> tuple[float | None, float | None]:
+    normalized_latitude = _optional_number(latitude)
+    normalized_longitude = _optional_number(longitude)
+    if (
+        normalized_latitude is None
+        or normalized_longitude is None
+        or not -90 <= normalized_latitude <= 90
+        or not -180 <= normalized_longitude <= 180
+    ):
+        return None, None
+    return normalized_latitude, normalized_longitude
 
 
 def _freeze_json(value: Any) -> Any:
@@ -169,6 +189,10 @@ class BadgeEntity:
             source = SOURCE_NAMES.get(source_id, f"unknown_{source_id}")
         else:
             source = "unknown"
+        latitude, longitude = _coordinate_pair(payload.get("lat"), payload.get("lon"))
+        operator_latitude, operator_longitude = _coordinate_pair(
+            payload.get("operator_lat"), payload.get("operator_lon")
+        )
         known_keys = {
             "label", "detail", "evidence", "class", "category", "code", "display_id",
             "source", "source_id", "score", "confidence_pct", "last_seen_s", "rssi",
@@ -193,11 +217,11 @@ class BadgeEntity:
             events=_optional_integer(payload.get("events")),
             seen_count=_optional_integer(payload.get("seen_count")),
             stale=_optional_bool(payload.get("stale")),
-            latitude=_optional_number(payload.get("lat")),
-            longitude=_optional_number(payload.get("lon")),
+            latitude=latitude,
+            longitude=longitude,
             altitude_m=_optional_number(payload.get("altitude_m")),
-            operator_latitude=_optional_number(payload.get("operator_lat")),
-            operator_longitude=_optional_number(payload.get("operator_lon")),
+            operator_latitude=operator_latitude,
+            operator_longitude=operator_longitude,
             operator_id=_optional_text(payload.get("operator_id")),
             ssid=_optional_text(payload.get("ssid")),
             bssid=_optional_text(payload.get("bssid")),
@@ -269,8 +293,8 @@ class BadgeStatus:
     counts: Mapping[str, Any] | None
     safe_mode: bool | None
     recovery_mode: str | None
-    entities: tuple[BadgeEntity, ...]
-    scanners: tuple[Mapping[str, Any], ...]
+    entities: tuple[BadgeEntity, ...] | None
+    scanners: tuple[Mapping[str, Any], ...] | None
     raw: Mapping[str, Any]
 
     @classmethod
@@ -283,13 +307,21 @@ class BadgeStatus:
         uptime = payload.get("uptime_s")
         if isinstance(uptime, bool) or not isinstance(uptime, (int, float)) or not isfinite(uptime):
             raise ValueError("status uptime_s must be finite numeric")
-        entity_payloads = payload.get("entities", [])
-        scanner_payloads = payload.get("scanners", [])
-        if not isinstance(entity_payloads, list) or not isinstance(scanner_payloads, list):
+        entity_value = payload.get("entities", _MISSING)
+        scanner_value = payload.get("scanners", _MISSING)
+        if entity_value is not _MISSING and not isinstance(entity_value, list):
             raise ValueError("status entities and scanners must be arrays")
-        if not all(isinstance(entity, dict) for entity in entity_payloads):
+        if scanner_value is not _MISSING and not isinstance(scanner_value, list):
+            raise ValueError("status entities and scanners must be arrays")
+        entity_payloads = None if entity_value is _MISSING else entity_value
+        scanner_payloads = None if scanner_value is _MISSING else scanner_value
+        if entity_payloads is not None and not all(
+            isinstance(entity, dict) for entity in entity_payloads
+        ):
             raise ValueError("status entities must contain objects")
-        if not all(isinstance(scanner, dict) for scanner in scanner_payloads):
+        if scanner_payloads is not None and not all(
+            isinstance(scanner, dict) for scanner in scanner_payloads
+        ):
             raise ValueError("status scanners must contain objects")
         counts = payload.get("counts")
         return cls(
@@ -301,15 +333,25 @@ class BadgeStatus:
             counts=_freeze_json(counts) if isinstance(counts, dict) else None,
             safe_mode=_optional_bool(payload.get("safe_mode")),
             recovery_mode=_optional_text(payload.get("recovery_mode")),
-            entities=tuple(BadgeEntity.from_payload(entity) for entity in entity_payloads),
-            scanners=tuple(_freeze_json(scanner) for scanner in scanner_payloads),
+            entities=(
+                tuple(BadgeEntity.from_payload(entity) for entity in entity_payloads)
+                if entity_payloads is not None
+                else None
+            ),
+            scanners=(
+                tuple(_freeze_json(scanner) for scanner in scanner_payloads)
+                if scanner_payloads is not None
+                else None
+            ),
             raw=_freeze_json(payload),
         )
 
     def to_dict(self) -> dict[str, object]:
         result = _json_safe(self.raw)
-        result["entities"] = [entity.to_dict() for entity in self.entities]
-        result["scanners"] = _json_safe(self.scanners)
+        if self.entities is not None:
+            result["entities"] = [entity.to_dict() for entity in self.entities]
+        if self.scanners is not None:
+            result["scanners"] = _json_safe(self.scanners)
         return result
 
 

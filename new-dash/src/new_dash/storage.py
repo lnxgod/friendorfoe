@@ -81,11 +81,16 @@ _PROGRESS_INSTRUCTIONS = 1_000
 _WRITE_LOCK_POLL_SECONDS = 0.05
 _SQLITE_LOCK_POLL_SECONDS = 0.01
 _SQLITE_LOCK_TIMEOUT_SECONDS = 2.0
+_SCHEMA_VERSION = 1
 _Result = TypeVar("_Result")
 
 
 class ObservationStoreClosed(RuntimeError):
     """A local-history operation was attempted after shutdown began."""
+
+
+class ObservationStoreSchemaError(RuntimeError):
+    """The history database does not have the one supported schema version."""
 
 
 class ObservationStore:
@@ -112,16 +117,79 @@ class ObservationStore:
         self._active_connection_operations = 0
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self._write_access():
-            with self._connection() as connection:
-                self._run_sqlite_operation(
-                    lambda: connection.executescript(_SCHEMA)
+            with self._connection(negotiate_wal=False) as connection:
+                self._initialize_schema(connection)
+        with self._connection():
+            pass
+
+    def _initialize_schema(self, connection: sqlite3.Connection) -> None:
+        self._run_sqlite_operation(lambda: connection.execute("BEGIN IMMEDIATE"))
+        objects = self._run_sqlite_operation(
+            lambda: connection.execute(
+                """SELECT type, name FROM sqlite_schema
+                WHERE name NOT LIKE 'sqlite_%'"""
+            ).fetchall()
+        )
+        is_new_database = not objects
+        if not is_new_database:
+            if not any(
+                row["type"] == "table" and row["name"] == "schema_meta"
+                for row in objects
+            ):
+                raise ObservationStoreSchemaError(
+                    "observation history schema metadata is missing"
                 )
+            self._require_supported_schema(connection)
+
+        for statement in _SCHEMA.split(";"):
+            if statement.strip():
                 self._run_sqlite_operation(
-                    lambda: connection.execute(
-                        "INSERT INTO schema_meta (version) "
-                        "SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM schema_meta)"
-                    )
+                    lambda statement=statement: connection.execute(statement)
                 )
+
+        if is_new_database:
+            self._run_sqlite_operation(
+                lambda: connection.execute(
+                    "INSERT INTO schema_meta (version) VALUES (?)",
+                    (_SCHEMA_VERSION,),
+                )
+            )
+            self._require_supported_schema(connection)
+
+    def _require_supported_schema(
+        self,
+        connection: sqlite3.Connection,
+    ) -> None:
+        try:
+            rows = self._run_sqlite_operation(
+                lambda: connection.execute(
+                    "SELECT version, typeof(version) AS version_type "
+                    "FROM schema_meta"
+                ).fetchall()
+            )
+        except sqlite3.Error as error:
+            if (
+                isinstance(error, sqlite3.OperationalError)
+                and self._is_lock_conflict(error)
+            ):
+                raise
+            raise ObservationStoreSchemaError(
+                "observation history schema metadata is malformed"
+            ) from error
+
+        if len(rows) != 1:
+            raise ObservationStoreSchemaError(
+                "observation history schema metadata must contain exactly one version"
+            )
+        row = rows[0]
+        if row["version_type"] != "integer" or type(row["version"]) is not int:
+            raise ObservationStoreSchemaError(
+                "observation history schema version must be an integer"
+            )
+        if row["version"] != _SCHEMA_VERSION:
+            raise ObservationStoreSchemaError(
+                f"unsupported observation history schema version: {row['version']}"
+            )
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.path, timeout=0.0)
@@ -129,7 +197,11 @@ class ObservationStore:
         return connection
 
     @contextmanager
-    def _connection(self) -> Iterator[sqlite3.Connection]:
+    def _connection(
+        self,
+        *,
+        negotiate_wal: bool = True,
+    ) -> Iterator[sqlite3.Connection]:
         """Commit or roll back one operation, then always close its connection."""
         with self._connection_condition:
             if self._closing.is_set():
@@ -147,9 +219,10 @@ class ObservationStore:
                 _PROGRESS_INSTRUCTIONS,
             )
             connection.execute("PRAGMA busy_timeout=0")
-            self._run_sqlite_operation(
-                lambda: connection.execute("PRAGMA journal_mode=WAL").fetchone()
-            )
+            if negotiate_wal:
+                self._run_sqlite_operation(
+                    lambda: connection.execute("PRAGMA journal_mode=WAL").fetchone()
+                )
             try:
                 yield connection
             except BaseException:
