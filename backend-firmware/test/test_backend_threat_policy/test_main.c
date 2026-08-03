@@ -437,6 +437,37 @@ void test_coordinator_observes_pending_upload_once_after_http_attempt(void)
     TEST_ASSERT_FALSE(backend_coordinator_flow_paused(&coordinator));
 }
 
+void test_coordinator_observes_once_without_http_and_keeps_backpressure(void)
+{
+    backend_coordinator_t coordinator;
+    backend_coordinator_init(&coordinator);
+    canonical_sink_fixture_t fixture = {0};
+    backend_coordinator_set_canonical_sink(
+        &coordinator, ordered_canonical_sink, &fixture);
+    backend_detection_observation_t observation =
+        coordinator_observation("canonical-without-http", 0U, -63);
+
+    TEST_ASSERT_TRUE(backend_coordinator_ingest_detection(
+        &coordinator, 0U, &observation, 1000).accepted_for_upload);
+    TEST_ASSERT_EQUAL_UINT32(
+        1U, backend_coordinator_tick_detections(&coordinator, 1500));
+    TEST_ASSERT_EQUAL_UINT32(0U, fixture.upload_calls);
+    TEST_ASSERT_EQUAL_UINT32(1U, fixture.canonical_calls);
+    TEST_ASSERT_EQUAL_MEMORY(
+        &observation, &fixture.canonical, sizeof(observation));
+    TEST_ASSERT_TRUE(coordinator.pending_upload_valid);
+    TEST_ASSERT_TRUE(backend_coordinator_flow_paused(&coordinator));
+
+    TEST_ASSERT_EQUAL_UINT32(
+        0U, backend_coordinator_tick_detections(&coordinator, 1600));
+    TEST_ASSERT_EQUAL_UINT32(
+        0U, backend_coordinator_tick_detections(&coordinator, 1700));
+    TEST_ASSERT_EQUAL_UINT32(0U, fixture.upload_calls);
+    TEST_ASSERT_EQUAL_UINT32(1U, fixture.canonical_calls);
+    TEST_ASSERT_TRUE(coordinator.pending_upload_valid);
+    TEST_ASSERT_TRUE(backend_coordinator_flow_paused(&coordinator));
+}
+
 void test_coordinator_observer_presence_does_not_change_backpressure(void)
 {
     backend_coordinator_t without_observer;
@@ -599,6 +630,8 @@ int main(void)
         test_coordinator_tick_uploads_at_exact_boundary_and_sink_refusal_keeps_item);
     BACKEND_RUN_TEST(
         test_coordinator_observes_pending_upload_once_after_http_attempt);
+    BACKEND_RUN_TEST(
+        test_coordinator_observes_once_without_http_and_keeps_backpressure);
     BACKEND_RUN_TEST(
         test_coordinator_observer_presence_does_not_change_backpressure);
     BACKEND_RUN_TEST(

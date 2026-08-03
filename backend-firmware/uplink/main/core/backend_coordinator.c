@@ -24,12 +24,6 @@ static void refresh_flow_paused(backend_coordinator_t *coordinator)
 
 static bool drain_uploads(backend_coordinator_t *coordinator)
 {
-    if (coordinator->upload_sink == NULL) {
-        refresh_flow_paused(coordinator);
-        return !coordinator->pending_upload_valid &&
-               coordinator->detection_router.ready_count == 0U;
-    }
-
     for (;;) {
         if (!coordinator->pending_upload_valid) {
             backend_detection_observation_t next = {0};
@@ -42,7 +36,8 @@ static bool drain_uploads(backend_coordinator_t *coordinator)
             coordinator->pending_upload_valid = true;
         }
 
-        const bool uploaded = coordinator->upload_sink(
+        const bool uploaded = coordinator->upload_sink != NULL &&
+            coordinator->upload_sink(
                 coordinator->upload_sink_context,
                 &coordinator->pending_upload);
         if (!coordinator->pending_canonical_notified) {
