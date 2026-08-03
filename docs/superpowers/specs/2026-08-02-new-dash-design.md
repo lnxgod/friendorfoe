@@ -168,18 +168,21 @@ transport becomes live.
 The serial port uses the badge tools' established host settings:
 
 - nominal baud: 115200;
-- DTR: false;
-- RTS: false;
+- leave DTR and RTS at the serial adapter defaults;
 - short bounded read timeout;
 - newline-terminated UTF-8 writes;
 - UTF-8 reads with replacement for invalid bytes.
 
-The port object is configured while closed and only then opened, preventing a
-constructor-time DTR/RTS pulse. Exclusive access is requested where PySerial
-and macOS support it. Stale input is cleared and the verification write is a
-leading newline followed by `FOF_PING\n`, which resynchronizes any partial
-firmware command line. Only a complete, nonempty PONG received after that write
-verifies the session.
+New Dash must not force either control line before or after opening the port.
+This matches the existing Android bulk-USB command path and
+`scripts/fof_badge_debug_bridge.py`. Factory uplink firmware
+`0.67.2-badge-defcon34` returns `FOF_PONG`, `FOF_STATUS`, and detections with
+the established default signaling, while forcing DTR/RTS low suppresses its
+command path. Exclusive access is requested where PySerial and macOS support
+it. Stale input is cleared and the verification write is a leading newline
+followed by `FOF_PING\n`, which resynchronizes any partial firmware command
+line. Only a complete, nonempty PONG received after that write verifies the
+session.
 
 The nominal baud is a host convention for the ESP32-S3 native USB
 Serial/JTAG console, not the internal 921600-baud scanner UART.
@@ -517,7 +520,7 @@ Serial tests cover:
 
 - zero, one, and several candidates;
 - explicit-port selection and application-level identity verification;
-- DTR/RTS settings and newline writes;
+- absence of forced DTR/RTS mutations and factory-compatible newline writes;
 - port busy, silent/wrong device, detach, stale status, changed device path,
   bounded backoff, and clean shutdown;
 - serialized status/control writes and control timeout/error routing.
@@ -590,6 +593,7 @@ New Dash v1 is complete when:
   reach USB;
 - automated protocol, serial, storage, application, and HTTP tests pass;
 - browser fixture verification passes at desktop and narrow widths;
-- a read-only live-badge smoke check passes when hardware is available;
+- a read-only factory-badge smoke check receives PONG, repeated status,
+  detections, browser-visible live state, and a successful disconnect/reconnect;
 - documentation enables a contributor to build, run, test, and troubleshoot
   New Dash without consulting the legacy backend.
