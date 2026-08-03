@@ -39,6 +39,7 @@ import com.friendorfoe.data.badge.BadgeThreatEntity
 import com.friendorfoe.data.badge.BadgeUsbActivity
 import com.friendorfoe.data.badge.BadgeUsbState
 import com.friendorfoe.data.badge.BadgeUsbStatus
+import com.friendorfoe.data.badge.badgeDisplayControlsAvailable
 import com.friendorfoe.data.badge.defaultBadgeDisplayPolicy
 import com.friendorfoe.data.badge.defaultBadgeTheme
 import com.friendorfoe.detection.BleInvestigationMode
@@ -79,6 +80,7 @@ fun BadgeControlScreen(
     var selectedEntity by remember { mutableStateOf<BadgeThreatEntity?>(null) }
     val commandsEnabled = BadgeControlTransportPolicy.allowsCommandSurface(state.status)
     val refreshEnabled = BadgeControlTransportPolicy.allowsStatusRefresh(state.status)
+    val displayControlsAvailable = badgeDisplayControlsAvailable(state.controlStatus)
 
     fun dispatchDanger(event: BadgeDangerEvent) {
         val transition = reduceBadgeDangerCommand(
@@ -119,72 +121,75 @@ fun BadgeControlScreen(
                 onEntityDetails = { selectedEntity = it },
             )
         }
-        item {
-            BadgeLcdRemoteSection(
-                display = state.controlStatus?.displayState,
-                commandsEnabled = commandsEnabled,
-                onNavigate = viewModel::displayNav,
-            )
-        }
-        item {
-            Surface(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 12.dp)
-                    .testTag("badge_appearance"),
-                shape = MaterialTheme.shapes.medium,
-                tonalElevation = 2.dp,
-            ) {
-                BadgeAppearanceSection(
-                    expanded = appearanceExpanded,
-                    onExpandedChange = { appearanceExpanded = it },
-                    theme = draftTheme,
-                    appliedTheme = state.controlStatus?.theme ?: defaultBadgeTheme(),
-                    themeHash = state.controlStatus?.themeHash ?: 0,
-                    profiles = profiles,
-                    onThemeChange = { draftTheme = it },
-                    onCreateProfile = viewModel::createProfile,
-                    onRenameProfile = viewModel::renameProfile,
-                    onReplaceProfile = viewModel::replaceProfile,
-                    onDeleteProfile = viewModel::deleteProfile,
-                    onApply = viewModel::applyTheme,
-                    onRefresh = viewModel::refresh,
+        if (displayControlsAvailable) {
+            item {
+                BadgeLcdRemoteSection(
+                    display = state.controlStatus?.displayState,
                     commandsEnabled = commandsEnabled,
-                    refreshEnabled = refreshEnabled,
+                    onNavigate = viewModel::displayNav,
                 )
             }
-        }
-        item {
-            Surface(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 12.dp)
-                    .testTag("badge_filters"),
-                shape = MaterialTheme.shapes.medium,
-                tonalElevation = 2.dp,
-            ) {
-                BadgeDisplayFiltersSection(
-                    expanded = filtersExpanded,
-                    onExpandedChange = { filtersExpanded = it },
-                    policy = draftPolicy,
-                    displayPolicyHash = state.controlStatus?.displayPolicyHash ?: 0,
-                    filteredCounts = state.controlStatus?.filteredCounts.orEmpty(),
-                    onPolicyChange = { draftPolicy = it },
-                    onApply = { viewModel.applyDisplayPolicy(draftPolicy) },
-                    onReset = {
-                        draftPolicy = defaultBadgeDisplayPolicy()
-                        viewModel.resetDisplayPolicy()
-                    },
-                    onRefresh = viewModel::refresh,
-                    remoteActionsEnabled = commandsEnabled,
-                    refreshEnabled = refreshEnabled,
-                )
+            item {
+                Surface(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp)
+                        .testTag("badge_appearance"),
+                    shape = MaterialTheme.shapes.medium,
+                    tonalElevation = 2.dp,
+                ) {
+                    BadgeAppearanceSection(
+                        expanded = appearanceExpanded,
+                        onExpandedChange = { appearanceExpanded = it },
+                        theme = draftTheme,
+                        appliedTheme = state.controlStatus?.theme ?: defaultBadgeTheme(),
+                        themeHash = state.controlStatus?.themeHash ?: 0,
+                        profiles = profiles,
+                        onThemeChange = { draftTheme = it },
+                        onCreateProfile = viewModel::createProfile,
+                        onRenameProfile = viewModel::renameProfile,
+                        onReplaceProfile = viewModel::replaceProfile,
+                        onDeleteProfile = viewModel::deleteProfile,
+                        onApply = viewModel::applyTheme,
+                        onRefresh = viewModel::refresh,
+                        commandsEnabled = commandsEnabled,
+                        refreshEnabled = refreshEnabled,
+                    )
+                }
+            }
+            item {
+                Surface(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp)
+                        .testTag("badge_filters"),
+                    shape = MaterialTheme.shapes.medium,
+                    tonalElevation = 2.dp,
+                ) {
+                    BadgeDisplayFiltersSection(
+                        expanded = filtersExpanded,
+                        onExpandedChange = { filtersExpanded = it },
+                        policy = draftPolicy,
+                        displayPolicyHash = state.controlStatus?.displayPolicyHash ?: 0,
+                        filteredCounts = state.controlStatus?.filteredCounts.orEmpty(),
+                        onPolicyChange = { draftPolicy = it },
+                        onApply = { viewModel.applyDisplayPolicy(draftPolicy) },
+                        onReset = {
+                            draftPolicy = defaultBadgeDisplayPolicy()
+                            viewModel.resetDisplayPolicy()
+                        },
+                        onRefresh = viewModel::refresh,
+                        remoteActionsEnabled = commandsEnabled,
+                        refreshEnabled = refreshEnabled,
+                    )
+                }
             }
         }
         item {
             BadgeOperationsSection(
                 state = state,
                 commandsEnabled = commandsEnabled,
+                displayControlsAvailable = displayControlsAvailable,
                 onSetMode = viewModel::setMode,
                 onResetTheme = viewModel::resetTheme,
                 onDanger = { action -> dispatchDanger(BadgeDangerEvent.Request(action)) },
@@ -613,6 +618,7 @@ private fun BadgeLcdRemoteSection(
 private fun BadgeOperationsSection(
     state: BadgeUsbState,
     commandsEnabled: Boolean,
+    displayControlsAvailable: Boolean,
     onSetMode: (String) -> Unit,
     onResetTheme: () -> Unit,
     onDanger: (BadgeDangerAction) -> Unit,
@@ -639,12 +645,14 @@ private fun BadgeOperationsSection(
                 ) { Text(label, maxLines = 1) }
             }
         }
-        OutlinedButton(
-            onClick = onResetTheme,
-            enabled = commandsEnabled,
-            modifier = Modifier.padding(top = 8.dp),
-        ) {
-            Text("Reset badge theme")
+        if (displayControlsAvailable) {
+            OutlinedButton(
+                onClick = onResetTheme,
+                enabled = commandsEnabled,
+                modifier = Modifier.padding(top = 8.dp),
+            ) {
+                Text("Reset badge theme")
+            }
         }
 
         Text(

@@ -536,6 +536,11 @@ data class BadgeControlStatus(
     val appProject: String = "",
     val hardwareType: String = "",
     val hardwareId: String = "",
+    val productFamily: String = "",
+    val project: String = "",
+    val hardware: String = "",
+    val mac: String = "",
+    val capabilities: Set<String> = emptySet(),
     val runningPartition: String = "",
     val pendingVerify: Boolean = false,
     val rollbackState: String = "",
@@ -656,18 +661,37 @@ internal fun parseBadgeControlStatus(
                 )
             }.getOrNull()
         }.orEmpty()
-        val scanners = obj.getAsJsonArray("scanners")?.mapNotNull { element ->
+        val scannerArray = sequenceOf("scanners", "scanner", "scanner_summaries")
+            .mapNotNull { key -> runCatching { obj.getAsJsonArray(key) }.getOrNull() }
+            .firstOrNull()
+        val scanners = scannerArray?.mapNotNull { element ->
             runCatching {
                 val s = element.asJsonObject
+                val healthObject = runCatching { s.getAsJsonObject("health") }.getOrNull()
+                val connected = s.badgeOptBoolean("connected")
+                val commandHealthy = healthObject?.badgeStrictBoolean("command")
+                val radioHealthy = healthObject?.badgeStrictBoolean("radio")
+                val roleAcked = s.badgeStrictBoolean("role_acked")
+                    ?: healthObject?.badgeStrictBoolean("role_acked")
+                    ?: false
                 BadgeScannerStatus(
                     slot = s.badgeOptInt("slot", -1),
                     uart = s.badgeOptString("uart"),
-                    connected = s.badgeOptBoolean("connected"),
+                    connected = connected,
                     slotRole = s.badgeOptString("slot_role"),
                     expectedScanProfile = s.badgeOptString("expected_scan_profile"),
-                    scanProfile = s.badgeOptString("scan_profile"),
-                    roleAcked = s.badgeOptBoolean("role_acked"),
-                    health = s.badgeOptString("health"),
+                    scanProfile = s.badgeOptString("scan_profile").ifBlank {
+                        s.badgeStrictNonNegativeInt("profile")?.toString().orEmpty()
+                    },
+                    roleAcked = roleAcked,
+                    health = s.badgeOptString("health").ifBlank {
+                        when {
+                            !connected -> "disconnected"
+                            commandHealthy == true && radioHealthy == true && roleAcked -> "healthy"
+                            commandHealthy != null || radioHealthy != null -> "degraded"
+                            else -> ""
+                        }
+                    },
                     uartRawSeen = s.badgeOptBoolean("uart_raw_seen"),
                     uartRawAgeSeconds = s.badgeOptLongOrNull("uart_raw_age_s"),
                     uartJsonErrors = s.badgeOptInt("uart_json_err"),
@@ -704,6 +728,11 @@ internal fun parseBadgeControlStatus(
             appProject = obj.badgeOptString("app_project"),
             hardwareType = obj.badgeOptString("hardware_type"),
             hardwareId = obj.badgeStrictString("hardware_id").orEmpty(),
+            productFamily = obj.badgeStrictString("product_family").orEmpty(),
+            project = obj.badgeStrictString("project").orEmpty(),
+            hardware = obj.badgeStrictString("hardware").orEmpty(),
+            mac = obj.badgeStrictString("mac").orEmpty(),
+            capabilities = obj.badgeStrictStringSet("capabilities"),
             runningPartition = obj.badgeStrictString("running_partition").orEmpty(),
             pendingVerify = obj.badgeStrictBoolean("pending_verify") ?: false,
             rollbackState = obj.badgeStrictString("rollback_state").orEmpty(),
@@ -834,6 +863,11 @@ private fun parseBadgeUsbHealthStatus(obj: JsonObject?): BadgeUsbHealthStatus {
 private val BadgeHardwareIdPattern =
     Regex("^[0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5}$")
 
+internal enum class BadgeUsbProductKind {
+    NATIVE_BADGE,
+    BADGE_LITE,
+}
+
 internal fun canonicalBadgeHardwareId(raw: String): String? {
     if (!BadgeHardwareIdPattern.matches(raw)) return null
     val canonical = raw.uppercase()
@@ -843,29 +877,102 @@ internal fun canonicalBadgeHardwareId(raw: String): String? {
     return canonical
 }
 
+private fun exactBadgeIdentityAlias(primary: String, alias: String): String? = when {
+    primary.isBlank() -> alias.takeIf(String::isNotBlank)
+    alias.isBlank() -> primary
+    primary == alias -> primary
+    else -> null
+}
+
+private fun exactBadgeHardwareIdAlias(primary: String, alias: String): String? {
+    val primaryCanonical = primary.takeIf(String::isNotBlank)
+        ?.let(::canonicalBadgeHardwareId)
+    val aliasCanonical = alias.takeIf(String::isNotBlank)
+        ?.let(::canonicalBadgeHardwareId)
+    if ((primary.isNotBlank() && primaryCanonical == null) ||
+        (alias.isNotBlank() && aliasCanonical == null)
+    ) {
+        return null
+    }
+    return when {
+        primaryCanonical == null -> aliasCanonical
+        aliasCanonical == null -> primaryCanonical
+        primaryCanonical == aliasCanonical -> primaryCanonical
+        else -> null
+    }
+}
+
+internal fun badgeUsbProductKind(status: BadgeControlStatus?): BadgeUsbProductKind? {
+    if (status == null) return null
+    return when (status.productFamily) {
+        "" -> BadgeUsbProductKind.NATIVE_BADGE
+        "badge_lite" -> BadgeUsbProductKind.BADGE_LITE
+        else -> null
+    }
+}
+
+internal fun badgeDisplayControlsAvailable(status: BadgeControlStatus?): Boolean =
+    status == null ||
+        (status.mode != "headless" && "display_none" !in status.capabilities)
+
 internal fun badgeUsbIdentityError(
     status: BadgeControlStatus?,
     expectedHardwareId: String? = null,
+    expectedProductKind: BadgeUsbProductKind? = null,
 ): String? {
     // These fields are self-asserted by firmware. This is a product-routing safety check,
     // not cryptographic device authentication.
     if (status == null) return "Malformed badge status"
-    if (status.firmwareName != "uplink-s3-fof_badge") {
-        return "Unexpected USB firmware identity: ${status.firmwareName.ifBlank { "missing" }}"
+    val productKind = badgeUsbProductKind(status)
+        ?: return "Unexpected USB product family: ${status.productFamily.ifBlank { "missing" }}"
+    val hardwareId = when (productKind) {
+        BadgeUsbProductKind.NATIVE_BADGE -> {
+            if (status.firmwareName != "uplink-s3-fof_badge") {
+                return "Unexpected USB firmware identity: ${status.firmwareName.ifBlank { "missing" }}"
+            }
+            if (status.appProject != "fof_badge_uplink") {
+                return "Unexpected USB app project: ${status.appProject.ifBlank { "missing" }}"
+            }
+            if (status.hardwareType != "seeed_xiao_esp32s3") {
+                return "Unexpected USB hardware identity: ${status.hardwareType.ifBlank { "missing" }}"
+            }
+            if (status.firmwareTarget.isNotBlank() &&
+                status.firmwareTarget != "uplink-s3-fof_badge"
+            ) {
+                return "Unexpected USB target identity: ${status.firmwareTarget}"
+            }
+            canonicalBadgeHardwareId(status.hardwareId)
+        }
+        BadgeUsbProductKind.BADGE_LITE -> {
+            if (status.firmwareTarget != "uplink-s3-backend") {
+                return "Unexpected USB target identity: ${status.firmwareTarget.ifBlank { "missing" }}"
+            }
+            if (status.firmwareName.isNotBlank() &&
+                status.firmwareName != "uplink-s3-backend"
+            ) {
+                return "Unexpected USB firmware identity: ${status.firmwareName}"
+            }
+            val project = exactBadgeIdentityAlias(status.project, status.appProject)
+            if (project != "fof_backend_uplink") {
+                return "Unexpected USB app project: ${project ?: "conflicting aliases"}"
+            }
+            val hardware = exactBadgeIdentityAlias(status.hardware, status.hardwareType)
+            if (hardware != "seeed_xiao_esp32s3") {
+                return "Unexpected USB hardware identity: ${hardware ?: "conflicting aliases"}"
+            }
+            if (status.mode != "headless") {
+                return "Unexpected USB badge mode: ${status.mode.ifBlank { "missing" }}"
+            }
+            if ("display_none" !in status.capabilities) {
+                return "Unexpected USB badge capabilities: display_none missing"
+            }
+            exactBadgeHardwareIdAlias(status.mac, status.hardwareId)
+        }
     }
-    if (status.appProject != "fof_badge_uplink") {
-        return "Unexpected USB app project: ${status.appProject.ifBlank { "missing" }}"
-    }
-    if (status.hardwareType != "seeed_xiao_esp32s3") {
-        return "Unexpected USB hardware identity: ${status.hardwareType.ifBlank { "missing" }}"
-    }
-    if (status.firmwareTarget.isNotBlank() &&
-        status.firmwareTarget != "uplink-s3-fof_badge"
-    ) {
-        return "Unexpected USB target identity: ${status.firmwareTarget}"
-    }
-    val hardwareId = canonicalBadgeHardwareId(status.hardwareId)
         ?: return "Unexpected USB hardware ID: missing or invalid"
+    if (expectedProductKind != null && productKind != expectedProductKind) {
+        return "USB product identity mismatch"
+    }
     if (expectedHardwareId != null) {
         val expected = canonicalBadgeHardwareId(expectedHardwareId)
             ?: return "Expected USB hardware ID is invalid"
@@ -880,8 +987,9 @@ internal fun badgeUsbStatusFrameIdentityError(
     isStatusFrame: Boolean,
     status: BadgeControlStatus?,
     expectedHardwareId: String? = null,
+    expectedProductKind: BadgeUsbProductKind? = null,
 ): String? = if (isStatusFrame) {
-    badgeUsbIdentityError(status, expectedHardwareId)
+    badgeUsbIdentityError(status, expectedHardwareId, expectedProductKind)
 } else {
     null
 }
@@ -1137,6 +1245,7 @@ internal data class BadgeUsbOwnerKey(
     val connectionIdentity: Any,
     val endpointIdentity: Any,
     val hardwareId: String,
+    val productKind: BadgeUsbProductKind = BadgeUsbProductKind.NATIVE_BADGE,
 )
 
 internal fun badgeUsbOwnerKeyFromHandshake(
@@ -1147,13 +1256,21 @@ internal fun badgeUsbOwnerKeyFromHandshake(
     endpointIdentity: Any,
 ): BadgeUsbOwnerKey? {
     if (badgeUsbIdentityError(status) != null) return null
-    val hardwareId = canonicalBadgeHardwareId(status?.hardwareId.orEmpty()) ?: return null
+    val productKind = badgeUsbProductKind(status) ?: return null
+    val hardwareId = when (productKind) {
+        BadgeUsbProductKind.NATIVE_BADGE -> canonicalBadgeHardwareId(status?.hardwareId.orEmpty())
+        BadgeUsbProductKind.BADGE_LITE -> exactBadgeHardwareIdAlias(
+            status?.mac.orEmpty(),
+            status?.hardwareId.orEmpty(),
+        )
+    } ?: return null
     return BadgeUsbOwnerKey(
         attachmentToken = attachmentToken,
         lifecycleSession = lifecycleSession,
         connectionIdentity = connectionIdentity,
         endpointIdentity = endpointIdentity,
         hardwareId = hardwareId,
+        productKind = productKind,
     )
 }
 
@@ -1165,7 +1282,8 @@ internal fun badgeUsbOwnerKeysMatch(
     expected.lifecycleSession == actual.lifecycleSession &&
     expected.connectionIdentity === actual.connectionIdentity &&
     expected.endpointIdentity === actual.endpointIdentity &&
-    expected.hardwareId == actual.hardwareId
+    expected.hardwareId == actual.hardwareId &&
+    expected.productKind == actual.productKind
 
 internal fun badgeUsbStatusResponseCounter(status: BadgeControlStatus?): Long? =
     status?.usbHealth?.takeIf { it.schema == 1 }?.responsesCompleted
@@ -1474,6 +1592,20 @@ private fun JsonObject.badgeOptString(key: String): String {
 private fun JsonObject.badgeStrictString(key: String): String? {
     val primitive = get(key)?.takeIf { it.isJsonPrimitive }?.asJsonPrimitive ?: return null
     return primitive.takeIf { it.isString }?.asString
+}
+
+private fun JsonObject.badgeStrictStringSet(key: String): Set<String> {
+    val array = runCatching { getAsJsonArray(key) }.getOrNull() ?: return emptySet()
+    val values = LinkedHashSet<String>()
+    array.forEach { element ->
+        val value = element
+            .takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isString }
+            ?.asString
+            ?.takeIf(String::isNotBlank)
+            ?: return emptySet()
+        values += value
+    }
+    return values
 }
 
 private fun JsonObject.badgeStrictNonNegativeInt(key: String): Int? {
@@ -2395,6 +2527,7 @@ class BadgeUsbRepository @Inject constructor(
     private val lifecycleGate = BadgeUsbLifecycleGate()
     private val attachmentGate = BadgeUsbAttachmentGate()
     private val usbStatusPollGate = BadgeUsbStatusPollGate()
+    private val usbLiteLiveGate = BadgeUsbLiteLiveGate()
     private val usbReconnectGate = BadgeUsbReconnectGate()
     private val usbReconnectOperationSlot = BadgeUsbAtomicSlot<ActiveBadgeUsbReconnectOperation>()
     private val usbReconnectSelectionGate = BadgeUsbReconnectSelectionGate()
@@ -4008,8 +4141,19 @@ class BadgeUsbRepository @Inject constructor(
 
     private fun sendControl(payload: JsonObject) {
         val command = payload.badgeStrictString("cmd").orEmpty()
-        if (!BadgeControlTransportPolicy.allowsAndroidControlCommand(command)) {
-            setState { it.copy(message = "Unsupported Android badge control command") }
+        val controlStatus = state.value.controlStatus
+        if (!BadgeControlTransportPolicy.allowsAndroidControlCommand(command) ||
+            !BadgeControlTransportPolicy.allowsAndroidControlCommand(command, controlStatus)
+        ) {
+            setState {
+                it.copy(
+                    message = if (!badgeDisplayControlsAvailable(controlStatus)) {
+                        "Display controls are unavailable on this headless badge"
+                    } else {
+                        "Unsupported Android badge control command"
+                    },
+                )
+            }
             return
         }
         val expectedOwner = verifiedUsbOwnerKey
@@ -4174,6 +4318,15 @@ class BadgeUsbRepository @Inject constructor(
         usbReconnectOperationSlot.current() === it && it.isActive()
     }?.let {
         usbReconnectGate.expectedHardwareId(it.ticket, lifecycleSession)
+    }
+
+    private fun reconnectExpectedProductKind(
+        operation: ActiveBadgeUsbReconnectOperation?,
+        lifecycleSession: Long,
+    ): BadgeUsbProductKind? = operation?.takeIf {
+        usbReconnectOperationSlot.current() === it && it.isActive()
+    }?.let {
+        usbReconnectGate.expectedProductKind(it.ticket, lifecycleSession)
     }
 
     private fun isUsbReconnectAttemptCurrent(
@@ -6256,6 +6409,17 @@ class BadgeUsbRepository @Inject constructor(
         } else {
             null
         }
+        val liteLiveReady = if (frameOwner?.productKind == BadgeUsbProductKind.BADGE_LITE) {
+            parseBadgeUsbLiteLiveReady(trimmed)
+        } else {
+            null
+        }
+        val liteLiveHeartbeat = if (frameOwner?.productKind == BadgeUsbProductKind.BADGE_LITE) {
+            parseBadgeUsbLiteLiveHeartbeat(trimmed)
+        } else {
+            null
+        }
+        var liteLiveFrameAccepted = false
         val usbHandshakeActive = badgeUsbHandshakeOwnsSession(
             lifecycleActive = lifecycleGate.isActive(lifecycleSession),
             status = state.value.status,
@@ -6275,6 +6439,10 @@ class BadgeUsbRepository @Inject constructor(
             isStatusFrame = isStatusFrame,
             status = status,
             expectedHardwareId = frameOwner?.hardwareId ?: expectedHardwareId,
+            expectedProductKind = frameOwner?.productKind ?: reconnectExpectedProductKind(
+                operation = reconnectOperation,
+                lifecycleSession = lifecycleSession,
+            ),
         )?.let { identityError ->
             rejectUsbIdentityLocked(
                 connection = connection,
@@ -6346,6 +6514,10 @@ class BadgeUsbRepository @Inject constructor(
                         }
                         trimmed.startsWith("FOF_CTL_OK:") -> "Badge command accepted"
                         trimmed.startsWith("FOF_CTL_ERROR:") -> "Badge command failed"
+                        liteLiveFrameAccepted && liteLiveReady != null ->
+                            "Badge Lite live stream ready"
+                        liteLiveFrameAccepted && liteLiveHeartbeat != null ->
+                            "Badge Lite live stream active"
                         investigationHandled -> "Badge investigation updated"
                         detection != null -> "Receiving badge events"
                         else -> current.message
@@ -6374,6 +6546,11 @@ class BadgeUsbRepository @Inject constructor(
                             owner = acceptedOwner,
                             initialResponsesCompleted = badgeUsbStatusResponseCounter(status),
                         )
+                        if (acceptedOwner.productKind == BadgeUsbProductKind.BADGE_LITE) {
+                            check(usbLiteLiveGate.bind(acceptedOwner)) {
+                                "Verified Badge Lite owner could not bind live USB session"
+                            }
+                        }
                         verifiedUsbOwnerKey = acceptedOwner
                         setState(frameStateUpdate(false))
                         preparedStatusPoller = prepareUsbStatusPollerLocked(
@@ -6419,6 +6596,14 @@ class BadgeUsbRepository @Inject constructor(
             completedReconnectJob?.cancel()
             completedHandshakeJob?.cancel()
             preparedStatusPoller?.let(::startUsbStatusPoller)
+            badgeUsbLiteLiveStartLine(acceptedOwner)?.let { liveStartLine ->
+                scope.launch {
+                    writeVerifiedUsbLine(
+                        line = liveStartLine,
+                        expectedOwner = acceptedOwner,
+                    )
+                }
+            }
             return
         }
         if (!badgeUsbFrameMayMutateState(
@@ -6430,6 +6615,7 @@ class BadgeUsbRepository @Inject constructor(
         }
         val exactFrameOwner = frameOwner ?: return
         var preparedInvestigation = PreparedBadgeUsbInvestigationFrame()
+        var liteLiveAckTicket: BadgeUsbLiteLiveAckTicket? = null
         val frameCommitted = usbReconnectSelectionGate.withBarrier {
             val currentOwner = verifiedUsbOwnerKey
             if (activeUsbIoSession !== ioSession ||
@@ -6452,12 +6638,34 @@ class BadgeUsbRepository @Inject constructor(
                     responsesCompleted = badgeUsbStatusResponseCounter(status),
                 )
             }
+            if (liteLiveReady != null) {
+                liteLiveFrameAccepted = usbLiteLiveGate.acceptReady(
+                    owner = exactFrameOwner,
+                    ready = liteLiveReady,
+                )
+            } else if (liteLiveHeartbeat != null) {
+                liteLiveAckTicket = usbLiteLiveGate.prepareAck(
+                    owner = exactFrameOwner,
+                    heartbeat = liteLiveHeartbeat,
+                )
+                liteLiveFrameAccepted = liteLiveAckTicket != null
+            }
             val frameStateUpdate = frameStateUpdate(preparedInvestigation.handled)
             setState(frameStateUpdate)
             true
         }
         if (!frameCommitted) return
         completePreparedUsbInvestigationFrame(preparedInvestigation)
+        liteLiveAckTicket?.let { ticket ->
+            scope.launch {
+                val ackLine = badgeUsbLiteLiveAckLine(ticket.sessionId, ticket.sequence)
+                val sent = ackLine != null && writeVerifiedUsbLine(
+                    line = ackLine,
+                    expectedOwner = ticket.owner,
+                )
+                usbLiteLiveGate.completeAck(ticket, sent)
+            }
+        }
     }
 
     // Call only while connectionMutex -> usbReconnectSelectionGate are held.
@@ -6727,7 +6935,10 @@ class BadgeUsbRepository @Inject constructor(
             )
         }
         verifiedUsbOwnerKey = null
-        if (disconnectedOwner != null) usbStatusPollGate.clear(disconnectedOwner)
+        if (disconnectedOwner != null) {
+            usbStatusPollGate.clear(disconnectedOwner)
+            usbLiteLiveGate.clear(disconnectedOwner)
+        }
         val detachedInvestigation = detachUsbInvestigationLocked(disconnectedOwner)
         readJob = null
         usbHandshakeJob = null

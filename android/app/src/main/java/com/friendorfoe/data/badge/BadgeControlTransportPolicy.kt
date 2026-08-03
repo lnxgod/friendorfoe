@@ -18,6 +18,13 @@ internal object BadgeControlTransportPolicy {
         "badge_theme_reset",
         "display_nav",
     )
+    private val displayOnlyCommands = setOf(
+        "badge_display_policy",
+        "badge_display_policy_reset",
+        "badge_theme",
+        "badge_theme_reset",
+        "display_nav",
+    )
 
     fun select(
         hasUsb: Boolean,
@@ -38,8 +45,11 @@ internal object BadgeControlTransportPolicy {
         BadgeUsbStatus.DEBUG_BRIDGE_CONNECTED,
     )
 
-    fun allowsAndroidControlCommand(command: String): Boolean =
-        command in androidControlCommands
+    fun allowsAndroidControlCommand(
+        command: String,
+        controlStatus: BadgeControlStatus? = null,
+    ): Boolean = command in androidControlCommands &&
+        (command !in displayOnlyCommands || badgeDisplayControlsAvailable(controlStatus))
 
     fun controlConnectionGuidance(): String =
         "Attach a FoF badge over USB-C to send controls"
