@@ -58,6 +58,30 @@ Available launch options are:
 `--http-port` still binds only to `127.0.0.1`. An explicitly requested busy
 HTTP port is reported as an error instead of silently changing ports.
 
+## Overnight macOS service
+
+For unattended overnight capture, register the per-user macOS service from
+`new-dash/`:
+
+```sh
+./start.sh
+./start.sh --http-port 18888 --port /dev/cu.usbmodem1101
+./stop.sh
+```
+
+`start.sh` creates or reuses the local virtual environment, installs New Dash,
+and replaces only its own `io.friendorfoe.new-dash` LaunchAgent. The service
+restarts after a crash, continues retrying when the USB badge disconnects and
+reconnects, and uses `caffeinate` to keep the Mac awake while it runs. Its
+history remains at `~/Library/Application Support/New Dash/new-dash.sqlite3`;
+service logs remain at `~/Library/Logs/New Dash/service.log` and
+`~/Library/Logs/New Dash/service-error.log` after `./stop.sh`.
+
+The Mac must remain powered with its lid open for overnight capture. Stop any
+other serial owner, such as a flasher, serial monitor, Android bridge, or
+foreground New Dash process, before starting this service. `run.sh` remains
+the foreground developer launcher.
+
 ## Browser views
 
 - **Live** shows USB/freshness/scanner health, threat counts, active badge
