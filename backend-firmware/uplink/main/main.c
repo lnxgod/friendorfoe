@@ -695,6 +695,29 @@ static void reset_lite_wifi_state_locked(void)
     s_runtime.wifi_rssi = 0;
     s_runtime.wifi_ssid[0] = '\0';
 }
+
+static bool acquire_lite_http_if_sta_usable(void)
+{
+    if (xSemaphoreTake(s_runtime.http_lock, portMAX_DELAY) != pdTRUE) {
+        return false;
+    }
+    lock_runtime();
+    const bool station_usable = backend_lite_network_can_use_sta(
+        s_runtime.config.network_count,
+        s_runtime.wifi_initialized,
+        s_runtime.wifi_connected);
+    unlock_runtime();
+    if (!station_usable) {
+        (void)xSemaphoreGive(s_runtime.http_lock);
+        return false;
+    }
+    return true;
+}
+
+static void release_lite_http(void)
+{
+    (void)xSemaphoreGive(s_runtime.http_lock);
+}
 #endif
 
 static bool portal_reconnect(
@@ -741,7 +764,16 @@ static bool portal_backend_get(
 {
     (void)context;
     (void)timeout_ms;
+#if defined(FOF_BACKEND_PROFILE_BADGE_LITE)
+    if (!acquire_lite_http_if_sta_usable()) {
+        if (status_code != NULL) {
+            *status_code = 0;
+        }
+        return false;
+    }
+#else
     (void)xSemaphoreTake(s_runtime.http_lock, portMAX_DELAY);
+#endif
     const backend_http_result_t result = backend_http_get_json(
         base_url, path, s_runtime.portal_http_response,
         sizeof(s_runtime.portal_http_response));
@@ -757,12 +789,15 @@ static bool portal_backend_get(
         }
         unlock_runtime();
     }
-#endif
+    if (status_code != NULL) {
+        *status_code = result.status_code;
+    }
+    release_lite_http();
+#else
     (void)xSemaphoreGive(s_runtime.http_lock);
     if (status_code != NULL) {
         *status_code = result.status_code;
     }
-#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
     if (result.transport_complete && result.status_code >= 200 &&
         result.status_code < 300) {
         lock_runtime();
@@ -1247,22 +1282,34 @@ static bool ota_fetch_metadata(
     lock_runtime();
     copy_text(base_url, sizeof(base_url), s_runtime.config.backend_url);
     unlock_runtime();
-    (void)xSemaphoreTake(s_runtime.http_lock, portMAX_DELAY);
-    const backend_http_result_t result = backend_http_get_json(
-        base_url, endpoint, json, capacity);
-    (void)xSemaphoreGive(s_runtime.http_lock);
-    if (!result.transport_complete || result.status_code != 200 ||
-        result.body_length == 0U || result.body_length >= capacity) {
+#if defined(FOF_BACKEND_PROFILE_BADGE_LITE)
+    if (!acquire_lite_http_if_sta_usable()) {
         return false;
     }
-    lock_runtime();
-    s_runtime.catalog_generation =
-        s_runtime.catalog_generation == UINT32_MAX
-            ? 1U : s_runtime.catalog_generation + 1U;
-    *out_catalog_generation = s_runtime.catalog_generation;
-    unlock_runtime();
-    *out_length = result.body_length;
-    return true;
+#else
+    (void)xSemaphoreTake(s_runtime.http_lock, portMAX_DELAY);
+#endif
+    const backend_http_result_t result = backend_http_get_json(
+        base_url, endpoint, json, capacity);
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+    (void)xSemaphoreGive(s_runtime.http_lock);
+#endif
+    const bool valid = result.transport_complete &&
+        result.status_code == 200 && result.body_length > 0U &&
+        result.body_length < capacity;
+    if (valid) {
+        lock_runtime();
+        s_runtime.catalog_generation =
+            s_runtime.catalog_generation == UINT32_MAX
+                ? 1U : s_runtime.catalog_generation + 1U;
+        *out_catalog_generation = s_runtime.catalog_generation;
+        unlock_runtime();
+        *out_length = result.body_length;
+    }
+#if defined(FOF_BACKEND_PROFILE_BADGE_LITE)
+    release_lite_http();
+#endif
+    return valid;
 }
 
 static bool ota_download_image(
@@ -1294,20 +1341,31 @@ static bool ota_download_image(
         .capacity = capacity,
         .length = 0U,
     };
+#if defined(FOF_BACKEND_PROFILE_BADGE_LITE)
+    if (!acquire_lite_http_if_sta_usable()) {
+        return false;
+    }
+#else
     (void)xSemaphoreTake(s_runtime.http_lock, portMAX_DELAY);
+#endif
     const backend_http_result_t result = backend_http_get_binary(
         base_url,
         endpoint,
         expected_size,
         binary_download_sink,
         &sink);
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
     (void)xSemaphoreGive(s_runtime.http_lock);
-    if (!result.transport_complete || result.status_code != 200 ||
-        sink.length != expected_size) {
-        return false;
+#endif
+    const bool valid = result.transport_complete &&
+        result.status_code == 200 && sink.length == expected_size;
+    if (valid) {
+        *out_size = sink.length;
     }
-    *out_size = sink.length;
-    return true;
+#if defined(FOF_BACKEND_PROFILE_BADGE_LITE)
+    release_lite_http();
+#endif
+    return valid;
 }
 
 static const char *ota_running_version(
@@ -2368,14 +2426,13 @@ static void uploader_worker(void *argument)
         }
 #if defined(FOF_BACKEND_PROFILE_BADGE_LITE)
         /* Hold HTTP across admission, POST, and response bookkeeping. */
-        (void)xSemaphoreTake(s_runtime.http_lock, portMAX_DELAY);
+        if (!acquire_lite_http_if_sta_usable()) {
+            vTaskDelay(pdMS_TO_TICKS(UPLINK_UPLOAD_PERIOD_MS));
+            continue;
+        }
         lock_runtime();
-        const bool station_usable = backend_lite_network_can_use_sta(
-            s_runtime.config.network_count,
-            s_runtime.wifi_initialized,
-            s_runtime.wifi_connected);
-        const backend_upload_batch_t *head = station_usable
-            ? backend_upload_fifo_peek(&s_runtime.upload_fifo) : NULL;
+        const backend_upload_batch_t *head =
+            backend_upload_fifo_peek(&s_runtime.upload_fifo);
         if (head != NULL && backend_uploader_begin_head(
                 &s_runtime.uploader,
                 head,
@@ -2390,7 +2447,7 @@ static void uploader_worker(void *argument)
         }
         unlock_runtime();
         if (!have_request) {
-            (void)xSemaphoreGive(s_runtime.http_lock);
+            release_lite_http();
             vTaskDelay(pdMS_TO_TICKS(UPLINK_UPLOAD_PERIOD_MS));
             continue;
         }
@@ -2478,7 +2535,7 @@ static void uploader_worker(void *argument)
         }
         unlock_runtime();
 #if defined(FOF_BACKEND_PROFILE_BADGE_LITE)
-        (void)xSemaphoreGive(s_runtime.http_lock);
+        release_lite_http();
 #endif
     }
 }
@@ -2534,6 +2591,9 @@ static void time_worker(void *argument)
             sntp_epoch_ms > BACKEND_DETECTION_EPOCH_MIN_MS;
         bool backend_valid = false;
         int64_t backend_epoch_ms = 0;
+#if defined(FOF_BACKEND_PROFILE_BADGE_LITE)
+        bool lite_http_held = false;
+#endif
         char base_url[sizeof(s_runtime.config.backend_url)];
         bool connected = false;
         lock_runtime();
@@ -2541,18 +2601,28 @@ static void time_worker(void *argument)
         copy_text(base_url, sizeof(base_url), s_runtime.config.backend_url);
         unlock_runtime();
         if (!sntp_valid && connected) {
+#if defined(FOF_BACKEND_PROFILE_BADGE_LITE)
+            if (acquire_lite_http_if_sta_usable()) {
+                lite_http_held = true;
+#else
             (void)xSemaphoreTake(s_runtime.http_lock, portMAX_DELAY);
+#endif
             const backend_http_result_t result = backend_http_get_json(
                 base_url,
                 "/detections/time",
                 s_runtime.time_http_response,
                 sizeof(s_runtime.time_http_response));
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
             (void)xSemaphoreGive(s_runtime.http_lock);
+#endif
             backend_valid = result.transport_complete &&
                 result.status_code == 200 &&
                 backend_time_parse_response(
                     s_runtime.time_http_response, result.body_length,
                     &backend_epoch_ms);
+#if defined(FOF_BACKEND_PROFILE_BADGE_LITE)
+            }
+#endif
         }
         int64_t selected_epoch_ms = 0;
         const backend_time_source_t source = backend_time_select_source(
@@ -2564,6 +2634,11 @@ static void time_worker(void *argument)
         if (source != BACKEND_TIME_SOURCE_NONE) {
             broadcast_time(selected_epoch_ms, source);
         }
+#if defined(FOF_BACKEND_PROFILE_BADGE_LITE)
+        if (lite_http_held) {
+            release_lite_http();
+        }
+#endif
         vTaskDelay(pdMS_TO_TICKS(UPLINK_TIME_PERIOD_MS));
     }
 }
@@ -2589,11 +2664,19 @@ static void command_send_result(
     memcpy(body, s_runtime.command_client.post_body, body_length + 1U);
     unlock_runtime();
 
+#if defined(FOF_BACKEND_PROFILE_BADGE_LITE)
+    if (!acquire_lite_http_if_sta_usable()) {
+        return;
+    }
+#else
     (void)xSemaphoreTake(s_runtime.http_lock, portMAX_DELAY);
+#endif
     const backend_http_result_t http_result = backend_http_post_json(
         base_url, path, body, body_length, s_runtime.command_http_response,
         sizeof(s_runtime.command_http_response));
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
     (void)xSemaphoreGive(s_runtime.http_lock);
+#endif
     lock_runtime();
     backend_command_result_ack_t ack;
     const bool ack_valid = http_result.transport_complete &&
@@ -2622,6 +2705,9 @@ static void command_send_result(
     (void)device_id;
     (void)now_ms;
     unlock_runtime();
+#if defined(FOF_BACKEND_PROFILE_BADGE_LITE)
+    release_lite_http();
+#endif
 }
 
 static void command_worker(void *argument)
@@ -2659,14 +2745,24 @@ static void command_worker(void *argument)
             vTaskDelay(pdMS_TO_TICKS(1000));
             continue;
         }
+#if defined(FOF_BACKEND_PROFILE_BADGE_LITE)
+        if (!acquire_lite_http_if_sta_usable()) {
+            vTaskDelay(pdMS_TO_TICKS(500));
+            continue;
+        }
+#endif
         lock_runtime();
         (void)backend_command_poll_started(&s_runtime.command_http, now_ms);
         unlock_runtime();
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
         (void)xSemaphoreTake(s_runtime.http_lock, portMAX_DELAY);
+#endif
         const backend_http_result_t http_result = backend_http_get_json(
             base_url, path, s_runtime.command_http_response,
             sizeof(s_runtime.command_http_response));
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
         (void)xSemaphoreGive(s_runtime.http_lock);
+#endif
         const backend_command_http_action_t action =
             backend_command_poll_http_action(
                 http_result.transport_complete, http_result.status_code);
@@ -2727,6 +2823,9 @@ static void command_worker(void *argument)
             }
         }
         unlock_runtime();
+#if defined(FOF_BACKEND_PROFILE_BADGE_LITE)
+        release_lite_http();
+#endif
     }
 }
 

@@ -341,6 +341,9 @@ def test_lite_zero_network_clear_disconnects_and_fences_uploader_http() -> None:
     source = (UPLINK / "main/main.c").read_text(encoding="utf-8")
     disconnect = _c_function(source, "disconnect_lite_station")
     reset = _c_function(source, "reset_lite_wifi_state_locked")
+    acquire_http = _c_function(
+        source, "acquire_lite_http_if_sta_usable"
+    )
     begin_transaction = _c_function(source, "begin_config_transaction")
     commit = _c_function(source, "portal_commit")
     reconnect = _c_function(source, "portal_reconnect")
@@ -368,6 +371,27 @@ def test_lite_zero_network_clear_disconnects_and_fences_uploader_http() -> None:
     assert "unlock_runtime()" in commit
     assert "http_lock" not in commit
 
+    helper_take = acquire_http.index(
+        "xSemaphoreTake(s_runtime.http_lock, portMAX_DELAY)"
+    )
+    helper_runtime_lock = acquire_http.index("lock_runtime()", helper_take)
+    helper_admission = acquire_http.index(
+        "backend_lite_network_can_use_sta(", helper_runtime_lock
+    )
+    helper_runtime_unlock = acquire_http.index(
+        "unlock_runtime()", helper_admission
+    )
+    helper_denied_release = acquire_http.index(
+        "xSemaphoreGive(s_runtime.http_lock)", helper_runtime_unlock
+    )
+    assert (
+        helper_take
+        < helper_runtime_lock
+        < helper_admission
+        < helper_runtime_unlock
+        < helper_denied_release
+    )
+
     zero_network = reconnect.index("committed->network_count == 0U")
     http_lock = reconnect.index(
         "xSemaphoreTake(s_runtime.http_lock, portMAX_DELAY)", zero_network
@@ -393,36 +417,59 @@ def test_lite_zero_network_clear_disconnects_and_fences_uploader_http() -> None:
         < http_unlock
     )
 
-    backend_get_http_lock = backend_get.index(
-        "xSemaphoreTake(s_runtime.http_lock, portMAX_DELAY)"
-    )
-    backend_get_request = backend_get.index(
-        "backend_http_get_json(", backend_get_http_lock
-    )
-    backend_get_runtime_lock = backend_get.index(
-        "lock_runtime()", backend_get_request
-    )
-    backend_get_admission = backend_get.index(
-        "backend_lite_network_can_use_sta(", backend_get_runtime_lock
-    )
-    reachable = backend_get.index(
-        "s_runtime.backend_reachable = true", backend_get_admission
-    )
-    backend_get_runtime_unlock = backend_get.index(
-        "unlock_runtime()", reachable
-    )
-    backend_get_http_unlock = backend_get.index(
-        "xSemaphoreGive(s_runtime.http_lock)", backend_get_runtime_unlock
-    )
-    assert (
-        backend_get_http_lock
-        < backend_get_request
-        < backend_get_runtime_lock
-        < backend_get_admission
-        < reachable
-        < backend_get_runtime_unlock
-        < backend_get_http_unlock
-    )
+    lite_http_sites = {
+        "portal_backend_get": (
+            backend_get,
+            "backend_http_get_json(",
+            "s_runtime.backend_reachable = true",
+        ),
+        "ota_fetch_metadata": (
+            _c_function(source, "ota_fetch_metadata"),
+            "backend_http_get_json(",
+            "*out_length = result.body_length",
+        ),
+        "ota_download_image": (
+            _c_function(source, "ota_download_image"),
+            "backend_http_get_binary(",
+            "*out_size = sink.length",
+        ),
+        "uploader_worker": (
+            uploader,
+            "backend_http_post_json(",
+            "backend_uploader_note_response(",
+        ),
+        "time_worker": (
+            _c_function(source, "time_worker"),
+            "backend_http_get_json(",
+            "broadcast_time(",
+        ),
+        "command_send_result": (
+            _c_function(source, "command_send_result"),
+            "backend_http_post_json(",
+            "backend_command_result_ack_commit(",
+        ),
+        "command_worker": (
+            _c_function(source, "command_worker"),
+            "backend_http_get_json(",
+            "backend_command_client_bind(",
+        ),
+    }
+    assert len(lite_http_sites) == 7
+    assert source.count("acquire_lite_http_if_sta_usable()") == 7
+    for name, (function, transport, effect) in lite_http_sites.items():
+        admission = function.index("acquire_lite_http_if_sta_usable()")
+        network_call = function.index(transport, admission)
+        final_effect = function.index(effect, network_call)
+        release = function.index("release_lite_http()", final_effect)
+        assert admission < network_call < final_effect < release, name
+
+    for fullsize_only in (
+        "ota_drain_pending_outbox",
+        "backend_ota_client_worker",
+    ):
+        assert "acquire_lite_http_if_sta_usable" not in _c_function(
+            source, fullsize_only
+        )
 
     got_ip = wifi_events.index("IP_EVENT_STA_GOT_IP")
     admission = wifi_events.index(
@@ -436,38 +483,6 @@ def test_lite_zero_network_clear_disconnects_and_fences_uploader_http() -> None:
     )
     accepted = wifi_events.index("s_runtime.wifi_connected = true", admission)
     assert admission < stale_disconnect < stale_reset < accepted
-
-    lite_selection = uploader.index(
-        "#if defined(FOF_BACKEND_PROFILE_BADGE_LITE)",
-        uploader.index("backend_heartbeat_due("),
-    )
-    upload_http_lock = uploader.index(
-        "xSemaphoreTake(s_runtime.http_lock, portMAX_DELAY)", lite_selection
-    )
-    upload_runtime_lock = uploader.index("lock_runtime()", upload_http_lock)
-    upload_admission = uploader.index(
-        "backend_lite_network_can_use_sta(", upload_runtime_lock
-    )
-    begin_head = uploader.index("backend_uploader_begin_head(", upload_admission)
-    selection_unlock = uploader.index("unlock_runtime()", begin_head)
-    post = uploader.index("backend_http_post_json(", selection_unlock)
-    response_lock = uploader.index("lock_runtime()", post)
-    response_unlock = uploader.index("unlock_runtime()", response_lock)
-    upload_http_unlock = uploader.index(
-        "xSemaphoreGive(s_runtime.http_lock)", response_unlock
-    )
-    assert (
-        upload_http_lock
-        < upload_runtime_lock
-        < upload_admission
-        < begin_head
-        < selection_unlock
-        < post
-        < response_lock
-        < response_unlock
-        < upload_http_unlock
-    )
-
 
 def test_lite_dashboard_status_uses_bounded_psram_not_task_stack() -> None:
     header = (UPLINK / "main/network/backend_config_portal.h").read_text(
