@@ -11,7 +11,8 @@ import zlib
 from pathlib import Path
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import event as sqlalchemy_event, func, select
+from sqlalchemy.exc import OperationalError
 
 from app.routers import detections, nodes
 from app.services import firmware_manager
@@ -298,6 +299,123 @@ async def test_preflight_rejects_nonexact_or_unhealthy_trios_before_fetch(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        pytest.param(
+            lambda hb: hb.pop("firmware_version"), id="uplink-version-missing",
+        ),
+        pytest.param(
+            lambda hb: hb.__setitem__("firmware_version", ""),
+            id="uplink-version-empty",
+        ),
+        pytest.param(
+            lambda hb: hb.__setitem__("firmware_version", 7),
+            id="uplink-version-non-string",
+        ),
+        pytest.param(
+            lambda hb: hb.__setitem__("firmware_version", "0.2.0\nbackend"),
+            id="uplink-version-control",
+        ),
+        pytest.param(
+            lambda hb: hb["scanners"][0].pop("firmware_version"),
+            id="scanner-version-missing",
+        ),
+        pytest.param(
+            lambda hb: hb["scanners"][1].__setitem__("firmware_version", True),
+            id="scanner-version-non-string",
+        ),
+        pytest.param(
+            lambda hb: hb["scanners"][0].__setitem__("firmware_version", " bad"),
+            id="scanner-version-noncanonical",
+        ),
+        pytest.param(
+            lambda hb: hb["scanners"][0].pop("uart"), id="uart-missing",
+        ),
+        pytest.param(
+            lambda hb: hb["scanners"][0].__setitem__("uart", False),
+            id="uart-non-string",
+        ),
+        pytest.param(
+            lambda hb: hb["scanners"][1].__setitem__("uart", "ble"),
+            id="uart-wrong",
+        ),
+        pytest.param(
+            lambda hb: hb["scanners"][0].__setitem__("slot", False),
+            id="slot-false",
+        ),
+        pytest.param(
+            lambda hb: hb["scanners"][1].__setitem__("slot", 1.0),
+            id="slot-float",
+        ),
+        pytest.param(
+            lambda hb: hb["scanners"][0].__setitem__("slot", "0"),
+            id="slot-string",
+        ),
+        pytest.param(
+            lambda hb: hb["scanners"][1].__setitem__("slot", True),
+            id="slot-true",
+        ),
+        pytest.param(
+            lambda hb: hb["scanners"][0].pop("profile"), id="profile-missing",
+        ),
+        pytest.param(
+            lambda hb: hb["scanners"][0].__setitem__(
+                "profile", "hybrid_failover",
+            ),
+            id="profile-wrong",
+        ),
+        pytest.param(
+            lambda hb: hb["scanners"][1].__setitem__("profile", 1),
+            id="profile-non-string",
+        ),
+    ],
+)
+async def test_preflight_rejects_noncanonical_trio_binding_before_fetch(
+    client, monkeypatch, mutation,
+):
+    heartbeat = fullsize_heartbeat()
+    mutation(heartbeat)
+    install_heartbeat(heartbeat)
+    calls = install_images(monkeypatch)
+
+    response = await client.post(
+        "/nodes/uplink_FULL/backend-ota/rollouts", json={"components": "all"},
+    )
+
+    assert response.status_code == 409
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_preflight_binds_snapshot_device_id_to_requested_device(db_session):
+    from app.models.schemas import BackendOtaRolloutRequest
+    from app.services.backend_ota_commands import BackendOtaConflict, BackendOtaService
+
+    heartbeat = fullsize_heartbeat()
+    snapshot = {
+        "device_id": "uplink_OTHER",
+        "ip": heartbeat["ip"],
+        "heartbeat": heartbeat,
+        "scanners": heartbeat["scanners"],
+    }
+
+    class ExactManager:
+        async def get_firmware_binary(self, name: str) -> bytes:
+            return SCANNER_IMAGE if name == SCANNER_NAME else UPLINK_IMAGE
+
+    with pytest.raises(BackendOtaConflict, match="device"):
+        await BackendOtaService().create_rollout(
+            db_session,
+            "uplink_FULL",
+            BackendOtaRolloutRequest(components="all"),
+            now=time.time(),
+            firmware_manager=ExactManager(),
+            snapshot_provider=lambda *_args: snapshot,
+        )
+
+
+@pytest.mark.asyncio
 async def test_binding_change_immediately_after_first_await_stops_second_fetch(
     client, monkeypatch,
 ):
@@ -419,6 +537,109 @@ async def test_final_synchronous_preflight_catches_last_binding_change(db_sessio
             snapshot_provider=changing_snapshot,
         )
     assert snapshot_calls == 4
+
+
+@pytest.mark.asyncio
+async def test_create_takes_immediate_transaction_only_at_final_database_boundary(
+    db_session,
+):
+    from app.models.schemas import BackendOtaRolloutRequest
+    from app.services.backend_ota_commands import BackendOtaService
+
+    heartbeat = fullsize_heartbeat()
+    timeline: list[str] = []
+    snapshot_count = 0
+
+    def snapshot_provider(*_args) -> dict:
+        nonlocal snapshot_count
+        snapshot_count += 1
+        timeline.append(f"snapshot:{snapshot_count}")
+        copied = json.loads(json.dumps(heartbeat))
+        return {
+            "device_id": "uplink_FULL",
+            "ip": copied["ip"],
+            "heartbeat": copied,
+            "scanners": copied["scanners"],
+        }
+
+    class ExactManager:
+        async def get_firmware_binary(self, name: str) -> bytes:
+            timeline.append(f"fetch:{name}")
+            return SCANNER_IMAGE if name == SCANNER_NAME else UPLINK_IMAGE
+
+    def capture_sql(_conn, _cursor, statement, _parameters, _context, _many):
+        normalized = " ".join(statement.split())
+        if normalized == "BEGIN IMMEDIATE":
+            timeline.append("db:begin-immediate")
+        elif normalized.startswith("SELECT") and "backend_ota_rollouts" in normalized:
+            timeline.append("db:active-select")
+        elif normalized.startswith("INSERT INTO backend_ota_rollouts"):
+            timeline.append("db:insert")
+
+    engine = db_session.bind.sync_engine
+    sqlalchemy_event.listen(engine, "before_cursor_execute", capture_sql)
+    try:
+        await BackendOtaService().create_rollout(
+            db_session,
+            "uplink_FULL",
+            BackendOtaRolloutRequest(components="all"),
+            now=time.time(),
+            firmware_manager=ExactManager(),
+            snapshot_provider=snapshot_provider,
+        )
+    finally:
+        sqlalchemy_event.remove(engine, "before_cursor_execute", capture_sql)
+
+    assert timeline[:6] == [
+        "snapshot:1",
+        f"fetch:{SCANNER_NAME}",
+        "snapshot:2",
+        f"fetch:{UPLINK_NAME}",
+        "snapshot:3",
+        "snapshot:4",
+    ]
+    assert timeline[6:] == [
+        "db:begin-immediate", "db:active-select", "db:insert",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_create_maps_final_immediate_transaction_outage_to_unavailable(
+    db_session,
+):
+    from app.models.schemas import BackendOtaRolloutRequest
+    from app.services.backend_ota_commands import BackendOtaService, BackendOtaUnavailable
+
+    heartbeat = fullsize_heartbeat()
+    snapshot = {
+        "device_id": "uplink_FULL",
+        "ip": heartbeat["ip"],
+        "heartbeat": heartbeat,
+        "scanners": heartbeat["scanners"],
+    }
+
+    class ExactManager:
+        async def get_firmware_binary(self, name: str) -> bytes:
+            return SCANNER_IMAGE if name == SCANNER_NAME else UPLINK_IMAGE
+
+    def fail_immediate(_conn, _cursor, statement, parameters, _context, _many):
+        if " ".join(statement.split()) == "BEGIN IMMEDIATE":
+            raise OperationalError(statement, parameters, RuntimeError("offline"))
+
+    engine = db_session.bind.sync_engine
+    sqlalchemy_event.listen(engine, "before_cursor_execute", fail_immediate)
+    try:
+        with pytest.raises(BackendOtaUnavailable, match="store unavailable"):
+            await BackendOtaService().create_rollout(
+                db_session,
+                "uplink_FULL",
+                BackendOtaRolloutRequest(components="all"),
+                now=time.time(),
+                firmware_manager=ExactManager(),
+                snapshot_provider=lambda *_args: snapshot,
+            )
+    finally:
+        sqlalchemy_event.remove(engine, "before_cursor_execute", fail_immediate)
 
 
 @pytest.mark.asyncio
@@ -675,6 +896,121 @@ async def test_event_duplicate_keys_and_noncanonical_extra_fields_are_422(
     ] == 0
 
 
+def _progress(
+    command: dict,
+    *,
+    sequence: int,
+    stage: str,
+    received: int,
+    total: int = 100,
+    retry_count: int = 0,
+) -> dict:
+    return {
+        "schema": 1,
+        "operation_id": command["operation_id"],
+        "sequence": sequence,
+        "type": "backend_ota_progress",
+        "component": command["component"],
+        "catalog_name": command["catalog_name"],
+        "stage": stage,
+        "received": received,
+        "total": total,
+        "retry_count": retry_count,
+    }
+
+
+async def _command_for_progress_phase(
+    client, monkeypatch, *, component: str, action: str,
+) -> dict:
+    heartbeat = fullsize_heartbeat()
+    if component == "uplink":
+        for scanner in heartbeat["scanners"]:
+            scanner["firmware_version"] = TARGET_VERSION
+    _heartbeat, command = await _create_rollout(
+        client, monkeypatch, heartbeat=heartbeat,
+    )
+    if component == "uplink":
+        command = await _finish_no_update(client, command)
+        assert command is not None
+        command = await _finish_no_update(client, command)
+        assert command is not None and command["component"] == "uplink"
+    if action == "apply":
+        command, _ = await _finish_eligible_probe(client, command)
+    return command
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("component", "action", "allowed", "forbidden"),
+    [
+        (
+            "scanner0",
+            "probe",
+            ("metadata", "download", "validate", "stage", "uart_relay", "convergence"),
+            ("reboot_wait",),
+        ),
+        (
+            "uplink",
+            "probe",
+            ("metadata", "download", "validate", "stage", "convergence"),
+            ("uart_relay", "reboot_wait"),
+        ),
+        (
+            "scanner0",
+            "apply",
+            (
+                "metadata", "download", "validate", "stage", "uart_relay",
+                "reboot_wait", "convergence",
+            ),
+            (),
+        ),
+        (
+            "uplink",
+            "apply",
+            ("metadata", "download", "validate", "stage", "reboot_wait", "convergence"),
+            ("uart_relay",),
+        ),
+    ],
+)
+async def test_progress_stage_matrix_matches_component_and_action(
+    client, monkeypatch, component, action, allowed, forbidden,
+):
+    command = await _command_for_progress_phase(
+        client, monkeypatch, component=component, action=action,
+    )
+    assert command["component"] == component
+    assert command["type"] == f"backend_ota_{action}"
+    assert (await _post_event(
+        client, command, _begin(command),
+    )).status_code == 200
+    sequence = command["next_sequence"] + 1
+
+    for stage in forbidden:
+        response = await _post_event(
+            client,
+            command,
+            _progress(
+                command, sequence=sequence, stage=stage, received=0,
+            ),
+        )
+        assert response.status_code == 409
+
+    for index, stage in enumerate(allowed, start=1):
+        response = await _post_event(
+            client,
+            command,
+            _progress(
+                command,
+                sequence=sequence,
+                stage=stage,
+                received=index,
+                retry_count=index - 1,
+            ),
+        )
+        assert response.status_code == 200, response.text
+        sequence += 1
+
+
 @pytest.mark.asyncio
 async def test_begin_first_and_monotonic_progress_counters_are_enforced(
     client, monkeypatch,
@@ -700,7 +1036,6 @@ async def test_begin_first_and_monotonic_progress_counters_are_enforced(
     for mutation in (
         {"sequence": 2, "received": 9},
         {"sequence": 2, "total": 101},
-        {"sequence": 2, "stage": "download"},
     ):
         invalid = {**progress, **mutation}
         assert (await _post_event(client, command, invalid)).status_code == 409
@@ -712,7 +1047,7 @@ async def test_begin_first_and_monotonic_progress_counters_are_enforced(
 
 
 @pytest.mark.asyncio
-async def test_progress_counters_reset_on_stage_advance_but_not_within_stage(
+async def test_progress_counters_and_total_are_global_across_stage_advancement(
     client, monkeypatch,
 ):
     _heartbeat, probe = await _create_rollout(client, monkeypatch)
@@ -726,24 +1061,32 @@ async def test_progress_counters_reset_on_stage_advance_but_not_within_stage(
         "component": "scanner0",
         "catalog_name": SCANNER_NAME,
         "stage": "metadata",
-        "received": 100,
+        "received": 40,
         "total": 100,
         "retry_count": 2,
     }
     assert (await _post_event(client, command, metadata)).status_code == 200
-    download = {
+    for mutation in (
+        {"received": 39, "total": 100, "retry_count": 2},
+        {"received": 40, "total": 101, "retry_count": 2},
+        {"received": 40, "total": 100, "retry_count": 1},
+    ):
+        regressed = {
+            **metadata,
+            **mutation,
+            "sequence": 4,
+            "stage": "download",
+        }
+        assert (await _post_event(client, command, regressed)).status_code == 409
+
+    advanced = {
         **metadata,
         "sequence": 4,
         "stage": "download",
-        "received": 0,
-        "total": 200,
-        "retry_count": 0,
+        "received": 60,
+        "retry_count": 3,
     }
-    assert (await _post_event(client, command, download)).status_code == 200
-    within_stage_regression = {**download, "sequence": 5, "total": 201}
-    assert (
-        await _post_event(client, command, within_stage_regression)
-    ).status_code == 409
+    assert (await _post_event(client, command, advanced)).status_code == 200
 
 
 @pytest.mark.asyncio
@@ -1069,6 +1412,134 @@ async def test_no_update_scanner_boots_are_persisted_for_later_uplink_apply(
     assert await _finish_apply(
         client, heartbeat, apply_uplink, new_boot_id=1_101,
     ) is None
+
+
+@pytest.mark.asyncio
+async def test_failed_before_validation_may_report_all_empty_identity(
+    client, monkeypatch,
+):
+    _heartbeat, command = await _create_rollout(client, monkeypatch)
+    assert (await _post_event(client, command, _begin(command))).status_code == 200
+    metadata = _progress(
+        command,
+        sequence=command["next_sequence"] + 1,
+        stage="metadata",
+        received=0,
+    )
+    assert (await _post_event(client, command, metadata)).status_code == 200
+    failed = _end(
+        command,
+        sequence=command["next_sequence"] + 2,
+        state="failed",
+        decision="rejected",
+        error="download",
+        image_writes=0,
+        target="",
+        project="",
+        hardware="",
+        version="",
+        role_healthy=False,
+        radio_healthy=False,
+        rollback_clear=False,
+    )
+
+    response = await _post_event(client, command, failed)
+
+    assert response.status_code == 200, response.text
+    assert response.json()["terminal"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("action", "stage", "image_writes", "identity", "error"),
+    [
+        (
+            "probe", "validate", 0, ("", "", "", ""),
+            "identity_mismatch",
+        ),
+        ("probe", None, 1, ("", "", "", ""), "download"),
+        (
+            "apply", "reboot_wait", 0, ("", "", "", ""),
+            "reboot_timeout",
+        ),
+        ("probe", "convergence", 0, ("", "", "", ""), "health"),
+        (
+            "probe", None, 0, (SCANNER_NAME, "", "", ""),
+            "identity_mismatch",
+        ),
+    ],
+)
+async def test_failed_identity_must_be_complete_after_attribution_evidence(
+    client, monkeypatch, action, stage, image_writes, identity, error,
+):
+    _heartbeat, command = await _create_rollout(client, monkeypatch)
+    if action == "apply":
+        command, _ = await _finish_eligible_probe(client, command)
+    assert (await _post_event(client, command, _begin(command))).status_code == 200
+    sequence = command["next_sequence"] + 1
+    if stage is not None:
+        progress = _progress(
+            command, sequence=sequence, stage=stage, received=0,
+        )
+        assert (await _post_event(client, command, progress)).status_code == 200
+        sequence += 1
+    failed = _end(
+        command,
+        sequence=sequence,
+        state="failed",
+        decision="rejected",
+        error=error,
+        image_writes=image_writes,
+        target=identity[0],
+        project=identity[1],
+        hardware=identity[2],
+        version=identity[3],
+        role_healthy=False,
+        radio_healthy=False,
+        rollback_clear=False,
+    )
+
+    response = await _post_event(client, command, failed)
+
+    assert response.status_code == 409
+    polled = await client.get("/nodes/uplink_FULL/backend-ota/next")
+    assert polled.status_code == 200
+    assert polled.json()["next_sequence"] == sequence
+
+
+@pytest.mark.asyncio
+async def test_failed_after_validation_retains_nonmatching_observed_identity(
+    client, monkeypatch,
+):
+    _heartbeat, command = await _create_rollout(client, monkeypatch)
+    assert (await _post_event(client, command, _begin(command))).status_code == 200
+    validation = _progress(
+        command, sequence=1, stage="validate", received=0,
+    )
+    assert (await _post_event(client, command, validation)).status_code == 200
+    failed = _end(
+        command,
+        sequence=2,
+        state="failed",
+        decision="rejected",
+        error="identity_mismatch",
+        image_writes=0,
+        target="observed-target",
+        project="observed-project",
+        hardware="observed-hardware",
+        version="9.9.9-observed",
+        role_healthy=False,
+        radio_healthy=False,
+        rollback_clear=False,
+    )
+
+    response = await _post_event(client, command, failed)
+
+    assert response.status_code == 200, response.text
+    history = await client.get(
+        f"/nodes/uplink_FULL/backend-ota/{command['operation_id']}",
+    )
+    assert history.json()["events"][-1]["target"] == "observed-target"
 
 
 @pytest.mark.asyncio

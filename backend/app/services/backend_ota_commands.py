@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import hashlib
 import json
+import re
 import secrets
 import time
 from typing import Callable
@@ -53,7 +54,7 @@ _STAGE_RANK = {
     "reboot_wait": 5,
     "convergence": 6,
 }
-_PROBE_STAGES = {"metadata", "validate", "convergence"}
+_IDENTITY_TEXT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
 
 class BackendOtaError(Exception):
@@ -153,6 +154,12 @@ def _mac(value: object, label: str) -> str:
     return normalized
 
 
+def _identity_text(value: object, label: str) -> str:
+    if not isinstance(value, str) or _IDENTITY_TEXT_RE.fullmatch(value) is None:
+        raise BackendOtaConflict(f"{label} is noncanonical")
+    return value
+
+
 def _exact_identity(report: dict, *, component: str) -> None:
     identity = resolve_component_management_identity(report, component)
     expected_catalog = UPLINK_CATALOG if component == "uplink" else SCANNER_CATALOG
@@ -166,7 +173,14 @@ def _exact_identity(report: dict, *, component: str) -> None:
         raise BackendOtaConflict(f"{component} Fullsize identity is incompatible")
 
 
-def _binding_from_snapshot(snapshot: dict, *, now: float) -> dict:
+def _binding_from_snapshot(
+    snapshot: dict,
+    *,
+    now: float,
+    expected_device_id: str,
+) -> dict:
+    if snapshot.get("device_id") != expected_device_id:
+        raise BackendOtaConflict("snapshot device ID differs from requested device")
     heartbeat = snapshot.get("heartbeat")
     if not isinstance(heartbeat, dict):
         raise BackendOtaConflict("missing uplink heartbeat")
@@ -189,16 +203,33 @@ def _binding_from_snapshot(snapshot: dict, *, now: float) -> dict:
         "target": UPLINK_CATALOG,
         "project": UPLINK_PROJECT,
         "hardware": FULLSIZE_HARDWARE,
-        "version": str(heartbeat.get("firmware_version") or ""),
+        "version": _identity_text(
+            heartbeat.get("firmware_version"), "uplink firmware version",
+        ),
     }
-    scanners = [
-        item for item in snapshot.get("scanners") or []
-        if isinstance(item, dict)
-    ]
-    by_binding = {
-        (item.get("uart"), item.get("slot")): item
-        for item in scanners
-    }
+    scanners = snapshot.get("scanners")
+    if (
+        not isinstance(scanners, list)
+        or len(scanners) != 2
+        or any(not isinstance(item, dict) for item in scanners)
+    ):
+        raise BackendOtaConflict("scanner slot/UART binding is incompatible")
+    by_binding: dict[tuple[str, int], dict] = {}
+    for scanner in scanners:
+        uart = scanner.get("uart")
+        slot = scanner.get("slot")
+        if not isinstance(uart, str) or type(slot) is not int:
+            raise BackendOtaConflict("scanner slot/UART binding is incompatible")
+        key = (uart, slot)
+        expected_profile = {
+            ("ble", 0): "ble_primary",
+            ("wifi", 1): "wifi_primary",
+        }.get(key)
+        if expected_profile is None or scanner.get("profile") != expected_profile:
+            raise BackendOtaConflict("scanner runtime profile is incompatible")
+        if key in by_binding:
+            raise BackendOtaConflict("scanner slot/UART binding is incompatible")
+        by_binding[key] = scanner
     if set(by_binding) != {("ble", 0), ("wifi", 1)} or len(scanners) != 2:
         raise BackendOtaConflict("scanner slot/UART binding is incompatible")
 
@@ -225,7 +256,10 @@ def _binding_from_snapshot(snapshot: dict, *, now: float) -> dict:
             "target": SCANNER_CATALOG,
             "project": SCANNER_PROJECT,
             "hardware": FULLSIZE_HARDWARE,
-            "version": str(scanner.get("firmware_version") or scanner.get("version") or ""),
+            "version": _identity_text(
+                scanner.get("firmware_version"),
+                f"{component} firmware version",
+            ),
         }
     macs = {uplink["mac"], *(item["mac"] for item in bound_scanners.values())}
     if len(macs) != 3:
@@ -273,7 +307,9 @@ class BackendOtaService:
         device_id: str,
     ) -> dict:
         return _binding_from_snapshot(
-            snapshot_provider(device_id, "both"), now=self._clock(),
+            snapshot_provider(device_id, "both"),
+            now=self._clock(),
+            expected_device_id=device_id,
         )
 
     def _require_same_binding(
@@ -321,8 +357,11 @@ class BackendOtaService:
             next_sequence=0,
             created_at=_utc(now),
         )
-        db.add(row)
         try:
+            await _begin_transaction(db)
+            if await _active_rollout(db, device_id, for_update=True) is not None:
+                raise BackendOtaConflict("node already has an active rollout")
+            db.add(row)
             await db.commit()
         except IntegrityError as exc:
             await db.rollback()
@@ -330,6 +369,9 @@ class BackendOtaService:
         except OperationalError as exc:
             await db.rollback()
             raise BackendOtaUnavailable("backend OTA store unavailable") from exc
+        except BackendOtaConflict:
+            await db.rollback()
+            raise
         return _probe_envelope(row)
 
     async def next_for_device(
@@ -611,10 +653,9 @@ def _apply_event_transition(
     if not row.began:
         raise BackendOtaConflict("begin event required first")
     if isinstance(event, BackendOtaProgressEvent):
-        allowed = (
-            set(_PROBE_STAGES)
-            if row.current_action == "probe" else set(_STAGE_RANK)
-        )
+        allowed = set(_STAGE_RANK)
+        if row.current_action == "probe":
+            allowed.discard("reboot_wait")
         if row.current_component == "uplink":
             allowed.discard("uart_relay")
         if event.stage not in allowed:
@@ -624,13 +665,12 @@ def _apply_event_transition(
             raise BackendOtaConflict("stage regression")
         if event.received > event.total:
             raise BackendOtaConflict("received count regression")
-        if rank == row.last_stage_rank:
-            if event.received < row.last_received:
-                raise BackendOtaConflict("received count regression")
-            if row.progress_total is not None and event.total != row.progress_total:
-                raise BackendOtaConflict("progress total differs")
-            if event.retry_count < row.retry_count:
-                raise BackendOtaConflict("retry count regression")
+        if event.received < row.last_received:
+            raise BackendOtaConflict("received count regression")
+        if row.progress_total is not None and event.total != row.progress_total:
+            raise BackendOtaConflict("progress total differs")
+        if event.retry_count < row.retry_count:
+            raise BackendOtaConflict("retry count regression")
         row.last_stage_rank = rank
         row.last_received = event.received
         row.progress_total = event.total
@@ -647,6 +687,22 @@ def _validate_receipt(event: BackendOtaEndEvent, command: dict) -> None:
     digest = hashlib.sha256(build_receipt_preimage(command, end)).hexdigest()
     if not secrets.compare_digest(digest, event.receipt_sha256):
         raise BackendOtaConflict("terminal receipt differs")
+
+
+def _validate_failed_identity_attribution(
+    row: BackendOtaRollout,
+    event: BackendOtaEndEvent,
+) -> None:
+    identity = (event.target, event.project, event.hardware, event.version)
+    empty = tuple(value == "" for value in identity)
+    if any(empty) and not all(empty):
+        raise BackendOtaConflict("failed terminal identity is partial")
+    if all(empty) and (
+        row.current_action != "probe"
+        or row.last_stage_rank >= _STAGE_RANK["validate"]
+        or event.image_writes > 0
+    ):
+        raise BackendOtaConflict("failed terminal identity evidence is missing")
 
 
 def _validate_end(
@@ -676,6 +732,8 @@ def _validate_end(
     if pair in {("failed", "rejected"), ("rolled_back", "rolled_back")}:
         if event.error == "none":
             raise BackendOtaConflict("terminal failure requires an error")
+        if pair == ("failed", "rejected"):
+            _validate_failed_identity_attribution(row, event)
         row.state = event.state
         row.active_key = None
         row.completed_at = _utc(now)
@@ -775,7 +833,9 @@ def _current_binding(
 ) -> dict:
     try:
         current = _binding_from_snapshot(
-            snapshot_provider(row.device_id, "both"), now=now,
+            snapshot_provider(row.device_id, "both"),
+            now=now,
+            expected_device_id=row.device_id,
         )
     except BackendOtaConflict as exc:
         raise BackendOtaConflict(f"converged heartbeat is invalid: {exc}") from exc

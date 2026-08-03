@@ -11,6 +11,12 @@ routes. The intended commit subject is exactly:
 backend: add guarded Fullsize OTA rollouts
 ```
 
+Independent-review hardening is delivered as the exact follow-up commit:
+
+```text
+backend: harden Fullsize rollout contracts
+```
+
 ## RED/GREEN evidence
 
 The work was developed in focused TDD slices.
@@ -33,6 +39,22 @@ The work was developed in focused TDD slices.
   uplink binding fields, and its exact token counts predated those fields. The
   fixture now exercises the complete Lite and Fullsize heartbeat contract.
 
+Fix round 1 established 24 focused RED failures against `975b69a`:
+
+- 14 exact-trio failures: malformed runtime versions, Python-equivalent
+  bool/float slots, missing/wrong profiles, and a mismatched snapshot device ID
+  reached activation;
+- 3 progress failures: real scanner/uplink probe stages were rejected and
+  counters could regress when stage advanced;
+- 5 failure-attribution failures: empty/partial identity evidence was accepted
+  after validation, writes, reboot wait, or convergence;
+- 2 create-transaction failures: activation had neither a final SQLite
+  immediate transaction/active lookup nor outage translation at that boundary.
+
+All fix-round regressions are GREEN. Exact UART/type and apply-stage neighbors,
+pre-validation all-empty failure attribution, and complete but nonmatching
+observed failure identity were retained as positive characterization cases.
+
 Final focused GREEN gates:
 
 ```text
@@ -41,7 +63,7 @@ backend/.venv312/bin/pytest -q \
   tests/test_backend_node_commands.py \
   tests/test_scanner_ota_relay_paths.py \
   tests/test_backend_firmware_ingest.py
-299 passed, 3 warnings in 5.08s
+330 passed, 3 warnings in 6.69s
 
 backend/.venv312/bin/python -m pytest -q \
   backend-firmware/tools/tests/test_serializer_fixture.py
@@ -119,13 +141,19 @@ Creation performs the required order before activating a row:
    order. Server-authoritative identities, three distinct MACs, healthy role,
    radio, ingress, OTA, rollback, nonzero boot IDs, and uplink-owned nonzero
    topology generation are mandatory. Scanner `role_generation` cannot replace
-   topology generation.
+   topology generation. UARTs are exact strings, slots are exact integers
+   (never bool/float), profiles are exactly `ble_primary`/`wifi_primary`, and
+   every runtime version is a nonempty canonical string. The returned snapshot
+   device ID must equal the requested route device ID.
 3. Fetch scanner bytes exactly once, immediately revalidate the complete
    binding with a fresh clock, then validate embedded image identity/capacity
    and derive version/size/SHA-256 from those same bytes.
 4. Fetch uplink bytes exactly once and repeat the immediate complete-binding
    check and same-byte metadata derivation.
-5. Perform a final synchronous complete-binding check, then insert.
+5. Perform a final synchronous complete-binding check. Only then enter the
+   database boundary: SQLite `BEGIN IMMEDIATE` (or the portable PostgreSQL
+   transaction), active-row `SELECT ... FOR UPDATE`, and insert with the unique
+   active key as the final race guard. No write lock spans firmware awaits.
 
 Tests prove invalid scanner bytes stop before the uplink fetch, staleness is
 recomputed after awaited fetches, changes after either fetch/final check abort,
@@ -160,10 +188,22 @@ converged boot IDs.
 
 Only the five specified terminal state/decision pairs are accepted, with exact
 error and write-count semantics. Begin must be first. Probe/apply and
-component-specific stages are enforced; stage order cannot regress. Byte/retry
-counters and totals are monotonic within a stage and may restart when the stage
-advances. Global sequence is strict uint32 and exhaustion rejects before any
-event insertion or rollout mutation.
+component-specific stages are enforced; stage order cannot regress. Scanner
+probe allows metadata/download/validate/stage/UART relay/convergence but not
+reboot wait; uplink probe also excludes UART relay. Apply allows every stage
+for scanners and excludes UART relay for uplink. Byte/retry counters are
+globally nondecreasing and total is stable for the entire current command
+phase; they reset only at probe-to-apply or component advancement. Global
+sequence is strict uint32 and exhaustion rejects before any event insertion or
+rollout mutation.
+
+Failed/rejected events may use an all-empty identity only during a probe before
+validation and before any image write. Partial empty tuples are always
+rejected. Validation-or-later progress, any positive write, and an apply phase
+require four nonempty canonical identity fields. Complete observed identity is
+retained even when it differs from the expected image, preserving useful
+identity-mismatch evidence. Receipt verification remains mandatory in every
+case.
 
 SQLite uses `BEGIN IMMEDIATE`; row reads use `SELECT ... FOR UPDATE`; unique
 active/event keys remain the final race guards. Tests prove simultaneous create
@@ -173,6 +213,11 @@ phase/terminal checks. Reordered JSON or any raw-byte change at the same
 sequence returns 409. Restart/resume, terminal history, completed replacement,
 duplicate polling, duplicate replay after advancement, and retryable store
 outage (`503`, `Retry-After: 1`) are covered.
+
+For creation specifically, the immediate transaction and active lookup occur
+only after both firmware awaits and all four binding snapshots. An
+`OperationalError` from that final boundary is rolled back and translated to
+the same retryable backend-OTA unavailable error.
 
 ## Canonical receipt proof
 
@@ -240,3 +285,7 @@ commands ran. The only verification concern is that the system `python3` did
 not provide this repository's pytest environment, so the host serializer gate
 used the checked backend `.venv312` Python explicitly; the requested test file
 and assertions were unchanged.
+
+Fix round 1 changes only the backend OTA service, its focused test file, and
+this report. It does not touch C/native firmware, so the already-green native
+gates were intentionally not rerun.
