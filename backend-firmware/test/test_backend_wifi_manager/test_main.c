@@ -212,6 +212,49 @@ void test_connected_and_new_generation_reset_index_and_backoff(void)
     TEST_ASSERT_EQUAL_UINT32(22, state.config_generation);
 }
 
+void test_join_failed_only_after_every_saved_network_fails(void)
+{
+    backend_wifi_manager_t manager;
+    backend_config_record_t config = config_fixture(32, 2);
+
+    TEST_ASSERT_TRUE(backend_wifi_manager_init(&manager, &config, 0));
+    TEST_ASSERT_FALSE(backend_wifi_manager_join_failed(&manager));
+
+    TEST_ASSERT_TRUE(backend_wifi_manager_handle_event(
+        &manager, BACKEND_WIFI_EVENT_NO_AP, 1));
+    TEST_ASSERT_FALSE(backend_wifi_manager_join_failed(&manager));
+
+    TEST_ASSERT_TRUE(backend_wifi_manager_handle_event(
+        &manager, BACKEND_WIFI_EVENT_AUTH_FAILED, 2));
+    TEST_ASSERT_TRUE(backend_wifi_manager_join_failed(&manager));
+
+    TEST_ASSERT_TRUE(backend_wifi_manager_handle_event(
+        &manager, BACKEND_WIFI_EVENT_CONNECTED, 3));
+    TEST_ASSERT_FALSE(backend_wifi_manager_join_failed(&manager));
+}
+
+void test_join_failed_clears_on_generation_reset_and_disconnect_after_connect(void)
+{
+    backend_wifi_manager_t manager;
+    backend_config_record_t config = config_fixture(33, 1);
+
+    TEST_ASSERT_TRUE(backend_wifi_manager_init(&manager, &config, 0));
+    TEST_ASSERT_TRUE(backend_wifi_manager_handle_event(
+        &manager, BACKEND_WIFI_EVENT_NO_AP, 1));
+    TEST_ASSERT_TRUE(backend_wifi_manager_join_failed(&manager));
+
+    config.generation = 34;
+    TEST_ASSERT_TRUE(backend_wifi_manager_apply_committed_config(
+        &manager, &config, 2));
+    TEST_ASSERT_FALSE(backend_wifi_manager_join_failed(&manager));
+
+    TEST_ASSERT_TRUE(backend_wifi_manager_handle_event(
+        &manager, BACKEND_WIFI_EVENT_CONNECTED, 3));
+    TEST_ASSERT_TRUE(backend_wifi_manager_handle_event(
+        &manager, BACKEND_WIFI_EVENT_DISCONNECTED, 4));
+    TEST_ASSERT_FALSE(backend_wifi_manager_join_failed(&manager));
+}
+
 void test_manager_status_never_exposes_ssids_or_passwords(void)
 {
     const backend_config_record_t config = config_fixture(31, 4);
@@ -263,6 +306,9 @@ int main(void)
         test_late_failure_events_cannot_bypass_retry_tick_or_advance_backoff);
     BACKEND_RUN_TEST(
         test_connected_and_new_generation_reset_index_and_backoff);
+    BACKEND_RUN_TEST(test_join_failed_only_after_every_saved_network_fails);
+    BACKEND_RUN_TEST(
+        test_join_failed_clears_on_generation_reset_and_disconnect_after_connect);
     BACKEND_RUN_TEST(test_manager_status_never_exposes_ssids_or_passwords);
     BACKEND_RUN_TEST(
         test_invalid_or_empty_config_does_not_attempt_connection);

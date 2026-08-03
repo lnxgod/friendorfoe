@@ -49,6 +49,7 @@ static backend_wifi_action_t reset_for_generation(
     state->attempt_started_ms = now_ms;
     state->retry_after_ms = -1;
     state->connected = false;
+    state->join_failed = false;
     return BACKEND_WIFI_CONNECT_NETWORK;
 }
 
@@ -81,6 +82,7 @@ static backend_wifi_action_t advance_network(
         state->retry_after_ms = -1;
         return BACKEND_WIFI_CONNECT_NETWORK;
     }
+    state->join_failed = true;
     return schedule_retry(state, now_ms);
 }
 
@@ -104,6 +106,7 @@ backend_wifi_action_t backend_wifi_policy_update(
     switch (event) {
     case BACKEND_WIFI_EVENT_CONNECTED:
         state->connected = true;
+        state->join_failed = false;
         state->retry_exponent = 0;
         state->retry_after_ms = -1;
         return BACKEND_WIFI_NO_CHANGE;
@@ -118,6 +121,7 @@ backend_wifi_action_t backend_wifi_policy_update(
             return BACKEND_WIFI_NO_CHANGE;
         }
         state->connected = false;
+        state->join_failed = false;
         state->network_index = 0;
         return schedule_retry(state, now_ms);
     case BACKEND_WIFI_EVENT_TICK:
@@ -265,4 +269,10 @@ const backend_wifi_network_t *backend_wifi_manager_active_network(
         return NULL;
     }
     return &manager->config.networks[manager->policy.network_index];
+}
+
+bool backend_wifi_manager_join_failed(const backend_wifi_manager_t *manager)
+{
+    return manager != NULL && manager->initialized &&
+           manager->policy.join_failed;
 }

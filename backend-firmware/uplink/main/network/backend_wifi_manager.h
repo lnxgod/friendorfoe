@@ -37,6 +37,7 @@ typedef struct {
     int64_t attempt_started_ms;
     int64_t retry_after_ms;
     bool connected;
+    bool join_failed;
 } backend_wifi_policy_t;
 
 void backend_wifi_policy_init(backend_wifi_policy_t *state);
@@ -69,6 +70,8 @@ bool backend_wifi_manager_apply_committed_config(
     const backend_config_record_t *committed,
     int64_t now_ms);
 const backend_wifi_network_t *backend_wifi_manager_active_network(
+    const backend_wifi_manager_t *manager);
+bool backend_wifi_manager_join_failed(
     const backend_wifi_manager_t *manager);
 
 #ifdef __cplusplus
