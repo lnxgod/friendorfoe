@@ -553,6 +553,23 @@ controls, empty/error states, keyboard operation, and narrow screens. It may
 use repository development tooling, but New Dash gains no Node runtime or
 frontend build dependency.
 
+Factory firmware can emit native `FOF_DET` events while a recovery
+`FOF_STATUS` intentionally omits the active `entities` snapshot. The Live view
+therefore treats these as two distinct channels, matching the Android client:
+
+- active counts, Remote ID map markers, and trails come only from
+  `status.entities`; when that field is absent, active counts are unavailable
+  rather than zero;
+- normalized, deduplicated `recent_events` render in a separate “Recent USB
+  detections” section, clearly labeled as native edge events and never promoted
+  into active or positioned entities;
+- an informational banner explains when the active snapshot is temporarily
+  unavailable while recent USB detections remain visible.
+
+Per the user's explicit direction for this hardware compatibility correction,
+the small UI change is implemented before its focused regression coverage;
+the full verification requirements remain unchanged.
+
 When a badge is available, final verification includes a read-only hardware
 check: automatic or explicit-port discovery, `FOF_PING`, repeated valid
 `FOF_STATUS`, scanner health display, and unplug/reconnect. It never flashes,

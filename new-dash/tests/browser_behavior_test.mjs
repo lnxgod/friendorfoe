@@ -85,6 +85,213 @@ test("Live groups and Map keys derive from the same filtered entity set", () => 
   assert.deepEqual(live.filteredRemoteIdKeys(snapshot, ALL_FILTERS), ["ble_rid:RID-A"]);
 });
 
+test("Live presents deduplicated native USB detections separately when active entities are unavailable", () => {
+  const snapshot = {
+    freshness: { state: "fresh" },
+    status: { version: "0.67.2", recovery_mode: "startup_dependency" },
+    recent_events: [
+      {
+        detection_id: "rid_FOF-SIM-001",
+        badge_label: "Remote ID",
+        badge_class: "drone",
+        badge_entity_key: "DRONE:rid_FOF-SIM-001",
+        source: "ble_rid",
+        confidence: 0.9,
+        threat_score: 97,
+        rssi: -49,
+        received_at: 102,
+      },
+      {
+        detection_id: "rid_FOF-SIM-001",
+        badge_label: "Older Remote ID label",
+        badge_class: "drone",
+        badge_entity_key: "DRONE:rid_FOF-SIM-001",
+        source: "ble_rid",
+        confidence: 0.1,
+        threat_score: 12,
+        rssi: -80,
+        received_at: 101,
+      },
+      {
+        detection_id: "BLE:17D27B12:FindMy Accessory",
+        manufacturer: "Find My",
+        badge_class: "tracker",
+        source: "ble_fingerprint",
+        confidence: 65,
+        threat_score: 36,
+        rssi: -52,
+        received_at: 100,
+      },
+      {
+        detection_id: "BLE:17D27B12:FindMy Accessory",
+        manufacturer: "Older Find My label",
+        badge_class: "tracker",
+        source: "ble_fingerprint",
+        confidence: 0.2,
+        threat_score: 10,
+        rssi: -90,
+        received_at: 99,
+      },
+      {
+        badge_entity_key: "META:key-only",
+        badge_label: "Badge-key-only event",
+        badge_class: "meta",
+        source: "ble_fingerprint",
+        confidence: 0.5,
+        threat_score: 20,
+        rssi: -60,
+        received_at: 98,
+      },
+      null,
+      [],
+      { source: "ble_rid" },
+    ],
+  };
+
+  const recent = live.recentUsbDetections(snapshot, ALL_FILTERS, 105);
+
+  assert.deepEqual(recent, [
+    {
+      display_id: "rid_FOF-SIM-001",
+      label: "Remote ID",
+      class: "drone",
+      source: "ble_rid",
+      confidence_pct: 90,
+      score: 97,
+      rssi: -49,
+      last_seen_s: 3,
+      evidence: "Recent native USB detection: Remote ID.",
+      recent_native_usb: true,
+    },
+    {
+      display_id: "BLE:17D27B12:FindMy Accessory",
+      label: "Find My",
+      class: "tracker",
+      source: "ble_fingerprint",
+      confidence_pct: 65,
+      score: 36,
+      rssi: -52,
+      last_seen_s: 5,
+      evidence: "Recent native USB detection: Find My.",
+      recent_native_usb: true,
+    },
+    {
+      display_id: null,
+      label: "Badge-key-only event",
+      class: "meta",
+      source: "ble_fingerprint",
+      confidence_pct: 50,
+      score: 20,
+      rssi: -60,
+      last_seen_s: 7,
+      evidence: "Recent native USB detection: Badge-key-only event.",
+      recent_native_usb: true,
+    },
+  ]);
+  assert.deepEqual(live.groupVisibleEntities(snapshot, ALL_FILTERS).visible, []);
+  assert.deepEqual(live.filteredRemoteIdKeys(snapshot, ALL_FILTERS), []);
+  assert.equal(
+    live.stateBanners(snapshot).some(([message, tone]) => (
+      tone === "info"
+      && message === "Active badge entity snapshot is temporarily unavailable. Recent native USB detections are shown separately."
+    )),
+    true,
+  );
+});
+
+test("missing active entities are called unavailable while New Dash waits for native USB detections", () => {
+  const snapshot = {
+    freshness: { state: "fresh" },
+    status: { version: "0.67.2", recovery_mode: "startup_dependency" },
+    recent_events: [],
+  };
+
+  assert.deepEqual(live.recentUsbDetections(snapshot, ALL_FILTERS, 101), []);
+  assert.equal(
+    live.stateBanners(snapshot).some(([message, tone]) => (
+      tone === "info"
+      && message === "Active badge entity snapshot is temporarily unavailable. Waiting for native USB detections."
+    )),
+    true,
+  );
+});
+
+test("unavailable active sections do not present a numeric empty count", () => {
+  assert.equal(live.sectionCountLabel(0, true), "Unavailable");
+  assert.equal(live.sectionCountLabel(0), "0 items");
+  assert.equal(live.sectionCountLabel(1), "1 item");
+});
+
+test("recent native USB detections honor presentation filters", () => {
+  const snapshot = {
+    freshness: { state: "fresh" },
+    status: {},
+    recent_events: [
+      {
+        detection_id: "RID-A",
+        badge_label: "Remote ID",
+        badge_class: "drone",
+        source: "ble_rid",
+        confidence: 0.9,
+        received_at: 100,
+      },
+      {
+        detection_id: "TAG-A",
+        badge_label: "Find My",
+        badge_class: "tracker",
+        source: "ble_fingerprint",
+        confidence: 0.65,
+        received_at: 99,
+      },
+    ],
+  };
+
+  assert.deepEqual(
+    live.recentUsbDetections(snapshot, { ...ALL_FILTERS, class: "tracker" }, 101)
+      .map((item) => item.display_id),
+    ["TAG-A"],
+  );
+  assert.deepEqual(
+    live.recentUsbDetections(snapshot, {
+      ...ALL_FILTERS,
+      source: "ble_rid",
+      minConfidence: "95",
+    }, 101),
+    [],
+  );
+  assert.deepEqual(
+    live.recentUsbDetections(snapshot, { ...ALL_FILTERS, freshness: "stale" }, 101),
+    [],
+  );
+});
+
+test("an explicit empty active entity snapshot remains authoritative beside recent USB detections", () => {
+  const snapshot = state([], {
+    status: { version: "0.67.2", entities: [] },
+    recent_events: [{
+      detection_id: "RID-A",
+      badge_label: "Remote ID",
+      badge_class: "drone",
+      source: "ble_rid",
+      confidence: 0.9,
+      received_at: 100,
+    }],
+  });
+
+  assert.deepEqual(live.visibleEntities(snapshot, ALL_FILTERS), []);
+  assert.deepEqual(live.groupVisibleEntities(snapshot, ALL_FILTERS).visible, []);
+  assert.deepEqual(live.filteredRemoteIdKeys(snapshot, ALL_FILTERS), []);
+  assert.deepEqual(
+    live.recentUsbDetections(snapshot, ALL_FILTERS, 101).map((item) => item.display_id),
+    ["RID-A"],
+  );
+  assert.equal(
+    live.stateBanners(snapshot)
+      .some(([message]) => message.includes("Active badge entity snapshot is temporarily unavailable")),
+    false,
+  );
+});
+
 test("Other class includes every class outside the four named filters for Live and Map", () => {
   const snapshot = state([
     entity("wifi_ssid", "FLOCK", { class: "flock" }),

@@ -62,7 +62,10 @@ HTTP port is reported as an error instead of silently changing ports.
 
 - **Live** shows USB/freshness/scanner health, threat counts, active badge
   classifications, and prominent Remote ID details including available drone
-  and operator locations.
+  and operator locations. Native `FOF_DET` notifications also appear in a
+  separate **Recent USB detections** section, so recovery firmware can still
+  show Remote ID and Find My events when its active entity snapshot is
+  temporarily unavailable; those events are not presented as map tracks.
 - **Map** shows positioned Remote ID drone/operator markers, their connecting
   line, and locally retained host-observed trails. Public OpenStreetMap tiles
   provide the optional basemap; markers and coordinates remain available when

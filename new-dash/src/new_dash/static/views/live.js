@@ -19,36 +19,99 @@ function isRemoteId(entity) {
   return REMOTE_ID_SOURCES.has(entity?.source);
 }
 
-export function visibleEntities(state, filters) {
+function matchesFilters(entity, state, filters) {
   const hostStale = state?.freshness?.state === "stale";
+  if (!entity || entity.stale === true) {
+    return false;
+  }
+  if (filters.class !== "all") {
+    const entityClass = entity.class || "";
+    if (filters.class === "other" ? NAMED_CLASS_FILTERS.has(entityClass) : entityClass !== filters.class) {
+      return false;
+    }
+  }
+  if (filters.source !== "all" && entity.source !== filters.source) {
+    return false;
+  }
+  if (filters.minConfidence !== "all") {
+    const minimum = Number(filters.minConfidence);
+    if (!hasNumber(entity.confidence_pct) || entity.confidence_pct < minimum) {
+      return false;
+    }
+  }
+  if (filters.freshness === "live" && hostStale) {
+    return false;
+  }
+  if (filters.freshness === "stale" && !hostStale) {
+    return false;
+  }
+  return true;
+}
+
+function textValue(value) {
+  return typeof value === "string" && value.trim() ? value : null;
+}
+
+function recentEventKey(event) {
+  const badgeEntityKey = textValue(event.badge_entity_key);
+  if (badgeEntityKey) {
+    return `badge:${badgeEntityKey}`;
+  }
+  const source = textValue(event.source);
+  const detectionId = textValue(event.detection_id);
+  return source && detectionId ? `detection:${source}:${detectionId}` : null;
+}
+
+function confidencePercent(value) {
+  if (!hasNumber(value)) {
+    return undefined;
+  }
+  return value >= 0 && value <= 1 ? value * 100 : value;
+}
+
+export function recentUsbDetections(state, filters = null, nowSeconds = Date.now() / 1000) {
+  const events = Array.isArray(state?.recent_events) ? state.recent_events : [];
+  const seen = new Set();
+  const detections = [];
+  for (const event of events) {
+    if (!event || typeof event !== "object" || Array.isArray(event)) {
+      continue;
+    }
+    const key = recentEventKey(event);
+    if (!key || seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    const detectionId = textValue(event.detection_id);
+    const label = textValue(event.badge_label)
+      || textValue(event.manufacturer)
+      || detectionId;
+    const receivedAt = hasNumber(event.received_at) ? event.received_at : undefined;
+    const lastSeen = hasNumber(receivedAt) && hasNumber(nowSeconds)
+      ? Math.max(0, nowSeconds - receivedAt)
+      : undefined;
+    const detection = {
+      display_id: detectionId,
+      label,
+      class: textValue(event.badge_class),
+      source: textValue(event.source),
+      confidence_pct: confidencePercent(event.confidence),
+      score: hasNumber(event.threat_score) ? event.threat_score : undefined,
+      rssi: hasNumber(event.rssi) ? event.rssi : undefined,
+      last_seen_s: lastSeen,
+      evidence: label ? `Recent native USB detection: ${label}.` : "Recent native USB detection.",
+      recent_native_usb: true,
+    };
+    if (!filters || matchesFilters(detection, state, filters)) {
+      detections.push(detection);
+    }
+  }
+  return detections;
+}
+
+export function visibleEntities(state, filters) {
   const entities = Array.isArray(state?.status?.entities) ? state.status.entities : [];
-  return entities.filter((entity) => {
-    if (!entity || entity.stale === true) {
-      return false;
-    }
-    if (filters.class !== "all") {
-      const entityClass = entity.class || "";
-      if (filters.class === "other" ? NAMED_CLASS_FILTERS.has(entityClass) : entityClass !== filters.class) {
-        return false;
-      }
-    }
-    if (filters.source !== "all" && entity.source !== filters.source) {
-      return false;
-    }
-    if (filters.minConfidence !== "all") {
-      const minimum = Number(filters.minConfidence);
-      if (!hasNumber(entity.confidence_pct) || entity.confidence_pct < minimum) {
-        return false;
-      }
-    }
-    if (filters.freshness === "live" && hostStale) {
-      return false;
-    }
-    if (filters.freshness === "stale" && !hostStale) {
-      return false;
-    }
-    return true;
-  });
+  return entities.filter((entity) => matchesFilters(entity, state, filters));
 }
 
 export function groupVisibleEntities(state, filters) {
@@ -104,6 +167,12 @@ export function stateBanners(state) {
   if (!status.version) {
     banners.push(["No valid firmware status snapshot is available yet.", "info"]);
   }
+  if (!Array.isArray(status.entities)) {
+    const message = recentUsbDetections(state).length > 0
+      ? "Active badge entity snapshot is temporarily unavailable. Recent native USB detections are shown separately."
+      : "Active badge entity snapshot is temporarily unavailable. Waiting for native USB detections.";
+    banners.push([message, "info"]);
+  }
   if (diagnostics.history_available === false) {
     banners.push(["Local history is unavailable; observations are not being saved.", "danger"]);
   }
@@ -123,7 +192,7 @@ function renderBanners(state) {
   return stack.childElementCount ? stack : null;
 }
 
-function countRail(entities) {
+function countRail(entities, available = true) {
   const remoteId = entities.filter(isRemoteId).length;
   const droneClues = entities.filter((entity) => !isRemoteId(entity) && entity.class === "drone").length;
   const other = Math.max(0, entities.length - remoteId - droneClues);
@@ -135,7 +204,7 @@ function countRail(entities) {
   ]) {
     rail.append(element("div", { className: `count-item ${variant}` }, [
       element("span", { text: label }),
-      element("strong", { text: value }),
+      element("strong", { text: available ? value : "—" }),
     ]));
   }
   return rail;
@@ -174,25 +243,33 @@ function truthSource(entity) {
 function renderEntity(entity) {
   const remoteId = isRemoteId(entity);
   const warningSource = entity.source === "wifi_dji_ie";
+  const recentNativeUsb = entity.recent_native_usb === true;
   const record = element("article", { className: `entity-record${remoteId ? " remote-id" : ""}` });
   const primary = element("div", { className: "entity-primary" }, [
-    element("p", { className: "entity-id", text: entityIdentity(entity) }),
+    element("p", {
+      className: "entity-id",
+      text: recentNativeUsb ? (entity.label || entityIdentity(entity)) : entityIdentity(entity),
+    }),
     chip(truthSource(entity), remoteId ? "remote-id" : (warningSource ? "warning" : "")),
     element("span", { className: "entity-age", text: formatAge(entity.last_seen_s) }),
   ]);
   record.append(primary);
-  record.append(definitionList([
+  const facts = [
     ["Class", entity.class || "Missing"],
     ["Confidence", formatNumber(entity.confidence_pct, "%")],
     ["Score", formatNumber(entity.score)],
     ["RSSI", formatInteger(entity.rssi, " dBm")],
-  ]));
+  ];
+  if (recentNativeUsb) {
+    facts.unshift(["Detection ID", entity.display_id || "Missing"]);
+  }
+  record.append(definitionList(facts));
   const evidence = entity.evidence || entity.detail || "Evidence missing";
   record.append(element("p", {
     className: `evidence-line${warningSource ? " truth-warning" : ""}`,
     text: warningSource ? `DJI evidence — not Remote ID. ${evidence}` : evidence,
   }));
-  if (remoteId) {
+  if (remoteId && !recentNativeUsb) {
     record.append(definitionList([
       ["Drone position", formatCoordinates(entity.lat, entity.lon)],
       ["Altitude", formatNumber(entity.altitude_m, " m")],
@@ -205,15 +282,25 @@ function renderEntity(entity) {
   return record;
 }
 
-function entitySection(title, entities, variant = "") {
+export function sectionCountLabel(count, unavailable = false) {
+  if (unavailable) {
+    return "Unavailable";
+  }
+  return `${count} ${count === 1 ? "item" : "items"}`;
+}
+
+function entitySection(title, entities, variant = "", unavailable = false) {
   const section = element("section", { className: "observation-section" });
   const heading = element("div", { className: `section-heading ${variant}` }, [
     element("h2", { text: title }),
-    element("span", { text: `${entities.length} ${entities.length === 1 ? "item" : "items"}` }),
+    element("span", { text: sectionCountLabel(entities.length, unavailable) }),
   ]);
   section.append(heading);
   if (!entities.length) {
-    section.append(element("p", { className: "empty-state", text: `No ${title.toLowerCase()} match the current presentation filters.` }));
+    const emptyText = unavailable
+      ? "Active badge entity snapshot is temporarily unavailable."
+      : `No ${title.toLowerCase()} match the current presentation filters.`;
+    section.append(element("p", { className: "empty-state", text: emptyText }));
     return section;
   }
   const list = element("div", { className: "entity-list" });
@@ -226,16 +313,19 @@ function entitySection(title, entities, variant = "") {
 
 export function renderLive(root, state, filters) {
   const { visible, remoteId, droneClues, other } = groupVisibleEntities(state, filters);
+  const recentDetections = recentUsbDetections(state, filters);
+  const activeSnapshotAvailable = Array.isArray(state?.status?.entities);
   const children = [];
   const banners = renderBanners(state);
   if (banners) {
     children.push(banners);
   }
-  children.push(countRail(visible));
+  children.push(countRail(visible, activeSnapshotAvailable));
+  children.push(entitySection("Recent USB detections", recentDetections));
   children.push(firmwareCounts(state?.status));
-  children.push(entitySection("Remote ID", remoteId, "remote-id"));
-  children.push(entitySection("Drone clues", droneClues, "drone-clue"));
-  children.push(entitySection("Other observations", other));
+  children.push(entitySection("Remote ID", remoteId, "remote-id", !activeSnapshotAvailable));
+  children.push(entitySection("Drone clues", droneClues, "drone-clue", !activeSnapshotAvailable));
+  children.push(entitySection("Other observations", other, "", !activeSnapshotAvailable));
   replace(root, children);
   root.closest(".view-panel")?.classList.toggle("is-host-stale", state?.freshness?.state === "stale");
 }

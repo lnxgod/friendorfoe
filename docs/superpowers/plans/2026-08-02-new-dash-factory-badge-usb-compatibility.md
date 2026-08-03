@@ -394,3 +394,41 @@ Poll state for up to 45 seconds. Record whether `recent_events` or `status.entit
 - [ ] **Step 4: Complete physical reconnect when the user is ready**
 
 Ask the user to unplug the badge, observe state leave live, then ask them to reconnect it. Verify the same running process returns to live/fresh with a newly verified PONG and resumed increasing response counters. Keep the dashboard running afterward unless the user asks to stop it.
+
+---
+
+### Task 5: Render Native Detection Events When the Active Snapshot Is Unavailable
+
+**Files:**
+- Modify: `new-dash/src/new_dash/static/views/live.js`
+- Modify: `new-dash/tests/browser_behavior_test.mjs`
+
+**Interfaces:**
+- Consumes: `status.entities` as the authoritative active snapshot and
+  `recent_events` as the independent native `FOF_DET` event stream.
+- Produces: truthful active-snapshot availability plus a separate, deduplicated
+  Recent USB detections section. Map markers/trails remain status-only.
+
+- [x] **Step 1: Implement the dual-channel Live presentation**
+
+Keep `visibleEntities`, `groupVisibleEntities`, and `filteredRemoteIdKeys`
+status-only. Normalize safe fields from recent events for card rendering,
+deduplicate newest-first by `badge_entity_key` or source/detection ID, and show
+them in a separate Recent USB detections section. Do not synthesize coordinates,
+active state, or status entities. When `status.entities` is absent, show active
+counts as unavailable and explain that recent native USB detections remain
+visible. Per user direction, do not use TDD for this correction.
+
+- [x] **Step 2: Add focused post-implementation regression coverage**
+
+Cover startup status with absent entities plus Remote ID/Find My events,
+deduplication and normalization, authoritative explicit empty entities, the
+availability banner, and status-only map/trail keys.
+
+- [ ] **Step 3: Verify against tests and the physical badge**
+
+Run the browser behavior suite and full Python suite. Reload the running
+dashboard, confirm the plugged-in badge's Remote ID and Find My events appear in
+the separate section, confirm active counts do not claim zero when unavailable,
+and check page identity, meaningful DOM, overlay absence, console health,
+screenshot evidence, and one presentation-filter interaction.
