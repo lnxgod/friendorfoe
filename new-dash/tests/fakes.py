@@ -141,8 +141,6 @@ class FakeSerial:
     def open(self) -> None:
         if self.is_open:
             raise RuntimeError("already open")
-        if self.dtr is not False or self.rts is not False:
-            raise AssertionError("DTR and RTS must be false before open")
         self.actions.append(("open",))
         if self.open_exception is not None:
             raise self.open_exception

@@ -174,7 +174,7 @@ class DiscoveryTest(unittest.TestCase):
 
 
 class VerifiedSessionTest(unittest.TestCase):
-    def test_safe_configuration_precedes_open_and_ping_precedes_live(self) -> None:
+    def test_factory_compatible_configuration_leaves_control_lines_at_defaults(self) -> None:
         fake = FakeSerial([b"I (12) boot\nFOF_PO", b"NG:v1.2.3\n"])
         updates: list[ConnectionUpdate] = []
         live = threading.Event()
@@ -201,23 +201,27 @@ class VerifiedSessionTest(unittest.TestCase):
 
         self.assertEqual(factory_open_states, [False])
         self.assertEqual(worker_daemon_states, [False])
+        expected_before_ping = [
+            ("set", "port", "/dev/cu.usbmodem101"),
+            ("set", "baudrate", 115200),
+            ("set", "timeout", 0.1),
+            ("set", "write_timeout", 3.0),
+            ("set", "exclusive", True),
+            ("open",),
+            ("reset_input_buffer",),
+        ]
+        self.assertEqual(fake.actions[: len(expected_before_ping)], expected_before_ping)
         self.assertEqual(
-            fake.actions[:11],
-            [
-                ("set", "port", "/dev/cu.usbmodem101"),
-                ("set", "baudrate", 115200),
-                ("set", "timeout", 0.1),
-                ("set", "write_timeout", 3.0),
-                ("set", "exclusive", True),
-                ("set", "dtr", False),
-                ("set", "rts", False),
-                ("open",),
-                ("setDTR", False),
-                ("setRTS", False),
-                ("reset_input_buffer",),
-            ],
+            fake.actions[len(expected_before_ping)],
+            ("write", b"\nFOF_PING\n"),
         )
-        self.assertEqual(fake.actions[11], ("write", b"\nFOF_PING\n"))
+        control_line_actions = [
+            action
+            for action in fake.actions
+            if action[0] in {"setDTR", "setRTS"}
+            or action[:2] in {("set", "dtr"), ("set", "rts")}
+        ]
+        self.assertEqual(control_line_actions, [])
         self.assertEqual(fake.writes[0], b"\nFOF_PING\n")
         live_update = next(update for update in updates if update.state == "live")
         self.assertEqual(live_update.firmware_version, "v1.2.3")
@@ -521,9 +525,13 @@ class VerifiedSessionTest(unittest.TestCase):
 
         transport.start()
         self.assertTrue(live.wait(1.0), fake.actions)
-        open_index = fake.actions.index(("open",))
-        self.assertLess(fake.actions.index(("set", "dtr", False)), open_index)
-        self.assertLess(fake.actions.index(("set", "rts", False)), open_index)
+        control_line_actions = [
+            action
+            for action in fake.actions
+            if action[0] in {"setDTR", "setRTS"}
+            or action[:2] in {("set", "dtr"), ("set", "rts")}
+        ]
+        self.assertEqual(control_line_actions, [])
         transport.stop()
 
     def test_read_failure_closes_and_reports_typed_detail(self) -> None:

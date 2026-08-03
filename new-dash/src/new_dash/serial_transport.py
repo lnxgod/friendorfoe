@@ -447,8 +447,6 @@ class BadgeSerialTransport:
                 )
             )
             serial_port = self._open_safely(identity)
-            serial_port.setDTR(False)
-            serial_port.setRTS(False)
             serial_port.reset_input_buffer()
             framer = LineFramer()
             if not self._write_if_running(
@@ -904,8 +902,6 @@ class BadgeSerialTransport:
                 serial_port.exclusive = True
             except (AttributeError, NotImplementedError):
                 pass
-            serial_port.dtr = False
-            serial_port.rts = False
             serial_port.open()
             return serial_port
         except Exception:

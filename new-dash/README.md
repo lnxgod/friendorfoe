@@ -6,6 +6,10 @@ detections, makes Remote ID evidence prominent, maps positioned Remote ID,
 keeps bounded local history, and exposes badge diagnostics and a small safe
 display-control allowlist.
 
+New Dash uses the same factory-firmware command signaling as the working
+Android USB path and `scripts/fof_badge_debug_bridge.py`. Existing factory
+badges do not need to be reflashed or reconfigured.
+
 New Dash is a separate application from `../backend/`. It does not import that
 backend, use its database or configuration, start its processes, or implement
 its multi-node ingest features. New Dash requires macOS and Python 3.11 or
