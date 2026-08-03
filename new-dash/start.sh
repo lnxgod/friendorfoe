@@ -1,5 +1,6 @@
 #!/bin/sh
 set -eu
+umask 077
 
 NEW_DASH_DIR=$(CDPATH= cd "$(dirname "$0")" && pwd)
 NEW_DASH_VENV="$NEW_DASH_DIR/.venv"
@@ -51,6 +52,7 @@ valid_port() {
 
 valid_badge_port() {
     case "$1" in
+        *[![:print:]]*) return 1 ;;
         /dev/cu.*) return 0 ;;
         *) return 1 ;;
     esac
@@ -66,6 +68,8 @@ xml_escape() {
 }
 
 run_service() {
+    umask 077
+
     if [ ! -r "$NEW_DASH_CONFIG" ]; then
         echo "New Dash service configuration is missing: $NEW_DASH_CONFIG" >&2
         exit 1
@@ -77,9 +81,23 @@ run_service() {
 
     NEW_DASH_HTTP_PORT=
     NEW_DASH_BADGE_PORT=
+    NEW_DASH_EXTRA=
     {
-        IFS= read -r NEW_DASH_HTTP_PORT
-        IFS= read -r NEW_DASH_BADGE_PORT || :
+        if ! IFS= read -r NEW_DASH_HTTP_PORT; then
+            echo "Invalid service configuration." >&2
+            exit 1
+        fi
+        if ! IFS= read -r NEW_DASH_BADGE_PORT; then
+            echo "Invalid service configuration." >&2
+            exit 1
+        fi
+        if IFS= read -r NEW_DASH_EXTRA; then
+            echo "Invalid service configuration: unexpected trailing records." >&2
+            exit 1
+        elif [ -n "$NEW_DASH_EXTRA" ]; then
+            echo "Invalid service configuration: unexpected trailing records." >&2
+            exit 1
+        fi
     } < "$NEW_DASH_CONFIG"
 
     if ! valid_port "$NEW_DASH_HTTP_PORT"; then
@@ -111,6 +129,11 @@ NEW_DASH_BADGE_PORT_SET=0
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --help)
+            if [ "$#" -ne 1 ]; then
+                echo "--help does not accept additional arguments." >&2
+                usage >&2
+                exit 1
+            fi
             usage
             exit 0
             ;;
@@ -154,7 +177,10 @@ fi
 "$NEW_DASH_VENV/bin/python" -m pip install -e "$NEW_DASH_DIR"
 
 mkdir -p "$NEW_DASH_SUPPORT_DIR" "$NEW_DASH_LOG_DIR" "$HOME/Library/LaunchAgents"
-umask 077
+chmod 700 "$NEW_DASH_SUPPORT_DIR" "$NEW_DASH_LOG_DIR"
+: >> "$NEW_DASH_STDOUT"
+: >> "$NEW_DASH_STDERR"
+chmod 600 "$NEW_DASH_STDOUT" "$NEW_DASH_STDERR"
 NEW_DASH_CONFIG_TMP=
 NEW_DASH_PLIST_TMP=
 cleanup() {

@@ -76,6 +76,8 @@ reconnects, and uses `caffeinate` to keep the Mac awake while it runs. Its
 history remains at `~/Library/Application Support/New Dash/new-dash.sqlite3`;
 service logs remain at `~/Library/Logs/New Dash/service.log` and
 `~/Library/Logs/New Dash/service-error.log` after `./stop.sh`.
+The service does not rotate these log files automatically; if long-running use
+makes that necessary, stop the service first, then archive or clear the logs.
 
 The Mac must remain powered with its lid open for overnight capture. Stop any
 other serial owner, such as a flasher, serial monitor, Android bridge, or

@@ -23,8 +23,43 @@ NEW_DASH_STDOUT="$NEW_DASH_LOG_DIR/service.log"
 NEW_DASH_STDERR="$NEW_DASH_LOG_DIR/service-error.log"
 NEW_DASH_PLIST="$HOME/Library/LaunchAgents/$NEW_DASH_LABEL.plist"
 
-if launchctl print "$NEW_DASH_TARGET" >/dev/null 2>&1; then
-    launchctl bootout "$NEW_DASH_TARGET"
+service_is_absent() {
+    NEW_DASH_LAUNCHCTL_OUTPUT=
+    if NEW_DASH_LAUNCHCTL_OUTPUT=$(launchctl print "$NEW_DASH_TARGET" 2>&1); then
+        return 1
+    fi
+    case "$NEW_DASH_LAUNCHCTL_OUTPUT" in
+        "Could not find service \"$NEW_DASH_LABEL\" in domain for "*)
+            return 0
+            ;;
+        *)
+            printf 'Unable to inspect New Dash service %s: %s\n' \
+                "$NEW_DASH_TARGET" "$NEW_DASH_LAUNCHCTL_OUTPUT" >&2
+            return 2
+            ;;
+    esac
+}
+
+if service_is_absent; then
+    :
+else
+    NEW_DASH_SERVICE_STATE=$?
+    if [ "$NEW_DASH_SERVICE_STATE" -eq 2 ]; then
+        exit 1
+    fi
+    if ! launchctl bootout "$NEW_DASH_TARGET"; then
+        echo "Unable to stop New Dash service: $NEW_DASH_TARGET" >&2
+        exit 1
+    fi
+    if service_is_absent; then
+        :
+    else
+        NEW_DASH_SERVICE_STATE=$?
+        if [ "$NEW_DASH_SERVICE_STATE" -eq 1 ]; then
+            echo "New Dash service is still registered: $NEW_DASH_TARGET" >&2
+        fi
+        exit 1
+    fi
 fi
 
 rm -f "$NEW_DASH_PLIST" "$NEW_DASH_CONFIG"
