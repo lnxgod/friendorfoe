@@ -1162,6 +1162,21 @@ class ReconnectTest(unittest.TestCase):
         transport.stop()
         self.assertEqual(transport.delays, [1.0, 2.0, 4.0, 8.0, 10.0, 10.0])
 
+    def test_retry_backoff_remains_capped_after_one_thousand_attempts(self) -> None:
+        transport = self.RecordingRetryTransport(
+            enumerate_ports=lambda: [],
+            serial_factory=lambda: self.fail("no port should be opened"),
+            stop_after_waits=1_026,
+        )
+        transport.start()
+        worker = transport._worker
+        self.assertIsNotNone(worker)
+        worker.join(2.0)  # type: ignore[union-attr]
+        transport.stop()
+
+        self.assertEqual(len(transport.delays), 1_026)
+        self.assertEqual(transport.delays[-1], 10.0)
+
     def test_verified_pong_resets_backoff_to_one_second(self) -> None:
         fakes = iter(
             (

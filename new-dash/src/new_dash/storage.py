@@ -296,7 +296,7 @@ class ObservationStore:
             "event", received_at, received_at, event.stable_key, event.source_id, event.source,
             event.badge_class or "", "", event.badge_label or "", event.detection_id or "",
             event.manufacturer or "", event.confidence, event.threat_score,
-            int(event.rssi) if event.rssi is not None else None, None, None,
+            event.rssi, None, None,
             None, None, None, None, None, "",
             json.dumps(event.to_dict(), separators=(",", ":"), allow_nan=False),
         )

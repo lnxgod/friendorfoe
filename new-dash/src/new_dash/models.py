@@ -51,6 +51,18 @@ def _optional_integer(value: Any) -> int | None:
     return None
 
 
+def _optional_numeric_integer(value: Any) -> int | None:
+    if isinstance(value, int) and not isinstance(value, bool):
+        converted = value
+    elif isinstance(value, float) and isfinite(value):
+        converted = int(value)
+    else:
+        return None
+    if SQLITE_INTEGER_MIN <= converted <= SQLITE_INTEGER_MAX:
+        return converted
+    return None
+
+
 def _optional_bool(value: Any) -> bool | None:
     return value if isinstance(value, bool) else None
 
@@ -99,7 +111,10 @@ class DetectionEvent:
     source: str
     confidence: float | None
     threat_score: float | None
-    rssi: float | None
+    rssi: int | None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "rssi", _optional_numeric_integer(self.rssi))
 
     @classmethod
     def from_payload(cls, payload: object) -> "DetectionEvent":
@@ -123,7 +138,7 @@ class DetectionEvent:
             source=source,
             confidence=_optional_number(payload.get("confidence")),
             threat_score=_optional_number(payload.get("threat_score")),
-            rssi=_optional_number(payload.get("rssi")),
+            rssi=_optional_numeric_integer(payload.get("rssi")),
         )
 
     @property

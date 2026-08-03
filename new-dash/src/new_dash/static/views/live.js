@@ -65,10 +65,11 @@ export function filteredRemoteIdKeys(state, filters) {
   )].sort();
 }
 
-function stateBanners(state) {
+export function stateBanners(state) {
   const banners = [];
   const connection = state?.connection || {};
   const status = state?.status || {};
+  const diagnostics = state?.diagnostics || {};
   const detail = connection.detail;
   const candidateText = Array.isArray(connection.candidates) && connection.candidates.length
     ? ` Candidates: ${connection.candidates.flat().join(", ")}.`
@@ -102,6 +103,14 @@ function stateBanners(state) {
   }
   if (!status.version) {
     banners.push(["No valid firmware status snapshot is available yet.", "info"]);
+  }
+  if (diagnostics.history_available === false) {
+    banners.push(["Local history is unavailable; observations are not being saved.", "danger"]);
+  }
+  if (hasNumber(diagnostics.persistence_drops) && diagnostics.persistence_drops > 0) {
+    const drops = Math.round(diagnostics.persistence_drops);
+    const noun = drops === 1 ? "observation" : "observations";
+    banners.push([`Local history is incomplete: ${drops} ${noun} could not be saved.`, "danger"]);
   }
   return banners;
 }

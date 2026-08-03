@@ -106,6 +106,36 @@ test("Other class includes every class outside the four named filters for Live a
   assert.deepEqual(live.filteredRemoteIdKeys(snapshot, otherFilters), ["ble_rid:RID-OTHER"]);
 });
 
+test("Live keeps local history failures and observation drops visible", () => {
+  const dropped = state([], { diagnostics: { persistence_drops: 3 } });
+  const unavailable = state([], {
+    diagnostics: {
+      history_available: false,
+      history_error: "Private database path and exception details",
+      persistence_drops: 0,
+    },
+  });
+
+  assert.deepEqual(
+    live.stateBanners(dropped).filter(([message]) => message.includes("could not be saved")),
+    [["Local history is incomplete: 3 observations could not be saved.", "danger"]],
+  );
+  assert.deepEqual(
+    live.stateBanners(unavailable).filter(([message]) => message.includes("not being saved")),
+    [["Local history is unavailable; observations are not being saved.", "danger"]],
+  );
+  assert.equal(
+    live.stateBanners(unavailable)
+      .some(([message]) => message.includes("Private database path")),
+    false,
+  );
+  assert.equal(
+    live.stateBanners(state([], { diagnostics: { persistence_drops: 0 } }))
+      .some(([message]) => message.includes("could not be saved")),
+    false,
+  );
+});
+
 test("scanner summary distinguishes explicit zero from unavailable data", () => {
   assert.equal(ui.scannerSummary({ scanners: [] }), "0 scanners");
   assert.equal(ui.scannerSummary({}), "Scanners unavailable");

@@ -398,7 +398,7 @@ class BadgeSerialTransport:
                     reconnect_attempt=reconnect_attempt,
                 )
             )
-            delay = min(2.0 ** (reconnect_attempt - 1), 10.0)
+            delay = min(2.0 ** min(reconnect_attempt - 1, 4), 10.0)
             if self._wait_before_retry(stop_event, delay):
                 return
 

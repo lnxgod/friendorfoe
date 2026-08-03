@@ -130,6 +130,22 @@ class ObservationStoreTest(unittest.TestCase):
         self.assertIsNone(rows[0].seen_count)
         store.close()
 
+    def test_out_of_range_detection_rssi_normalizes_and_event_persists(self) -> None:
+        event = DetectionEvent.from_payload({
+            "id": "huge-rssi",
+            "source": 0,
+            "rssi": 1e20,
+        })
+        store = ObservationStore(self.path)
+
+        row_id = store.add_event(event, received_at=10.0)
+        row = store.query(HistoryQuery(limit=1)).items[0]
+
+        self.assertIsNotNone(row_id)
+        self.assertIsNone(event.rssi)
+        self.assertIsNone(row.rssi)
+        store.close()
+
     def test_rejects_stale_non_remote_id_and_unpositioned_tracks(self) -> None:
         entity = self._positioned_entity()
         store = ObservationStore(self.path, retention_days=30, max_observations=50_000)
