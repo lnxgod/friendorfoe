@@ -2,7 +2,16 @@ import json
 import pathlib
 import unittest
 
-from new_dash.models import BadgeStatus, ControlReply, DetectionEvent, SOURCE_NAMES
+from new_dash.models import (
+    BadgeStatus,
+    ControlReply,
+    DetectionEvent,
+    LiteConfiguration,
+    LiteConfigWriteReply,
+    LiteLiveHeartbeat,
+    LiteLiveReady,
+    SOURCE_NAMES,
+)
 from new_dash.protocol import LineFramer, MachineFrameError, parse_machine_line
 
 
@@ -174,3 +183,53 @@ class ControlReplyParsingTest(unittest.TestCase):
         self.assertTrue(success.value.ok)
         self.assertFalse(failure.value.ok)
         self.assertEqual(failure.value.error, "rejected")
+
+
+class LiteProtocolParsingTest(unittest.TestCase):
+    def test_live_ready_and_heartbeat_require_exact_bounded_contract(self) -> None:
+        ready = parse_machine_line(
+            'FOF_LIVE_READY:{"session_id":"boot-a1","heartbeat_ms":5000,"lease_ms":15000}'
+        )
+        heartbeat = parse_machine_line(
+            'FOF_LIVE_HEARTBEAT:{"session_id":"boot-a1","sequence":7}'
+        )
+
+        self.assertIsInstance(ready.value, LiteLiveReady)
+        self.assertIsInstance(heartbeat.value, LiteLiveHeartbeat)
+        self.assertEqual(heartbeat.value.sequence, 7)
+        for line in (
+            'FOF_LIVE_READY:{"session_id":"boot-a1","heartbeat_ms":1000,"lease_ms":15000}',
+            'FOF_LIVE_HEARTBEAT:{"session_id":"boot-a1","sequence":-1}',
+            'FOF_LIVE_HEARTBEAT:{"session_id":"boot-a1","sequence":7,"extra":true}',
+        ):
+            with self.subTest(line=line), self.assertRaises(MachineFrameError):
+                parse_machine_line(line)
+
+    def test_config_readback_is_redacted_and_config_results_are_typed(self) -> None:
+        config = parse_machine_line(
+            'FOF_CONFIG:{"schema_version":1,"generation":9,"networks":['
+            '{"ssid":"Lab","password_set":true}],"backend_url":"http://10.0.0.2:8000",'
+            '"device_id":"uplink_CB77A4","display_name":"Lite Lab",'
+            '"ap_password_set":true,"auto_update_enabled":false,"has_location":false,'
+            '"latitude":null,"longitude":null,"altitude_m":null}'
+        )
+        committed = parse_machine_line(
+            'FOF_CONFIG_OK:{"generation":10,"reconnect":false}'
+        )
+        rejected = parse_machine_line('FOF_CONFIG_ERROR:{"reason":"invalid_config"}')
+
+        self.assertIsInstance(config.value, LiteConfiguration)
+        self.assertEqual(config.value.to_dict()["networks"][0]["password_set"], True)
+        self.assertIsInstance(committed.value, LiteConfigWriteReply)
+        self.assertTrue(committed.value.ok)
+        self.assertFalse(committed.value.reconnect)
+        self.assertFalse(rejected.value.ok)
+        with self.assertRaises(MachineFrameError):
+            parse_machine_line(
+                'FOF_CONFIG:{"schema_version":1,"generation":9,"networks":['
+                '{"ssid":"Lab","password_set":true,"password":"secret"}],'
+                '"backend_url":"http://10.0.0.2:8000","device_id":"uplink",'
+                '"display_name":"Lite","ap_password_set":true,'
+                '"auto_update_enabled":false,"has_location":false,'
+                '"latitude":null,"longitude":null,"altitude_m":null}'
+            )

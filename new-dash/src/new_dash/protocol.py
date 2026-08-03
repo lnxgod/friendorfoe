@@ -5,7 +5,17 @@ from __future__ import annotations
 import json
 from math import isfinite
 
-from .models import BadgeStatus, ControlReply, DetectionEvent, MachineFrame
+from .models import (
+    BadgeStatus,
+    ControlReply,
+    DetectionEvent,
+    LiteConfiguration,
+    LiteConfigWriteReply,
+    LiteLiveHeartbeat,
+    LiteLiveReady,
+    LiteLiveStopped,
+    MachineFrame,
+)
 
 
 class MachineFrameError(ValueError):
@@ -80,6 +90,18 @@ _JSON_PREFIXES = {
     "FOF_STATUS:": ("status", BadgeStatus.from_payload),
     "FOF_CTL_OK:": ("control_ok", lambda payload: ControlReply.from_payload(payload, ok=True)),
     "FOF_CTL_ERROR:": ("control_error", lambda payload: ControlReply.from_payload(payload, ok=False)),
+    "FOF_LIVE_READY:": ("live_ready", LiteLiveReady.from_payload),
+    "FOF_LIVE_HEARTBEAT:": ("live_heartbeat", LiteLiveHeartbeat.from_payload),
+    "FOF_LIVE_STOPPED:": ("live_stopped", LiteLiveStopped.from_payload),
+    "FOF_CONFIG:": ("config", LiteConfiguration.from_payload),
+    "FOF_CONFIG_OK:": (
+        "config_ok",
+        lambda payload: LiteConfigWriteReply.from_payload(payload, ok=True),
+    ),
+    "FOF_CONFIG_ERROR:": (
+        "config_error",
+        lambda payload: LiteConfigWriteReply.from_payload(payload, ok=False),
+    ),
 }
 
 

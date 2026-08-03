@@ -1,3 +1,4 @@
+import json
 import threading
 import time
 import unittest
@@ -11,6 +12,7 @@ from new_dash.serial_transport import (
     PortIdentity,
     TransportError,
     TransportUnavailable,
+    UnsupportedCapability,
     choose_candidate,
     discover_badge_ports,
 )
@@ -23,6 +25,38 @@ else:
 
 ESPRESSIF_VID = 0x303A
 USB_SERIAL_JTAG_PID = 0x1001
+
+
+def lite_status(version: str = "0.2.0-backend", **overrides: object) -> bytes:
+    payload: dict[str, object] = {
+        "product_family": "badge_lite",
+        "target": "uplink-s3-backend",
+        "project": "fof_backend_uplink",
+        "hardware": "seeed_xiao_esp32s3",
+        "version": version,
+        "mode": "headless",
+        "capabilities": [
+            "display_none", "usb_live", "usb_live_ack", "usb_buffered",
+            "usb_config", "http_uplink", "config_ap",
+        ],
+        "scanner": [],
+        "scanner_summaries": [],
+    }
+    payload.update(overrides)
+    return b"FOF_STATUS:" + json.dumps(payload, separators=(",", ":")).encode() + b"\n"
+
+
+def native_status(version: str = "v-live") -> bytes:
+    payload = {
+        "version": version,
+        "target": "uplink-s3-fof_badge",
+        "project": "fof_badge_uplink",
+        "hardware": "seeed_xiao_esp32s3",
+        "mode": "usb_only",
+        "entities": [],
+        "scanners": [],
+    }
+    return b"FOF_STATUS:" + json.dumps(payload, separators=(",", ":")).encode() + b"\n"
 
 
 def espressif(
@@ -695,6 +729,123 @@ class PollingTest(unittest.TestCase):
         return len(fake.writes) >= count
 
 
+class LiteUsbParityTest(unittest.TestCase):
+    def test_exact_lite_identity_starts_live_acks_once_and_keeps_detections(self) -> None:
+        fake = FakeSerial([b"FOF_PONG:0.2.0-backend\n"])
+        frames: list[object] = []
+        detection_seen = threading.Event()
+
+        def on_frame(frame: object, _received_at: float) -> None:
+            frames.append(frame)
+            if getattr(frame, "kind", None) == "detection":
+                detection_seen.set()
+
+        transport = BadgeSerialTransport(
+            enumerate_ports=lambda: [espressif("101", serial_number="LITE")],
+            serial_factory=lambda: fake,
+            on_frame=on_frame,
+        )
+        self.addCleanup(transport.stop)
+        transport.start()
+        self._wait_for_write(fake, b"FOF_STATUS\n")
+        fake.feed(lite_status())
+        self._wait_for_write(
+            fake, b'FOF_LIVE_START:{"client":"new_dash","protocol":1}\n'
+        )
+        fake.feed(
+            b'FOF_LIVE_READY:{"session_id":"boot-a1","heartbeat_ms":5000,"lease_ms":15000}\n',
+            b'FOF_LIVE_HEARTBEAT:{"session_id":"boot-a1","sequence":1}\n',
+            b'FOF_DET:{"id":"det-lite","source":3,"badge_class":"drone"}\n',
+        )
+        ack = b'FOF_LIVE_ACK:{"session_id":"boot-a1","sequence":1}\n'
+        self._wait_for_write(fake, ack)
+        self.assertTrue(detection_seen.wait(1.0), frames)
+
+        fake.feed(
+            b'FOF_LIVE_HEARTBEAT:{"session_id":"wrong","sequence":2}\n',
+            b'FOF_LIVE_HEARTBEAT:{"session_id":"boot-a1","sequence":1}\n',
+        )
+        time.sleep(0.02)
+        self.assertEqual(fake.writes.count(ack), 1)
+        self.assertEqual(
+            [frame.kind for frame in frames],
+            ["status", "detection"],
+        )
+
+        transport.stop()
+        self.assertIn(
+            b'FOF_LIVE_STOP:{"session_id":"boot-a1"}\n',
+            fake.writes,
+        )
+
+    def test_lite_tuple_or_version_mismatch_never_starts_acknowledged_live(self) -> None:
+        for label, status in (
+            ("version", lite_status(version="different")),
+            ("hardware", lite_status(hardware="other_s3")),
+            ("project", lite_status(project="fof_badge_uplink")),
+        ):
+            with self.subTest(label=label):
+                fake = FakeSerial([b"FOF_PONG:0.2.0-backend\n"])
+                transport = BadgeSerialTransport(
+                    enumerate_ports=lambda: [espressif("101", serial_number="LITE")],
+                    serial_factory=lambda: fake,
+                )
+                transport.start()
+                self._wait_for_write(fake, b"FOF_STATUS\n")
+                fake.feed(status)
+                self.assertTrue(fake.closed.wait(1.0), fake.writes)
+                transport.stop()
+                self.assertFalse(any(wire.startswith(b"FOF_LIVE_START:") for wire in fake.writes))
+
+    def test_missing_heartbeat_for_one_lease_sends_fresh_start_not_replayed_ack(self) -> None:
+        clock = ManualClock()
+        fake = FakeSerial([b"FOF_PONG:0.2.0-backend\n"])
+        status_count = 0
+        status_lock = threading.Lock()
+
+        def on_frame(frame: object, _received_at: float) -> None:
+            nonlocal status_count
+            if getattr(frame, "kind", None) == "status":
+                with status_lock:
+                    status_count += 1
+
+        transport = BadgeSerialTransport(
+            enumerate_ports=lambda: [espressif("101", serial_number="LITE")],
+            serial_factory=lambda: fake,
+            monotonic_clock=clock,
+            on_frame=on_frame,
+        )
+        self.addCleanup(transport.stop)
+        transport.start()
+        self._wait_for_write(fake, b"FOF_STATUS\n")
+        fake.feed(lite_status())
+        start = b'FOF_LIVE_START:{"client":"new_dash","protocol":1}\n'
+        self._wait_for_write(fake, start)
+        for elapsed, expected_count in ((10.0, 2), (4.0, 3)):
+            clock.advance(elapsed)
+            fake.feed(lite_status())
+            deadline = time.monotonic() + 1.0
+            while True:
+                with status_lock:
+                    if status_count >= expected_count:
+                        break
+                self.assertLess(time.monotonic(), deadline)
+                time.sleep(0.001)
+        clock.advance(1.0)
+        deadline = time.monotonic() + 1.0
+        while fake.writes.count(start) < 2:
+            self.assertLess(time.monotonic(), deadline, fake.writes)
+            time.sleep(0.001)
+        self.assertFalse(any(wire.startswith(b"FOF_LIVE_ACK:") for wire in fake.writes))
+
+    def _wait_for_write(self, fake: FakeSerial, expected: bytes) -> None:
+        deadline = time.monotonic() + 1.0
+        while expected not in fake.writes and time.monotonic() < deadline:
+            fake.written.wait(0.001)
+            fake.written.clear()
+        self.assertIn(expected, fake.writes)
+
+
 class ControlTest(unittest.TestCase):
     THEME = {
         "version": 1,
@@ -710,6 +861,37 @@ class ControlTest(unittest.TestCase):
             "clear": 12133,
         },
     }
+
+    def test_pong_only_generation_rejects_requests_until_fresh_native_status(self) -> None:
+        fake = FakeSerial([b"FOF_PONG:v-live\n"])
+        transport = BadgeSerialTransport(
+            enumerate_ports=lambda: [espressif("101", serial_number="ABC")],
+            serial_factory=lambda: fake,
+        )
+        self.addCleanup(transport.stop)
+        transport.start()
+        self._wait_for_write(fake, b"FOF_STATUS\n")
+        command = build_display_nav("next")
+
+        with self.assertRaises(TransportUnavailable):
+            transport.send_control(command)
+        with self.assertRaises(UnsupportedCapability):
+            transport.get_lite_config()
+        self.assertNotIn(command.to_wire(), fake.writes)
+        self.assertNotIn(b"FOF_CONFIG_GET\n", fake.writes)
+
+        self._authorize_native(transport, fake)
+        replies: list[object] = []
+        caller = threading.Thread(
+            target=lambda: replies.append(transport.send_control(command))
+        )
+        caller.start()
+        self._wait_for_write(fake, command.to_wire())
+        fake.feed(b'FOF_CTL_OK:{"message":"display nav updated"}\n')
+        caller.join(1.0)
+
+        self.assertFalse(caller.is_alive())
+        self.assertTrue(replies[0].ok)  # type: ignore[union-attr]
 
     def test_serializes_callers_and_correlates_exact_success_message(self) -> None:
         clock = ManualClock()
@@ -733,6 +915,7 @@ class ControlTest(unittest.TestCase):
         self.addCleanup(transport.stop)
         transport.start()
         self._wait_for_write(fake, b"FOF_STATUS\n")
+        self._authorize_native(transport, fake)
 
         first = threading.Thread(
             target=lambda: results.setdefault("nav", transport.send_control(nav)),
@@ -778,6 +961,7 @@ class ControlTest(unittest.TestCase):
         self.addCleanup(transport.stop)
         transport.start()
         self._wait_for_write(fake, b"FOF_STATUS\n")
+        self._authorize_native(transport, fake)
         command = build_display_nav("back")
         result: list[object] = []
         caller = threading.Thread(target=lambda: result.append(transport.send_control(command)))
@@ -800,6 +984,7 @@ class ControlTest(unittest.TestCase):
         self.addCleanup(transport.stop)
         transport.start()
         self._wait_for_write(fake, b"FOF_STATUS\n")
+        self._authorize_native(transport, fake)
         first_errors: list[BaseException] = []
         queued_errors: list[BaseException] = []
 
@@ -841,6 +1026,7 @@ class ControlTest(unittest.TestCase):
         self.addCleanup(transport.stop)
         transport.start()
         self._wait_for_write(fake, b"FOF_STATUS\n")
+        self._authorize_native(transport, fake)
         first_command = build_display_nav("next")
         second_command = build_display_nav("detail")
         replies: dict[str, object] = {}
@@ -893,6 +1079,7 @@ class ControlTest(unittest.TestCase):
         self.addCleanup(transport.stop)
         transport.start()
         self._wait_for_write(fake, b"FOF_STATUS\n")
+        self._authorize_native(transport, fake)
         command = build_display_nav("next")
         errors: list[BaseException] = []
         replies: list[object] = []
@@ -925,6 +1112,7 @@ class ControlTest(unittest.TestCase):
         self.addCleanup(transport.stop)
         transport.start()
         self._wait_for_write(fake, b"FOF_STATUS\n")
+        self._authorize_native(transport, fake)
         errors: list[BaseException] = []
         command = build_display_nav("next")
 
@@ -964,6 +1152,7 @@ class ControlTest(unittest.TestCase):
         errors: list[BaseException] = []
         transport.start()
         self._wait_for_write(fake, b"FOF_STATUS\n")
+        self._authorize_native(transport, fake)
 
         def send() -> None:
             try:
@@ -1004,6 +1193,7 @@ class ControlTest(unittest.TestCase):
         errors: list[BaseException] = []
         transport.start()
         self._wait_for_write(fake, b"FOF_STATUS\n")
+        self._authorize_native(transport, fake)
 
         def send() -> None:
             try:
@@ -1034,6 +1224,17 @@ class ControlTest(unittest.TestCase):
             fake.written.wait(0.001)
             fake.written.clear()
         self.assertIn(expected, fake.writes)
+
+    def _authorize_native(
+        self,
+        transport: BadgeSerialTransport,
+        fake: FakeSerial,
+    ) -> None:
+        fake.feed(native_status())
+        deadline = time.monotonic() + 1.0
+        while transport._verified_family != "regular_badge" and time.monotonic() < deadline:
+            time.sleep(0.001)
+        self.assertEqual(transport._verified_family, "regular_badge")
 
 
 class ReconnectTest(unittest.TestCase):
@@ -1241,6 +1442,8 @@ class ReconnectTest(unittest.TestCase):
                 first_error.append(error)
 
         self._wait_for(lambda: b"FOF_STATUS\n" in first_fake.writes)
+        first_fake.feed(native_status("first"))
+        self._wait_for(lambda: transport._verified_family == "regular_badge")
         caller = threading.Thread(target=first_call)
         caller.start()
         self._wait_for(lambda: build_display_nav("next").to_wire() in first_fake.writes)
@@ -1255,6 +1458,10 @@ class ReconnectTest(unittest.TestCase):
 
         second_fake.feed(b"FOF_PONG:second\n")
         self._wait_for(lambda: second_fake.writes.count(b"FOF_STATUS\n") == 1)
+        with self.assertRaises(TransportUnavailable):
+            transport.send_control(build_display_nav("next"))
+        second_fake.feed(native_status("second"))
+        self._wait_for(lambda: transport._verified_family == "regular_badge")
         result: list[object] = []
         next_caller = threading.Thread(
             target=lambda: result.append(transport.send_control(build_display_nav("next")))

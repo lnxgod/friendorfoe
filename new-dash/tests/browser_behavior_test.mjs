@@ -861,6 +861,28 @@ test("Badge draft polling preserves edits and waits for matching firmware status
   assert.equal(draft.snapshot().dirty, false);
 });
 
+test("Badge display controls hide only for the exact trusted headless Lite identity", () => {
+  const lite = {
+    product_family: "badge_lite",
+    target: "uplink-s3-backend",
+    project: "fof_backend_uplink",
+    hardware: "seeed_xiao_esp32s3",
+    mode: "headless",
+    capabilities: ["display_none", "usb_live", "usb_live_ack"],
+  };
+
+  assert.equal(badgeView.isTrustedHeadlessLite(lite), true);
+  assert.equal(badgeView.isTrustedHeadlessLite({ ...lite, hardware: "other_s3" }), false);
+  assert.equal(badgeView.isTrustedHeadlessLite({
+    ...lite, capabilities: ["usb_live", "usb_live_ack"],
+  }), false);
+  assert.equal(badgeView.isTrustedHeadlessLite({
+    target: "uplink-s3-fof_badge",
+    project: "fof_badge_uplink",
+    capabilities: [],
+  }), false);
+});
+
 test("Badge restoring reordered exact current settings makes the draft pristine", () => {
   const current = {
     version: 1, palette: "night", background: "dark", brightness: 80,

@@ -23,6 +23,8 @@ from .models import (
     BadgeStatus,
     ControlReply,
     DetectionEvent,
+    LiteConfiguration,
+    LiteConfigWriteReply,
     MachineFrame,
     Observation,
 )
@@ -46,6 +48,12 @@ class BadgeTransportLike(Protocol):
     def send_control(
         self, command: BadgeControlCommand, timeout: float = 5.0
     ) -> ControlReply: ...
+
+    def get_lite_config(self, timeout: float = 5.0) -> LiteConfiguration: ...
+
+    def set_lite_config(
+        self, payload: object, timeout: float = 5.0
+    ) -> LiteConfigWriteReply: ...
 
 
 class ApplicationError(RuntimeError):
@@ -267,21 +275,62 @@ class NewDashApplication:
         return int(result)
 
     def display_nav(self, action: str, timeout: float = 5.0) -> ControlReply:
+        self._require_display_controls()
         return self._send_control(build_display_nav(action), timeout)
 
     def set_theme(self, payload: object, timeout: float = 5.0) -> ControlReply:
+        self._require_display_controls()
         return self._send_control(build_theme(payload), timeout)
 
     def reset_theme(self, timeout: float = 5.0) -> ControlReply:
+        self._require_display_controls()
         return self._send_control(build_theme_reset(), timeout)
 
     def set_display_policy(
         self, payload: object, timeout: float = 5.0
     ) -> ControlReply:
+        self._require_display_controls()
         return self._send_control(build_display_policy(payload), timeout)
 
     def reset_display_policy(self, timeout: float = 5.0) -> ControlReply:
+        self._require_display_controls()
         return self._send_control(build_display_policy_reset(), timeout)
+
+    def get_lite_config(self, timeout: float = 5.0) -> LiteConfiguration:
+        with self._lock:
+            transport = self._transport if self._accepting else None
+        if transport is None:
+            raise TransportUnavailable()
+        return transport.get_lite_config(timeout=timeout)
+
+    def set_lite_config(
+        self, payload: object, timeout: float = 5.0
+    ) -> LiteConfigWriteReply:
+        with self._lock:
+            transport = self._transport if self._accepting else None
+        if transport is None:
+            raise TransportUnavailable()
+        return transport.set_lite_config(payload, timeout=timeout)
+
+    def _require_display_controls(self) -> None:
+        with self._lock:
+            status = self._status
+        if status is None:
+            return
+        raw = status.raw
+        capabilities = raw.get("capabilities")
+        if (
+            raw.get("product_family") == "badge_lite"
+            and raw.get("target") == "uplink-s3-backend"
+            and raw.get("project") == "fof_backend_uplink"
+            and raw.get("hardware") == "seeed_xiao_esp32s3"
+            and raw.get("mode") == "headless"
+            and isinstance(capabilities, tuple)
+            and "display_none" in capabilities
+        ):
+            raise TransportUnavailable(
+                "Backend Badge Lite is headless and has no display controls."
+            )
 
     def _send_control(
         self, command: BadgeControlCommand, timeout: float

@@ -19,8 +19,12 @@ from typing import Protocol
 from urllib.parse import SplitResult, parse_qs, urlsplit
 
 from .controls import ControlValidationError
-from .models import ControlReply
-from .serial_transport import ControlTimeout, TransportUnavailable
+from .models import ControlReply, LiteConfiguration, LiteConfigWriteReply
+from .serial_transport import (
+    ControlTimeout,
+    TransportUnavailable,
+    UnsupportedCapability,
+)
 from .storage import HistoryPage, HistoryQuery
 
 
@@ -99,6 +103,8 @@ _POST_ROUTES = frozenset(
         "/api/control/theme/reset",
         "/api/control/display-policy",
         "/api/control/display-policy/reset",
+        "/api/config/read",
+        "/api/config",
     }
 )
 _CSV_FIELDS = (
@@ -150,6 +156,10 @@ class ApplicationLike(Protocol):
     def set_display_policy(self, payload: object) -> ControlReply: ...
 
     def reset_display_policy(self) -> ControlReply: ...
+
+    def get_lite_config(self) -> LiteConfiguration: ...
+
+    def set_lite_config(self, payload: object) -> LiteConfigWriteReply: ...
 
 
 class NewDashHTTPServer(ThreadingHTTPServer):
@@ -402,6 +412,27 @@ class _NewDashRequestHandler(BaseHTTPRequestHandler):
                     raise RuntimeError("invalid clear result")
                 self._send_json(200, {"ok": True, "data": {"deleted": deleted}})
                 return
+            if path == "/api/config/read":
+                if payload:
+                    raise ControlValidationError("configuration read body must be empty")
+                configuration = self.server.application.get_lite_config()
+                if not isinstance(configuration, LiteConfiguration):
+                    raise RuntimeError("invalid configuration result")
+                self._send_json(200, {"ok": True, "data": configuration.to_dict()})
+                return
+            if path == "/api/config":
+                config_reply = self.server.application.set_lite_config(payload)
+                if not isinstance(config_reply, LiteConfigWriteReply):
+                    raise RuntimeError("invalid configuration result")
+                if not config_reply.ok:
+                    self._send_error(
+                        502,
+                        "firmware_rejected",
+                        _bounded_message(config_reply.reason or "The badge rejected the configuration."),
+                    )
+                    return
+                self._send_json(200, {"ok": True, "data": config_reply.to_dict()})
+                return
             if path == "/api/control/display-nav":
                 if set(payload) != {"action"}:
                     raise ControlValidationError("invalid display navigation payload")
@@ -428,6 +459,9 @@ class _NewDashRequestHandler(BaseHTTPRequestHandler):
             return
         except TransportUnavailable as error:
             self._send_error(409, "transport_unavailable", _bounded_message(error.message))
+            return
+        except UnsupportedCapability as error:
+            self._send_error(409, "unsupported_capability", _bounded_message(error.message))
             return
         except ControlTimeout as error:
             self._send_error(504, "control_timeout", _bounded_message(error.message))

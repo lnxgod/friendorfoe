@@ -379,6 +379,169 @@ class BadgeStatus:
 
 
 @dataclass(frozen=True, slots=True)
+class LiteLiveReady:
+    """A fresh acknowledged-live session offered by Backend Badge Lite."""
+
+    session_id: str
+    heartbeat_ms: int
+    lease_ms: int
+
+    @classmethod
+    def from_payload(cls, payload: object) -> "LiteLiveReady":
+        if not isinstance(payload, dict) or set(payload) != {
+            "session_id", "heartbeat_ms", "lease_ms"
+        }:
+            raise ValueError("live ready payload has invalid fields")
+        session_id = payload["session_id"]
+        heartbeat_ms = payload["heartbeat_ms"]
+        lease_ms = payload["lease_ms"]
+        if not isinstance(session_id, str) or not session_id or len(session_id) > 128:
+            raise ValueError("live ready session_id is invalid")
+        if type(heartbeat_ms) is not int or heartbeat_ms != 5_000:
+            raise ValueError("live ready heartbeat is incompatible")
+        if type(lease_ms) is not int or lease_ms != 15_000:
+            raise ValueError("live ready lease is incompatible")
+        return cls(session_id, heartbeat_ms, lease_ms)
+
+
+@dataclass(frozen=True, slots=True)
+class LiteLiveHeartbeat:
+    """One acknowledgeable heartbeat for the current Lite session."""
+
+    session_id: str
+    sequence: int
+
+    @classmethod
+    def from_payload(cls, payload: object) -> "LiteLiveHeartbeat":
+        if not isinstance(payload, dict) or set(payload) != {"session_id", "sequence"}:
+            raise ValueError("live heartbeat payload has invalid fields")
+        session_id = payload["session_id"]
+        sequence = payload["sequence"]
+        if not isinstance(session_id, str) or not session_id or len(session_id) > 128:
+            raise ValueError("live heartbeat session_id is invalid")
+        if type(sequence) is not int or not 0 <= sequence <= (2 ** 64) - 1:
+            raise ValueError("live heartbeat sequence is invalid")
+        return cls(session_id, sequence)
+
+
+@dataclass(frozen=True, slots=True)
+class LiteLiveStopped:
+    """Confirmation that a Lite acknowledged-live session was stopped."""
+
+    session_id: str
+
+    @classmethod
+    def from_payload(cls, payload: object) -> "LiteLiveStopped":
+        if not isinstance(payload, dict) or set(payload) != {"session_id"}:
+            raise ValueError("live stopped payload has invalid fields")
+        session_id = payload["session_id"]
+        if not isinstance(session_id, str) or not session_id or len(session_id) > 128:
+            raise ValueError("live stopped session_id is invalid")
+        return cls(session_id)
+
+
+@dataclass(frozen=True, slots=True)
+class LiteConfiguration:
+    """A strictly redacted canonical Backend Badge Lite configuration."""
+
+    generation: int
+    values: Mapping[str, Any]
+
+    @classmethod
+    def from_payload(cls, payload: object) -> "LiteConfiguration":
+        required = {
+            "schema_version", "generation", "networks", "backend_url",
+            "device_id", "display_name", "ap_password_set",
+            "auto_update_enabled", "has_location", "latitude", "longitude",
+            "altitude_m",
+        }
+        if not isinstance(payload, dict) or set(payload) != required:
+            raise ValueError("configuration payload has invalid fields")
+        forbidden = {"password", "wifi_pass", "wifi_password", "ap_password"}
+        stack: list[object] = [payload]
+        while stack:
+            value = stack.pop()
+            if isinstance(value, dict):
+                if any(key in forbidden for key in value):
+                    raise ValueError("configuration response disclosed a secret")
+                stack.extend(value.values())
+            elif isinstance(value, list):
+                stack.extend(value)
+        if payload["schema_version"] != 1:
+            raise ValueError("configuration schema is incompatible")
+        generation = payload["generation"]
+        if type(generation) is not int or not 0 <= generation <= (2 ** 32) - 1:
+            raise ValueError("configuration generation is invalid")
+        networks = payload["networks"]
+        if not isinstance(networks, list) or len(networks) > 4:
+            raise ValueError("configuration networks are invalid")
+        for network in networks:
+            if not isinstance(network, dict) or set(network) != {"ssid", "password_set"}:
+                raise ValueError("configuration network is invalid")
+            if not isinstance(network["ssid"], str) or not network["ssid"]:
+                raise ValueError("configuration network SSID is invalid")
+            if type(network["password_set"]) is not bool:
+                raise ValueError("configuration password marker is invalid")
+        for key in ("backend_url", "device_id", "display_name"):
+            if not isinstance(payload[key], str):
+                raise ValueError(f"configuration {key} is invalid")
+        for key in ("ap_password_set", "auto_update_enabled", "has_location"):
+            if type(payload[key]) is not bool:
+                raise ValueError(f"configuration {key} is invalid")
+        latitude = payload["latitude"]
+        longitude = payload["longitude"]
+        altitude = payload["altitude_m"]
+        if payload["has_location"]:
+            if any(type(value) not in {int, float} or not isfinite(value)
+                   for value in (latitude, longitude, altitude)):
+                raise ValueError("configuration location is invalid")
+            if not -90 <= latitude <= 90 or not -180 <= longitude <= 180:
+                raise ValueError("configuration coordinates are invalid")
+        elif any(value is not None for value in (latitude, longitude, altitude)):
+            raise ValueError("disabled configuration location must be redacted")
+        return cls(generation=generation, values=_freeze_json(payload))
+
+    def to_dict(self) -> dict[str, object]:
+        return _json_safe(self.values)
+
+
+@dataclass(frozen=True, slots=True)
+class LiteConfigWriteReply:
+    """Atomic Lite configuration commit result."""
+
+    ok: bool
+    generation: int | None
+    reconnect: bool | None
+    reason: str | None
+
+    @classmethod
+    def from_payload(cls, payload: object, *, ok: bool) -> "LiteConfigWriteReply":
+        if not isinstance(payload, dict):
+            raise ValueError("configuration result must be an object")
+        if ok:
+            if set(payload) != {"generation", "reconnect"}:
+                raise ValueError("configuration success has invalid fields")
+            generation = payload["generation"]
+            reconnect = payload["reconnect"]
+            if type(generation) is not int or not 0 <= generation <= (2 ** 32) - 1:
+                raise ValueError("configuration generation is invalid")
+            if type(reconnect) is not bool:
+                raise ValueError("configuration reconnect result is invalid")
+            return cls(True, generation, reconnect, None)
+        if set(payload) != {"reason"} or not isinstance(payload["reason"], str) or not payload["reason"]:
+            raise ValueError("configuration error has invalid fields")
+        return cls(False, None, None, payload["reason"][:128])
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "ok": self.ok,
+            "generation": self.generation,
+            "reconnect": self.reconnect,
+            "reason": self.reason,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class ControlReply:
     """A success or error result from an allowlisted badge control."""
 

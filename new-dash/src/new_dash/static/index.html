@@ -220,12 +220,17 @@
             <h3>Scanners</h3>
             <div id="badge-scanners"></div>
           </section>
-          <section>
+          <section id="badge-headless-section" hidden>
+            <h3>Headless uplink</h3>
+            <p class="diagnostic-note">No LCD is present. USB live delivery, Wi-Fi, backend upload, and scanner health are shown here.</p>
+            <div id="badge-headless-diagnostics"></div>
+          </section>
+          <section data-display-only>
             <h3>Display state</h3>
             <div id="badge-display-state"></div>
           </section>
         </aside>
-        <div class="badge-controls">
+        <div id="badge-display-controls" class="badge-controls" data-display-only>
           <header class="badge-workspace-heading">
             <div>
               <h2>Badge display settings</h2>

@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import json
+from math import isfinite
 from types import MappingProxyType
 from typing import Mapping
+from urllib.parse import urlsplit
 
 
 NAV_ACTIONS = frozenset({"next", "detail", "page", "back"})
@@ -35,6 +37,13 @@ POLICY_PROXIMITIES = frozenset({"present", "near", "close"})
 
 class ControlValidationError(ValueError):
     """A requested safe control command does not meet the exact contract."""
+
+
+LITE_CONFIG_FIELDS = frozenset({
+    "networks", "backend_url", "display_name", "ap_password",
+    "auto_update_enabled", "confirm_auto_update", "has_location",
+    "latitude", "longitude", "altitude_m",
+})
 
 
 @dataclass(frozen=True)
@@ -104,6 +113,130 @@ def build_display_policy_reset() -> BadgeControlCommand:
         payload={"cmd": "badge_display_policy_reset", "persist": True},
         expected_message="display policy reset",
     )
+
+
+def build_lite_config_set(payload: object) -> bytes:
+    """Validate and encode one atomic Backend Badge Lite configuration commit."""
+
+    if type(payload) is not dict or not payload or not set(payload) <= LITE_CONFIG_FIELDS:
+        raise ControlValidationError("invalid Lite configuration fields")
+    normalized: dict[str, object] = {}
+    if "networks" in payload:
+        networks = payload["networks"]
+        if type(networks) is not list or len(networks) > 4:
+            raise ControlValidationError("Lite configuration accepts zero to four networks")
+        normalized_networks: list[dict[str, str]] = []
+        seen_ssids: set[str] = set()
+        for network in networks:
+            if type(network) is not dict or not set(network) <= {"ssid", "password"} or "ssid" not in network:
+                raise ControlValidationError("invalid Lite network configuration")
+            ssid = network["ssid"]
+            if type(ssid) is not str or not ssid or _has_physical_control(ssid):
+                raise ControlValidationError("invalid Lite network SSID")
+            if len(ssid.encode("utf-8")) > 32 or ssid in seen_ssids:
+                raise ControlValidationError("Lite network SSID is too long or duplicated")
+            seen_ssids.add(ssid)
+            normalized_network: dict[str, str] = {"ssid": ssid}
+            if "password" in network:
+                password = network["password"]
+                if type(password) is not str or _has_physical_control(password):
+                    raise ControlValidationError("invalid Lite network password")
+                if len(password.encode("utf-8")) > 63:
+                    raise ControlValidationError("Lite network password is too long")
+                normalized_network["password"] = password
+            normalized_networks.append(normalized_network)
+        normalized["networks"] = normalized_networks
+    if "backend_url" in payload:
+        backend_url = payload["backend_url"]
+        if type(backend_url) is not str or _has_physical_control(backend_url):
+            raise ControlValidationError("invalid Lite backend URL")
+        try:
+            parsed_url = urlsplit(backend_url)
+            hostname = parsed_url.hostname
+            port = parsed_url.port
+        except ValueError as error:
+            raise ControlValidationError("invalid Lite backend URL") from error
+        if (
+            parsed_url.scheme != "http"
+            or not hostname
+            or parsed_url.username is not None
+            or parsed_url.password is not None
+            or parsed_url.fragment
+            or port is not None and not 1 <= port <= 65_535
+        ):
+            raise ControlValidationError("Lite backend URL must be an HTTP URL")
+        normalized["backend_url"] = backend_url
+    if "display_name" in payload:
+        display_name = payload["display_name"]
+        if type(display_name) is not str or _has_physical_control(display_name):
+            raise ControlValidationError("invalid Lite display name")
+        if len(display_name.encode("utf-8")) > 64:
+            raise ControlValidationError("Lite display name is too long")
+        normalized["display_name"] = display_name
+    if "ap_password" in payload:
+        ap_password = payload["ap_password"]
+        if type(ap_password) is not str or _has_physical_control(ap_password):
+            raise ControlValidationError("invalid Lite AP password")
+        ap_password_length = len(ap_password.encode("utf-8"))
+        if not 8 <= ap_password_length <= 63:
+            raise ControlValidationError("Lite AP password must be 8 to 63 bytes")
+        normalized["ap_password"] = ap_password
+    if "auto_update_enabled" in payload:
+        auto_update = payload["auto_update_enabled"]
+        if type(auto_update) is not bool:
+            raise ControlValidationError("Lite auto-update flag must be boolean")
+        normalized["auto_update_enabled"] = auto_update
+        if auto_update:
+            if payload.get("confirm_auto_update") is not True:
+                raise ControlValidationError("enabling Lite auto-update requires confirmation")
+            normalized["confirm_auto_update"] = True
+        elif "confirm_auto_update" in payload:
+            if type(payload["confirm_auto_update"]) is not bool:
+                raise ControlValidationError("Lite auto-update confirmation must be boolean")
+            normalized["confirm_auto_update"] = payload["confirm_auto_update"]
+    elif "confirm_auto_update" in payload:
+        raise ControlValidationError("Lite auto-update confirmation requires the setting")
+    if "has_location" in payload:
+        has_location = payload["has_location"]
+        if type(has_location) is not bool:
+            raise ControlValidationError("Lite location flag must be boolean")
+        normalized["has_location"] = has_location
+        location_keys = ("latitude", "longitude", "altitude_m")
+        if has_location:
+            if any(key not in payload for key in location_keys):
+                raise ControlValidationError("enabled Lite location requires all coordinates")
+            latitude, longitude, altitude = (payload[key] for key in location_keys)
+            if any(type(value) not in {int, float} or not isfinite(value)
+                   for value in (latitude, longitude, altitude)):
+                raise ControlValidationError("Lite location values must be finite")
+            if not -90 <= latitude <= 90 or not -180 <= longitude <= 180:
+                raise ControlValidationError("Lite coordinates are outside valid ranges")
+            normalized.update({
+                "latitude": latitude,
+                "longitude": longitude,
+                "altitude_m": altitude,
+            })
+        elif any(key in payload for key in location_keys):
+            raise ControlValidationError("disabled Lite location cannot include coordinates")
+    elif any(key in payload for key in ("latitude", "longitude", "altitude_m")):
+        raise ControlValidationError("Lite coordinates require has_location")
+    try:
+        encoded = json.dumps(
+            normalized,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            allow_nan=False,
+        ).encode("ascii")
+    except (TypeError, ValueError) as error:
+        raise ControlValidationError("Lite configuration is not finite JSON") from error
+    wire = b"FOF_CONFIG_SET:" + encoded
+    if len(wire) > 2047:
+        raise ControlValidationError("Lite configuration command exceeds 2047 bytes")
+    return wire + b"\n"
+
+
+def _has_physical_control(value: str) -> bool:
+    return any(ord(character) < 0x20 or ord(character) == 0x7F for character in value)
 
 
 def _validate_control_command(payload: object, expected_message: object) -> dict[str, object]:

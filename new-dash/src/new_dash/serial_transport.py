@@ -5,12 +5,21 @@ from __future__ import annotations
 from collections import deque
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
+import json
 import threading
 import time
 from typing import Any
 
-from .controls import BadgeControlCommand
-from .models import ControlReply, MachineFrame
+from .controls import BadgeControlCommand, build_lite_config_set
+from .models import (
+    BadgeStatus,
+    ControlReply,
+    LiteConfiguration,
+    LiteConfigWriteReply,
+    LiteLiveHeartbeat,
+    LiteLiveReady,
+    MachineFrame,
+)
 from .protocol import LineFramer, MachineFrameError, parse_machine_line
 
 
@@ -69,6 +78,16 @@ class ControlTimeout(TransportError):
         super().__init__("control_timeout", message)
 
 
+class UnsupportedCapability(TransportError):
+    """The verified device family does not support the requested operation."""
+
+    def __init__(
+        self,
+        message: str = "The connected badge does not support this operation.",
+    ) -> None:
+        super().__init__("unsupported_capability", message)
+
+
 @dataclass(frozen=True, slots=True)
 class ConnectionUpdate:
     """An immutable connection-state observation."""
@@ -93,6 +112,33 @@ class _ControlRequest:
     completion: threading.Event = field(default_factory=threading.Event)
     reply: ControlReply | None = None
     error: BaseException | None = None
+
+
+@dataclass(slots=True)
+class _ProtocolRequest:
+    wire: bytes
+    expected_kinds: frozenset[str]
+    generation: int
+    timeout: float
+    deadline: float | None = None
+    completion: threading.Event = field(default_factory=threading.Event)
+    reply: object | None = None
+    error: BaseException | None = None
+
+
+_PendingRequest = _ControlRequest | _ProtocolRequest
+
+
+_LITE_IDENTITY = {
+    "product_family": "badge_lite",
+    "target": "uplink-s3-backend",
+    "project": "fof_backend_uplink",
+    "hardware": "seeed_xiao_esp32s3",
+    "mode": "headless",
+}
+_LITE_REQUIRED_CAPABILITIES = frozenset({"display_none", "usb_live", "usb_live_ack"})
+_LIVE_START = b'FOF_LIVE_START:{"client":"new_dash","protocol":1}\n'
+_LIVE_RETRY_SECONDS = 15.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -238,8 +284,10 @@ class BadgeSerialTransport:
         self._last_valid_status_monotonic: float | None = None
         self._generation = 0
         self._live_generation: int | None = None
-        self._control_queue: deque[_ControlRequest] = deque()
-        self._outstanding_control: _ControlRequest | None = None
+        self._verified_family: str | None = None
+        self._verified_capabilities: frozenset[str] = frozenset()
+        self._control_queue: deque[_PendingRequest] = deque()
+        self._outstanding_control: _PendingRequest | None = None
 
     def start(self) -> None:
         """Start one non-daemon discovery and verified-session worker."""
@@ -359,6 +407,16 @@ class BadgeSerialTransport:
             generation = self._live_generation
             if generation is None:
                 raise TransportUnavailable()
+            if self._verified_family is None:
+                raise TransportUnavailable(
+                    "A fresh badge status is required before controls are enabled."
+                )
+            if self._verified_family == "badge_lite":
+                raise UnsupportedCapability(
+                    "Backend Badge Lite is headless and has no display controls."
+                )
+            if self._verified_family != "regular_badge":
+                raise UnsupportedCapability()
             request = _ControlRequest(
                 command=command,
                 generation=generation,
@@ -370,6 +428,69 @@ class BadgeSerialTransport:
             raise request.error
         if request.reply is None:
             raise TransportUnavailable("The badge control ended without a reply.")
+        return request.reply
+
+    def get_lite_config(self, timeout: float = 5.0) -> LiteConfiguration:
+        """Read one freshly redacted canonical Lite configuration."""
+
+        reply = self._send_protocol_request(
+            b"FOF_CONFIG_GET\n",
+            frozenset({"config"}),
+            timeout,
+            required_capability="usb_config",
+        )
+        if not isinstance(reply, LiteConfiguration):
+            raise TransportUnavailable("The Lite configuration reply was unavailable.")
+        return reply
+
+    def set_lite_config(
+        self, payload: object, timeout: float = 5.0
+    ) -> LiteConfigWriteReply:
+        """Commit one validated atomic Lite configuration update."""
+
+        wire = build_lite_config_set(payload)
+        reply = self._send_protocol_request(
+            wire,
+            frozenset({"config_ok", "config_error"}),
+            timeout,
+            required_capability="usb_config",
+        )
+        if not isinstance(reply, LiteConfigWriteReply):
+            raise TransportUnavailable("The Lite configuration result was unavailable.")
+        return reply
+
+    def _send_protocol_request(
+        self,
+        wire: bytes,
+        expected_kinds: frozenset[str],
+        timeout: float,
+        *,
+        required_capability: str,
+    ) -> object:
+        if timeout < 0:
+            raise ValueError("timeout must be nonnegative")
+        with self._control_lock:
+            generation = self._live_generation
+            if generation is None:
+                raise TransportUnavailable()
+            if self._verified_family != "badge_lite":
+                raise UnsupportedCapability(
+                    "Lite USB configuration requires a freshly verified Backend Badge Lite."
+                )
+            if required_capability not in self._verified_capabilities:
+                raise UnsupportedCapability()
+            request = _ProtocolRequest(
+                wire=wire,
+                expected_kinds=expected_kinds,
+                generation=generation,
+                timeout=timeout,
+            )
+            self._control_queue.append(request)
+        request.completion.wait()
+        if request.error is not None:
+            raise request.error
+        if request.reply is None:
+            raise TransportUnavailable("The Lite protocol operation ended without a reply.")
         return request.reply
 
     def _run_one_session(self, stop_event: threading.Event) -> None:
@@ -576,102 +697,80 @@ class BadgeSerialTransport:
             else session_started
         )
         state = initial_state
-        while not stop_event.is_set():
-            now = self._monotonic_clock()
-            if self._control_timed_out(generation, now):
-                return "control_timeout"
-            if now - last_valid_frame >= 12.0:
-                return "status_silent"
-            if state == "live" and now - last_valid_status >= 6.0:
-                state = "stale"
-                self._emit_session_update(
-                    state,
-                    identity,
-                    firmware_version,
-                    detail="status_stale",
-                    stop_event=stop_event,
-                )
-            if now >= next_presence_check:
-                if not self._current_path_present(identity.device):
-                    return "path_missing"
-                next_presence_check = now + 1.0
-            if now >= next_poll:
-                if not self._write_if_running(
-                    serial_port,
-                    b"FOF_STATUS\n",
-                    stop_event,
-                ):
-                    return "stopped"
-                next_poll += 2.0
-                while next_poll <= now:
+        live_started_at: float | None = None
+        live_exchange_at: float | None = None
+        live_session_id: str | None = None
+        live_last_sequence: int | None = None
+        try:
+            while not stop_event.is_set():
+                now = self._monotonic_clock()
+                if self._control_timed_out(generation, now):
+                    return "control_timeout"
+                if now - last_valid_frame >= 12.0:
+                    return "status_silent"
+                if state == "live" and now - last_valid_status >= 6.0:
+                    state = "stale"
+                    self._emit_session_update(
+                        state,
+                        identity,
+                        firmware_version,
+                        detail="status_stale",
+                        stop_event=stop_event,
+                    )
+                if live_started_at is not None:
+                    lease_reference = live_exchange_at or live_started_at
+                    if now - lease_reference >= _LIVE_RETRY_SECONDS:
+                        if not self._write_if_running(serial_port, _LIVE_START, stop_event):
+                            return "stopped"
+                        live_started_at = now
+                        live_exchange_at = None
+                        live_session_id = None
+                        live_last_sequence = None
+                if now >= next_presence_check:
+                    if not self._current_path_present(identity.device):
+                        return "path_missing"
+                    next_presence_check = now + 1.0
+                if now >= next_poll:
+                    if not self._write_if_running(
+                        serial_port,
+                        b"FOF_STATUS\n",
+                        stop_event,
+                    ):
+                        return "stopped"
                     next_poll += 2.0
+                    while next_poll <= now:
+                        next_poll += 2.0
 
-            request = self._take_next_control(generation)
-            if request is not None:
-                if not self._write_if_running(
-                    serial_port,
-                    request.command.to_wire(),
-                    stop_event,
-                ):
+                request = self._take_next_control(generation)
+                if request is not None:
+                    wire = (
+                        request.command.to_wire()
+                        if isinstance(request, _ControlRequest)
+                        else request.wire
+                    )
+                    if not self._write_if_running(serial_port, wire, stop_event):
+                        return "stopped"
+                    self._mark_control_transmitted(request, generation)
+
+                prior_overlong = framer.overlong_lines
+                chunk = serial_port.read(4096)
+                if stop_event.is_set():
                     return "stopped"
-                self._mark_control_transmitted(request, generation)
-
-            prior_overlong = framer.overlong_lines
-            chunk = serial_port.read(4096)
-            if stop_event.is_set():
-                return "stopped"
-            if not chunk:
-                continue
-            lines = framer.feed(chunk)
-            if framer.overlong_lines != prior_overlong:
-                self._overlong_lines += framer.overlong_lines - prior_overlong
-                self._emit_session_update(
-                    state,
-                    identity,
-                    firmware_version,
-                    stop_event=stop_event,
-                )
-            for line in lines:
-                try:
-                    frame = parse_machine_line(line)
-                except MachineFrameError:
-                    self._malformed_frames += 1
+                if not chunk:
+                    continue
+                lines = framer.feed(chunk)
+                if framer.overlong_lines != prior_overlong:
+                    self._overlong_lines += framer.overlong_lines - prior_overlong
                     self._emit_session_update(
                         state,
                         identity,
                         firmware_version,
                         stop_event=stop_event,
                     )
-                    continue
-                if frame is None:
-                    continue
-                received_at = self._wall_clock()
-                frame_monotonic = self._monotonic_clock()
-                last_valid_frame = frame_monotonic
-                if frame.kind == "status":
-                    self._last_valid_status_at = received_at
-                    self._last_valid_status_monotonic = frame_monotonic
-                    last_valid_status = frame_monotonic
-                    if state == "stale":
-                        state = "live"
-                        self._emit_session_update(
-                            state,
-                            identity,
-                            firmware_version,
-                            detail="status_recovered",
-                            stop_event=stop_event,
-                        )
-                if frame.kind in {"detection", "status"}:
-                    if not self._emit_frame_if_running(
-                        frame,
-                        received_at,
-                        stop_event,
-                    ):
-                        return "stopped"
-                elif frame.kind in {"control_ok", "control_error"}:
-                    if self._control_timed_out(generation, frame_monotonic):
-                        return "control_timeout"
-                    if not self._route_control_reply(frame, generation):
+                for line in lines:
+                    try:
+                        frame = parse_machine_line(line)
+                    except MachineFrameError:
                         self._malformed_frames += 1
                         self._emit_session_update(
                             state,
@@ -679,18 +778,193 @@ class BadgeSerialTransport:
                             firmware_version,
                             stop_event=stop_event,
                         )
-        return "stopped"
+                        continue
+                    if frame is None:
+                        continue
+                    received_at = self._wall_clock()
+                    frame_monotonic = self._monotonic_clock()
+                    last_valid_frame = frame_monotonic
+                    classified_family: str | None = None
+                    if frame.kind == "status":
+                        status = frame.value
+                        if not isinstance(status, BadgeStatus):
+                            return "wrong_device"
+                        classification = self._classify_status(
+                            status, firmware_version
+                        )
+                        if classification is None:
+                            return "wrong_device"
+                        classified_family, capabilities = classification
+                        if not self._authorize_status(
+                            generation, classified_family, capabilities
+                        ):
+                            return "wrong_device"
+                        self._last_valid_status_at = received_at
+                        self._last_valid_status_monotonic = frame_monotonic
+                        last_valid_status = frame_monotonic
+                        if state == "stale":
+                            state = "live"
+                            self._emit_session_update(
+                                state,
+                                identity,
+                                firmware_version,
+                                detail="status_recovered",
+                                stop_event=stop_event,
+                            )
+                    if frame.kind in {"detection", "status"}:
+                        if not self._emit_frame_if_running(
+                            frame,
+                            received_at,
+                            stop_event,
+                        ):
+                            return "stopped"
+                        if classified_family == "badge_lite" and live_started_at is None:
+                            if not self._write_if_running(serial_port, _LIVE_START, stop_event):
+                                return "stopped"
+                            live_started_at = frame_monotonic
+                            live_exchange_at = None
+                            live_session_id = None
+                            live_last_sequence = None
+                    elif frame.kind == "live_ready":
+                        ready = frame.value
+                        if (
+                            self._verified_family != "badge_lite"
+                            or not isinstance(ready, LiteLiveReady)
+                            or live_started_at is None
+                        ):
+                            continue
+                        live_session_id = ready.session_id
+                        live_last_sequence = None
+                        live_exchange_at = frame_monotonic
+                    elif frame.kind == "live_heartbeat":
+                        heartbeat = frame.value
+                        if (
+                            self._verified_family != "badge_lite"
+                            or not isinstance(heartbeat, LiteLiveHeartbeat)
+                            or heartbeat.session_id != live_session_id
+                            or live_last_sequence is not None
+                            and heartbeat.sequence <= live_last_sequence
+                        ):
+                            continue
+                        ack = self._live_session_wire(
+                            "FOF_LIVE_ACK", heartbeat.session_id, heartbeat.sequence
+                        )
+                        if not self._write_if_running(serial_port, ack, stop_event):
+                            return "stopped"
+                        live_last_sequence = heartbeat.sequence
+                        live_exchange_at = frame_monotonic
+                    elif frame.kind in {
+                        "control_ok", "control_error", "config", "config_ok", "config_error"
+                    }:
+                        if self._control_timed_out(generation, frame_monotonic):
+                            return "control_timeout"
+                        if not self._route_control_reply(frame, generation):
+                            self._malformed_frames += 1
+                            self._emit_session_update(
+                                state,
+                                identity,
+                                firmware_version,
+                                stop_event=stop_event,
+                            )
+            return "stopped"
+        finally:
+            if live_session_id is not None:
+                try:
+                    self._write(
+                        serial_port,
+                        self._live_session_wire("FOF_LIVE_STOP", live_session_id),
+                    )
+                except Exception:
+                    pass
 
     def _current_path_present(self, device: str) -> bool:
         return any(port.device == device for port in self._read_port_identities())
+
+    @staticmethod
+    def _classify_status(
+        status: BadgeStatus,
+        firmware_version: str,
+    ) -> tuple[str, frozenset[str]] | None:
+        raw = status.raw
+        raw_capabilities = raw.get("capabilities")
+        if raw_capabilities is None:
+            capabilities = frozenset()
+        elif (
+            isinstance(raw_capabilities, tuple)
+            and all(isinstance(value, str) and value for value in raw_capabilities)
+        ):
+            capabilities = frozenset(raw_capabilities)
+            if len(capabilities) != len(raw_capabilities):
+                return None
+        else:
+            return None
+
+        lite_hint = any(
+            raw.get(key) == _LITE_IDENTITY[key]
+            for key in ("product_family", "target", "project", "mode")
+        ) or "display_none" in capabilities
+        if lite_hint:
+            if any(raw.get(key) != value for key, value in _LITE_IDENTITY.items()):
+                return None
+            if status.version != firmware_version:
+                return None
+            if not _LITE_REQUIRED_CAPABILITIES <= capabilities:
+                return None
+            return "badge_lite", capabilities
+
+        identity_keys = ("product_family", "target", "project", "hardware")
+        if any(key in raw for key in identity_keys):
+            native_badge = (
+                raw.get("product_family") in {None, "badge"}
+                and raw.get("target") == "uplink-s3-fof_badge"
+                and raw.get("project") == "fof_badge_uplink"
+                and raw.get("hardware") in {None, "seeed_xiao_esp32s3"}
+            )
+            if not native_badge:
+                return None
+        return "regular_badge", capabilities
+
+    def _authorize_status(
+        self,
+        generation: int,
+        family: str,
+        capabilities: frozenset[str],
+    ) -> bool:
+        with self._control_lock:
+            if self._live_generation != generation:
+                return False
+            if self._verified_family is not None and self._verified_family != family:
+                return False
+            self._verified_family = family
+            self._verified_capabilities = capabilities
+            return True
+
+    @staticmethod
+    def _live_session_wire(
+        prefix: str,
+        session_id: str,
+        sequence: int | None = None,
+    ) -> bytes:
+        payload: dict[str, object] = {"session_id": session_id}
+        if sequence is not None:
+            payload["sequence"] = sequence
+        encoded = json.dumps(
+            payload,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            allow_nan=False,
+        ).encode("ascii")
+        return prefix.encode("ascii") + b":" + encoded + b"\n"
 
     def _activate_generation(self) -> int:
         with self._control_lock:
             self._generation += 1
             self._live_generation = self._generation
+            self._verified_family = None
+            self._verified_capabilities = frozenset()
             return self._generation
 
-    def _take_next_control(self, generation: int) -> _ControlRequest | None:
+    def _take_next_control(self, generation: int) -> _PendingRequest | None:
         with self._control_lock:
             if self._live_generation != generation:
                 return None
@@ -707,7 +981,7 @@ class BadgeSerialTransport:
 
     def _mark_control_transmitted(
         self,
-        request: _ControlRequest,
+        request: _PendingRequest,
         generation: int,
     ) -> None:
         transmitted_at = self._monotonic_clock()
@@ -722,12 +996,19 @@ class BadgeSerialTransport:
         with self._control_lock:
             request = self._outstanding_control
             if request is None or request.generation != generation:
-                return frame.kind != "control_ok"
-            reply = frame.value
-            if not isinstance(reply, ControlReply):
-                return False
-            if frame.kind == "control_ok" and reply.message != request.command.expected_message:
-                return False
+                return frame.kind not in {"control_ok", "config_ok", "config_error", "config"}
+            if isinstance(request, _ControlRequest):
+                if frame.kind not in {"control_ok", "control_error"}:
+                    return False
+                reply = frame.value
+                if not isinstance(reply, ControlReply):
+                    return False
+                if frame.kind == "control_ok" and reply.message != request.command.expected_message:
+                    return False
+            else:
+                if frame.kind not in request.expected_kinds:
+                    return False
+                reply = frame.value
             request.reply = reply
             self._outstanding_control = None
             request.completion.set()
@@ -754,6 +1035,8 @@ class BadgeSerialTransport:
         with self._control_lock:
             if self._live_generation == generation:
                 self._live_generation = None
+                self._verified_family = None
+                self._verified_capabilities = frozenset()
             request = self._outstanding_control
             if request is not None and request.generation == generation:
                 self._outstanding_control = None
@@ -762,7 +1045,7 @@ class BadgeSerialTransport:
             self._fail_queued_locked(generation, error)
 
     def _fail_queued_locked(self, generation: int, error: BaseException) -> None:
-        retained: deque[_ControlRequest] = deque()
+        retained: deque[_PendingRequest] = deque()
         while self._control_queue:
             request = self._control_queue.popleft()
             if request.generation == generation:

@@ -11,6 +11,13 @@ const ACCENTS = ["drone", "meta", "tracker", "flock", "wifi_attack", "clear"];
 const LANES = new Set(["off", "lower", "top", "both"]);
 const PROXIMITIES = new Set(["present", "near", "close"]);
 const NAV_ACTIONS = new Set(["next", "detail", "page", "back"]);
+const LITE_IDENTITY = Object.freeze({
+  product_family: "badge_lite",
+  target: "uplink-s3-backend",
+  project: "fof_backend_uplink",
+  hardware: "seeed_xiao_esp32s3",
+  mode: "headless",
+});
 
 function isObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -101,6 +108,14 @@ export function presentFact(source, key) {
   if (typeof value === "boolean") return value ? "Yes" : "No";
   if (typeof value === "object") return JSON.stringify(value);
   return String(value);
+}
+
+export function isTrustedHeadlessLite(status) {
+  if (!isObject(status)) return false;
+  const capabilities = status.capabilities;
+  return Object.entries(LITE_IDENTITY).every(([key, value]) => status[key] === value)
+    && Array.isArray(capabilities)
+    && capabilities.includes("display_none");
 }
 
 export function readRequiredInteger(input) {
@@ -261,6 +276,8 @@ function appendPresent(facts, source, key, display = label(key), suffix = "") {
 }
 
 const SCANNER_FIELDS = [
+  ["slot", "Slot"], ["status_available", "Status available"],
+  ["identity_valid", "Identity valid"], ["identity", "Identity"],
   ["uart", "UART"], ["role", "Role"], ["profile", "Profile"],
   ["connected", "Connected"], ["health", "Health"], ["firmware", "Firmware"],
   ["commands_sent", "Commands sent"], ["commands_accepted", "Commands accepted"],
@@ -268,6 +285,7 @@ const SCANNER_FIELDS = [
   ["radio_packets", "Radio packets"], ["policy_ack", "Policy acknowledgement"],
   ["policy_hash", "Policy hash"], ["recovery", "Recovery"],
   ["recovery_mode", "Recovery mode"], ["ota", "OTA"], ["ota_state", "OTA state"],
+  ["errors", "Errors"], ["uptime_ms", "Uptime (ms)"],
 ];
 const SCANNER_KNOWN = new Set(SCANNER_FIELDS.map(([key]) => key));
 
@@ -345,6 +363,31 @@ function renderStatusFacts(root, status) {
   replace(root, [definitionList(facts, "diagnostic-facts")]);
   const extras = extrasDetails(status, STATUS_KNOWN);
   if (extras) root.append(extras);
+}
+
+function renderHeadlessDiagnostics(root, status) {
+  replace(root);
+  const groups = [
+    ["Identity", status, ["product_family", "target", "project", "hardware", "version", "mac", "boot_id", "config_generation", "led", "ota_ready"]],
+    ["Wi-Fi", status.wifi, ["configured", "connected", "full_pass_failed"]],
+    ["Recovery AP", status.recovery, ["reason", "ap_running"]],
+    ["Backend", status.backend, ["reachable", "last_success_age_s"]],
+    ["USB", status.usb, ["available", "host_connected", "required_depth", "optional_depth", "optional_drops", "required_failures", "bytes_transmitted", "bytes_received", "output_poisoned"]],
+    ["Acknowledged live", status.live, ["started", "session_id", "last_ack_sequence", "confirmed", "lease_remaining_ms"]],
+    ["Upload queue", status.upload, ["depth", "capacity", "dropped", "ok", "failed", "retries"]],
+  ];
+  for (const [title, source, keys] of groups) {
+    if (!isObject(source)) continue;
+    const facts = [];
+    for (const key of keys) appendPresent(facts, source, key);
+    if (!facts.length) continue;
+    const section = element("section", { className: "headless-diagnostic-group" });
+    section.append(element("h4", { text: title }), definitionList(facts, "diagnostic-facts"));
+    root.append(section);
+  }
+  if (!root.children.length) {
+    root.append(element("p", { className: "empty-state", text: "Headless diagnostics are unavailable." }));
+  }
 }
 
 function renderDisplayState(root, displayState) {
@@ -512,6 +555,9 @@ export function createBadgeView({ post }) {
   const displayRoot = document.querySelector("#badge-display-state");
   const themeCurrent = document.querySelector("#badge-theme-current");
   const policyCurrent = document.querySelector("#badge-policy-current");
+  const headlessSection = document.querySelector("#badge-headless-section");
+  const headlessRoot = document.querySelector("#badge-headless-diagnostics");
+  const displayOnly = [...document.querySelectorAll("[data-display-only]")];
   const themeForm = document.querySelector("#badge-theme-form");
   const policyForm = document.querySelector("#badge-policy-form");
   const themeApply = document.querySelector("#theme-apply");
@@ -593,9 +639,17 @@ export function createBadgeView({ post }) {
   return {
     render(state) {
       const status = state?.status || {};
-      canMutate = state?.connection?.phase === "live" && state?.freshness?.state === "fresh";
-      renderScanners(scannerRoot, status.scanners, status.sensing_health);
+      const headless = isTrustedHeadlessLite(status);
+      displayOnly.forEach((node) => { node.hidden = headless; });
+      headlessSection.hidden = !headless;
+      canMutate = !headless && state?.connection?.phase === "live" && state?.freshness?.state === "fresh";
+      renderScanners(
+        scannerRoot,
+        headless ? status.scanner_summaries || status.scanner : status.scanners,
+        status.sensing_health,
+      );
       renderStatusFacts(statusRoot, status);
+      if (headless) renderHeadlessDiagnostics(headlessRoot, status);
       renderDisplayState(displayRoot, status.display_state);
       observeDraftStatus({
         draft: themeDraft, mutations, path: "/api/control/theme", label: "Theme", value: status.theme,

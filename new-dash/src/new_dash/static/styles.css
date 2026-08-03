@@ -975,6 +975,18 @@ input[type="checkbox"] {
   font-size: 0.84rem;
 }
 
+.headless-diagnostic-group {
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--divider);
+}
+
+.headless-diagnostic-group h4 {
+  margin-bottom: 8px;
+  color: var(--rid);
+  font-size: 0.84rem;
+}
+
 .diagnostic-note,
 .form-note {
   color: var(--muted);
