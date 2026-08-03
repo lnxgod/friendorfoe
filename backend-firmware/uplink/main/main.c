@@ -1,4 +1,5 @@
 #include <inttypes.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/time.h>
@@ -29,6 +30,11 @@
 #include "backend_command_client.h"
 #include "backend_config_portal.h"
 #include "backend_coordinator.h"
+#if defined(FOF_BACKEND_PROFILE_BADGE_LITE)
+#include "backend_dashboard_event.h"
+#include "backend_event_ring.h"
+#include "backend_lite_ap_policy.h"
+#endif
 #include "backend_detection_codec.h"
 #include "backend_detection_router.h"
 #include "backend_firmware_buffer.h"
@@ -39,6 +45,7 @@
 #include "backend_identity.h"
 #include "backend_ingest_ack.h"
 #include "backend_json_reader.h"
+#include "backend_json_writer.h"
 #include "backend_led_pattern.h"
 #include "backend_nvs_config.h"
 #include "backend_ota_maintenance.h"
@@ -59,8 +66,14 @@
 #include "backend_upload_batch.h"
 #include "backend_upload_fifo.h"
 #include "backend_uploader.h"
+#if defined(FOF_BACKEND_PROFILE_BADGE_LITE)
+#include "backend_usb_config.h"
+#include "backend_usb_protocol.h"
+#include "backend_usb_service.h"
+#endif
 #include "backend_wifi_manager.h"
 #include "backend_status_led.h"
+#include "psram_alloc.h"
 
 #define UPLINK_FACTORY_URL "http://192.168.4.2:8000"
 #define UPLINK_SCANNER_STALE_MS INT64_C(15000)
@@ -122,11 +135,16 @@ typedef struct {
 
 typedef struct {
     SemaphoreHandle_t lock;
+    SemaphoreHandle_t coordinator_lock;
+    SemaphoreHandle_t upload_build_lock;
     SemaphoreHandle_t http_lock;
     SemaphoreHandle_t usb_lock;
     SemaphoreHandle_t ota_lock;
     SemaphoreHandle_t uart_tx_lock[BACKEND_UART_SLOT_COUNT];
     SemaphoreHandle_t relay_complete;
+#if defined(FOF_BACKEND_PROFILE_BADGE_LITE)
+    SemaphoreHandle_t event_ring_lock;
+#endif
 #if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
     QueueHandle_t ota_work_queue;
     QueueHandle_t ota_result_queue;
@@ -136,7 +154,16 @@ typedef struct {
 
     backend_config_record_t config;
     backend_config_portal_t portal;
+#if defined(FOF_BACKEND_PROFILE_BADGE_LITE)
+    backend_lite_ap_policy_t lite_ap_policy;
+    backend_usb_service_t usb;
+    backend_usb_config_t usb_config;
+    backend_event_ring_t event_ring;
+    backend_dashboard_event_t *event_storage;
+    atomic_uint_fast64_t event_ring_contention_drops;
+#else
     backend_ap_policy_t ap_policy;
+#endif
     backend_wifi_manager_t wifi;
     backend_uart_slots_t uarts;
     backend_coordinator_t coordinator;
@@ -203,7 +230,12 @@ typedef struct {
     bool epoch_valid;
     bool config_loaded;
     bool portal_started;
+#if defined(FOF_BACKEND_PROFILE_BADGE_LITE)
+    bool history_available;
+    bool usb_available;
+#else
     bool usb_ap_start_requested;
+#endif
     bool wifi_initialized;
     bool wifi_connected;
     bool backend_reachable;
@@ -232,6 +264,10 @@ typedef struct {
     bool target_claimed[3];
     char boot_line[UPLINK_STATUS_CAPACITY];
     char health_line[UPLINK_STATUS_CAPACITY];
+#if defined(FOF_BACKEND_PROFILE_BADGE_LITE)
+    char usb_status_scratch[BACKEND_USB_STATUS_MAX];
+    char usb_print_scratch[BACKEND_USB_STATUS_MAX];
+#endif
     char portal_http_response[UPLINK_HTTP_RESPONSE_CAPACITY];
     char uploader_http_response[UPLINK_HTTP_RESPONSE_CAPACITY];
     char time_http_response[UPLINK_HTTP_RESPONSE_CAPACITY];
@@ -255,6 +291,16 @@ static void lock_runtime(void)
 static void unlock_runtime(void)
 {
     (void)xSemaphoreGive(s_runtime.lock);
+}
+
+static void lock_coordinator(void)
+{
+    (void)xSemaphoreTake(s_runtime.coordinator_lock, portMAX_DELAY);
+}
+
+static void unlock_coordinator(void)
+{
+    (void)xSemaphoreGive(s_runtime.coordinator_lock);
 }
 
 static void copy_text(char *output, size_t capacity, const char *value)
@@ -331,10 +377,27 @@ static bool print_line(const char *line)
         xSemaphoreTake(s_runtime.usb_lock, portMAX_DELAY) != pdTRUE) {
         return false;
     }
+#if defined(FOF_BACKEND_PROFILE_BADGE_LITE)
+    const size_t length = strlen(line);
+    bool emitted = false;
+    if (s_runtime.usb_available &&
+        length + 1U <= sizeof(s_runtime.usb_print_scratch)) {
+        memcpy(s_runtime.usb_print_scratch, line, length);
+        s_runtime.usb_print_scratch[length] = '\n';
+        emitted = backend_usb_service_emit(
+            &s_runtime.usb,
+            BACKEND_USB_FRAME_REQUIRED,
+            s_runtime.usb_print_scratch,
+            length + 1U);
+    }
+    (void)xSemaphoreGive(s_runtime.usb_lock);
+    return emitted;
+#else
     const int result = printf("%s\n", line);
     fflush(stdout);
     (void)xSemaphoreGive(s_runtime.usb_lock);
     return result >= 0;
+#endif
 }
 
 static bool uart_write_locked(size_t slot, const void *bytes, size_t length)
@@ -484,13 +547,21 @@ static bool upload_context_locked(
     return true;
 }
 
-static bool queue_upload_locked(
+static bool queue_upload(
     const backend_detection_observation_t *observation)
 {
-    const uint32_t sequence = s_runtime.next_batch_sequence;
-    if (!upload_context_locked(sequence, &s_runtime.upload_context_scratch)) {
+    if (xSemaphoreTake(
+            s_runtime.upload_build_lock, portMAX_DELAY) != pdTRUE) {
         return false;
     }
+    lock_runtime();
+    const uint32_t sequence = s_runtime.next_batch_sequence;
+    if (!upload_context_locked(sequence, &s_runtime.upload_context_scratch)) {
+        unlock_runtime();
+        (void)xSemaphoreGive(s_runtime.upload_build_lock);
+        return false;
+    }
+    unlock_runtime();
     backend_upload_builder_init(
         &s_runtime.upload_builder, &s_runtime.upload_context_scratch,
         monotonic_ms());
@@ -498,12 +569,15 @@ static bool queue_upload_locked(
         backend_upload_builder_add(
             &s_runtime.upload_builder, observation, monotonic_ms()) !=
             BACKEND_ENCODE_OK) {
+        (void)xSemaphoreGive(s_runtime.upload_build_lock);
         return false;
     }
     if (!backend_upload_builder_finish(
             &s_runtime.upload_builder, &s_runtime.upload_batch_scratch)) {
+        (void)xSemaphoreGive(s_runtime.upload_build_lock);
         return false;
     }
+    lock_runtime();
     uint32_t dropped_sequence = 0U;
     uint32_t dropped_crc = 0U;
     const backend_upload_batch_t *old_head =
@@ -516,6 +590,8 @@ static bool queue_upload_locked(
     bool dropped = false;
     if (!backend_upload_fifo_push(
             &s_runtime.upload_fifo, &s_runtime.upload_batch_scratch, &dropped)) {
+        unlock_runtime();
+        (void)xSemaphoreGive(s_runtime.upload_build_lock);
         return false;
     }
     (void)backend_uploader_note_enqueued(
@@ -526,6 +602,8 @@ static bool queue_upload_locked(
         dropped_crc);
     s_runtime.next_batch_sequence = sequence == UINT32_MAX
         ? 1U : sequence + 1U;
+    unlock_runtime();
+    (void)xSemaphoreGive(s_runtime.upload_build_lock);
     return true;
 }
 
@@ -533,8 +611,41 @@ static bool coordinator_upload_sink(
     void *context, const backend_detection_observation_t *observation)
 {
     (void)context;
-    return queue_upload_locked(observation);
+    return queue_upload(observation);
 }
+
+#if defined(FOF_BACKEND_PROFILE_BADGE_LITE)
+static void coordinator_canonical_sink(
+    void *context, const backend_detection_observation_t *observation)
+{
+    (void)context;
+    backend_dashboard_event_t event;
+    if (!backend_dashboard_event_project(observation, &event)) {
+        return;
+    }
+    if (s_runtime.history_available &&
+        xSemaphoreTake(s_runtime.event_ring_lock, 0) == pdTRUE) {
+        (void)backend_event_ring_append(&s_runtime.event_ring, &event);
+        (void)xSemaphoreGive(s_runtime.event_ring_lock);
+    } else if (s_runtime.history_available) {
+        atomic_fetch_add_explicit(
+            &s_runtime.event_ring_contention_drops,
+            1U,
+            memory_order_relaxed);
+    }
+
+    char frame[BACKEND_USB_DET_MAX];
+    const size_t length = backend_dashboard_event_encode_fof_det(
+        &event, frame, sizeof(frame));
+    if (length != 0U && s_runtime.usb_available) {
+        (void)backend_usb_service_emit(
+            &s_runtime.usb,
+            BACKEND_USB_FRAME_OPTIONAL,
+            frame,
+            length);
+    }
+}
+#endif
 
 static bool portal_commit(
     void *context, const backend_config_record_t *candidate)
@@ -545,8 +656,10 @@ static bool portal_commit(
     }
     lock_runtime();
     s_runtime.config = *candidate;
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
     backend_ap_policy_note_config_commit(
         &s_runtime.ap_policy, candidate->generation, monotonic_ms());
+#endif
     unlock_runtime();
     return true;
 }
@@ -594,10 +707,12 @@ static bool portal_backend_get(
     if (result.transport_complete && result.status_code >= 200 &&
         result.status_code < 300) {
         lock_runtime();
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
         backend_ap_policy_note_backend_success(
             &s_runtime.ap_policy,
             s_runtime.config.generation,
             monotonic_ms());
+#endif
         s_runtime.backend_reachable = true;
         unlock_runtime();
     }
@@ -1719,23 +1834,25 @@ static void dispatch_uart_frame(
             &detection,
             &stamp) == BACKEND_DECODE_OK) {
         lock_runtime();
+        const int64_t epoch_ms = current_epoch_ms_locked(now_ms);
+        unlock_runtime();
         backend_detection_observation_t observation;
         backend_observation_resolve(
-            &detection,
-            &stamp,
-            current_epoch_ms_locked(now_ms),
-            &observation);
+            &detection, &stamp, epoch_ms, &observation);
+        lock_coordinator();
         const backend_coordinator_ingest_result_t result =
             backend_coordinator_ingest_detection(
                 &s_runtime.coordinator,
                 (uint8_t)slot,
                 &observation,
                 now_ms);
+        unlock_coordinator();
         if (result.update_local_threat) {
+            lock_runtime();
             backend_threat_ingest(
                 &s_runtime.threats, &observation.detection, now_ms);
+            unlock_runtime();
         }
-        unlock_runtime();
         return;
     }
 
@@ -1752,12 +1869,55 @@ static void dispatch_uart_frame(
     ble_investigation_chunk_t chunk;
     if (backend_uart_investigation_decode(bytes, length, &chunk) ==
         BACKEND_UART_INVESTIGATION_DECODE_OK) {
+#if defined(FOF_BACKEND_PROFILE_BADGE_LITE)
+        char completed_json[BACKEND_COMMAND_RESULT_MAX_JSON + 1U];
+        size_t completed_length = 0U;
+#endif
         lock_runtime();
-        (void)backend_ble_investigation_accept_chunk(
+        const bool accepted = backend_ble_investigation_accept_chunk(
             &s_runtime.investigation,
             (backend_scanner_slot_t)slot,
             &chunk);
+#if defined(FOF_BACKEND_PROFILE_BADGE_LITE)
+        if (accepted && chunk.kind == BLE_INV_CHUNK_END) {
+            for (uint8_t index = 0U;
+                 index < s_runtime.investigation.queue_count; ++index) {
+                const uint8_t queue_index = (uint8_t)(
+                    (s_runtime.investigation.queue_head + index) %
+                    BACKEND_COMMAND_RESULT_QUEUE_CAPACITY);
+                const backend_command_result_t *result =
+                    &s_runtime.investigation.queue[queue_index];
+                if (strcmp(result->type, "ble_inv_end") == 0 &&
+                    result->json_length < sizeof(completed_json)) {
+                    completed_length = result->json_length;
+                    memcpy(
+                        completed_json,
+                        result->json,
+                        completed_length + 1U);
+                    break;
+                }
+            }
+        }
+#endif
         unlock_runtime();
+#if defined(FOF_BACKEND_PROFILE_BADGE_LITE)
+        if (completed_length != 0U && s_runtime.usb_available) {
+            char frame[BACKEND_USB_DET_MAX];
+            const size_t frame_length =
+                backend_usb_protocol_encode_investigation(
+                    completed_json,
+                    completed_length,
+                    frame,
+                    sizeof(frame));
+            if (frame_length != 0U) {
+                (void)backend_usb_service_emit(
+                    &s_runtime.usb,
+                    BACKEND_USB_FRAME_OPTIONAL,
+                    frame,
+                    frame_length);
+            }
+        }
+#endif
         return;
     }
 
@@ -1904,16 +2064,22 @@ static void coordinator_worker(void *argument)
     unlock_runtime();
     for (;;) {
         const int64_t now_ms = monotonic_ms();
-        lock_runtime();
-        (void)backend_coordinator_tick_detections(
-            &s_runtime.coordinator, now_ms);
         uint8_t retry_slot = 0U;
         backend_detection_observation_t retry_threat;
-        if (backend_coordinator_retry_one(
-                &s_runtime.coordinator, &retry_slot, &retry_threat)) {
+        lock_coordinator();
+        (void)backend_coordinator_tick_detections(
+            &s_runtime.coordinator, now_ms);
+        const bool retried = backend_coordinator_retry_one(
+            &s_runtime.coordinator, &retry_slot, &retry_threat);
+        unlock_coordinator();
+        if (retried) {
+            lock_runtime();
             backend_threat_ingest(
                 &s_runtime.threats, &retry_threat.detection, now_ms);
+            unlock_runtime();
         }
+
+        lock_runtime();
         for (size_t slot = 0U; slot < 2U; ++slot) {
             if (s_runtime.scanner_health[slot].connected &&
                 now_ms - s_runtime.scanner_last_seen_ms[slot] >
@@ -1958,26 +2124,32 @@ static void coordinator_worker(void *argument)
             .fatal_runtime = s_runtime.fatal_runtime,
             .threats = threats,
         };
-        backend_health_snapshot_t health_snapshot;
-        backend_health_evaluate(&inputs, &health_snapshot);
-        (void)backend_status_led_set_state(health_snapshot.led_state);
         uint8_t connected_mask = 0U;
         for (size_t slot = 0U; slot < 2U; ++slot) {
             if (s_runtime.scanner_health[slot].connected) {
                 connected_mask |= (uint8_t)(UINT8_C(1) << slot);
             }
         }
+        service_relay_locked(now_ms);
+        unlock_runtime();
+
+        backend_health_snapshot_t health_snapshot;
+        backend_health_evaluate(&inputs, &health_snapshot);
+        (void)backend_status_led_set_state(health_snapshot.led_state);
         backend_led_mirror_output_t mirror;
+        lock_coordinator();
         backend_coordinator_update_led(
             &s_runtime.coordinator,
             health_snapshot.led_state,
             connected_mask,
             now_ms,
             &mirror);
-        send_led_mirror_locked(&mirror);
-
         const bool paused = backend_coordinator_flow_paused(
             &s_runtime.coordinator);
+        unlock_coordinator();
+
+        lock_runtime();
+        send_led_mirror_locked(&mirror);
         if (!s_runtime.flow_state_known ||
             paused != s_runtime.flow_sent_paused) {
             if (s_runtime.flow_generation != UINT32_MAX) {
@@ -1997,7 +2169,6 @@ static void coordinator_worker(void *argument)
                 s_runtime.flow_sent_paused = paused;
             }
         }
-        service_relay_locked(now_ms);
         unlock_runtime();
         vTaskDelay(pdMS_TO_TICKS(UPLINK_COORDINATOR_PERIOD_MS));
     }
@@ -2010,13 +2181,18 @@ static void network_worker(void *argument)
     s_runtime.network_worker_live = true;
     unlock_runtime();
     for (;;) {
+        const int64_t now_ms = monotonic_ms();
         backend_ap_action_t ap_action = BACKEND_AP_NO_CHANGE;
+#if defined(FOF_BACKEND_PROFILE_BADGE_LITE)
+        const bool usb_live_confirmed = s_runtime.usb_available &&
+            backend_usb_service_live_confirmed(&s_runtime.usb, now_ms);
+#endif
         lock_runtime();
         if (s_runtime.wifi_initialized) {
             (void)backend_wifi_manager_handle_event(
                 &s_runtime.wifi,
                 BACKEND_WIFI_EVENT_TICK,
-                monotonic_ms());
+                now_ms);
         }
         if (s_runtime.wifi_connected) {
             wifi_ap_record_t record;
@@ -2028,6 +2204,21 @@ static void network_worker(void *argument)
                     (const char *)record.ssid);
             }
         }
+#if defined(FOF_BACKEND_PROFILE_BADGE_LITE)
+        const bool config_valid = s_runtime.config_loaded &&
+            s_runtime.config.network_count > 0U &&
+            backend_config_validate(&s_runtime.config) ==
+                BACKEND_CONFIG_VALID;
+        const backend_lite_ap_input_t ap_input = {
+            .wifi_configured = config_valid,
+            .wifi_connected = s_runtime.wifi_connected,
+            .wifi_join_failed = s_runtime.wifi_initialized &&
+                backend_wifi_manager_join_failed(&s_runtime.wifi),
+            .usb_live_confirmed = usb_live_confirmed,
+        };
+        ap_action = backend_lite_ap_policy_tick(
+            &s_runtime.lite_ap_policy, ap_input);
+#else
         const backend_ap_input_t ap_input = {
             .config_valid = s_runtime.config_loaded &&
                 s_runtime.config.network_count > 0U &&
@@ -2040,6 +2231,7 @@ static void network_worker(void *argument)
         s_runtime.usb_ap_start_requested = false;
         ap_action = backend_ap_policy_tick(
             &s_runtime.ap_policy, ap_input, monotonic_ms());
+#endif
         unlock_runtime();
         if (ap_action == BACKEND_AP_START) {
             const bool started = backend_config_portal_start(
@@ -2047,7 +2239,11 @@ static void network_worker(void *argument)
             lock_runtime();
             s_runtime.portal_started = started;
             if (!started) {
+#if defined(FOF_BACKEND_PROFILE_BADGE_LITE)
+                s_runtime.lite_ap_policy.running = false;
+#else
                 s_runtime.ap_policy.running = false;
+#endif
             }
             unlock_runtime();
         } else if (ap_action == BACKEND_AP_STOP) {
@@ -2056,7 +2252,11 @@ static void network_worker(void *argument)
             lock_runtime();
             s_runtime.portal_started = !stopped;
             if (!stopped) {
+#if defined(FOF_BACKEND_PROFILE_BADGE_LITE)
+                s_runtime.lite_ap_policy.running = true;
+#else
                 s_runtime.ap_policy.running = true;
+#endif
             }
             unlock_runtime();
         }
@@ -2077,10 +2277,15 @@ static void uploader_worker(void *argument)
         char base_url[sizeof(s_runtime.config.backend_url)];
         char device_id[sizeof(s_runtime.config.device_id)];
         lock_runtime();
-        if (backend_heartbeat_due(&s_runtime.heartbeat, now_ms) &&
-            queue_upload_locked(NULL)) {
+        const bool heartbeat_due = backend_heartbeat_due(
+            &s_runtime.heartbeat, now_ms);
+        unlock_runtime();
+        if (heartbeat_due && queue_upload(NULL)) {
+            lock_runtime();
             backend_heartbeat_mark_queued(&s_runtime.heartbeat, now_ms);
+            unlock_runtime();
         }
+        lock_runtime();
         const backend_upload_batch_t *head =
             backend_upload_fifo_peek(&s_runtime.upload_fifo);
         if (head != NULL && backend_uploader_begin_head(
@@ -2149,10 +2354,12 @@ static void uploader_worker(void *argument)
                 now_ms);
         if (outcome == BACKEND_UPLOADER_ACKED) {
             s_runtime.backend_reachable = true;
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
             backend_ap_policy_note_backend_success(
                 &s_runtime.ap_policy,
                 s_runtime.config.generation,
                 now_ms);
+#endif
         } else if (!http_result.transport_complete) {
             s_runtime.backend_reachable = false;
         }
@@ -3636,6 +3843,645 @@ static void emit_status_lines(void)
     }
 }
 
+#if defined(FOF_BACKEND_PROFILE_BADGE_LITE)
+typedef struct {
+    char mac[18];
+    uint32_t boot_id;
+    uint32_t config_generation;
+    bool wifi_configured;
+    bool wifi_connected;
+    bool wifi_full_pass_failed;
+    bool backend_reachable;
+    bool ap_running;
+    backend_lite_ap_reason_t recovery_reason;
+    bool dashboard_routes_enabled;
+    const char *dashboard_failure_reason;
+    backend_scanner_health_t scanners[2];
+    backend_threat_snapshot_t threats;
+    backend_led_state_t led_state;
+    bool ota_ready;
+    size_t upload_depth;
+    size_t upload_capacity;
+    uint64_t upload_drops;
+    uint64_t upload_ok;
+    uint64_t upload_failed;
+    uint64_t upload_retries;
+    bool history_available;
+    size_t history_count;
+    uint64_t history_contention_drops;
+    backend_usb_service_snapshot_t usb;
+} lite_status_snapshot_t;
+
+static const char *lite_recovery_reason_name(
+    backend_lite_ap_reason_t reason)
+{
+    switch (reason) {
+    case BACKEND_LITE_AP_REASON_WIFI_UNCONFIGURED:
+        return "wifi_unconfigured";
+    case BACKEND_LITE_AP_REASON_WIFI_JOIN_FAILED:
+        return "wifi_join_failed";
+    default:
+        return "none";
+    }
+}
+
+static bool take_lite_status_snapshot(
+    int64_t now_ms, lite_status_snapshot_t *snapshot)
+{
+    if (snapshot == NULL) {
+        return false;
+    }
+    memset(snapshot, 0, sizeof(*snapshot));
+    lock_runtime();
+    copy_text(snapshot->mac, sizeof(snapshot->mac), s_runtime.mac_text);
+    snapshot->boot_id = s_runtime.boot_id;
+    snapshot->config_generation = s_runtime.config.generation;
+    snapshot->wifi_configured = s_runtime.config_loaded &&
+        s_runtime.config.network_count > 0U &&
+        backend_config_validate(&s_runtime.config) == BACKEND_CONFIG_VALID;
+    snapshot->wifi_connected = s_runtime.wifi_connected;
+    snapshot->wifi_full_pass_failed = s_runtime.wifi_initialized &&
+        backend_wifi_manager_join_failed(&s_runtime.wifi);
+    snapshot->backend_reachable = s_runtime.backend_reachable;
+    snapshot->ap_running = s_runtime.portal_started;
+    snapshot->recovery_reason = backend_lite_ap_policy_reason(
+        &s_runtime.lite_ap_policy);
+    snapshot->dashboard_routes_enabled =
+        s_runtime.portal.dashboard_routes_enabled;
+    snapshot->dashboard_failure_reason =
+        s_runtime.portal.dashboard_failure_reason;
+    memcpy(
+        snapshot->scanners,
+        s_runtime.scanner_health,
+        sizeof(snapshot->scanners));
+    backend_threat_snapshot(
+        &s_runtime.threats, now_ms, &snapshot->threats);
+    snapshot->led_state = backend_status_led_state();
+    snapshot->ota_ready = s_runtime.ota_ready;
+    snapshot->upload_depth = s_runtime.upload_fifo.count;
+    snapshot->upload_capacity = s_runtime.upload_fifo.capacity;
+    snapshot->upload_drops = s_runtime.upload_fifo.dropped_batches;
+    snapshot->upload_ok = s_runtime.uploader.ack_count;
+    snapshot->upload_failed = s_runtime.uploader.quarantine_count;
+    snapshot->upload_retries = s_runtime.uploader.retry_count;
+    snapshot->history_available = s_runtime.history_available;
+    const bool usb_available = s_runtime.usb_available;
+    unlock_runtime();
+
+    snapshot->history_contention_drops = atomic_load_explicit(
+        &s_runtime.event_ring_contention_drops, memory_order_relaxed);
+    if (snapshot->history_available &&
+        xSemaphoreTake(
+            s_runtime.event_ring_lock, pdMS_TO_TICKS(20U)) == pdTRUE) {
+        snapshot->history_count = s_runtime.event_ring.count;
+        (void)xSemaphoreGive(s_runtime.event_ring_lock);
+    }
+    if (usb_available) {
+        (void)backend_usb_service_snapshot(
+            &s_runtime.usb, now_ms, &snapshot->usb);
+    }
+    return true;
+}
+
+static size_t build_lite_status(
+    bool usb_frame, char *output, size_t capacity)
+{
+    if (output == NULL || capacity == 0U) {
+        return 0U;
+    }
+    output[0] = '\0';
+    const backend_firmware_identity_t *identity =
+        backend_identity_for_image(BACKEND_IMAGE_UPLINK);
+    lite_status_snapshot_t status;
+    if (identity == NULL ||
+        !take_lite_status_snapshot(monotonic_ms(), &status)) {
+        return 0U;
+    }
+    const char *led = led_state_name(status.led_state);
+    if (led == NULL) {
+        led = "unknown";
+    }
+
+    backend_json_writer_t writer;
+    backend_json_writer_init(&writer, output, capacity);
+    bool ok = !usb_frame || backend_json_append(&writer, "FOF_STATUS:");
+    ok = ok && backend_json_append(&writer, "{\"product_family\":") &&
+        backend_json_append_escaped(&writer, identity->product_family) &&
+        backend_json_append(&writer, ",\"target\":") &&
+        backend_json_append_escaped(&writer, identity->target) &&
+        backend_json_append(&writer, ",\"project\":") &&
+        backend_json_append_escaped(&writer, identity->project) &&
+        backend_json_append(&writer, ",\"hardware\":") &&
+        backend_json_append_escaped(&writer, identity->hardware) &&
+        backend_json_append(&writer, ",\"version\":") &&
+        backend_json_append_escaped(&writer, identity->version) &&
+        backend_json_append(&writer, ",\"mac\":") &&
+        backend_json_append_escaped(&writer, status.mac) &&
+        backend_json_append_format(
+            &writer,
+            ",\"boot_id\":%lu,\"mode\":\"headless\","
+            "\"mode_label\":\"Backend Badge Lite\","
+            "\"config_generation\":%lu,"
+            "\"capabilities\":[\"display_none\",\"usb_live\","
+            "\"usb_live_ack\",\"usb_buffered\",\"usb_config\","
+            "\"http_uplink\",\"config_ap\",\"ap_dashboard\","
+            "\"remote_ota\",\"uart_relay_ota\"],"
+            "\"wifi\":{\"configured\":%s,\"connected\":%s,"
+            "\"full_pass_failed\":%s},"
+            "\"backend\":{\"reachable\":%s},"
+            "\"recovery\":{\"reason\":\"%s\",\"ap_running\":%s},"
+            "\"scanner\":[{\"slot\":0,\"connected\":%s,"
+            "\"identity_valid\":%s},{\"slot\":1,\"connected\":%s,"
+            "\"identity_valid\":%s}],"
+            "\"threats\":{\"drone_active\":%s,\"meta_active\":%s},"
+            "\"led\":\"%s\",\"ota_ready\":%s,"
+            "\"upload\":{\"depth\":%u,\"capacity\":%u,"
+            "\"dropped\":%llu,\"ok\":%llu,\"failed\":%llu,"
+            "\"retries\":%llu},"
+            "\"usb\":{\"available\":%s,\"host_connected\":%s,"
+            "\"required_depth\":%u,\"optional_depth\":%u,"
+            "\"optional_drops\":%llu,\"required_failures\":%llu,"
+            "\"bytes_transmitted\":%llu,\"bytes_received\":%llu,"
+            "\"output_poisoned\":%s},"
+            "\"live\":{\"started\":%s,\"session_id\":\"%s\","
+            "\"last_ack_sequence\":%llu,\"confirmed\":%s,"
+            "\"lease_remaining_ms\":%lld},"
+            "\"history\":{\"available\":%s,\"count\":%u,"
+            "\"contention_drops\":%llu},"
+            "\"dashboard\":{\"enabled\":%s,\"degraded_reason\":",
+            (unsigned long)status.boot_id,
+            (unsigned long)status.config_generation,
+            status.wifi_configured ? "true" : "false",
+            status.wifi_connected ? "true" : "false",
+            status.wifi_full_pass_failed ? "true" : "false",
+            status.backend_reachable ? "true" : "false",
+            lite_recovery_reason_name(status.recovery_reason),
+            status.ap_running ? "true" : "false",
+            status.scanners[0].connected ? "true" : "false",
+            status.scanners[0].identity_valid ? "true" : "false",
+            status.scanners[1].connected ? "true" : "false",
+            status.scanners[1].identity_valid ? "true" : "false",
+            status.threats.drone_live ? "true" : "false",
+            status.threats.meta_live ? "true" : "false",
+            led,
+            status.ota_ready ? "true" : "false",
+            (unsigned)status.upload_depth,
+            (unsigned)status.upload_capacity,
+            (unsigned long long)status.upload_drops,
+            (unsigned long long)status.upload_ok,
+            (unsigned long long)status.upload_failed,
+            (unsigned long long)status.upload_retries,
+            status.usb.available ? "true" : "false",
+            status.usb.host_connected ? "true" : "false",
+            (unsigned)status.usb.required_queue_depth,
+            (unsigned)status.usb.optional_queue_depth,
+            (unsigned long long)status.usb.optional_drops,
+            (unsigned long long)status.usb.required_failures,
+            (unsigned long long)status.usb.bytes_transmitted,
+            (unsigned long long)status.usb.bytes_received,
+            status.usb.output_poisoned ? "true" : "false",
+            status.usb.live_started ? "true" : "false",
+            status.usb.live_session_id,
+            (unsigned long long)status.usb.last_ack_sequence,
+            status.usb.live_confirmed ? "true" : "false",
+            (long long)status.usb.live_lease_remaining_ms,
+            status.history_available ? "true" : "false",
+            (unsigned)status.history_count,
+            (unsigned long long)status.history_contention_drops,
+            status.dashboard_routes_enabled ? "true" : "false");
+    if (!ok) {
+        output[0] = '\0';
+        return 0U;
+    }
+    const char *degraded_reason = status.dashboard_failure_reason;
+    if (!status.history_available) {
+        degraded_reason = "history_psram_unavailable";
+    }
+    if (degraded_reason == NULL) {
+        ok = backend_json_append(&writer, "null");
+    } else {
+        ok = backend_json_append_escaped(&writer, degraded_reason);
+    }
+    ok = ok && backend_json_append(&writer, "}}");
+    if (usb_frame) {
+        ok = ok && backend_json_append(&writer, "\n");
+    }
+    if (!ok) {
+        output[0] = '\0';
+        return 0U;
+    }
+    return backend_json_writer_finish(&writer);
+}
+
+static bool portal_dashboard_status(
+    void *context,
+    char *output,
+    size_t capacity,
+    size_t *out_length)
+{
+    (void)context;
+    if (out_length == NULL) {
+        return false;
+    }
+    *out_length = build_lite_status(false, output, capacity);
+    return *out_length != 0U;
+}
+
+static bool portal_event_snapshot(
+    void *context,
+    uint64_t after,
+    size_t limit,
+    backend_dashboard_event_t *events,
+    size_t event_capacity,
+    backend_event_ring_snapshot_t *snapshot)
+{
+    (void)context;
+    if (events == NULL || snapshot == NULL || limit == 0U ||
+        limit > BACKEND_DASHBOARD_MAX_LIMIT) {
+        return false;
+    }
+    if (!s_runtime.history_available) {
+        memset(snapshot, 0, sizeof(*snapshot));
+        return true;
+    }
+    if (xSemaphoreTake(
+            s_runtime.event_ring_lock, pdMS_TO_TICKS(20U)) != pdTRUE) {
+        return false;
+    }
+    const bool copied = backend_event_ring_snapshot(
+        &s_runtime.event_ring,
+        after,
+        limit,
+        events,
+        event_capacity,
+        snapshot);
+    (void)xSemaphoreGive(s_runtime.event_ring_lock);
+    return copied;
+}
+
+static bool emit_required_frame(const char *frame, size_t length)
+{
+    return backend_usb_service_emit(
+        &s_runtime.usb,
+        BACKEND_USB_FRAME_REQUIRED,
+        frame,
+        length);
+}
+
+static void emit_control_error(const char *reason)
+{
+    char frame[160];
+    const int written = snprintf(
+        frame,
+        sizeof(frame),
+        "FOF_CTL_ERROR:{\"reason\":\"%s\"}\n",
+        reason == NULL ? "unknown" : reason);
+    if (written > 0 && (size_t)written < sizeof(frame)) {
+        (void)emit_required_frame(frame, (size_t)written);
+    }
+}
+
+static bool line_starts_with(
+    const char *line, size_t length, const char *prefix)
+{
+    const size_t prefix_length = strlen(prefix);
+    return length >= prefix_length &&
+        memcmp(line, prefix, prefix_length) == 0;
+}
+
+static bool screen_only_command(const char *line, size_t length)
+{
+    static const char *const prefixes[] = {
+        "FOF_SCREEN",
+        "FOF_NAV",
+        "FOF_THEME",
+        "FOF_DISPLAY",
+        "FOF_SET:theme",
+        "FOF_SET:navigation",
+        "FOF_SET:display",
+    };
+    for (size_t index = 0U;
+         index < sizeof(prefixes) / sizeof(prefixes[0]); ++index) {
+        if (line_starts_with(line, length, prefixes[index])) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static const char *portal_update_reason(
+    backend_portal_update_result_t result)
+{
+    switch (result) {
+    case BACKEND_PORTAL_UPDATE_UNKNOWN_FIELD:
+        return "unknown_field";
+    case BACKEND_PORTAL_UPDATE_CONFIRMATION_REQUIRED:
+        return "confirmation_required";
+    case BACKEND_PORTAL_UPDATE_COMMIT_FAILED:
+        return "commit_failed";
+    case BACKEND_PORTAL_UPDATE_RECONNECT_FAILED:
+        return "reconnect_failed";
+    case BACKEND_PORTAL_UPDATE_INVALID_ARGUMENT:
+        return "invalid_argument";
+    case BACKEND_PORTAL_UPDATE_INVALID_JSON:
+        return "invalid_json";
+    case BACKEND_PORTAL_UPDATE_INVALID_CONFIG:
+        return "invalid_config";
+    default:
+        return "unknown";
+    }
+}
+
+static void emit_lite_status(void)
+{
+    if (xSemaphoreTake(s_runtime.usb_lock, portMAX_DELAY) != pdTRUE) {
+        return;
+    }
+    const size_t length = build_lite_status(
+        true,
+        s_runtime.usb_status_scratch,
+        sizeof(s_runtime.usb_status_scratch));
+    if (length != 0U) {
+        (void)emit_required_frame(s_runtime.usb_status_scratch, length);
+    }
+    (void)xSemaphoreGive(s_runtime.usb_lock);
+}
+
+static void emit_redacted_config(void)
+{
+    backend_config_record_t config;
+    lock_runtime();
+    config = s_runtime.config;
+    unlock_runtime();
+    if (xSemaphoreTake(s_runtime.usb_lock, portMAX_DELAY) != pdTRUE) {
+        return;
+    }
+    static const char prefix[] = "FOF_CONFIG:";
+    memcpy(
+        s_runtime.usb_status_scratch,
+        prefix,
+        sizeof(prefix) - 1U);
+    const size_t json_length = backend_portal_render_redacted_config(
+        &config,
+        s_runtime.usb_status_scratch + sizeof(prefix) - 1U,
+        sizeof(s_runtime.usb_status_scratch) - sizeof(prefix));
+    if (json_length != 0U) {
+        const size_t length = sizeof(prefix) - 1U + json_length;
+        s_runtime.usb_status_scratch[length] = '\n';
+        (void)emit_required_frame(
+            s_runtime.usb_status_scratch, length + 1U);
+    }
+    (void)xSemaphoreGive(s_runtime.usb_lock);
+}
+
+static void emit_staged_result(
+    const char *prefix,
+    const char *value)
+{
+    char frame[128];
+    const int written = snprintf(
+        frame, sizeof(frame), "%s%s\n", prefix, value);
+    if (written > 0 && (size_t)written < sizeof(frame)) {
+        (void)emit_required_frame(frame, (size_t)written);
+    }
+}
+
+static void handle_lite_config_set(
+    const backend_usb_command_t *command, int64_t now_ms)
+{
+    const backend_portal_update_result_t result =
+        backend_config_portal_apply_update(
+            &s_runtime.portal,
+            command->json,
+            command->json_length,
+            now_ms);
+    if (result == BACKEND_PORTAL_UPDATE_OK ||
+        result == BACKEND_PORTAL_UPDATE_RECONNECT_FAILED) {
+        backend_config_record_t config;
+        lock_runtime();
+        config = s_runtime.config;
+        unlock_runtime();
+        backend_usb_config_init(&s_runtime.usb_config, &config);
+        char frame[128];
+        const int written = snprintf(
+            frame,
+            sizeof(frame),
+            "FOF_CONFIG_OK:{\"generation\":%lu,\"reconnect\":%s}\n",
+            (unsigned long)config.generation,
+            result == BACKEND_PORTAL_UPDATE_OK ? "true" : "false");
+        if (written > 0 && (size_t)written < sizeof(frame)) {
+            (void)emit_required_frame(frame, (size_t)written);
+        }
+        return;
+    }
+    char frame[128];
+    const int written = snprintf(
+        frame,
+        sizeof(frame),
+        "FOF_CONFIG_ERROR:{\"reason\":\"%s\"}\n",
+        portal_update_reason(result));
+    if (written > 0 && (size_t)written < sizeof(frame)) {
+        (void)emit_required_frame(frame, (size_t)written);
+    }
+}
+
+static void handle_lite_save(int64_t now_ms)
+{
+    uint32_t generation = 0U;
+    const backend_portal_update_result_t result = backend_usb_config_save(
+        &s_runtime.usb_config,
+        portal_commit,
+        portal_reconnect,
+        NULL,
+        now_ms,
+        &generation);
+    if (result == BACKEND_PORTAL_UPDATE_OK ||
+        result == BACKEND_PORTAL_UPDATE_RECONNECT_FAILED) {
+        lock_runtime();
+        s_runtime.portal.config = s_runtime.config;
+        const backend_config_record_t config = s_runtime.config;
+        unlock_runtime();
+        backend_usb_config_init(&s_runtime.usb_config, &config);
+        if (result == BACKEND_PORTAL_UPDATE_OK) {
+            emit_staged_result("", "FOF_SAVED");
+        } else {
+            emit_staged_result("FOF_ERROR:", "reconnect_failed");
+        }
+        (void)generation;
+        return;
+    }
+    emit_staged_result("FOF_ERROR:", portal_update_reason(result));
+}
+
+static void handle_lite_ap_start(int64_t now_ms)
+{
+    const bool live_confirmed = s_runtime.usb_available &&
+        backend_usb_service_live_confirmed(&s_runtime.usb, now_ms);
+    lock_runtime();
+    const bool configured = s_runtime.config_loaded &&
+        s_runtime.config.network_count > 0U &&
+        backend_config_validate(&s_runtime.config) == BACKEND_CONFIG_VALID;
+    const bool join_failed = s_runtime.wifi_initialized &&
+        backend_wifi_manager_join_failed(&s_runtime.wifi);
+    const bool eligible = !configured || join_failed;
+    unlock_runtime();
+    if (live_confirmed) {
+        emit_control_error("usb_live_confirmed");
+    } else if (!eligible) {
+        emit_control_error("recovery_ap_not_needed");
+    } else {
+        static const char ok[] =
+            "FOF_CTL_OK:{\"command\":\"ap_start\"}\n";
+        (void)emit_required_frame(ok, sizeof(ok) - 1U);
+    }
+}
+
+static bool dispatch_lite_ota_alias(
+    const char *line, size_t length)
+{
+    if (s_runtime.ota_ready &&
+        backend_ota_maintenance_is_status_usb(line, length)) {
+        (void)xSemaphoreTake(s_runtime.ota_lock, portMAX_DELAY);
+        (void)backend_ota_maintenance_emit_status(&s_runtime.maintenance);
+        (void)xSemaphoreGive(s_runtime.ota_lock);
+        return true;
+    }
+    backend_ota_request_t request;
+    if (!s_runtime.ota_ready ||
+        !backend_ota_maintenance_parse_usb(line, length, &request)) {
+        return false;
+    }
+    (void)xSemaphoreTake(s_runtime.ota_lock, portMAX_DELAY);
+    if (request.probe) {
+        backend_ota_evidence_t evidence;
+        (void)backend_ota_maintenance_run_probe(
+            &s_runtime.maintenance,
+            request.component,
+            request.catalog_name,
+            request.expected_sha256[0] == '\0'
+                ? NULL : request.expected_sha256,
+            &evidence);
+    } else {
+        (void)backend_ota_maintenance_request_apply(
+            &s_runtime.maintenance, &request);
+    }
+    (void)xSemaphoreGive(s_runtime.ota_lock);
+    return true;
+}
+
+static void lite_usb_line(
+    void *context,
+    const char *line,
+    size_t length,
+    int64_t now_ms)
+{
+    (void)context;
+    if (screen_only_command(line, length)) {
+        emit_control_error("unsupported_capability");
+        return;
+    }
+    backend_usb_command_t command;
+    if (!backend_usb_protocol_parse_line(line, length, &command)) {
+        emit_control_error("malformed_command");
+        return;
+    }
+    char frame[256];
+    size_t frame_length = 0U;
+    switch (command.kind) {
+    case BACKEND_USB_COMMAND_PING:
+        frame_length = backend_usb_protocol_encode_pong(
+            backend_identity_for_image(BACKEND_IMAGE_UPLINK),
+            frame,
+            sizeof(frame));
+        if (frame_length != 0U) {
+            (void)emit_required_frame(frame, frame_length);
+        }
+        return;
+    case BACKEND_USB_COMMAND_STATUS:
+        emit_lite_status();
+        return;
+    case BACKEND_USB_COMMAND_LIVE_START: {
+        char session_id[33];
+        if (!backend_usb_service_live_start(
+                &s_runtime.usb, now_ms, session_id)) {
+            emit_control_error("live_start_failed");
+            return;
+        }
+        frame_length = backend_usb_protocol_encode_live_ready(
+            session_id, frame, sizeof(frame));
+        if (frame_length == 0U ||
+            !emit_required_frame(frame, frame_length)) {
+            (void)backend_usb_service_live_stop(
+                &s_runtime.usb, session_id);
+            emit_control_error("required_queue_full");
+        }
+        return;
+    }
+    case BACKEND_USB_COMMAND_LIVE_ACK:
+        if (!backend_usb_service_live_acknowledge(
+                &s_runtime.usb,
+                command.session_id,
+                command.sequence,
+                now_ms)) {
+            emit_control_error("invalid_live_ack");
+        }
+        return;
+    case BACKEND_USB_COMMAND_LIVE_STOP:
+        if (!backend_usb_service_live_stop(
+                &s_runtime.usb, command.session_id)) {
+            emit_control_error("stale_live_session");
+            return;
+        }
+        {
+            const int written = snprintf(
+                frame,
+                sizeof(frame),
+                "FOF_LIVE_STOPPED:{\"session_id\":\"%s\"}\n",
+                command.session_id);
+            if (written > 0 && (size_t)written < sizeof(frame)) {
+                (void)emit_required_frame(frame, (size_t)written);
+            }
+        }
+        return;
+    case BACKEND_USB_COMMAND_CONFIG_GET:
+        emit_redacted_config();
+        return;
+    case BACKEND_USB_COMMAND_CONFIG_SET:
+        handle_lite_config_set(&command, now_ms);
+        return;
+    case BACKEND_USB_COMMAND_SET: {
+        const backend_portal_update_result_t result =
+            backend_usb_config_stage(
+                &s_runtime.usb_config, command.key, command.value);
+        if (result == BACKEND_PORTAL_UPDATE_OK) {
+            emit_staged_result("FOF_OK:", command.key);
+        } else {
+            emit_staged_result("FOF_ERROR:", portal_update_reason(result));
+        }
+        return;
+    }
+    case BACKEND_USB_COMMAND_SAVE:
+        handle_lite_save(now_ms);
+        return;
+    case BACKEND_USB_COMMAND_BACKEND_STATUS:
+        emit_status_lines();
+        return;
+    case BACKEND_USB_COMMAND_AP_START:
+        handle_lite_ap_start(now_ms);
+        return;
+    case BACKEND_USB_COMMAND_UNKNOWN:
+        if (!dispatch_lite_ota_alias(line, length)) {
+            emit_control_error("unknown_command");
+        }
+        return;
+    default:
+        emit_control_error("malformed_command");
+        return;
+    }
+}
+#endif
+
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
 static void usb_worker(void *argument)
 {
     (void)argument;
@@ -3702,6 +4548,7 @@ static void usb_worker(void *argument)
             "FOF_BACKEND_ERROR {\"reason\":\"unknown_command\"}");
     }
 }
+#endif
 
 static bool create_runtime_tasks(void)
 {
@@ -3734,9 +4581,11 @@ static bool create_runtime_tasks(void)
     created = created == pdPASS ? xTaskCreate(
         ota_worker, "ota_backend", 8192U,
         NULL, 4U, NULL) : created;
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
     created = created == pdPASS ? xTaskCreate(
         usb_worker, "usb_backend", 8192U,
         NULL, 3U, NULL) : created;
+#endif
     return created == pdPASS;
 }
 
@@ -3753,8 +4602,13 @@ static bool workers_ready(void)
 #if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
         s_runtime.ota_client_worker_live &&
 #endif
-        s_runtime.ota_worker_live &&
+        s_runtime.ota_worker_live
+#if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
+        &&
         s_runtime.usb_worker_live;
+#else
+        ;
+#endif
     unlock_runtime();
     return ready;
 }
@@ -3762,12 +4616,17 @@ static bool workers_ready(void)
 static bool init_sync_objects(void)
 {
     s_runtime.lock = xSemaphoreCreateMutex();
+    s_runtime.coordinator_lock = xSemaphoreCreateMutex();
+    s_runtime.upload_build_lock = xSemaphoreCreateMutex();
     s_runtime.http_lock = xSemaphoreCreateMutex();
     s_runtime.usb_lock = xSemaphoreCreateMutex();
     s_runtime.ota_lock = xSemaphoreCreateMutex();
     s_runtime.uart_tx_lock[0] = xSemaphoreCreateMutex();
     s_runtime.uart_tx_lock[1] = xSemaphoreCreateMutex();
     s_runtime.relay_complete = xSemaphoreCreateBinary();
+#if defined(FOF_BACKEND_PROFILE_BADGE_LITE)
+    s_runtime.event_ring_lock = xSemaphoreCreateMutex();
+#endif
 #if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
     s_runtime.ota_work_queue = xQueueCreate(
         1U, sizeof(uplink_ota_work_item_t));
@@ -3778,11 +4637,16 @@ static bool init_sync_objects(void)
         sizeof(backend_ota_progress_update_t));
     s_runtime.ota_progress_ack = xSemaphoreCreateBinary();
 #endif
-    return s_runtime.lock != NULL && s_runtime.http_lock != NULL &&
+    return s_runtime.lock != NULL && s_runtime.coordinator_lock != NULL &&
+           s_runtime.upload_build_lock != NULL &&
+           s_runtime.http_lock != NULL &&
            s_runtime.usb_lock != NULL && s_runtime.ota_lock != NULL &&
            s_runtime.uart_tx_lock[0] != NULL &&
            s_runtime.uart_tx_lock[1] != NULL &&
            s_runtime.relay_complete != NULL
+#if defined(FOF_BACKEND_PROFILE_BADGE_LITE)
+           && s_runtime.event_ring_lock != NULL
+#endif
 #if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
            && s_runtime.ota_work_queue != NULL &&
            s_runtime.ota_result_queue != NULL &&
@@ -4079,6 +4943,10 @@ void app_main(void)
     backend_coordinator_init(&s_runtime.coordinator);
     backend_coordinator_set_upload_sink(
         &s_runtime.coordinator, coordinator_upload_sink, NULL);
+#if defined(FOF_BACKEND_PROFILE_BADGE_LITE)
+    backend_coordinator_set_canonical_sink(
+        &s_runtime.coordinator, coordinator_canonical_sink, NULL);
+#endif
     backend_threat_init(&s_runtime.threats);
     backend_uploader_state_init(&s_runtime.uploader);
     backend_heartbeat_init(
@@ -4100,18 +4968,46 @@ void app_main(void)
         print_line("FOF_BACKEND_FATAL {\"reason\":\"upload_queue\"}");
         return;
     }
+#if defined(FOF_BACKEND_PROFILE_BADGE_LITE)
+    atomic_init(&s_runtime.event_ring_contention_drops, 0U);
+    s_runtime.event_storage = psram_alloc_strict(
+        128U * sizeof(backend_dashboard_event_t));
+    s_runtime.history_available = backend_event_ring_init(
+        &s_runtime.event_ring,
+        s_runtime.event_storage,
+        BACKEND_EVENT_RING_CAPACITY);
+    backend_usb_config_init(&s_runtime.usb_config, &s_runtime.config);
+#endif
 
     const backend_config_portal_ops_t portal_ops = {
         .context = NULL,
         .commit_config = portal_commit,
         .reconnect_wifi = portal_reconnect,
         .backend_get = portal_backend_get,
+#if defined(FOF_BACKEND_PROFILE_BADGE_LITE)
+        .dashboard_status = portal_dashboard_status,
+        .event_snapshot = portal_event_snapshot,
+#endif
     };
+#if defined(FOF_BACKEND_PROFILE_BADGE_LITE)
+    backend_lite_ap_policy_init(&s_runtime.lite_ap_policy);
+#else
     backend_ap_policy_init(
         &s_runtime.ap_policy, s_runtime.boot_monotonic_ms);
+#endif
     const bool boot_config_valid = s_runtime.config_loaded &&
         s_runtime.config.network_count > 0U &&
         backend_config_validate(&s_runtime.config) == BACKEND_CONFIG_VALID;
+#if defined(FOF_BACKEND_PROFILE_BADGE_LITE)
+    const backend_lite_ap_input_t boot_ap_input = {
+        .wifi_configured = boot_config_valid,
+        .wifi_connected = false,
+        .wifi_join_failed = false,
+        .usb_live_confirmed = false,
+    };
+    const backend_ap_action_t boot_ap_action = backend_lite_ap_policy_tick(
+        &s_runtime.lite_ap_policy, boot_ap_input);
+#else
     const backend_ap_input_t boot_ap_input = {
         .config_valid = boot_config_valid,
         .config_generation = s_runtime.config.generation,
@@ -4122,6 +5018,7 @@ void app_main(void)
         &s_runtime.ap_policy,
         boot_ap_input,
         s_runtime.boot_monotonic_ms);
+#endif
     if (!backend_config_portal_init(
             &s_runtime.portal, &s_runtime.config, &portal_ops) ||
         !initialize_wifi_platform()) {
@@ -4159,6 +5056,22 @@ void app_main(void)
         print_line("FOF_BACKEND_FATAL {\"reason\":\"ota_runtime\"}");
         return;
     }
+#if defined(FOF_BACKEND_PROFILE_BADGE_LITE)
+    const backend_usb_service_config_t usb_config = {
+        .context = NULL,
+        .on_line = lite_usb_line,
+    };
+    s_runtime.usb_available = backend_usb_service_start(
+        &s_runtime.usb, &usb_config);
+    if (s_runtime.usb_available) {
+        char ready[32];
+        const size_t ready_length = backend_usb_protocol_encode_ready(
+            ready, sizeof(ready));
+        if (ready_length != 0U) {
+            (void)emit_required_frame(ready, ready_length);
+        }
+    }
+#endif
 
     if (!s_runtime.led_started || !s_runtime.uart_started[0] ||
         !s_runtime.uart_started[1] || !create_runtime_tasks()) {

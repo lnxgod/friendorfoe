@@ -171,6 +171,68 @@ def test_uplink_project_uses_backend_version_and_explicit_local_sources() -> Non
         assert source_path.is_file(), f"missing explicit source: {source}"
 
 
+def test_lite_runtime_sources_are_explicit_and_excluded_from_fullsize() -> None:
+    component = (UPLINK / "main/CMakeLists.txt").read_text(encoding="utf-8")
+    lite_start = component.index(
+        'if("${BACKEND_STATUS_PROJECT_NAME}" STREQUAL "fof_backend_uplink")'
+    )
+    fullsize_start = component.index(
+        'elseif("${BACKEND_STATUS_PROJECT_NAME}" STREQUAL '
+        '"fof_backend_uplink_fullsize")',
+        lite_start,
+    )
+    profile_end = component.index("else()", fullsize_start)
+    lite_branch = component[lite_start:fullsize_start]
+    fullsize_branch = component[fullsize_start:profile_end]
+    lite_sources = {
+        "core/backend_dashboard_event.c",
+        "network/backend_dashboard_page.c",
+        "storage/backend_event_ring.c",
+        "usb/backend_usb_config.c",
+        "usb/backend_usb_protocol.c",
+        "usb/backend_usb_service.c",
+        "usb/backend_usb_transport_core.c",
+        "../../shared/backend_lite_ap_policy.c",
+    }
+
+    assert "${BACKEND_STATUS_LED_SRCS}" in component
+    assert "esp_driver_usb_serial_jtag" in lite_branch
+    assert "esp_driver_usb_serial_jtag" not in fullsize_branch
+    for source in lite_sources:
+        assert f'"{source}"' in lite_branch
+        assert source not in fullsize_branch
+        assert component.count(f'"{source}"') == 1
+
+
+def test_lite_usb_service_owns_bounded_driver_and_strict_psram_queues() -> None:
+    service = (UPLINK / "main/usb/backend_usb_service.c").read_text(
+        encoding="utf-8"
+    )
+
+    assert ".rx_buffer_size = 8192" in service
+    assert ".tx_buffer_size = 8192" in service
+    assert "BACKEND_USB_DRIVER_WRITE_MAX 4096U" in service
+    assert "psram_alloc_strict(" in service
+    assert "BACKEND_USB_REQUIRED_QUEUE_CAPACITY" in service
+    assert "BACKEND_USB_OPTIONAL_QUEUE_CAPACITY" in service
+    assert "usb_serial_jtag_write_bytes(" in service
+
+
+def test_lite_main_registers_http_and_canonical_sinks_with_psram_history() -> None:
+    source = (UPLINK / "main/main.c").read_text(encoding="utf-8")
+
+    assert "backend_coordinator_set_upload_sink(" in source
+    assert "backend_coordinator_set_canonical_sink(" in source
+    assert "psram_alloc_strict(" in source
+    assert "128U * sizeof(backend_dashboard_event_t)" in source
+
+    lite_status_sources = source + (UPLINK / "main/usb/backend_usb_service.c").read_text(
+        encoding="utf-8"
+    )
+    assert "fof_badge_uplink" not in lite_status_sources
+    assert "uplink-s3-fof_badge" not in lite_status_sources
+
+
 def test_uplink_partition_table_is_exact_nonoverlapping_eight_megabytes() -> None:
     rows = _partition_rows()
     expected = [
@@ -290,8 +352,9 @@ def test_uplink_main_composes_the_backend_lite_runtime() -> None:
     ):
         assert f"{task}(" in source
 
-    assert 'FOF_BACKEND_BOOT {\\"target\\":\\"%s\\"' in source
-    assert 'FOF_BACKEND_HEALTH {\\"target\\":\\"%s\\"' in source
+    assert 'FOF_BACKEND_BOOT {\\"product_family\\":\\"%s\\"' in source
+    assert 'FOF_BACKEND_HEALTH {\\"product_family\\":\\"%s\\"' in source
+    assert '\\"target\\":\\"%s\\",\\"project\\":\\"%s\\"' in source
     assert 'strcmp(line, "FOF_BACKEND_STATUS") == 0' in source
     assert (
         "fof_backend_embedded_identity.image_kind != "

@@ -20,6 +20,16 @@ else()
 endif()
 if("${BACKEND_STATUS_PROJECT_NAME}" STREQUAL "fof_backend_uplink")
     list(APPEND BACKEND_STATUS_LED_SRCS "hw/backend_yellow_led.c")
+    list(APPEND BACKEND_STATUS_LED_SRCS
+        "core/backend_dashboard_event.c"
+        "network/backend_dashboard_page.c"
+        "storage/backend_event_ring.c"
+        "usb/backend_usb_config.c"
+        "usb/backend_usb_protocol.c"
+        "usb/backend_usb_service.c"
+        "usb/backend_usb_transport_core.c"
+        "../../shared/backend_lite_ap_policy.c")
+    list(APPEND BACKEND_STATUS_LED_REQUIRES esp_driver_usb_serial_jtag)
 elseif("${BACKEND_STATUS_PROJECT_NAME}" STREQUAL "fof_backend_uplink_fullsize")
     list(APPEND BACKEND_STATUS_LED_SRCS "../../shared/backend_rgb_led_pattern.c")
     list(APPEND BACKEND_STATUS_LED_REQUIRES backend_fullsize_led)
@@ -97,6 +107,7 @@ idf_component_register(
         "network"
         "ota"
         "storage"
+        "usb"
         "../../shared"
     LDFRAGMENTS
         "backend_identity.lf"
