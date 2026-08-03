@@ -130,6 +130,23 @@ Relevant Android code lives under:
 - `android/app/src/main/java/com/friendorfoe/presentation/badge/`
 - `android/app/src/main/java/com/friendorfoe/presentation/privacy/`
 
+## New Dash: One Badge, One USB Cable
+
+New Dash brings the factory badge's native Android-compatible USB feed to a
+compact browser dashboard on macOS. It runs directly from source, discovers
+one badge uplink, shows live detections and Remote ID, and keeps local history
+without using the legacy multi-node backend or reflashing a compatible factory
+badge.
+
+```sh
+cd new-dash
+./run.sh
+```
+
+See the [New Dash source and deployment guide](new-dash/README.md) for
+requirements, explicit USB-port selection, and the auto-restarting overnight
+service.
+
 ## From Badge To Sensor Platform
 
 The Packet Village demo is a badge, but the architecture is a sensor platform:

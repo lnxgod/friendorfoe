@@ -12,22 +12,45 @@ badges do not need to be reflashed or reconfigured.
 
 New Dash is a separate application from `../backend/`. It does not import that
 backend, use its database or configuration, start its processes, or implement
-its multi-node ingest features. New Dash requires macOS and Python 3.11 or
-newer. Windows and Linux are not supported or tested in this first release.
+its multi-node ingest features. Windows and Linux are not supported or tested
+in this first release.
 
-## Start from source
+## Requirements
 
-Connect the badge's uplink USB-C port, then run:
+Required:
+
+- A Mac running macOS.
+- Python 3.11 or newer, available as `python3`.
+- A compatible Friend or Foe factory badge and a data-capable USB-C cable
+  connected to the badge uplink board.
+- Network access on the first run if the Python packages are not already
+  cached.
+
+New Dash handles these automatically:
+
+- Creates or reuses `new-dash/.venv`.
+- Installs New Dash and its only runtime dependency, `pyserial>=3.5,<4`.
+- Opens a loopback-only browser dashboard and keeps retrying if the badge is
+  temporarily disconnected.
+
+You do **not** need to reflash a compatible factory badge or install Android,
+the legacy FastAPI backend, Docker, PostgreSQL, Redis, Node.js, or a separate
+USB driver for the badge's native USB serial connection.
+
+## Plug in and run
+
+From a clone or downloaded copy of this repository:
 
 ```sh
 cd new-dash
 ./run.sh
 ```
 
-The script creates or reuses `new-dash/.venv`, installs the project in editable
-mode, starts a loopback-only server, and opens its selected URL. If port 8765
-is occupied, New Dash selects another available loopback port. It remains
-usable and keeps looking for the badge when no badge is attached.
+Connect the badge uplink USB-C port before or after launch. New Dash opens the
+selected local URL automatically, verifies the badge using the same
+factory-firmware USB signaling as Android, and begins showing live detections.
+No firmware or badge configuration change is required. If port 8765 is
+occupied, New Dash selects another available loopback port.
 
 To select a badge port explicitly:
 
