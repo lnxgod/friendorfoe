@@ -65,6 +65,16 @@ class DetectionParsingTest(unittest.TestCase):
 
 
 class StatusParsingTest(unittest.TestCase):
+    def test_status_accepts_factory_startup_status_without_uptime(self) -> None:
+        fixture = pathlib.Path(__file__).parent / "fixtures" / "badge_status_factory_0_67_2_startup.json"
+        frame = parse_machine_line(f"FOF_STATUS:{fixture.read_text()}")
+        self.assertEqual(frame.value.version, "0.67.2-badge-defcon34")
+        self.assertIsNone(frame.value.uptime_seconds)
+        self.assertEqual(frame.value.recovery_mode, "startup_dependency")
+        self.assertIsNone(frame.value.entities)
+        self.assertIsNone(frame.value.scanners)
+        self.assertEqual(frame.value.to_dict()["usb_health"]["schema"], 1)
+
     def test_status_normalizes_positioned_remote_id_entity(self) -> None:
         fixture = pathlib.Path(__file__).parent / "fixtures" / "badge_status_remote_id.json"
         frame = parse_machine_line(f"FOF_STATUS:{fixture.read_text()}")
@@ -103,6 +113,7 @@ class StatusParsingTest(unittest.TestCase):
             {},
             {"version": "", "uptime_s": 0},
             {"version": "v1", "uptime_s": True},
+            {"version": "v1", "uptime_s": None},
             {"version": "v1", "uptime_s": float("inf")},
             {"version": "v1", "uptime_s": 0, "entities": {}},
             {"version": "v1", "uptime_s": 0, "scanners": {}},

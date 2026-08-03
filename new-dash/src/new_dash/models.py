@@ -301,7 +301,7 @@ class BadgeStatus:
     """The complete, validated status snapshot supplied by the firmware."""
 
     version: str
-    uptime_seconds: float
+    uptime_seconds: float | None
     mode: str | None
     mode_label: str | None
     threat_score: float | None
@@ -319,9 +319,17 @@ class BadgeStatus:
         version = payload.get("version")
         if not isinstance(version, str) or not version.strip():
             raise ValueError("status version must be a nonempty string")
-        uptime = payload.get("uptime_s")
-        if isinstance(uptime, bool) or not isinstance(uptime, (int, float)) or not isfinite(uptime):
-            raise ValueError("status uptime_s must be finite numeric")
+        uptime = payload.get("uptime_s", _MISSING)
+        if uptime is _MISSING:
+            normalized_uptime = None
+        elif (
+            isinstance(uptime, bool)
+            or not isinstance(uptime, (int, float))
+            or not isfinite(uptime)
+        ):
+            raise ValueError("status uptime_s must be finite numeric when present")
+        else:
+            normalized_uptime = float(uptime)
         entity_value = payload.get("entities", _MISSING)
         scanner_value = payload.get("scanners", _MISSING)
         if entity_value is not _MISSING and not isinstance(entity_value, list):
@@ -341,7 +349,7 @@ class BadgeStatus:
         counts = payload.get("counts")
         return cls(
             version=version,
-            uptime_seconds=float(uptime),
+            uptime_seconds=normalized_uptime,
             mode=_optional_text(payload.get("mode")),
             mode_label=_optional_text(payload.get("mode_label")),
             threat_score=_optional_number(payload.get("threat_score")),

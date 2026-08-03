@@ -507,6 +507,14 @@ class NewDashApplicationHealthTest(unittest.TestCase):
         self.assertNotIn("remote_id_entities", rendered)
         self.assertEqual(rendered["sensing_health"], "unknown")
 
+        no_uptime = BadgeStatus.from_payload({"version": "minimal-no-uptime"})
+        self.application.handle_frame(MachineFrame("status", no_uptime), 11.0)
+        rendered = self.application.snapshot(now=11.0)["status"]
+
+        self.assertIsNone(rendered["uptime_s"])
+        self.assertNotIn("entities", rendered)
+        self.assertNotIn("scanners", rendered)
+
     def test_non_string_scanner_health_is_unknown_without_breaking_snapshot(self) -> None:
         self.application.handle_connection(ConnectionUpdate("live", "status_valid"))
         for health in ({"future": 1}, ["future"]):
