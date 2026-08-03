@@ -104,7 +104,7 @@ Lite also adds an acknowledged live-session exchange for New Dash:
 - request: `FOF_LIVE_STOP:{"session_id":"<id>"}`
 - response: `FOF_LIVE_STOPPED:{"session_id":"<id>"}`
 
-`FOF_LIVE_START` alone does not suppress the recovery AP. The first acknowledgement matching the current session and heartbeat confirms delivery, and each later matching acknowledgement renews a 15-second lease. A stale session, future sequence, duplicate sequence used after expiry, generic `FOF_PING`, or USB enumeration without protocol traffic never counts as confirmed delivery. Lease expiry and `FOF_LIVE_STOP` immediately clear confirmation. This is the sole USB condition allowed to suppress the Lite recovery AP.
+`FOF_LIVE_START` alone does not suppress the recovery AP. A heartbeat sequence becomes acknowledgeable only after the TX worker completes the entire heartbeat frame; enqueue or partial transmission is insufficient. The first acknowledgement matching that completed current-session heartbeat confirms delivery, and each later matching acknowledgement renews a 15-second lease. A stale session, unsent/future sequence, duplicate sequence used after expiry, generic `FOF_PING`, or USB enumeration without protocol traffic never counts as confirmed delivery. Lease expiry and `FOF_LIVE_STOP` immediately clear confirmation. This is the sole USB condition allowed to suppress the Lite recovery AP.
 
 The exact `FOF_DET` compatibility fields are:
 
