@@ -23,8 +23,8 @@ android {
         applicationId = "com.friendorfoe"
         minSdk = 26
         targetSdk = 34
-        versionCode = 119
-        versionName = "0.67.10-android-settings-live-state"
+        versionCode = 120
+        versionName = "0.67.11-android-20mi-ar-range"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
