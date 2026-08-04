@@ -23,8 +23,8 @@ android {
         applicationId = "com.friendorfoe"
         minSdk = 26
         targetSdk = 34
-        versionCode = 122
-        versionName = "0.67.13-android-rid-carousel-fix"
+        versionCode = 123
+        versionName = "0.67.14-android-rid-radio-reliability"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

@@ -18,6 +18,9 @@ import java.time.Instant
 import javax.inject.Inject
 import javax.inject.Singleton
 
+internal fun useLegacyRemoteIdScan(extendedAdvertisingSupported: Boolean): Boolean =
+    !extendedAdvertisingSupported
+
 /**
  * BLE Remote ID scanner for detecting compliant drones.
  *
@@ -82,11 +85,16 @@ class RemoteIdScanner @Inject constructor(
         }
         bleScanner = scanner
 
+        val extendedAdvertisingSupported = try {
+            adapter?.isLeExtendedAdvertisingSupported == true
+        } catch (e: SecurityException) {
+            false
+        }
         val scanSettings = ScanSettings.Builder()
             .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
-            // The C5 simulator uses a 109-byte Bluetooth 5 extended
-            // advertisement; Android otherwise defaults to legacy-only scans.
-            .setLegacy(false)
+            // Receive extended advertisements on capable adapters while
+            // retaining legacy-only compatibility on older controllers.
+            .setLegacy(useLegacyRemoteIdScan(extendedAdvertisingSupported))
             .setReportDelay(0) // Immediate callback per result
             .build()
 

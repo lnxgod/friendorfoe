@@ -40,6 +40,21 @@ import java.util.Collections
 import javax.inject.Inject
 import javax.inject.Singleton
 
+private val ORDINARY_STALE_THRESHOLD = Duration.ofSeconds(120)
+
+// One 240-point formation sweep can take 120 seconds at 500 ms per point.
+// Retain formation points long enough for two complete worst-case sweeps.
+private val FORMATION_STALE_THRESHOLD = Duration.ofSeconds(300)
+
+internal fun isSkyObjectStale(obj: SkyObject, now: Instant): Boolean {
+    val threshold = if (obj is Drone && isFormationDroneId(obj.droneId)) {
+        FORMATION_STALE_THRESHOLD
+    } else {
+        ORDINARY_STALE_THRESHOLD
+    }
+    return Duration.between(obj.lastUpdated, now) > threshold
+}
+
 /**
  * Unified repository that merges all detection sources into a single stream
  * of sky objects for the presentation layer.
@@ -71,7 +86,6 @@ class SkyObjectRepository @Inject constructor(
 
     companion object {
         private const val TAG = "SkyObjectRepository"
-        private val STALE_THRESHOLD = Duration.ofSeconds(120)
         private const val DEDUP_DISTANCE_THRESHOLD_DEG = 0.001
         private const val MAX_TRAIL_POINTS = 60
         private const val MIN_POSITION_DELTA_DEG = 0.00001
@@ -374,7 +388,7 @@ class SkyObjectRepository @Inject constructor(
      * Collect ADS-B aircraft from the poller.
      * Upserts new/updated aircraft instead of replacing the entire set,
      * so aircraft that a provider momentarily stops reporting persist
-     * until pruneStaleEntries() removes them after STALE_THRESHOLD (60s).
+     * until pruneStaleEntries() removes them after 120 seconds.
      */
     private suspend fun collectAdsb(generation: Long) {
         adsbPoller.aircraft.collect { aircraftList ->
@@ -838,7 +852,7 @@ class SkyObjectRepository @Inject constructor(
      * Check if a sky object is stale (not updated within the threshold).
      */
     private fun isStale(obj: SkyObject, now: Instant): Boolean {
-        return Duration.between(obj.lastUpdated, now) > STALE_THRESHOLD
+        return isSkyObjectStale(obj, now)
     }
 
     /**

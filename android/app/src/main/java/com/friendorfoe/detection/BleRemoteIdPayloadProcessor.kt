@@ -13,22 +13,14 @@ import java.util.concurrent.ConcurrentHashMap
  */
 internal class BleRemoteIdPayloadProcessor {
 
-    private enum class FormationPhase {
-        EXPECT_SYSTEM,
-        EXPECT_OPERATOR,
-        EXPECT_LOCATION
-    }
-
     private data class FormationTransaction(
         val serial: String,
         val transportCounter: Int,
         val startedObservationNanos: Long,
-        var phase: FormationPhase = FormationPhase.EXPECT_SYSTEM,
         var lastMessageType: Int = OpenDroneIdParser.MSG_TYPE_BASIC_ID,
         var lastObservationNanos: Long = startedObservationNanos
     ) {
-        fun advance(nextPhase: FormationPhase, messageType: Int, observationNanos: Long) {
-            phase = nextPhase
+        fun record(messageType: Int, observationNanos: Long) {
             lastMessageType = messageType
             lastObservationNanos = observationNanos
         }
@@ -104,8 +96,8 @@ internal class BleRemoteIdPayloadProcessor {
                         return null
                     }
                     // Every formation Basic ID begins a new point transaction,
-                    // clearing shared-MAC fields. Publication waits for the
-                    // complete ordered transaction and its Location commit.
+                    // clearing shared-MAC fields. System and Operator ID are
+                    // optional; a matching Location commits the transaction.
                     parsedState.clearAircraftFieldsForFormationTransaction()
                     formationTransactions[deviceAddress] = FormationTransaction(
                         serial = parsedSerial,
@@ -127,49 +119,13 @@ internal class BleRemoteIdPayloadProcessor {
                     return null
                 }
                 when (messageType) {
-                    OpenDroneIdParser.MSG_TYPE_SYSTEM -> when (transaction.phase) {
-                        FormationPhase.EXPECT_SYSTEM -> transaction.advance(
-                            FormationPhase.EXPECT_OPERATOR,
-                            messageType,
-                            observationTimestampNanos
-                        )
-                        FormationPhase.EXPECT_OPERATOR -> {
-                            if (!transaction.isRecentDuplicate(
-                                    messageType,
-                                    observationTimestampNanos
-                                )) {
-                                formationTransactions.remove(deviceAddress)
-                            }
-                            return null
-                        }
-                        FormationPhase.EXPECT_LOCATION -> {
-                            formationTransactions.remove(deviceAddress)
-                            return null
-                        }
-                    }
-                    OpenDroneIdParser.MSG_TYPE_OPERATOR_ID -> when (transaction.phase) {
-                        FormationPhase.EXPECT_OPERATOR -> transaction.advance(
-                            FormationPhase.EXPECT_LOCATION,
-                            messageType,
-                            observationTimestampNanos
-                        )
-                        FormationPhase.EXPECT_LOCATION -> {
-                            if (!transaction.isRecentDuplicate(
-                                    messageType,
-                                    observationTimestampNanos
-                                )) {
-                                formationTransactions.remove(deviceAddress)
-                            }
-                            return null
-                        }
-                        FormationPhase.EXPECT_SYSTEM -> {
-                            formationTransactions.remove(deviceAddress)
-                            return null
-                        }
+                    OpenDroneIdParser.MSG_TYPE_SYSTEM,
+                    OpenDroneIdParser.MSG_TYPE_OPERATOR_ID -> {
+                        transaction.record(messageType, observationTimestampNanos)
+                        return null
                     }
                     OpenDroneIdParser.MSG_TYPE_LOCATION -> {
-                        if (transaction.phase != FormationPhase.EXPECT_LOCATION ||
-                            parsedState.latitude == null || parsedState.longitude == null) {
+                        if (parsedState.latitude == null || parsedState.longitude == null) {
                             formationTransactions.remove(deviceAddress)
                             return null
                         }
@@ -180,7 +136,6 @@ internal class BleRemoteIdPayloadProcessor {
                         return null
                     }
                 }
-                if (messageType != OpenDroneIdParser.MSG_TYPE_LOCATION) return null
             }
             val canonicalState = canonicalStates.getOrPut(serial) {
                 OpenDroneIdParser.DronePartialState(deviceAddress = deviceAddress, firstSeen = now)

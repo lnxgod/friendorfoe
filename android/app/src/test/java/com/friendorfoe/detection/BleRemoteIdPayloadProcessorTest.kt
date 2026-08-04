@@ -179,6 +179,92 @@ class BleRemoteIdPayloadProcessorTest {
     }
 
     @Test
+    fun standaloneFormationCommitsBasicThenLocationWhenOptionalFragmentsAreMissed() {
+        val processor = BleRemoteIdPayloadProcessor()
+        val address = "AA:BB:CC:DD:EE:FF"
+
+        assertNull(formationFrame(processor, address,
+            basicIdMessage("FOF-C5-A1B2C3-004"),
+            Instant.parse("2026-07-04T12:00:00Z"), 31))
+
+        val committed = formationFrame(processor, address,
+            locationMessage(36.13111, -115.15039),
+            Instant.parse("2026-07-04T12:00:00.100Z"), 31)
+
+        assertNotNull(committed)
+        requireNotNull(committed)
+        assertEquals("FOF-C5-A1B2C3-004", committed.droneId)
+        assertEquals(36.13111, committed.position.latitude, 0.000001)
+        assertEquals(-115.15039, committed.position.longitude, 0.000001)
+        assertNull(committed.operatorLatitude)
+        assertNull(committed.operatorLongitude)
+        assertNull(committed.operatorId)
+    }
+
+    @Test
+    fun standaloneFormationCommitsBasicSystemThenLocationWhenOperatorIsMissed() {
+        val processor = BleRemoteIdPayloadProcessor()
+        val address = "AA:BB:CC:DD:EE:FF"
+
+        assertNull(formationFrame(processor, address,
+            basicIdMessage("FOF-C5-A1B2C3-005"),
+            Instant.parse("2026-07-04T12:00:00Z"), 32))
+        assertNull(formationFrame(processor, address,
+            systemMessage(36.130940, -115.150640),
+            Instant.parse("2026-07-04T12:00:00.100Z"), 32))
+
+        val committed = formationFrame(processor, address,
+            locationMessage(36.13112, -115.15038),
+            Instant.parse("2026-07-04T12:00:00.200Z"), 32)
+
+        assertNotNull(committed)
+        requireNotNull(committed)
+        assertEquals("FOF-C5-A1B2C3-005", committed.droneId)
+        assertEquals(36.130940, committed.operatorLatitude ?: 0.0, 0.000001)
+        assertEquals(-115.150640, committed.operatorLongitude ?: 0.0, 0.000001)
+        assertNull(committed.operatorId)
+    }
+
+    @Test
+    fun standaloneFormationCommitsBasicOperatorThenLocationWhenSystemIsMissed() {
+        val processor = BleRemoteIdPayloadProcessor()
+        val address = "AA:BB:CC:DD:EE:FF"
+
+        assertNull(formationFrame(processor, address,
+            basicIdMessage("FOF-C5-A1B2C3-006"),
+            Instant.parse("2026-07-04T12:00:00Z"), 33))
+        assertNull(formationFrame(processor, address,
+            operatorIdMessage("FOF-FORMATION"),
+            Instant.parse("2026-07-04T12:00:00.100Z"), 33))
+
+        val committed = formationFrame(processor, address,
+            locationMessage(36.13113, -115.15037),
+            Instant.parse("2026-07-04T12:00:00.200Z"), 33)
+
+        assertNotNull(committed)
+        requireNotNull(committed)
+        assertEquals("FOF-C5-A1B2C3-006", committed.droneId)
+        assertNull(committed.operatorLatitude)
+        assertNull(committed.operatorLongitude)
+        assertEquals("FOF-FORMATION", committed.operatorId)
+    }
+
+    @Test
+    fun standaloneFormationRejectsLocationWithoutBasic() {
+        val processor = BleRemoteIdPayloadProcessor()
+
+        val orphanLocation = formationFrame(
+            processor = processor,
+            address = "AA:BB:CC:DD:EE:FF",
+            payload = locationMessage(36.13114, -115.15036),
+            now = Instant.parse("2026-07-04T12:00:00Z"),
+            counter = 34
+        )
+
+        assertNull(orphanLocation)
+    }
+
+    @Test
     fun missedLocationAndNextBasicCannotCommitNextPointUnderPreviousId() {
         val processor = BleRemoteIdPayloadProcessor()
         val address = "AA:BB:CC:DD:EE:FF"
@@ -247,7 +333,7 @@ class BleRemoteIdPayloadProcessorTest {
     }
 
     @Test
-    fun sameTypeFrameOutsideDuplicateWindowCannotBridgeAMissedBasic() {
+    fun wrongCounterFragmentsCannotBridgeAMissedBasic() {
         val processor = BleRemoteIdPayloadProcessor()
         val address = "AA:BB:CC:DD:EE:FF"
 
@@ -258,8 +344,8 @@ class BleRemoteIdPayloadProcessorTest {
             systemMessage(36.130940, -115.150640),
             Instant.parse("2026-07-04T12:00:00.100Z"), 60))
 
-        // Operator, Location, and the next Basic are missed. A System from the
-        // next point is 400 ms newer, not a duplicate of 025's System.
+        // Operator, Location, and the next Basic are missed. Fragments from
+        // the next point have another counter and cannot complete point 025.
         assertNull(formationFrame(processor, address,
             systemMessage(36.130940, -115.150640),
             Instant.parse("2026-07-04T12:00:00.500Z"), 61))
