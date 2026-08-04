@@ -88,6 +88,7 @@ private fun androidPrivacyNotificationDeliveryState(
     )
 }
 
+@Suppress("MissingPermission")
 private fun postPrivacyNotification(
     context: Context,
     finding: PrivacyFinding,

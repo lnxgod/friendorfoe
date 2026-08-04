@@ -1,10 +1,7 @@
 package com.friendorfoe.presentation.calibrate
 
 import android.content.Intent
-import android.content.pm.PackageManager
 import android.provider.Settings
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -20,6 +17,7 @@ import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.BiasAlignment
 import androidx.compose.ui.Modifier
@@ -31,7 +29,6 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
-import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -53,6 +50,10 @@ import com.friendorfoe.data.remote.CalibrationModelDto
 import com.friendorfoe.data.remote.EventDto
 import com.friendorfoe.data.remote.NodeDto
 import com.friendorfoe.data.remote.ProbeDeviceDto
+import com.friendorfoe.presentation.permissions.AppFeature
+import com.friendorfoe.presentation.permissions.PermissionSettingsLaunchResult
+import com.friendorfoe.presentation.permissions.PermissionUiState
+import com.friendorfoe.presentation.permissions.rememberPermissionBindings
 
 private val OK_GREEN     = Color(0xFF4CAF50)
 private val WARN_AMBER   = Color(0xFFFFB300)
@@ -68,25 +69,14 @@ fun CalibrateScreen(
     val state by viewModel.state.collectAsState()
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
-
-    fun currentlyGrantedPermissions(): Set<String> {
-        val needed = buildList {
-            add(android.Manifest.permission.ACCESS_FINE_LOCATION)
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
-                add(android.Manifest.permission.BLUETOOTH_ADVERTISE)
-                add(android.Manifest.permission.BLUETOOTH_SCAN)
-                add(android.Manifest.permission.BLUETOOTH_CONNECT)
-            }
-        }
-        return needed.filterTo(mutableSetOf()) { permission ->
-            ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED
-        }
-    }
-    val hasRequiredPermissions = viewModel.missingPermissions(currentlyGrantedPermissions()).isEmpty()
+    val permissionBindings = rememberPermissionBindings()
+    val calibrationPermissionState = permissionBindings.stateFor(AppFeature.CALIBRATION)
     val screenContract = buildCalibrateScreenContract(
         state = state,
-        hasRequiredPermissions = hasRequiredPermissions,
+        permissionState = calibrationPermissionState,
     )
+    var showPermissionRationale by rememberSaveable { mutableStateOf(false) }
+    var settingsLaunchFailed by rememberSaveable { mutableStateOf(false) }
 
     // Refresh BT state + reach connectivity check whenever the screen
     // returns to the foreground (operator may have just enabled BT or
@@ -104,55 +94,15 @@ fun CalibrateScreen(
         }
     }
 
-    // Cache the granted-permissions set so we don't rebuild the launcher
-    // on every recomposition.
-    var pendingStartAfterGrant by remember { mutableStateOf(false) }
-    val permissionLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestMultiplePermissions()
-    ) { result ->
-        viewModel.onRuntimePermissionsChanged()
-        val missing = viewModel.missingPermissions(
-            result.filterValues { it }.keys
-        )
-        if (missing.isEmpty() && pendingStartAfterGrant) {
-            pendingStartAfterGrant = false
-            viewModel.startWalk()
-        } else if (missing.isNotEmpty()) {
-            pendingStartAfterGrant = false
-        }
-    }
-
-    // Proactive permission prompt on screen entry — if they're already
-    // granted this is a no-op; if not, the operator sees the OS dialog
-    // immediately instead of halfway through tapping Start Walk. Runs
-    // once per screen entry via a stable LaunchedEffect key.
-    LaunchedEffect(Unit) {
-        val needed = listOf(
-            android.Manifest.permission.ACCESS_FINE_LOCATION,
-            android.Manifest.permission.BLUETOOTH_ADVERTISE,
-            android.Manifest.permission.BLUETOOTH_SCAN,
-            android.Manifest.permission.BLUETOOTH_CONNECT,
-        )
-        val missing = viewModel.missingPermissions(granted = currentlyGrantedPermissions())
-        if (missing.isNotEmpty()) {
-            permissionLauncher.launch(missing.ifEmpty { needed }.toTypedArray())
-        }
-    }
-
     fun requestStart() {
-        val granted = currentlyGrantedPermissions()
-        val needed = listOf(
-            android.Manifest.permission.ACCESS_FINE_LOCATION,
-            android.Manifest.permission.BLUETOOTH_ADVERTISE,
-            android.Manifest.permission.BLUETOOTH_SCAN,
-            android.Manifest.permission.BLUETOOTH_CONNECT,
-        )
-        val missing = viewModel.missingPermissions(granted)
-        if (missing.isEmpty()) {
-            viewModel.startWalk()
-        } else {
-            pendingStartAfterGrant = true
-            permissionLauncher.launch(missing.ifEmpty { needed }.toTypedArray())
+        when (screenContract.startAction) {
+            CalibrateStartAction.StartWalk -> viewModel.startWalk()
+            CalibrateStartAction.RequestPermissions -> showPermissionRationale = true
+            CalibrateStartAction.OpenAppSettings -> {
+                settingsLaunchFailed = permissionBindings.openSettings(AppFeature.CALIBRATION) ==
+                    PermissionSettingsLaunchResult.Failed
+            }
+            CalibrateStartAction.Disabled -> Unit
         }
     }
 
@@ -192,6 +142,47 @@ fun CalibrateScreen(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+
+            if (
+                calibrationPermissionState == PermissionUiState.Denied ||
+                calibrationPermissionState == PermissionUiState.Approximate ||
+                calibrationPermissionState == PermissionUiState.PermanentlyDenied
+            ) {
+                Surface(
+                    color = MaterialTheme.colorScheme.surfaceVariant,
+                    shape = RoundedCornerShape(8.dp),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Row(
+                        modifier = Modifier.padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Calibration needs precise location and nearby Bluetooth access")
+                            Text(
+                                if (settingsLaunchFailed) {
+                                    "Android settings could not be opened on this device. Open Friend or Foe from the system Settings app."
+                                } else if (calibrationPermissionState == PermissionUiState.Approximate) {
+                                    "Approximate location is not precise enough for a calibration walk."
+                                } else {
+                                    "Grant permissions before starting a calibration walk."
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        TextButton(onClick = ::requestStart) {
+                            Text(
+                                if (calibrationPermissionState == PermissionUiState.PermanentlyDenied) {
+                                    "Open app settings"
+                                } else {
+                                    "Grant permissions"
+                                },
+                            )
+                        }
+                    }
+                }
+            }
 
             // ── Bluetooth-off banner ─────────────────────────────────
             if (!state.bluetoothEnabled) {
@@ -382,7 +373,7 @@ fun CalibrateScreen(
                         if (!state.isWalking) {
                             Button(
                                 onClick = { requestStart() },
-                                enabled = screenContract.startDisabledReason == null,
+                                enabled = screenContract.startAction != CalibrateStartAction.Disabled,
                                 modifier = Modifier.weight(1f),
                             ) { Text("Start walk") }
                         } else {
@@ -767,6 +758,27 @@ fun CalibrateScreen(
                 }
             }
         }
+    }
+
+    if (showPermissionRationale) {
+        AlertDialog(
+            onDismissRequest = { showPermissionRationale = false },
+            title = { Text("Grant calibration permissions") },
+            text = {
+                Text(
+                    "Calibration uses precise location and Bluetooth to advertise a known beacon and record each sensor hearing it.",
+                )
+            },
+            confirmButton = {
+                Button(onClick = {
+                    showPermissionRationale = false
+                    permissionBindings.request(AppFeature.CALIBRATION)
+                }) { Text("Continue") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showPermissionRationale = false }) { Text("Not now") }
+            },
+        )
     }
 }
 

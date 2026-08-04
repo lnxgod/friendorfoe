@@ -37,6 +37,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
@@ -278,9 +279,35 @@ class MapViewModel @Inject constructor(
 
     private val mapTrackProjector = MapTrackProjector()
 
+    private val mapProjectionSources: StateFlow<MapProjectionSources> = skyObjects
+        .map(::splitMapProjectionSources)
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5_000),
+            initialValue = MapProjectionSources(emptyList(), emptyList()),
+        )
+
+    internal val formationPoints: StateFlow<List<FormationMapPoint>> = mapProjectionSources
+        .map { sources -> sources.formationPoints }
+        .distinctUntilChanged()
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5_000),
+            initialValue = emptyList(),
+        )
+
+    private val mapTrackObjects: StateFlow<List<SkyObject>> = mapProjectionSources
+        .map { sources -> sources.trackObjects }
+        .distinctUntilChanged()
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5_000),
+            initialValue = emptyList(),
+        )
+
     val mapTracks: StateFlow<List<MapTrack>> = combine(
         mapFrameClock(),
-        skyObjects,
+        mapTrackObjects,
     ) { nowMs, objects ->
         mapTrackProjector.project(objects, nowMs)
     }.stateIn(

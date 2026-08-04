@@ -4,6 +4,7 @@ import com.friendorfoe.domain.model.Aircraft
 import com.friendorfoe.domain.model.Drone
 import com.friendorfoe.domain.model.ObjectCategory
 import com.friendorfoe.domain.model.SkyObject
+import com.friendorfoe.domain.model.isFormationDroneId
 import kotlin.math.roundToInt
 
 data class SkyAlertSettings(
@@ -73,6 +74,7 @@ class SkyAlertPolicy(
             drone: Drone,
             settings: SkyAlertSettings
         ): SkyAlertCandidate? {
+            if (isFormationDroneId(drone.droneId)) return null
             if (!settings.droneAlertsEnabled) return null
             val label = listOfNotNull(
                 drone.manufacturer,

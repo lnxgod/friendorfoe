@@ -22,7 +22,9 @@ import org.junit.Test
 class ArBackendPollingTest {
     @Test
     fun endpointReplacementRejectsLateResultAndDisableClearsOnlyRemoteState() = runTest {
-        val settings = MutableStateFlow(DetectionSettings.defaults())
+        val settings = MutableStateFlow(
+            DetectionSettings.defaults().copy(sensorBackendEnabled = true),
+        )
         val state = ArBackendIntegrationState()
         val localObservation = VisualDetection(
             trackingId = 7,
@@ -75,6 +77,30 @@ class ArBackendPollingTest {
         assertFalse(state.sensorBackendOnline.value)
         assertEquals(0, state.sensorDroneCount.value)
         assertEquals(listOf(localObservation), state.localObservations.value)
+        job.cancel()
+    }
+
+    @Test
+    fun initiallyDisabledBackendDoesNotFetch() = runTest {
+        val settings = MutableStateFlow(DetectionSettings.defaults())
+        val state = ArBackendIntegrationState()
+        var fetches = 0
+        val job = launch {
+            collectArBackend(
+                settings = settings,
+                intervalMs = 100,
+                state = state,
+                fetchDroneCount = {
+                    fetches++
+                    0
+                },
+            )
+        }
+
+        runCurrent()
+
+        assertEquals(0, fetches)
+        assertFalse(state.sensorBackendOnline.value)
         job.cancel()
     }
 }

@@ -31,6 +31,16 @@ class SkyAlertPolicyTest {
     }
 
     @Test
+    fun formationPixelsDoNotGenerateAlerts() {
+        val candidate = SkyAlertPolicy.candidateFor(
+            drone(distanceMeters = null, droneId = "FOF-C5-ABCDEF-001"),
+            settings
+        )
+
+        assertNull(candidate)
+    }
+
+    @Test
     fun helicopterAlertsDoNotRequireDistance() {
         val candidate = SkyAlertPolicy.candidateFor(
             aircraft(category = ObjectCategory.HELICOPTER, distanceMeters = null),
@@ -146,7 +156,10 @@ class SkyAlertPolicyTest {
         assertTrue(policy.shouldNotify(candidate, nowMs = 61_001L))
     }
 
-    private fun drone(distanceMeters: Double?) = Drone(
+    private fun drone(
+        distanceMeters: Double?,
+        droneId: String = "DRONE123"
+    ) = Drone(
         id = "drone-1",
         position = Position(37.0, -122.0, 120.0),
         source = DetectionSource.REMOTE_ID,
@@ -154,7 +167,7 @@ class SkyAlertPolicyTest {
         firstSeen = NOW,
         lastUpdated = NOW,
         distanceMeters = distanceMeters,
-        droneId = "DRONE123",
+        droneId = droneId,
         manufacturer = "DJI"
     )
 

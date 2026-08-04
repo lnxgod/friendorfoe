@@ -25,9 +25,14 @@ import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.Surface
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -62,6 +67,11 @@ import com.friendorfoe.presentation.ar.ObjectPeekState
 import com.friendorfoe.presentation.ar.objectPeekEvidence
 import com.friendorfoe.presentation.filter.CompactFilterBar
 import com.friendorfoe.presentation.filter.FilterModalSheet
+import com.friendorfoe.presentation.permissions.AppFeature
+import com.friendorfoe.presentation.permissions.PermissionSettingsLaunchResult
+import com.friendorfoe.presentation.permissions.PermissionUiState
+import com.friendorfoe.presentation.permissions.isUsableFor
+import com.friendorfoe.presentation.permissions.rememberPermissionBindings
 import com.friendorfoe.presentation.util.categoryBadge
 import com.friendorfoe.presentation.util.categoryColor
 import java.time.Duration
@@ -79,19 +89,38 @@ fun ListViewScreen(
     val activeVisualFocusIds by viewModel.activeVisualFocusIds.collectAsStateWithLifecycle()
     val filterState by viewModel.filterState.collectAsStateWithLifecycle()
     val lifecycleOwner = LocalLifecycleOwner.current
+    val permissionBindings = rememberPermissionBindings()
+    val locationPermissionState = permissionBindings.stateFor(AppFeature.AR_MAP_LOCATION)
     var filtersOpen by rememberSaveable { mutableStateOf(false) }
+    var isResumed by remember(lifecycleOwner) {
+        mutableStateOf(lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED))
+    }
+    var showLocationRationale by rememberSaveable { mutableStateOf(false) }
+    var locationSettingsLaunchFailed by rememberSaveable { mutableStateOf(false) }
 
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
-                Lifecycle.Event.ON_RESUME -> viewModel.startLocationUpdates()
-                Lifecycle.Event.ON_PAUSE -> viewModel.stopLocationUpdates()
+                Lifecycle.Event.ON_RESUME -> isResumed = true
+                Lifecycle.Event.ON_PAUSE -> isResumed = false
                 else -> Unit
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose {
             lifecycleOwner.lifecycle.removeObserver(observer)
+            viewModel.stopLocationUpdates()
+        }
+    }
+
+    LaunchedEffect(isResumed, locationPermissionState) {
+        if (
+            isResumed &&
+            locationPermissionState.isUsableFor(AppFeature.AR_MAP_LOCATION)
+        ) {
+            viewModel.startLocationUpdates()
+        } else {
+            viewModel.stopLocationUpdates()
         }
     }
 
@@ -106,11 +135,19 @@ fun ListViewScreen(
             filter = filterState,
             activeFilterCount = filterCount,
             body = body,
+            locationPermissionState = locationPermissionState,
+            locationSettingsLaunchFailed = locationSettingsLaunchFailed,
         ),
         actions = ListActions(
             onQueryChanged = { viewModel.updateFilter(filterState.copy(searchQuery = it)) },
             onOpenFilters = { filtersOpen = true },
             onClearFilters = { viewModel.updateFilter(filterState.cleared()) },
+            onRequestLocation = { showLocationRationale = true },
+            onOpenLocationSettings = {
+                permissionBindings.openSettings(AppFeature.AR_MAP_LOCATION).also { result ->
+                    locationSettingsLaunchFailed = result == PermissionSettingsLaunchResult.Failed
+                }
+            },
         ),
         onFullDetails = onObjectTapped,
         activeVisualFocusIds = activeVisualFocusIds,
@@ -121,6 +158,27 @@ fun ListViewScreen(
             filterState = filterState,
             onFilterStateChange = viewModel::updateFilter,
             onDismiss = { filtersOpen = false },
+        )
+    }
+
+    if (showLocationRationale) {
+        AlertDialog(
+            onDismissRequest = { showLocationRationale = false },
+            title = { Text("Allow location for nearby distances") },
+            text = {
+                Text(
+                    "Location helps show nearby distance and direction. Your aircraft and drone inventory remains available without it.",
+                )
+            },
+            confirmButton = {
+                Button(onClick = {
+                    showLocationRationale = false
+                    permissionBindings.request(AppFeature.AR_MAP_LOCATION)
+                }) { Text("Continue") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showLocationRationale = false }) { Text("Not now") }
+            },
         )
     }
 }
@@ -186,6 +244,13 @@ internal fun ListContent(
             onClearFilters = actions.onClearFilters,
         )
 
+        ListLocationRecoveryBanner(
+            permissionState = state.locationPermissionState,
+            settingsLaunchFailed = state.locationSettingsLaunchFailed,
+            onRequestLocation = actions.onRequestLocation,
+            onOpenLocationSettings = actions.onOpenLocationSettings,
+        )
+
         when (val body = state.body) {
             ListBodyState.Loading -> FofLoadingState("Loading nearby detections")
             is ListBodyState.Results -> ListRows(
@@ -215,6 +280,74 @@ internal fun ListContent(
             )
             is ListBodyState.Failed -> FofFailureState(body.message)
         }
+    }
+}
+
+@Composable
+private fun ListLocationRecoveryBanner(
+    permissionState: PermissionUiState,
+    settingsLaunchFailed: Boolean,
+    onRequestLocation: () -> Unit,
+    onOpenLocationSettings: () -> PermissionSettingsLaunchResult,
+) {
+    when (permissionState) {
+        PermissionUiState.Granted,
+        PermissionUiState.Approximate,
+        -> Unit
+
+        PermissionUiState.Loading -> Text(
+            "Checking location access for nearby distances…",
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+
+        PermissionUiState.Denied,
+        PermissionUiState.PermanentlyDenied,
+        -> Surface(
+            color = MaterialTheme.colorScheme.surfaceVariant,
+            shape = RoundedCornerShape(12.dp),
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+        ) {
+            Row(
+                modifier = Modifier.padding(12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        "Nearby distances need location",
+                        style = MaterialTheme.typography.titleSmall,
+                    )
+                    Text(
+                        if (settingsLaunchFailed) {
+                            "Android settings could not be opened on this device. Open Friend or Foe from the system Settings app."
+                        } else {
+                            "Aircraft and drone inventory remains available without location."
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                TextButton(
+                    onClick = {
+                        if (permissionState == PermissionUiState.Denied) {
+                            onRequestLocation()
+                        } else {
+                            onOpenLocationSettings()
+                        }
+                    },
+                ) {
+                    Text(
+                        if (permissionState == PermissionUiState.Denied) "Allow location"
+                        else "Open app settings",
+                    )
+                }
+            }
+        }
+
+        PermissionUiState.NotificationsBlocked,
+        PermissionUiState.NotificationChannelBlocked,
+        -> Unit
     }
 }
 

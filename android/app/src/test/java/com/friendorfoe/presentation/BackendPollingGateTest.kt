@@ -19,7 +19,9 @@ import java.io.IOException
 class BackendPollingGateTest {
     @Test
     fun disablingBackendCancelsPollingAndClearsRemoteState() = runTest {
-        val settings = MutableStateFlow(DetectionSettings.defaults())
+        val settings = MutableStateFlow(
+            DetectionSettings.defaults().copy(sensorBackendEnabled = true),
+        )
         var fetches = 0
         var clears = 0
         val job = launch {
@@ -45,7 +47,9 @@ class BackendPollingGateTest {
 
     @Test
     fun changingEndpointCancelsOldLoopAndClearsBeforeRefetch() = runTest {
-        val settings = MutableStateFlow(DetectionSettings.defaults())
+        val settings = MutableStateFlow(
+            DetectionSettings.defaults().copy(sensorBackendEnabled = true),
+        )
         val events = mutableListOf<String>()
         var fetches = 0
         val job = launch {
@@ -78,7 +82,9 @@ class BackendPollingGateTest {
 
     @Test
     fun lateNonCooperativeFetchCannotPublishAfterEndpointChanges() = runTest {
-        val settings = MutableStateFlow(DetectionSettings.defaults())
+        val settings = MutableStateFlow(
+            DetectionSettings.defaults().copy(sensorBackendEnabled = true),
+        )
         val continuations = mutableListOf<Continuation<String>>()
         val published = mutableListOf<String>()
         var clears = 0
@@ -108,7 +114,9 @@ class BackendPollingGateTest {
 
     @Test
     fun lateNonCooperativeFailureCannotPublishAfterEndpointChanges() = runTest {
-        val settings = MutableStateFlow(DetectionSettings.defaults())
+        val settings = MutableStateFlow(
+            DetectionSettings.defaults().copy(sensorBackendEnabled = true),
+        )
         val continuations = mutableListOf<Continuation<String>>()
         val failures = mutableListOf<String>()
         val job = launch {
@@ -133,5 +141,28 @@ class BackendPollingGateTest {
         job.cancel()
         continuations.last().resume("cleanup")
         runCurrent()
+    }
+
+    @Test
+    fun initiallyDisabledBackendDoesNotFetchUntilExplicitlyEnabled() = runTest {
+        val settings = MutableStateFlow(DetectionSettings.defaults())
+        var fetches = 0
+        val job = launch {
+            collectBackendWhileEnabled(
+                settings = settings,
+                intervalMs = 5_000,
+                clear = {},
+                fetch = { ++fetches },
+                publish = {},
+            )
+        }
+
+        runCurrent()
+        assertEquals(0, fetches)
+
+        settings.value = settings.value.copy(sensorBackendEnabled = true)
+        runCurrent()
+        assertEquals(1, fetches)
+        job.cancel()
     }
 }

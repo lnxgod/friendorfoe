@@ -119,8 +119,8 @@ class ArOverlayPolicyTest {
     @Test
     fun `off-screen arrows include nearby aircraft but exclude farther aircraft and drones`() {
         val positions = listOf(
-            offScreenPosition(aircraft("INSIDE"), 19_200.0),
-            offScreenPosition(aircraft("OUTSIDE"), 19_400.0),
+            offScreenPosition(aircraft("INSIDE"), 32_100.0),
+            offScreenPosition(aircraft("OUTSIDE"), 32_300.0),
             offScreenPosition(drone("DRONE"), 2_100.0),
         )
 

@@ -63,6 +63,7 @@ internal fun requireConvertedFrame(bitmap: Bitmap?): Bitmap =
     bitmap ?: throw IllegalStateException("Could not analyze camera frame")
 
 /** Route-scoped CameraX owner. It never unbinds camera use cases owned by another screen. */
+@androidx.annotation.OptIn(markerClass = [TransformExperimental::class])
 class CameraXIrCameraBinder(
     context: Context,
     private val detector: IrCameraDetector = IrCameraDetector(),
@@ -181,7 +182,6 @@ class CameraXIrCameraBinder(
         }
     }
 
-    @TransformExperimental
     private fun analyzeFrame(
         generation: Long,
         analysisSession: IrCameraDetector.Session,
@@ -240,7 +240,6 @@ class CameraXIrCameraBinder(
         }
     }
 
-    @TransformExperimental
     private fun mapWithCameraX(
         sourceTransform: OutputTransform?,
         targetTransform: OutputTransform?,

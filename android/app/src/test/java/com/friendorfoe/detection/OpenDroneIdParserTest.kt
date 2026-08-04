@@ -3,6 +3,7 @@ package com.friendorfoe.detection
 import com.friendorfoe.domain.model.DetectionSource
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Test
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -34,6 +35,180 @@ class OpenDroneIdParserTest {
         assertEquals(10.0, drone.estimatedDistanceMeters ?: -1.0, 0.25)
     }
 
+    @Test
+    fun parsesStandardFourMessagePack() {
+        val state = newState()
+        val pack = messagePack(
+            basicIdMessage("FOF-C5-A1B2C3-001"),
+            locationMessage(36.13094, -115.15064),
+            systemMessage(36.13100, -115.15050),
+            operatorIdMessage("FOF-SIMULATOR")
+        )
+
+        assertEquals(103, pack.size)
+        OpenDroneIdParser.parseMessage(pack, state)
+
+        assertEquals("FOF-C5-A1B2C3-001", state.droneId)
+        assertEquals(36.13094, state.latitude ?: 0.0, 0.000001)
+        assertEquals(-115.15064, state.longitude ?: 0.0, 0.000001)
+        assertEquals(10, state.horizontalAccuracyCode)
+        assertEquals(4, state.verticalAccuracyCode)
+        assertEquals(36.13100, state.operatorLatitude ?: 0.0, 0.000001)
+        assertEquals(-115.15050, state.operatorLongitude ?: 0.0, 0.000001)
+        assertEquals("FOF-SIMULATOR", state.operatorId)
+        assertEquals(70, state.areaRadius)
+        assertEquals(120.0, state.areaCeiling ?: 0.0, 0.001)
+        assertEquals(80.0, state.areaFloor ?: 0.0, 0.001)
+        assertEquals(3, state.classificationTypeCode)
+    }
+
+    @Test
+    fun convertsAllDefinedVerticalAccuracyCodesToMeters() {
+        val expectedMeters = mapOf(
+            1 to 150f,
+            2 to 45f,
+            3 to 25f,
+            4 to 10f,
+            5 to 3f,
+            6 to 1f
+        )
+
+        assertNull(OpenDroneIdParser.verticalAccuracyCodeToMeters(0))
+        expectedMeters.forEach { (code, meters) ->
+            assertEquals(meters, OpenDroneIdParser.verticalAccuracyCodeToMeters(code))
+        }
+        assertNull(OpenDroneIdParser.verticalAccuracyCodeToMeters(7))
+        assertNull(OpenDroneIdParser.verticalAccuracyCodeToMeters(15))
+    }
+
+    @Test
+    fun emitsVerticalAccuracyUsingVerticalInsteadOfHorizontalTable() {
+        val state = newState()
+
+        OpenDroneIdParser.parseMessage(locationMessage(36.13094, -115.15064), state)
+
+        val drone = state.toDroneOrNull()
+        assertNotNull(drone)
+        requireNotNull(drone)
+        assertEquals(10f, drone.horizontalAccuracyMeters)
+        assertEquals(10f, drone.verticalAccuracyMeters)
+    }
+
+    @Test
+    fun decodesEastWestDirectionAndHighSpeedMultiplier() {
+        val state = newState()
+
+        OpenDroneIdParser.parseMessage(
+            locationMessage(
+                lat = 36.13094,
+                lon = -115.15064,
+                directionRaw = 42,
+                eastWestDirection = true,
+                speedRaw = 10,
+                speedMultiplier = true,
+            ),
+            state,
+        )
+
+        assertEquals(222f, state.heading)
+        assertEquals(71.25f, state.speedMps)
+    }
+
+    @Test
+    fun preservesStationaryZeroDirectionAndSpeed() {
+        val state = newState()
+
+        OpenDroneIdParser.parseMessage(
+            locationMessage(
+                lat = 36.13094,
+                lon = -115.15064,
+                directionRaw = 0,
+                speedRaw = 0,
+            ),
+            state,
+        )
+
+        assertEquals(0f, state.heading)
+        assertEquals(0f, state.speedMps)
+    }
+
+    @Test
+    fun mapsOfficialInvalidDirectionSentinelToUnknown() {
+        val state = newState()
+        OpenDroneIdParser.parseMessage(locationMessage(36.13094, -115.15064), state)
+
+        OpenDroneIdParser.parseMessage(
+            locationMessage(
+                lat = 36.13095,
+                lon = -115.15065,
+                directionRaw = 181,
+                eastWestDirection = true,
+            ),
+            state,
+        )
+
+        assertNull(state.heading)
+        assertNull(state.toDroneOrNull()?.position?.heading)
+        assertEquals(36.13095, state.latitude ?: 0.0, 0.000001)
+    }
+
+    @Test
+    fun mapsOfficialInvalidHorizontalSpeedSentinelToUnknown() {
+        val state = newState()
+        OpenDroneIdParser.parseMessage(locationMessage(36.13094, -115.15064), state)
+
+        OpenDroneIdParser.parseMessage(
+            locationMessage(
+                lat = 36.13095,
+                lon = -115.15065,
+                speedRaw = 255,
+                speedMultiplier = true,
+            ),
+            state,
+        )
+
+        assertNull(state.speedMps)
+        assertNull(state.toDroneOrNull()?.position?.speedMps)
+        assertEquals(36.13095, state.latitude ?: 0.0, 0.000001)
+    }
+
+    @Test
+    fun rejectsPackWithWrongSingleMessageSizeWithoutPartialMutation() {
+        val state = newState()
+        val pack = messagePack(
+            basicIdMessage("FOF-C5-A1B2C3-001"),
+            locationMessage(36.13094, -115.15064)
+        )
+        pack[1] = 24
+
+        OpenDroneIdParser.parseMessage(pack, state)
+
+        assertNull(state.droneId)
+        assertNull(state.latitude)
+        assertNull(state.longitude)
+    }
+
+    @Test
+    fun rejectsTruncatedPackWithoutParsingCompletePrefixMessages() {
+        val state = newState()
+        val complete = messagePack(
+            basicIdMessage("FOF-C5-A1B2C3-001"),
+            locationMessage(36.13094, -115.15064)
+        )
+        val truncated = complete.copyOf(complete.size - 1)
+
+        OpenDroneIdParser.parseMessage(truncated, state)
+
+        assertNull(state.droneId)
+        assertNull(state.latitude)
+        assertNull(state.longitude)
+    }
+
+    private fun newState() = OpenDroneIdParser.DronePartialState(
+        deviceAddress = "AA:BB:CC:DD:EE:FF",
+        firstSeen = Instant.parse("2026-07-04T12:00:00Z")
+    )
+
     private fun basicIdMessage(serial: String): ByteArray {
         val data = ByteArray(25)
         data[0] = (OpenDroneIdParser.MSG_TYPE_BASIC_ID shl 4).toByte()
@@ -43,15 +218,60 @@ class OpenDroneIdParserTest {
         return data
     }
 
-    private fun locationMessage(lat: Double, lon: Double): ByteArray {
+    private fun locationMessage(
+        lat: Double,
+        lon: Double,
+        directionRaw: Int = 45,
+        eastWestDirection: Boolean = false,
+        speedRaw: Int = 20,
+        speedMultiplier: Boolean = false,
+    ): ByteArray {
         val data = ByteArray(25)
         data[0] = (OpenDroneIdParser.MSG_TYPE_LOCATION shl 4).toByte()
-        data[2] = 45
-        data[3] = 20
+        data[1] = ((if (speedMultiplier) 0x01 else 0x00) or
+            (if (eastWestDirection) 0x02 else 0x00)).toByte()
+        data[2] = directionRaw.toByte()
+        data[3] = speedRaw.toByte()
         val buffer = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN)
         buffer.putInt(5, (lat / 1e-7).toInt())
         buffer.putInt(9, (lon / 1e-7).toInt())
         buffer.putShort(13, ((120.0 + 1000.0) / 0.5).toInt().toShort())
+        data[19] = 0x4A
         return data
+    }
+
+    private fun systemMessage(operatorLat: Double, operatorLon: Double): ByteArray {
+        val data = ByteArray(25)
+        data[0] = (OpenDroneIdParser.MSG_TYPE_SYSTEM shl 4).toByte()
+        data[1] = (3 shl 2).toByte()
+        val buffer = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN)
+        buffer.putInt(2, (operatorLat / 1e-7).toInt())
+        buffer.putInt(6, (operatorLon / 1e-7).toInt())
+        buffer.putShort(10, 1)
+        data[12] = 7
+        buffer.putShort(13, ((120.0 + 1000.0) / 0.5).toInt().toShort())
+        buffer.putShort(15, ((80.0 + 1000.0) / 0.5).toInt().toShort())
+        data[17] = 0x34
+        return data
+    }
+
+    private fun operatorIdMessage(operatorId: String): ByteArray {
+        val data = ByteArray(25)
+        data[0] = (OpenDroneIdParser.MSG_TYPE_OPERATOR_ID shl 4).toByte()
+        operatorId.toByteArray(Charsets.US_ASCII)
+            .copyInto(data, destinationOffset = 2, endIndex = operatorId.length.coerceAtMost(20))
+        return data
+    }
+
+    private fun messagePack(vararg messages: ByteArray): ByteArray {
+        val pack = ByteArray(3 + messages.size * 25)
+        pack[0] = (OpenDroneIdParser.MSG_TYPE_MESSAGE_PACK shl 4).toByte()
+        pack[1] = 25
+        pack[2] = messages.size.toByte()
+        messages.forEachIndexed { index, message ->
+            require(message.size == 25)
+            message.copyInto(pack, destinationOffset = 3 + index * 25)
+        }
+        return pack
     }
 }
