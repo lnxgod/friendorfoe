@@ -303,8 +303,7 @@ object OpenDroneIdParser {
     }
 
     /**
-     * Convert ASTM F3411-22a accuracy code to meters.
-     * Table 4: Horizontal/Vertical position accuracy.
+     * Convert ASTM F3411-22a horizontal accuracy code to meters.
      */
     fun accuracyCodeToMeters(code: Int): Float? = when (code) {
         0 -> null        // Unknown
@@ -320,6 +319,20 @@ object OpenDroneIdParser {
         10 -> 10f        // < 10 m
         11 -> 3f         // < 3 m
         12 -> 1f         // < 1 m
+        else -> null
+    }
+
+    /**
+     * Convert ASTM F3411-22a vertical accuracy code to meters.
+     */
+    fun verticalAccuracyCodeToMeters(code: Int): Float? = when (code) {
+        0 -> null        // Unknown
+        1 -> 150f        // < 150 m
+        2 -> 45f         // < 45 m
+        3 -> 25f         // < 25 m
+        4 -> 10f         // < 10 m
+        5 -> 3f          // < 3 m
+        6 -> 1f          // < 1 m
         else -> null
     }
 
@@ -402,7 +415,7 @@ object OpenDroneIdParser {
                 heightAglMeters = heightAglMeters,
                 geodeticAltitudeMeters = geodeticAltitudeMeters,
                 horizontalAccuracyMeters = horizontalAccuracyCode?.let { accuracyCodeToMeters(it) },
-                verticalAccuracyMeters = verticalAccuracyCode?.let { accuracyCodeToMeters(it) },
+                verticalAccuracyMeters = verticalAccuracyCode?.let { verticalAccuracyCodeToMeters(it) },
                 idType = idType
             )
         }

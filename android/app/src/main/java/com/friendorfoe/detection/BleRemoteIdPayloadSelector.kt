@@ -9,12 +9,19 @@ package com.friendorfoe.detection
  */
 internal object BleRemoteIdPayloadSelector {
 
+    data class Selection(
+        val payload: ByteArray,
+        val transactionCounter: Int?
+    )
+
     private const val ASTM_ODID_APPLICATION_CODE = 0x0D
     private const val PREFIX_SIZE = 2
     private const val SINGLE_MESSAGE_SIZE = 25
 
-    fun select(serviceData: ByteArray): ByteArray? {
-        if (isCompletePayload(serviceData)) return serviceData.copyOf()
+    fun select(serviceData: ByteArray): Selection? {
+        if (isCompletePayload(serviceData)) {
+            return Selection(serviceData.copyOf(), transactionCounter = null)
+        }
 
         if (serviceData.size <= PREFIX_SIZE ||
             (serviceData[0].toInt() and 0xFF) != ASTM_ODID_APPLICATION_CODE
@@ -23,7 +30,12 @@ internal object BleRemoteIdPayloadSelector {
         }
 
         val candidate = serviceData.copyOfRange(PREFIX_SIZE, serviceData.size)
-        return candidate.takeIf(::isCompletePayload)
+        return candidate.takeIf(::isCompletePayload)?.let {
+            Selection(
+                payload = it,
+                transactionCounter = serviceData[1].toInt() and 0xFF
+            )
+        }
     }
 
     private fun isCompletePayload(candidate: ByteArray): Boolean {

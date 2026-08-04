@@ -11,7 +11,9 @@ class BleRemoteIdPayloadSelectorTest {
     fun preservesRawSingleMessage() {
         val message = message(OpenDroneIdParser.MSG_TYPE_BASIC_ID)
 
-        assertArrayEquals(message, BleRemoteIdPayloadSelector.select(message))
+        val selection = requireNotNull(BleRemoteIdPayloadSelector.select(message))
+        assertArrayEquals(message, selection.payload)
+        assertNull(selection.transactionCounter)
     }
 
     @Test
@@ -19,7 +21,9 @@ class BleRemoteIdPayloadSelectorTest {
         val message = message(OpenDroneIdParser.MSG_TYPE_LOCATION)
         val serviceData = byteArrayOf(0x0D, 0x37) + message
 
-        assertArrayEquals(message, BleRemoteIdPayloadSelector.select(serviceData))
+        val selection = requireNotNull(BleRemoteIdPayloadSelector.select(serviceData))
+        assertArrayEquals(message, selection.payload)
+        assertEquals(0x37, selection.transactionCounter)
     }
 
     @Test
@@ -27,7 +31,9 @@ class BleRemoteIdPayloadSelectorTest {
         val pack = fourMessagePack()
 
         assertEquals(103, pack.size)
-        assertArrayEquals(pack, BleRemoteIdPayloadSelector.select(pack))
+        val selection = requireNotNull(BleRemoteIdPayloadSelector.select(pack))
+        assertArrayEquals(pack, selection.payload)
+        assertNull(selection.transactionCounter)
     }
 
     @Test
@@ -36,7 +42,9 @@ class BleRemoteIdPayloadSelectorTest {
         val serviceData = byteArrayOf(0x0D, 0x7F) + pack
 
         assertEquals(105, serviceData.size)
-        assertArrayEquals(pack, BleRemoteIdPayloadSelector.select(serviceData))
+        val selection = requireNotNull(BleRemoteIdPayloadSelector.select(serviceData))
+        assertArrayEquals(pack, selection.payload)
+        assertEquals(0x7F, selection.transactionCounter)
     }
 
     @Test

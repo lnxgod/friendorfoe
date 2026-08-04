@@ -63,6 +63,38 @@ class OpenDroneIdParserTest {
     }
 
     @Test
+    fun convertsAllDefinedVerticalAccuracyCodesToMeters() {
+        val expectedMeters = mapOf(
+            1 to 150f,
+            2 to 45f,
+            3 to 25f,
+            4 to 10f,
+            5 to 3f,
+            6 to 1f
+        )
+
+        assertNull(OpenDroneIdParser.verticalAccuracyCodeToMeters(0))
+        expectedMeters.forEach { (code, meters) ->
+            assertEquals(meters, OpenDroneIdParser.verticalAccuracyCodeToMeters(code))
+        }
+        assertNull(OpenDroneIdParser.verticalAccuracyCodeToMeters(7))
+        assertNull(OpenDroneIdParser.verticalAccuracyCodeToMeters(15))
+    }
+
+    @Test
+    fun emitsVerticalAccuracyUsingVerticalInsteadOfHorizontalTable() {
+        val state = newState()
+
+        OpenDroneIdParser.parseMessage(locationMessage(36.13094, -115.15064), state)
+
+        val drone = state.toDroneOrNull()
+        assertNotNull(drone)
+        requireNotNull(drone)
+        assertEquals(10f, drone.horizontalAccuracyMeters)
+        assertEquals(10f, drone.verticalAccuracyMeters)
+    }
+
+    @Test
     fun rejectsPackWithWrongSingleMessageSizeWithoutPartialMutation() {
         val state = newState()
         val pack = messagePack(

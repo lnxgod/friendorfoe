@@ -23,8 +23,8 @@ android {
         applicationId = "com.friendorfoe"
         minSdk = 26
         targetSdk = 34
-        versionCode = 121
-        versionName = "0.67.12-android-rid-formation-stability"
+        versionCode = 122
+        versionName = "0.67.13-android-rid-carousel-fix"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

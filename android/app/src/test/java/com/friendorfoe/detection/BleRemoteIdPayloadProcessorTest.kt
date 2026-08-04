@@ -2,6 +2,7 @@ package com.friendorfoe.detection
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Test
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -31,6 +32,337 @@ class BleRemoteIdPayloadProcessorTest {
         assertEquals("SERIAL123", withLocation.droneId)
         assertEquals(37.7749, withLocation.position.latitude, 0.000001)
         assertEquals(-122.4194, withLocation.position.longitude, 0.000001)
+    }
+
+    @Test
+    fun standaloneFormationCommitsOnLocationWithoutBorrowingPreviousAircraftLocation() {
+        val processor = BleRemoteIdPayloadProcessor()
+        val address = "AA:BB:CC:DD:EE:FF"
+
+        processor.process(
+            deviceAddress = address,
+            payload = basicIdMessage("FOF-C5-A1B2C3-001"),
+            now = Instant.parse("2026-07-04T12:00:00Z"),
+            transportCounter = 10
+        )
+        processor.process(
+            deviceAddress = address,
+            payload = systemMessage(36.130940, -115.150640),
+            now = Instant.parse("2026-07-04T12:00:00.025Z"),
+            transportCounter = 10
+        )
+        processor.process(
+            deviceAddress = address,
+            payload = operatorIdMessage("FOF-FORMATION"),
+            now = Instant.parse("2026-07-04T12:00:00.050Z"),
+            transportCounter = 10
+        )
+        processor.process(
+            deviceAddress = address,
+            payload = locationMessage(36.13095, -115.15063),
+            now = Instant.parse("2026-07-04T12:00:00.100Z"),
+            transportCounter = 10
+        )
+
+        val nextBasic = processor.process(
+            deviceAddress = address,
+            payload = basicIdMessage("FOF-C5-A1B2C3-002"),
+            now = Instant.parse("2026-07-04T12:00:00.200Z"),
+            transportCounter = 11
+        )
+        processor.process(
+            deviceAddress = address,
+            payload = systemMessage(36.130940, -115.150640),
+            now = Instant.parse("2026-07-04T12:00:00.225Z"),
+            transportCounter = 11
+        )
+        processor.process(
+            deviceAddress = address,
+            payload = operatorIdMessage("FOF-FORMATION"),
+            now = Instant.parse("2026-07-04T12:00:00.250Z"),
+            transportCounter = 11
+        )
+        val nextLocation = processor.process(
+            deviceAddress = address,
+            payload = locationMessage(36.13100, -115.15050),
+            now = Instant.parse("2026-07-04T12:00:00.300Z"),
+            transportCounter = 11
+        )
+
+        assertNull(nextBasic)
+        assertNotNull(nextLocation)
+        requireNotNull(nextLocation)
+        assertEquals("FOF-C5-A1B2C3-002", nextLocation.droneId)
+        assertEquals(36.13100, nextLocation.position.latitude, 0.000001)
+        assertEquals(-115.15050, nextLocation.position.longitude, 0.000001)
+    }
+
+    @Test
+    fun standaloneFormationDropsLocationWhenItsBasicIdWasMissed() {
+        val processor = BleRemoteIdPayloadProcessor()
+        val address = "AA:BB:CC:DD:EE:FF"
+
+        assertNull(processor.process(
+            deviceAddress = address,
+            payload = basicIdMessage("FOF-C5-A1B2C3-001"),
+            now = Instant.parse("2026-07-04T12:00:00Z"),
+            transportCounter = 20
+        ))
+        assertNull(processor.process(
+            deviceAddress = address,
+            payload = systemMessage(36.130940, -115.150640),
+            now = Instant.parse("2026-07-04T12:00:00.025Z"),
+            transportCounter = 20
+        ))
+        assertNull(processor.process(
+            deviceAddress = address,
+            payload = operatorIdMessage("FOF-FORMATION"),
+            now = Instant.parse("2026-07-04T12:00:00.050Z"),
+            transportCounter = 20
+        ))
+        assertNotNull(processor.process(
+            deviceAddress = address,
+            payload = locationMessage(36.13095, -115.15063),
+            now = Instant.parse("2026-07-04T12:00:00.100Z"),
+            transportCounter = 20
+        ))
+
+        val orphanLocation = processor.process(
+            deviceAddress = address,
+            payload = locationMessage(36.13100, -115.15050),
+            now = Instant.parse("2026-07-04T12:00:00.200Z"),
+            transportCounter = 21
+        )
+
+        assertNull(orphanLocation)
+    }
+
+    @Test
+    fun standaloneFormationAccumulatesFirmwareOrderAndCommitsCompletePointOnLocation() {
+        val processor = BleRemoteIdPayloadProcessor()
+        val address = "AA:BB:CC:DD:EE:FF"
+
+        assertNull(processor.process(
+            deviceAddress = address,
+            payload = basicIdMessage("FOF-C5-A1B2C3-003"),
+            now = Instant.parse("2026-07-04T12:00:00Z"),
+            transportCounter = 30
+        ))
+        assertNull(processor.process(
+            deviceAddress = address,
+            payload = systemMessage(36.130940, -115.150640),
+            now = Instant.parse("2026-07-04T12:00:00.100Z"),
+            transportCounter = 30
+        ))
+        assertNull(processor.process(
+            deviceAddress = address,
+            payload = operatorIdMessage("FOF-FORMATION"),
+            now = Instant.parse("2026-07-04T12:00:00.200Z"),
+            transportCounter = 30
+        ))
+
+        val committed = processor.process(
+            deviceAddress = address,
+            payload = locationMessage(36.13110, -115.15040),
+            now = Instant.parse("2026-07-04T12:00:00.300Z"),
+            transportCounter = 30
+        )
+
+        assertNotNull(committed)
+        requireNotNull(committed)
+        assertEquals("FOF-C5-A1B2C3-003", committed.droneId)
+        assertEquals(36.13110, committed.position.latitude, 0.000001)
+        assertEquals(-115.15040, committed.position.longitude, 0.000001)
+        assertEquals(36.130940, committed.operatorLatitude ?: 0.0, 0.000001)
+        assertEquals(-115.150640, committed.operatorLongitude ?: 0.0, 0.000001)
+        assertEquals("FOF-FORMATION", committed.operatorId)
+    }
+
+    @Test
+    fun missedLocationAndNextBasicCannotCommitNextPointUnderPreviousId() {
+        val processor = BleRemoteIdPayloadProcessor()
+        val address = "AA:BB:CC:DD:EE:FF"
+
+        assertNull(formationFrame(processor, address,
+            basicIdMessage("FOF-C5-A1B2C3-010"),
+            Instant.parse("2026-07-04T12:00:00Z"), 40))
+        assertNull(formationFrame(processor, address,
+            systemMessage(36.130940, -115.150640),
+            Instant.parse("2026-07-04T12:00:00.100Z"), 40))
+        assertNull(formationFrame(processor, address,
+            operatorIdMessage("FOF-FORMATION"),
+            Instant.parse("2026-07-04T12:00:00.200Z"), 40))
+
+        // Point 010 Location and point 011 Basic are both missed. The next
+        // System is out of phase and must close 010 rather than allowing the
+        // following Location to publish 011's coordinates under ID 010.
+        assertNull(formationFrame(processor, address,
+            systemMessage(36.130940, -115.150640),
+            Instant.parse("2026-07-04T12:00:00.500Z"), 41))
+        assertNull(formationFrame(processor, address,
+            operatorIdMessage("FOF-FORMATION"),
+            Instant.parse("2026-07-04T12:00:00.600Z"), 41))
+        assertNull(formationFrame(processor, address,
+            locationMessage(36.13120, -115.15030),
+            Instant.parse("2026-07-04T12:00:00.700Z"), 41))
+    }
+
+    @Test
+    fun delayedPreviousLocationCannotCrossCommitAfterNewPointIsReady() {
+        val processor = BleRemoteIdPayloadProcessor()
+        val address = "AA:BB:CC:DD:EE:FF"
+
+        assertNull(formationFrame(processor, address,
+            basicIdMessage("FOF-C5-A1B2C3-020"),
+            Instant.parse("2026-07-04T12:00:00Z"), 50))
+        assertNull(formationFrame(processor, address,
+            systemMessage(36.130940, -115.150640),
+            Instant.parse("2026-07-04T12:00:00.100Z"), 50))
+        assertNull(formationFrame(processor, address,
+            operatorIdMessage("FOF-FORMATION"),
+            Instant.parse("2026-07-04T12:00:00.200Z"), 50))
+        assertNull(formationFrame(processor, address,
+            basicIdMessage("FOF-C5-A1B2C3-021"),
+            Instant.parse("2026-07-04T12:00:00.400Z"), 51))
+        assertNull(formationFrame(processor, address,
+            systemMessage(36.130940, -115.150640),
+            Instant.parse("2026-07-04T12:00:00.500Z"), 51))
+        assertNull(formationFrame(processor, address,
+            operatorIdMessage("FOF-FORMATION"),
+            Instant.parse("2026-07-04T12:00:00.600Z"), 51))
+
+        // A's delayed Location has A's transport counter and is discarded
+        // even though B is currently waiting for a Location message.
+        assertNull(formationFrame(processor, address,
+            locationMessage(36.13130, -115.15020),
+            Instant.parse("2026-07-04T12:00:00.650Z"), 50))
+        val committed = formationFrame(processor, address,
+            locationMessage(36.13140, -115.15010),
+            Instant.parse("2026-07-04T12:00:00.700Z"), 51)
+        assertNotNull(committed)
+        requireNotNull(committed)
+        assertEquals("FOF-C5-A1B2C3-021", committed.droneId)
+        assertEquals(36.13140, committed.position.latitude, 0.000001)
+        assertEquals(-115.15010, committed.position.longitude, 0.000001)
+    }
+
+    @Test
+    fun sameTypeFrameOutsideDuplicateWindowCannotBridgeAMissedBasic() {
+        val processor = BleRemoteIdPayloadProcessor()
+        val address = "AA:BB:CC:DD:EE:FF"
+
+        assertNull(formationFrame(processor, address,
+            basicIdMessage("FOF-C5-A1B2C3-025"),
+            Instant.parse("2026-07-04T12:00:00Z"), 60))
+        assertNull(formationFrame(processor, address,
+            systemMessage(36.130940, -115.150640),
+            Instant.parse("2026-07-04T12:00:00.100Z"), 60))
+
+        // Operator, Location, and the next Basic are missed. A System from the
+        // next point is 400 ms newer, not a duplicate of 025's System.
+        assertNull(formationFrame(processor, address,
+            systemMessage(36.130940, -115.150640),
+            Instant.parse("2026-07-04T12:00:00.500Z"), 61))
+        assertNull(formationFrame(processor, address,
+            operatorIdMessage("FOF-FORMATION"),
+            Instant.parse("2026-07-04T12:00:00.600Z"), 61))
+        assertNull(formationFrame(processor, address,
+            locationMessage(36.13145, -115.15005),
+            Instant.parse("2026-07-04T12:00:00.700Z"), 61))
+    }
+
+    @Test
+    fun duplicateFirmwareFramesPreserveTransactionProgress() {
+        val processor = BleRemoteIdPayloadProcessor()
+        val address = "AA:BB:CC:DD:EE:FF"
+        val serial = "FOF-C5-A1B2C3-030"
+
+        repeat(2) { index ->
+            assertNull(formationFrame(processor, address, basicIdMessage(serial),
+                Instant.parse("2026-07-04T12:00:00.${index}00Z"), 70))
+        }
+        repeat(2) { index ->
+            assertNull(formationFrame(processor, address,
+                systemMessage(36.130940, -115.150640),
+                Instant.parse("2026-07-04T12:00:00.${index + 2}00Z"), 70))
+        }
+        repeat(2) { index ->
+            assertNull(formationFrame(processor, address,
+                operatorIdMessage("FOF-FORMATION"),
+                Instant.parse("2026-07-04T12:00:00.${index + 4}00Z"), 70))
+        }
+
+        val committed = formationFrame(processor, address,
+            locationMessage(36.13150, -115.15000),
+            Instant.parse("2026-07-04T12:00:00.600Z"), 70)
+        assertNotNull(committed)
+        requireNotNull(committed)
+        assertEquals(serial, committed.droneId)
+        assertEquals(36.13150, committed.position.latitude, 0.000001)
+        assertEquals(-115.15000, committed.position.longitude, 0.000001)
+    }
+
+    @Test
+    fun blankBasicCannotReusePreviousFormationIdentity() {
+        val processor = BleRemoteIdPayloadProcessor()
+        val address = "AA:BB:CC:DD:EE:FF"
+
+        assertNull(formationFrame(processor, address,
+            basicIdMessage("FOF-C5-A1B2C3-040"),
+            Instant.parse("2026-07-04T12:00:00Z"), 80))
+        assertNull(formationFrame(processor, address,
+            systemMessage(36.130940, -115.150640),
+            Instant.parse("2026-07-04T12:00:00.100Z"), 80))
+        assertNull(formationFrame(processor, address,
+            operatorIdMessage("FOF-FORMATION"),
+            Instant.parse("2026-07-04T12:00:00.200Z"), 80))
+        assertNotNull(formationFrame(processor, address,
+            locationMessage(36.13150, -115.15000),
+            Instant.parse("2026-07-04T12:00:00.300Z"), 80))
+
+        assertNull(formationFrame(processor, address, ByteArray(25),
+            Instant.parse("2026-07-04T12:00:00.400Z"), 81))
+        assertNull(formationFrame(processor, address,
+            systemMessage(36.130940, -115.150640),
+            Instant.parse("2026-07-04T12:00:00.500Z"), 81))
+        assertNull(formationFrame(processor, address,
+            operatorIdMessage("FOF-FORMATION"),
+            Instant.parse("2026-07-04T12:00:00.600Z"), 81))
+        assertNull(formationFrame(processor, address,
+            locationMessage(36.13160, -115.14990),
+            Instant.parse("2026-07-04T12:00:00.700Z"), 81))
+    }
+
+    @Test
+    fun fullDefconCarouselPublishesNinetySixUniqueStationaryPoints() {
+        val processor = BleRemoteIdPayloadProcessor()
+        val address = "AA:BB:CC:DD:EE:FF"
+        val startedAt = Instant.parse("2026-07-04T12:00:00Z")
+
+        val published = (1..96).map { pointIndex ->
+            val pointStart = startedAt.plusMillis((pointIndex - 1) * 400L)
+            val counter = (219 + pointIndex) and 0xFF
+            val serial = "FOF-C5-A1B2C3-${pointIndex.toString().padStart(3, '0')}"
+            val latitude = 36.13000 + pointIndex * 0.00001
+            val longitude = -115.15000 + pointIndex * 0.00001
+
+            assertNull(formationFrame(processor, address, basicIdMessage(serial),
+                pointStart, counter))
+            assertNull(formationFrame(processor, address,
+                systemMessage(36.13094, -115.15064),
+                pointStart.plusMillis(100), counter))
+            assertNull(formationFrame(processor, address,
+                operatorIdMessage("FOF-FORMATION"),
+                pointStart.plusMillis(200), counter))
+            requireNotNull(formationFrame(processor, address,
+                locationMessage(latitude, longitude),
+                pointStart.plusMillis(300), counter))
+        }
+
+        assertEquals(96, published.map { it.droneId }.toSet().size)
+        assertEquals(96, published.map {
+            it.position.latitude to it.position.longitude
+        }.toSet().size)
     }
 
     @Test
@@ -127,6 +459,19 @@ class BleRemoteIdPayloadProcessorTest {
         locationMessage(latitude, longitude),
         systemMessage(operatorLatitude, operatorLongitude),
         operatorIdMessage(operatorId)
+    )
+
+    private fun formationFrame(
+        processor: BleRemoteIdPayloadProcessor,
+        address: String,
+        payload: ByteArray,
+        now: Instant,
+        counter: Int
+    ) = processor.process(
+        deviceAddress = address,
+        payload = payload,
+        now = now,
+        transportCounter = counter
     )
 
     private fun basicIdMessage(serial: String): ByteArray = ByteArray(25).apply {

@@ -204,7 +204,7 @@ class RemoteIdScanner @Inject constructor(
 
         // Android has already stripped the service UUID. Preserve complete raw
         // or App Code-prefixed payloads, including 103-byte Message Packs.
-        val messageData = BleRemoteIdPayloadSelector.select(serviceData) ?: run {
+        val selection = BleRemoteIdPayloadSelector.select(serviceData) ?: run {
             Log.d(TAG, "Invalid OpenDroneID service data: ${serviceData.size} bytes")
             return null
         }
@@ -218,10 +218,12 @@ class RemoteIdScanner @Inject constructor(
 
         return payloadProcessor.process(
             deviceAddress = deviceAddress,
-            payload = messageData,
+            payload = selection.payload,
             now = now,
             signalStrengthDbm = result.rssi,
-            estimatedDistanceMeters = estimatedDistanceMeters
+            estimatedDistanceMeters = estimatedDistanceMeters,
+            transportCounter = selection.transactionCounter,
+            observationTimestampNanos = result.timestampNanos
         )
     }
 }
