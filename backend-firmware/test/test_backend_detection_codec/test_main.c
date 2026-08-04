@@ -9,6 +9,9 @@ void test_detection_codec_round_trips_full_record(void);
 void test_detection_codec_never_returns_partial_json(void);
 void test_detection_codec_matches_independent_http_mapping(void);
 void test_detection_codec_rejects_hostile_and_boundary_inputs(void);
+void test_production_detection_codec_normalizes_native_wire_units(void);
+void test_production_detection_codec_accepts_probe_string_and_array(void);
+void test_production_detection_codec_rejects_backend_and_hostile_dialects(void);
 void test_detection_assert_helper_detects_each_field_group(void);
 void test_detection_frequency_channel_boundaries(void);
 
@@ -30,6 +33,9 @@ int main(void)
     BACKEND_RUN_TEST(test_detection_codec_never_returns_partial_json);
     BACKEND_RUN_TEST(test_detection_codec_matches_independent_http_mapping);
     BACKEND_RUN_TEST(test_detection_codec_rejects_hostile_and_boundary_inputs);
+    BACKEND_RUN_TEST(test_production_detection_codec_normalizes_native_wire_units);
+    BACKEND_RUN_TEST(test_production_detection_codec_accepts_probe_string_and_array);
+    BACKEND_RUN_TEST(test_production_detection_codec_rejects_backend_and_hostile_dialects);
     BACKEND_RUN_TEST(test_detection_assert_helper_detects_each_field_group);
     BACKEND_RUN_TEST(test_detection_frequency_channel_boundaries);
     return UNITY_END();

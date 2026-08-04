@@ -1,6 +1,6 @@
 {
   "name": "Friend or Foe Backend Uplink (XIAO ESP32-S3)",
-  "version": "0.1.0-backend",
+  "version": "0.2.0-backend",
   "builds": [
     {
       "chipFamily": "ESP32-S3",

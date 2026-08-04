@@ -63,6 +63,7 @@
 #include "backend_time_sync.h"
 #include "backend_uart_investigation.h"
 #include "backend_uart_slot.h"
+#include "production_scanner_uart.h"
 #include "backend_upload_batch.h"
 #include "backend_upload_fifo.h"
 #include "backend_uploader.h"
@@ -84,6 +85,9 @@
 #define UPLINK_OTA_PERIOD_MS 1000
 #define UPLINK_RELAY_WAIT_MS 180000
 #define UPLINK_UART_TASK_STACK_DEPTH 12288U
+#define UPLINK_PRODUCTION_BOOTSTRAP_STACK_DEPTH 3072U
+#define UPLINK_PRODUCTION_BOOTSTRAP_WINDOW_MS INT64_C(8000)
+#define UPLINK_PRODUCTION_BOOTSTRAP_PERIOD_MS 250U
 #define UPLINK_USB_LINE_CAPACITY 512U
 #define UPLINK_STATUS_CAPACITY 768U
 #define UPLINK_HTTP_RESPONSE_CAPACITY (BACKEND_HTTP_MAX_JSON_BODY + 1U)
@@ -117,6 +121,12 @@ typedef struct {
     const uint8_t *bytes;
     size_t length;
 } uplink_memory_image_t;
+
+typedef enum {
+    UPLINK_SCANNER_WIRE_UNKNOWN = 0,
+    UPLINK_SCANNER_WIRE_BACKEND,
+    UPLINK_SCANNER_WIRE_PRODUCTION,
+} uplink_scanner_wire_t;
 
 #if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
 typedef struct {
@@ -172,8 +182,13 @@ typedef struct {
     backend_threat_state_t threats;
     backend_scanner_status_tracker_t scanner_tracker[2];
     backend_scanner_health_t scanner_health[2];
+    production_scanner_message_t production_scanner[2];
+    uplink_scanner_wire_t scanner_wire[2];
     backend_scanner_plan_t scanner_plan;
     int64_t scanner_last_seen_ms[2];
+    int64_t production_ready_sent_ms[2];
+    uint32_t production_boot_id[2];
+    uint32_t production_status_sequence[2];
     backend_upload_fifo_t upload_fifo;
     backend_upload_batch_t *upload_storage;
     backend_batch_context_t upload_context_scratch;
@@ -444,6 +459,107 @@ static bool uart_send_control(
     const size_t length = backend_scanner_control_encode(
         control, line, sizeof(s_runtime.uart_control_line[slot]));
     return length != 0U && uart_send_line(slot, line, length);
+}
+
+static bool uart_send_production_ready(size_t slot, int64_t now_ms)
+{
+    if (slot >= BACKEND_UART_SLOT_COUNT) {
+        return false;
+    }
+    char *line = s_runtime.uart_control_line[slot];
+    const size_t length = production_scanner_encode_ready(
+        line, sizeof(s_runtime.uart_control_line[slot]));
+    const bool sent = length != 0U && uart_send_line(slot, line, length);
+    if (sent) {
+        s_runtime.production_ready_sent_ms[slot] = now_ms;
+    }
+    return sent;
+}
+
+static bool uart_send_production_flow(size_t slot, bool paused, int64_t now_ms)
+{
+    if (slot >= BACKEND_UART_SLOT_COUNT) {
+        return false;
+    }
+    char *line = s_runtime.uart_control_line[slot];
+    const size_t length = paused
+        ? production_scanner_encode_stop(
+              line, sizeof(s_runtime.uart_control_line[slot]))
+        : production_scanner_encode_ready(
+              line, sizeof(s_runtime.uart_control_line[slot]));
+    const bool sent = length != 0U && uart_send_line(slot, line, length);
+    if (sent && !paused) {
+        s_runtime.production_ready_sent_ms[slot] = now_ms;
+    }
+    return sent;
+}
+
+static backend_scan_profile_t production_profile_for_slot(size_t slot)
+{
+    return slot == 0U
+        ? BACKEND_SCAN_PROFILE_BLE_PRIMARY
+        : BACKEND_SCAN_PROFILE_WIFI_PRIMARY;
+}
+
+static bool uart_send_production_assignment(size_t slot)
+{
+    if (slot >= BACKEND_UART_SLOT_COUNT) {
+        return false;
+    }
+    const backend_scan_profile_t profile = production_profile_for_slot(slot);
+    char *line = s_runtime.uart_control_line[slot];
+    const size_t length = production_scanner_encode_profile(
+        profile, line, sizeof(s_runtime.uart_control_line[slot]));
+    return length != 0U && uart_send_line(slot, line, length);
+}
+
+static bool uart_send_production_profile(size_t slot, int64_t now_ms)
+{
+    return uart_send_production_assignment(slot) &&
+        uart_send_production_ready(slot, now_ms);
+}
+
+static bool uart_send_production_time(
+    size_t slot, int64_t epoch_ms, backend_time_source_t source)
+{
+    if (slot >= BACKEND_UART_SLOT_COUNT) {
+        return false;
+    }
+    const char *source_name = source == BACKEND_TIME_SOURCE_SNTP
+        ? "local" : "backend";
+    char *line = s_runtime.uart_control_line[slot];
+    const size_t length = production_scanner_encode_time(
+        epoch_ms, source_name, line,
+        sizeof(s_runtime.uart_control_line[slot]));
+    return length != 0U && uart_send_line(slot, line, length);
+}
+
+static void production_scanner_bootstrap_worker(void *argument)
+{
+    (void)argument;
+    const int64_t started_ms = monotonic_ms();
+    uint32_t iteration = 0U;
+    for (;;) {
+        const int64_t now_ms = monotonic_ms();
+        if (now_ms < started_ms ||
+            now_ms - started_ms >= UPLINK_PRODUCTION_BOOTSTRAP_WINDOW_MS) {
+            break;
+        }
+        lock_runtime();
+        for (size_t slot = 0U; slot < BACKEND_UART_SLOT_COUNT; ++slot) {
+            if (s_runtime.uart_started[slot] &&
+                s_runtime.scanner_wire[slot] == UPLINK_SCANNER_WIRE_UNKNOWN) {
+                const bool assigned = uart_send_production_assignment(slot);
+                if (assigned && (iteration % 4U) == 0U) {
+                    (void)uart_send_production_ready(slot, now_ms);
+                }
+            }
+        }
+        unlock_runtime();
+        ++iteration;
+        vTaskDelay(pdMS_TO_TICKS(UPLINK_PRODUCTION_BOOTSTRAP_PERIOD_MS));
+    }
+    vTaskDelete(NULL);
 }
 
 static bool scanner_identity_exact(const backend_scanner_status_t *status)
@@ -1951,6 +2067,220 @@ static void update_scanner_status_locked(
     }
 }
 
+static uint32_t production_boot_id_for_slot(size_t slot)
+{
+    uint32_t value = s_runtime.boot_id ^ UINT32_C(0x50524f44) ^
+        (uint32_t)((slot + 1U) * UINT32_C(0x01010101));
+    return value == 0U ? (uint32_t)(slot + 1U) : value;
+}
+
+static void update_production_scanner_locked(
+    size_t slot,
+    const production_scanner_message_t *message,
+    int64_t now_ms)
+{
+    if (slot >= BACKEND_UART_SLOT_COUNT || message == NULL) {
+        return;
+    }
+    backend_scanner_health_t *health = &s_runtime.scanner_health[slot];
+    production_scanner_message_t *stored =
+        &s_runtime.production_scanner[slot];
+    const bool reconnect = !health->connected &&
+        s_runtime.scanner_wire[slot] == UPLINK_SCANNER_WIRE_PRODUCTION &&
+        s_runtime.scanner_last_seen_ms[slot] != 0;
+    s_runtime.scanner_wire[slot] = UPLINK_SCANNER_WIRE_PRODUCTION;
+    s_runtime.scanner_last_seen_ms[slot] = now_ms;
+    health->connected = true;
+    health->command_healthy = true;
+    const bool changed_reported_boot = message->boot_id_present &&
+        s_runtime.production_boot_id[slot] != 0U &&
+        s_runtime.production_boot_id[slot] != message->boot_id;
+    if (message->boot_id_present) {
+        s_runtime.production_boot_id[slot] = message->boot_id;
+    } else if (s_runtime.production_boot_id[slot] == 0U) {
+        s_runtime.production_boot_id[slot] =
+            production_boot_id_for_slot(slot);
+    } else if (reconnect && !stored->boot_id_present) {
+        if (++s_runtime.production_boot_id[slot] == 0U) {
+            s_runtime.production_boot_id[slot] = 1U;
+        }
+    }
+    if (reconnect || changed_reported_boot) {
+        health->commanded_generation = 0U;
+        health->acknowledged_generation = 0U;
+        health->role_acked = false;
+        health->radio_healthy = false;
+    }
+    health->boot_id = s_runtime.production_boot_id[slot];
+
+    if (message->identity_present) {
+        copy_text(stored->version, sizeof(stored->version), message->version);
+        copy_text(stored->board, sizeof(stored->board), message->board);
+        copy_text(stored->chip, sizeof(stored->chip), message->chip);
+        copy_text(
+            stored->capabilities, sizeof(stored->capabilities),
+            message->capabilities);
+        stored->identity_present = true;
+        stored->identity_valid = message->identity_valid;
+        health->identity_valid = message->identity_valid;
+        if (message->management_identity_present) {
+            copy_text(
+                stored->firmware_name, sizeof(stored->firmware_name),
+                message->firmware_name);
+            copy_text(
+                stored->app_project, sizeof(stored->app_project),
+                message->app_project);
+            copy_text(
+                stored->hardware_type, sizeof(stored->hardware_type),
+                message->hardware_type);
+            copy_text(
+                stored->hardware_id, sizeof(stored->hardware_id),
+                message->hardware_id);
+            stored->management_identity_present = true;
+            stored->management_identity_valid =
+                message->management_identity_valid;
+        }
+        if (message->boot_id_present) {
+            stored->boot_id = message->boot_id;
+            stored->boot_id_present = true;
+        }
+        /* Production identity is projected for USB inventory, but it is not
+         * admitted to the backend-native scanner tracker or relay. */
+        s_runtime.scanner_tracker[slot].initialized = false;
+    }
+    if (message->ota_state[0] != '\0') {
+        copy_text(
+            stored->ota_state, sizeof(stored->ota_state),
+            message->ota_state);
+    }
+    if (message->rollback_state[0] != '\0') {
+        copy_text(
+            stored->rollback_state, sizeof(stored->rollback_state),
+            message->rollback_state);
+    }
+    if (message->sequence != 0U) {
+        stored->sequence = message->sequence;
+    }
+    if (message->uptime_ms != 0U) {
+        if (!stored->boot_id_present && stored->uptime_ms != 0U &&
+            message->uptime_ms < stored->uptime_ms) {
+            uint32_t next = s_runtime.production_boot_id[slot] + 1U;
+            if (next == 0U) {
+                next = 1U;
+            }
+            s_runtime.production_boot_id[slot] = next;
+            health->boot_id = next;
+            health->commanded_generation = 0U;
+            health->acknowledged_generation = 0U;
+            health->role_acked = false;
+            health->radio_healthy = false;
+        }
+        stored->uptime_ms = message->uptime_ms;
+    }
+    stored->command_rx_count = message->command_rx_count;
+    stored->tx_drops = message->tx_drops;
+    if (message->ble_initialized_present) {
+        stored->ble_initialized = message->ble_initialized;
+    }
+    if (message->ble_scanning_present) {
+        stored->ble_scanning = message->ble_scanning;
+    }
+    if (message->ble_host_active_present) {
+        stored->ble_host_active = message->ble_host_active;
+    }
+    if (message->ble_host_synced_present) {
+        stored->ble_host_synced = message->ble_host_synced;
+    }
+    if (message->wifi_initialized_present) {
+        stored->wifi_initialized = message->wifi_initialized;
+    }
+    if (message->wifi_active_present) {
+        stored->wifi_active = message->wifi_active;
+    }
+    if (message->wifi_paused_present) {
+        stored->wifi_paused = message->wifi_paused;
+    }
+
+    if (message->profile_present) {
+        stored->profile = message->profile;
+        stored->profile_present = true;
+        health->reported_profile = message->profile;
+    }
+    const bool explicit_profile_ack =
+        message->kind == PRODUCTION_SCANNER_MESSAGE_PROFILE_ACK &&
+        (!message->slot_role_ok_present || message->slot_role_ok);
+    const bool matching_status = message->profile_present &&
+        health->commanded_generation != 0U &&
+        health->commanded_profile == message->profile &&
+        message->command_rx_count != 0U;
+    if ((explicit_profile_ack || matching_status) &&
+        health->commanded_generation != 0U &&
+        health->commanded_profile == health->reported_profile) {
+        health->acknowledged_generation = health->commanded_generation;
+        health->role_acked = true;
+        if (explicit_profile_ack) {
+            /* Current badge production firmware sets slot_role_ok only after
+             * accepting the exact durable role/profile pair.  Older deployed
+             * combo images omit that additive field; their profile ACK is the
+             * authoritative success signal.  An explicit false is never
+             * promoted to radio health. */
+            health->radio_healthy = true;
+        }
+    }
+    if (message->profile_present &&
+        (message->kind == PRODUCTION_SCANNER_MESSAGE_INFO ||
+         message->kind == PRODUCTION_SCANNER_MESSAGE_STATUS)) {
+        if (message->profile == BACKEND_SCAN_PROFILE_BLE_PRIMARY &&
+            (message->ble_initialized_present ||
+             message->ble_scanning_present ||
+             message->ble_host_active_present ||
+             message->ble_host_synced_present)) {
+            const bool observed_healthy = message->ble_initialized &&
+                (message->ble_scanning || message->ble_host_active ||
+                 message->ble_host_synced);
+            health->radio_healthy = health->radio_healthy || observed_healthy;
+        } else if (message->profile == BACKEND_SCAN_PROFILE_WIFI_PRIMARY &&
+                   (message->wifi_initialized_present ||
+                    message->wifi_active_present ||
+                    message->wifi_paused_present)) {
+            const bool observed_healthy = message->wifi_initialized &&
+                (!message->wifi_paused || message->wifi_active);
+            health->radio_healthy = health->radio_healthy || observed_healthy;
+        }
+    }
+    if (++s_runtime.production_status_sequence[slot] == 0U) {
+        s_runtime.production_status_sequence[slot] = 1U;
+    }
+}
+
+static void ingest_decoded_detection(
+    size_t slot,
+    const drone_detection_t *detection,
+    const backend_scanner_stamp_t *stamp,
+    int64_t now_ms)
+{
+    lock_runtime();
+    const int64_t epoch_ms = current_epoch_ms_locked(now_ms);
+    unlock_runtime();
+    backend_detection_observation_t observation;
+    backend_observation_resolve(
+        detection, stamp, epoch_ms, &observation);
+    lock_coordinator();
+    const backend_coordinator_ingest_result_t result =
+        backend_coordinator_ingest_detection(
+            &s_runtime.coordinator,
+            (uint8_t)slot,
+            &observation,
+            now_ms);
+    unlock_coordinator();
+    if (result.update_local_threat) {
+        lock_runtime();
+        backend_threat_ingest(
+            &s_runtime.threats, &observation.detection, now_ms);
+        unlock_runtime();
+    }
+}
+
 static void dispatch_uart_frame(
     size_t slot, const uint8_t *bytes, size_t length)
 {
@@ -1964,25 +2294,27 @@ static void dispatch_uart_frame(
             &detection,
             &stamp) == BACKEND_DECODE_OK) {
         lock_runtime();
-        const int64_t epoch_ms = current_epoch_ms_locked(now_ms);
+        s_runtime.scanner_wire[slot] = UPLINK_SCANNER_WIRE_BACKEND;
         unlock_runtime();
-        backend_detection_observation_t observation;
-        backend_observation_resolve(
-            &detection, &stamp, epoch_ms, &observation);
-        lock_coordinator();
-        const backend_coordinator_ingest_result_t result =
-            backend_coordinator_ingest_detection(
-                &s_runtime.coordinator,
-                (uint8_t)slot,
-                &observation,
-                now_ms);
-        unlock_coordinator();
-        if (result.update_local_threat) {
-            lock_runtime();
-            backend_threat_ingest(
-                &s_runtime.threats, &observation.detection, now_ms);
-            unlock_runtime();
+        ingest_decoded_detection(slot, &detection, &stamp, now_ms);
+        return;
+    }
+
+    if (backend_detection_uart_decode_production(
+            (const char *)bytes,
+            length,
+            (backend_scanner_slot_t)slot,
+            &detection,
+            &stamp) == BACKEND_DECODE_OK) {
+        lock_runtime();
+        if (s_runtime.scanner_wire[slot] != UPLINK_SCANNER_WIRE_BACKEND) {
+            s_runtime.scanner_wire[slot] = UPLINK_SCANNER_WIRE_PRODUCTION;
+            s_runtime.scanner_last_seen_ms[slot] = now_ms;
+            s_runtime.scanner_health[slot].connected = true;
+            s_runtime.scanner_health[slot].command_healthy = true;
         }
+        unlock_runtime();
+        ingest_decoded_detection(slot, &detection, &stamp, now_ms);
         return;
     }
 
@@ -1991,7 +2323,20 @@ static void dispatch_uart_frame(
             (const char *)bytes, length, &status) ==
         BACKEND_SCANNER_STATUS_DECODE_OK) {
         lock_runtime();
+        s_runtime.scanner_wire[slot] = UPLINK_SCANNER_WIRE_BACKEND;
         update_scanner_status_locked(slot, &status, now_ms);
+        unlock_runtime();
+        return;
+    }
+
+    production_scanner_message_t production;
+    if (production_scanner_uart_decode(
+            (const char *)bytes, length, &production)) {
+        lock_runtime();
+        if (s_runtime.scanner_wire[slot] != UPLINK_SCANNER_WIRE_BACKEND) {
+            update_production_scanner_locked(
+                slot, &production, now_ms);
+        }
         unlock_runtime();
         return;
     }
@@ -2108,6 +2453,23 @@ static void send_role_locked(
         return;
     }
     const uint32_t generation = ++s_runtime.role_generation;
+    if (s_runtime.scanner_wire[slot] ==
+        UPLINK_SCANNER_WIRE_PRODUCTION) {
+        const backend_scan_profile_t production_profile =
+            production_profile_for_slot(slot);
+        if (uart_send_production_profile(slot, now_ms)) {
+            health->commanded_generation = generation;
+            health->commanded_profile = production_profile;
+            health->convergence_started_ms = now_ms;
+            health->convergence_started = true;
+            health->command_healthy = true;
+            health->role_acked = false;
+            health->radio_healthy = false;
+        } else {
+            health->command_healthy = false;
+        }
+        return;
+    }
     backend_scanner_control_t control = {
         .type = BACKEND_SCANNER_CONTROL_ROLE,
         .payload.role = {
@@ -2143,7 +2505,10 @@ static void send_led_mirror_locked(
     control.payload.led.ttl_ms = mirror->command.ttl_ms;
     for (size_t slot = 0U; slot < 2U; ++slot) {
         if ((mirror->send_mask & (UINT8_C(1) << slot)) != 0U) {
-            (void)uart_send_control(slot, &control);
+            if (s_runtime.scanner_wire[slot] ==
+                UPLINK_SCANNER_WIRE_BACKEND) {
+                (void)uart_send_control(slot, &control);
+            }
         }
     }
 }
@@ -2213,11 +2578,25 @@ static void coordinator_worker(void *argument)
 
         lock_runtime();
         for (size_t slot = 0U; slot < 2U; ++slot) {
+            if (s_runtime.scanner_wire[slot] ==
+                    UPLINK_SCANNER_WIRE_UNKNOWN &&
+                now_ms - s_runtime.production_ready_sent_ms[slot] >=
+                    INT64_C(1000)) {
+                (void)uart_send_production_profile(slot, now_ms);
+            }
             if (s_runtime.scanner_health[slot].connected &&
                 now_ms - s_runtime.scanner_last_seen_ms[slot] >
                     UPLINK_SCANNER_STALE_MS) {
                 s_runtime.scanner_health[slot].connected = false;
                 s_runtime.scanner_health[slot].role_acked = false;
+                s_runtime.scanner_health[slot].radio_healthy = false;
+            }
+            if (s_runtime.scanner_health[slot].connected &&
+                s_runtime.scanner_wire[slot] ==
+                    UPLINK_SCANNER_WIRE_PRODUCTION &&
+                now_ms - s_runtime.production_ready_sent_ms[slot] >=
+                    INT64_C(30000)) {
+                (void)uart_send_production_ready(slot, now_ms);
             }
         }
         backend_scanner_plan_compute(
@@ -2230,7 +2609,9 @@ static void coordinator_worker(void *argument)
                 continue;
             }
             const backend_scan_profile_t desired =
-                s_runtime.scanner_plan.desired[slot];
+                s_runtime.scanner_wire[slot] == UPLINK_SCANNER_WIRE_PRODUCTION
+                    ? production_profile_for_slot(slot)
+                    : s_runtime.scanner_plan.desired[slot];
             backend_scanner_health_t *health =
                 &s_runtime.scanner_health[slot];
             if (health->connected &&
@@ -2294,7 +2675,13 @@ static void coordinator_worker(void *argument)
                 };
                 for (size_t slot = 0U; slot < 2U; ++slot) {
                     if ((connected_mask & (UINT8_C(1) << slot)) != 0U) {
-                        (void)uart_send_control(slot, &flow);
+                        if (s_runtime.scanner_wire[slot] ==
+                            UPLINK_SCANNER_WIRE_PRODUCTION) {
+                            (void)uart_send_production_flow(
+                                slot, paused, now_ms);
+                        } else {
+                            (void)uart_send_control(slot, &flow);
+                        }
                     }
                 }
                 s_runtime.flow_state_known = true;
@@ -2567,7 +2954,12 @@ static void broadcast_time(
         },
     };
     for (size_t slot = 0U; slot < 2U; ++slot) {
-        if (s_runtime.scanner_health[slot].connected) {
+        if (s_runtime.scanner_wire[slot] ==
+                UPLINK_SCANNER_WIRE_PRODUCTION ||
+            s_runtime.scanner_wire[slot] ==
+                UPLINK_SCANNER_WIRE_UNKNOWN) {
+            (void)uart_send_production_time(slot, epoch_ms, source);
+        } else if (s_runtime.scanner_health[slot].connected) {
             (void)uart_send_control(slot, &control);
         }
     }
@@ -4073,6 +4465,7 @@ typedef struct {
     bool dashboard_routes_enabled;
     const char *dashboard_failure_reason;
     backend_scanner_health_t scanners[2];
+    uplink_scanner_wire_t scanner_wire[2];
     backend_scanner_status_t scanner_status[2];
     bool scanner_status_available[2];
     backend_threat_snapshot_t threats;
@@ -4105,6 +4498,18 @@ static const char *lite_recovery_reason_name(
     }
 }
 
+static const char *scanner_wire_name(uplink_scanner_wire_t wire)
+{
+    switch (wire) {
+    case UPLINK_SCANNER_WIRE_BACKEND:
+        return "backend_uart";
+    case UPLINK_SCANNER_WIRE_PRODUCTION:
+        return "production_uart";
+    default:
+        return "unknown";
+    }
+}
+
 static bool take_lite_status_snapshot(
     int64_t now_ms, lite_status_snapshot_t *snapshot)
 {
@@ -4134,11 +4539,65 @@ static bool take_lite_status_snapshot(
         snapshot->scanners,
         s_runtime.scanner_health,
         sizeof(snapshot->scanners));
+    memcpy(
+        snapshot->scanner_wire,
+        s_runtime.scanner_wire,
+        sizeof(snapshot->scanner_wire));
     for (size_t slot = 0U; slot < 2U; ++slot) {
         if (s_runtime.scanner_tracker[slot].initialized) {
             snapshot->scanner_status_available[slot] = true;
             snapshot->scanner_status[slot] =
                 s_runtime.scanner_tracker[slot].status;
+        } else if (s_runtime.scanner_wire[slot] ==
+                       UPLINK_SCANNER_WIRE_PRODUCTION &&
+                   s_runtime.production_scanner[slot].identity_valid) {
+            const production_scanner_message_t *production =
+                &s_runtime.production_scanner[slot];
+            backend_scanner_status_t *scanner =
+                &snapshot->scanner_status[slot];
+            memset(scanner, 0, sizeof(*scanner));
+            scanner->schema = BACKEND_SCANNER_STATUS_SCHEMA;
+            scanner->sequence =
+                s_runtime.production_status_sequence[slot];
+            scanner->boot_id = s_runtime.production_boot_id[slot];
+            copy_text(scanner->mac, sizeof(scanner->mac),
+                      production->management_identity_valid
+                          ? production->hardware_id : "");
+            copy_text(scanner->target, sizeof(scanner->target),
+                      production->management_identity_valid
+                          ? production->firmware_name : production->board);
+            copy_text(scanner->project, sizeof(scanner->project),
+                      production->management_identity_valid
+                          ? production->app_project : "production_combo");
+            copy_text(scanner->hardware, sizeof(scanner->hardware),
+                      production->management_identity_valid
+                          ? production->hardware_type : production->chip);
+            copy_text(scanner->version, sizeof(scanner->version),
+                      production->version);
+            scanner->profile = production->profile_present
+                ? production->profile
+                : s_runtime.scanner_health[slot].reported_profile;
+            scanner->role_generation =
+                s_runtime.scanner_health[slot].acknowledged_generation;
+            scanner->role_acked =
+                s_runtime.scanner_health[slot].role_acked;
+            scanner->command_ingress =
+                s_runtime.scanner_health[slot].command_healthy;
+            scanner->ble_healthy = production->ble_scanning ||
+                production->ble_host_active ||
+                production->ble_host_synced;
+            scanner->wifi_healthy = !production->wifi_paused;
+            copy_text(scanner->ota_state, sizeof(scanner->ota_state),
+                      production->ota_state[0] != '\0'
+                          ? production->ota_state : "native");
+            copy_text(
+                scanner->rollback_state,
+                sizeof(scanner->rollback_state),
+                production->rollback_state[0] != '\0'
+                    ? production->rollback_state : "native");
+            scanner->tx_drops = production->tx_drops;
+            scanner->uptime_ms = production->uptime_ms;
+            snapshot->scanner_status_available[slot] = true;
         }
     }
     backend_threat_snapshot(
@@ -4220,11 +4679,13 @@ static bool append_lite_scanner_summary(
             writer,
             "{\"slot\":%u,\"connected\":%s,"
             "\"identity_valid\":%s,\"status_available\":%s,"
+            "\"protocol\":\"%s\","
             "\"identity\":",
             (unsigned)slot,
             health->connected ? "true" : "false",
             health->identity_valid ? "true" : "false",
-            available ? "true" : "false")) {
+            available ? "true" : "false",
+            scanner_wire_name(status->scanner_wire[slot]))) {
         return false;
     }
     if (available) {
@@ -4236,6 +4697,11 @@ static bool append_lite_scanner_summary(
             !backend_json_append_escaped(writer, scanner->hardware) ||
             !backend_json_append(writer, ",\"version\":") ||
             !backend_json_append_escaped(writer, scanner->version) ||
+            !backend_json_append(writer, ",\"hardware_id\":") ||
+            !backend_json_append_escaped(writer, scanner->mac) ||
+            !backend_json_append_format(
+                writer, ",\"boot_id\":%lu",
+                (unsigned long)scanner->boot_id) ||
             !backend_json_append(writer, "}")) {
             return false;
         }
@@ -4359,7 +4825,7 @@ static size_t build_lite_status(
             "\"capabilities\":[\"display_none\",\"usb_live\","
             "\"usb_live_ack\",\"usb_buffered\",\"usb_config\","
             "\"http_uplink\",\"config_ap\",\"ap_dashboard\","
-            "\"remote_ota\",\"uart_relay_ota\"],"
+            "\"remote_ota\",\"production_scanner_uart\"],"
             "\"wifi\":{\"configured\":%s,\"connected\":%s,"
             "\"full_pass_failed\":%s},"
             "\"recovery\":{\"reason\":\"%s\",\"ap_running\":%s},"
@@ -5353,6 +5819,20 @@ void app_main(void)
         s_runtime.uart_started[slot] = backend_uart_slot_driver_init(slot);
         backend_scanner_status_tracker_init(
             &s_runtime.scanner_tracker[slot]);
+    }
+    /* Production badge scanners reserve only six seconds at boot for their
+     * fixed physical role.  Seed each UART immediately, before Wi-Fi/AP/OTA
+     * initialization, and let the coordinator retry while the dialect is
+     * still unknown.  Backend-native scanners ignore these native commands. */
+    if (xTaskCreate(
+            production_scanner_bootstrap_worker,
+            "prod_scanner_boot",
+            UPLINK_PRODUCTION_BOOTSTRAP_STACK_DEPTH,
+            NULL,
+            9U,
+            NULL) != pdPASS) {
+        print_line("FOF_BACKEND_FATAL {\"reason\":\"scanner_bootstrap\"}");
+        return;
     }
     backend_coordinator_init(&s_runtime.coordinator);
     backend_coordinator_set_upload_sink(

@@ -1,60 +1,18 @@
 {
   "schema": 1,
   "targets": {
-    "scanner-s3-combo-backend": {
-      "hardware": "seeed_xiao_esp32s3",
-      "identity_crc32": 2647884543,
-      "kind": "scanner",
-      "partition_capacity": 2097152,
-      "parts": [
-        {
-          "crc32": 2474299426,
-          "name": "scanner-s3-combo-backend-bootloader.bin",
-          "offset": 0,
-          "path": "scanner-s3-combo-backend/scanner-s3-combo-backend-bootloader.bin",
-          "sha256": "27adefab46513375efbcd676b2418f9deea51da52666f17f9497b73149e108c2",
-          "size": 20928
-        },
-        {
-          "crc32": 1132525912,
-          "name": "scanner-s3-combo-backend-partition-table.bin",
-          "offset": 32768,
-          "path": "scanner-s3-combo-backend/scanner-s3-combo-backend-partition-table.bin",
-          "sha256": "73032b7402f35d74f4891405e0a984267da7e91ede325bff97e34dde9767f88d",
-          "size": 4096
-        },
-        {
-          "crc32": 3022599221,
-          "name": "scanner-s3-combo-backend-ota-data-initial.bin",
-          "offset": 61440,
-          "path": "scanner-s3-combo-backend/scanner-s3-combo-backend-ota-data-initial.bin",
-          "sha256": "7d2c7ac4888bfd75cd5f56e8d61f69595121183afc81556c876732fd3782c62f",
-          "size": 8192
-        },
-        {
-          "crc32": 3381893400,
-          "name": "scanner-s3-combo-backend-firmware.bin",
-          "offset": 131072,
-          "path": "scanner-s3-combo-backend/scanner-s3-combo-backend-firmware.bin",
-          "sha256": "c67b692a63cb6d0835de06155de6472c7330fbcd6ccad4c55bfc3828d9523c11",
-          "size": 1006720
-        }
-      ],
-      "project": "fof_backend_scanner",
-      "target": "scanner-s3-combo-backend"
-    },
     "uplink-s3-backend": {
       "hardware": "seeed_xiao_esp32s3",
-      "identity_crc32": 4035694052,
+      "identity_crc32": 3022711036,
       "kind": "uplink",
       "partition_capacity": 2097152,
       "parts": [
         {
-          "crc32": 559824941,
+          "crc32": 1121465377,
           "name": "uplink-s3-backend-bootloader.bin",
           "offset": 0,
           "path": "uplink-s3-backend/uplink-s3-backend-bootloader.bin",
-          "sha256": "0fc03b443d94256cc6a18ceb531f833cd376a6be8625bd6fbdc1a9765c4c832b",
+          "sha256": "5eb7e70b4968e5f8253d57f406d57283fd4d76ee800d6a80d5fda5c6902122c1",
           "size": 20928
         },
         {
@@ -74,17 +32,17 @@
           "size": 8192
         },
         {
-          "crc32": 65308779,
+          "crc32": 3768511454,
           "name": "uplink-s3-backend-firmware.bin",
           "offset": 131072,
           "path": "uplink-s3-backend/uplink-s3-backend-firmware.bin",
-          "sha256": "63245819e40264c7e65b1d19c7c09ff2b981d685628f2c8010e2cff4ded6dceb",
-          "size": 984400
+          "sha256": "0f35b40f5e7528487979d05bc90146e37e86043b477ec7af1f83bc4dd00e176c",
+          "size": 1028576
         }
       ],
       "project": "fof_backend_uplink",
       "target": "uplink-s3-backend"
     }
   },
-  "version": "0.1.0-backend"
+  "version": "0.2.0-backend"
 }

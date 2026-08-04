@@ -45,6 +45,7 @@ endif()
 idf_component_register(
     SRCS
         "main.c"
+        "comms/production_scanner_uart.c"
         "comms/backend_uart_investigation.c"
         "comms/backend_uart_slot.c"
         "core/backend_coordinator.c"

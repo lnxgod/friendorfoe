@@ -50,6 +50,19 @@ backend_detection_decode_result_t backend_detection_uart_decode(
     drone_detection_t *out_detection,
     backend_scanner_stamp_t *out_stamp);
 
+/* Decode the newline-delimited JSON emitted by the unchanged production
+ * combo scanner firmware.  That dialect reports first/last as scanner
+ * monotonic milliseconds, reports an unsynchronised ts as uptime, encodes
+ * probed SSIDs as either a string or an array, and reports ble_ival in
+ * milliseconds.  Monotonic timestamps are normalised to zero at this
+ * boundary; an epoch-valued ts remains authoritative in out_stamp. */
+backend_detection_decode_result_t backend_detection_uart_decode_production(
+    const char *json,
+    size_t length,
+    backend_scanner_slot_t slot,
+    drone_detection_t *out_detection,
+    backend_scanner_stamp_t *out_stamp);
+
 /* Exact Task-3 frequency-to-channel mapping; zero means not derivable. */
 int backend_detection_wifi_channel(int32_t freq_mhz);
 

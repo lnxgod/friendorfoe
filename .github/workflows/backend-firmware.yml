@@ -99,12 +99,6 @@ jobs:
           python tools/emit_serializer_fixture.py --check
           ../backend/tests/fixtures/backend_firmware_detection_batch.json
 
-      - name: Clean-build backend scanner
-        run: |
-          cd backend-firmware/scanner
-          pio run -e scanner-s3-combo-backend -t clean
-          pio run -e scanner-s3-combo-backend
-
       - name: Clean-build backend uplink
         run: |
           cd backend-firmware/uplink
@@ -147,7 +141,7 @@ jobs:
       - name: Upload private backend verification artifact
         uses: actions/upload-artifact@v4
         with:
-          name: friend-or-foe-backend-firmware-0.1.0-backend
+          name: friend-or-foe-backend-firmware-0.2.0-backend
           path: |
             backend-firmware/web-flasher
             backend-firmware/release/backend-release-index.json

@@ -7,15 +7,10 @@ PIO_BIN="${PIO:-pio}"
 FIRMWARE_DIR="$SCRIPT_DIR/firmware"
 INDEX_PATH="$BACKEND_FW_DIR/release/backend-release-index.json"
 
-cd "$BACKEND_FW_DIR/scanner"
-"$PIO_BIN" run -e scanner-s3-combo-backend
 cd "$BACKEND_FW_DIR/uplink"
 "$PIO_BIN" run -e uplink-s3-backend
 cd "$BACKEND_FW_DIR"
-python tools/verify_backend_build.py pair \
-  --scanner-build-dir scanner/.pio/build/scanner-s3-combo-backend \
-  --scanner-partition-csv scanner/partitions_backend_scanner_8mb.csv \
-  --scanner-sdkconfig scanner/.pio/build/scanner-s3-combo-backend/config/sdkconfig.h \
+python tools/verify_backend_build.py uplink \
   --uplink-build-dir uplink/.pio/build/uplink-s3-backend \
   --uplink-partition-csv uplink/partitions_backend_uplink_8mb.csv \
   --uplink-sdkconfig uplink/.pio/build/uplink-s3-backend/config/sdkconfig.h \

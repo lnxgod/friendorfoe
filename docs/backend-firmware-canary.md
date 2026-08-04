@@ -1,16 +1,25 @@
-# Backend firmware three-board canary
+# Legacy backend firmware three-board canary
+
+> **Current 0.2 production boundary:** scanner0 and scanner1 stay on the
+> production `scanner-s3-combo-fof_badge` ComboFO firmware. They may be
+> inventoried, backed up, and restored with this tool, but must never receive
+> `scanner-s3-combo-backend`. Both `challenge-flash` and `flash-initial` now
+> reject scanner roles before any hardware access. Only the Lite uplink is a
+> backend release and only `uplink-s3-backend` is published by the web flasher.
+> Scanner migration commands retained later in this historical runbook are
+> obsolete and intentionally fail closed.
 
 | Role | Image | UART wiring | Primary radio | LED |
 |---|---|---|---|---|
-| Lite scanner0 | `scanner-s3-combo-backend` | TX GPIO1 → uplink RX GPIO2; RX GPIO2 ← uplink TX GPIO1 | BLE | active-low GPIO21 yellow |
-| Lite scanner1 | `scanner-s3-combo-backend` | TX GPIO1 → uplink RX GPIO4; RX GPIO2 ← uplink TX GPIO3 | Wi-Fi | active-low GPIO21 yellow |
+| Lite scanner0 | production `scanner-s3-combo-fof_badge` | TX GPIO1 → uplink RX GPIO2; RX GPIO2 ← uplink TX GPIO1 | BLE | production behavior |
+| Lite scanner1 | production `scanner-s3-combo-fof_badge` | TX GPIO1 → uplink RX GPIO4; RX GPIO2 ← uplink TX GPIO3 | Wi-Fi | production behavior |
 | Lite uplink | `uplink-s3-backend` | slot0 RX2/TX1; slot1 RX4/TX3 | infrastructure Wi-Fi/HTTP | active-low GPIO21 yellow |
 
 “Lite” is only the nickname for this physical no-screen three-board assembly.
 It is never a firmware target, project, hardware, artifact, or API identity.
-The only accepted identities are `scanner-s3-combo-backend`/
-`fof_backend_scanner` and `uplink-s3-backend`/`fof_backend_uplink`, on
-`seeed_xiao_esp32s3`, version `0.1.0-backend`.
+The released backend identity is `uplink-s3-backend`/`fof_backend_uplink` on
+`seeed_xiao_esp32s3`, version `0.2.0-backend`. Production scanner identity is
+reported through the UART adapter and is not a backend release artifact.
 
 The native badge is a separate firmware family. Native badge
 `0.67.2-badge-defcon34` remains the default USB/factory firmware. Never select

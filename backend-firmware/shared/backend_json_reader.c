@@ -117,7 +117,7 @@ static bool add_token(backend_json_parser_t *parser,
                       size_t *out_index)
 {
     if (parser->count >= parser->capacity ||
-        parser->count >= BACKEND_JSON_MAX_TOKENS) {
+        parser->count >= BACKEND_JSON_EXTENDED_MAX_TOKENS) {
         parser->result = BACKEND_JSON_TOO_MANY_TOKENS;
         return false;
     }

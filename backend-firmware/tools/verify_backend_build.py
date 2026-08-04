@@ -1,4 +1,4 @@
-"""Verify and package the scanner/uplink backend firmware release pair."""
+"""Verify backend builds and package the Lite uplink release."""
 
 from __future__ import annotations
 
@@ -844,11 +844,9 @@ def verify_packaged_target(
 
 
 def _release_index(releases: Sequence[VerifiedArtifactSet]) -> dict[str, Any]:
-    if {release.kind for release in releases} != {"scanner", "uplink"}:
-        raise BuildVerificationError("release index requires exactly scanner and uplink")
+    if len(releases) != 1 or releases[0].kind != "uplink":
+        raise BuildVerificationError("release index requires exactly the Lite uplink")
     versions = {release.version for release in releases}
-    if len(versions) != 1:
-        raise BuildVerificationError("scanner and uplink versions differ")
     targets: dict[str, Any] = {}
     for release in sorted(releases, key=lambda item: item.target):
         parts: list[dict[str, Any]] = []
@@ -908,11 +906,8 @@ def _write_index_temp(index_path: Path, release_index: Mapping[str, Any]) -> Pat
     return Path(temporary_name)
 
 
-def verify_release_pair(
+def verify_uplink_release(
     *,
-    scanner_build_dir: Path,
-    scanner_partition_csv: Path,
-    scanner_sdkconfig: Path,
     uplink_build_dir: Path,
     uplink_partition_csv: Path,
     uplink_sdkconfig: Path,
@@ -921,15 +916,8 @@ def verify_release_pair(
     version: str,
     check_only: bool = False,
 ) -> dict[str, Any]:
-    """Validate both builds, then atomically expose target-scoped release files."""
+    """Validate and atomically expose only the Lite uplink release files."""
 
-    scanner = verify_artifact_set(
-        scanner_build_dir,
-        kind="scanner",
-        version=version,
-        partition_csv=scanner_partition_csv,
-        sdkconfig=scanner_sdkconfig,
-    )
     uplink = verify_artifact_set(
         uplink_build_dir,
         kind="uplink",
@@ -937,7 +925,7 @@ def verify_release_pair(
         partition_csv=uplink_partition_csv,
         sdkconfig=uplink_sdkconfig,
     )
-    releases = (scanner, uplink)
+    releases = (uplink,)
     release_index = _release_index(releases)
     if check_only:
         return release_index
@@ -946,6 +934,14 @@ def verify_release_pair(
     index = Path(index_path)
     if output.exists() and (not output.is_dir() or output.is_symlink()):
         raise BuildVerificationError("release output must be a real directory")
+    if output.exists():
+        unexpected = sorted(
+            entry.name for entry in output.iterdir() if entry.name != ".gitkeep"
+        )
+        if unexpected:
+            raise BuildVerificationError(
+                "release output is not empty: " + ", ".join(unexpected)
+            )
     for release in releases:
         destination = output / release.artifact_directory
         if destination.exists() or destination.is_symlink():
@@ -980,7 +976,7 @@ def verify_release_pair(
     except BuildVerificationError:
         raise
     except OSError as exc:
-        raise BuildVerificationError("cannot publish verified release pair") from exc
+        raise BuildVerificationError("cannot publish verified uplink release") from exc
     finally:
         if temporary_index is not None:
             try:
@@ -1005,31 +1001,25 @@ def _repository_version() -> str:
 
 def _argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Verify and package the backend firmware release pair"
+        description="Verify and package the backend Lite uplink firmware"
     )
     commands = parser.add_subparsers(dest="command", required=True)
-    pair = commands.add_parser("pair", help="verify scanner and uplink together")
-    pair.add_argument("--scanner-build-dir", type=Path, required=True)
-    pair.add_argument("--scanner-partition-csv", type=Path, required=True)
-    pair.add_argument("--scanner-sdkconfig", type=Path, required=True)
-    pair.add_argument("--uplink-build-dir", type=Path, required=True)
-    pair.add_argument("--uplink-partition-csv", type=Path, required=True)
-    pair.add_argument("--uplink-sdkconfig", type=Path, required=True)
-    pair.add_argument("--output-dir", type=Path, required=True)
-    pair.add_argument("--index", dest="index_path", type=Path, required=True)
-    pair.add_argument("--check-only", action="store_true")
+    uplink = commands.add_parser("uplink", help="verify and package only the Lite uplink")
+    uplink.add_argument("--uplink-build-dir", type=Path, required=True)
+    uplink.add_argument("--uplink-partition-csv", type=Path, required=True)
+    uplink.add_argument("--uplink-sdkconfig", type=Path, required=True)
+    uplink.add_argument("--output-dir", type=Path, required=True)
+    uplink.add_argument("--index", dest="index_path", type=Path, required=True)
+    uplink.add_argument("--check-only", action="store_true")
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = _argument_parser().parse_args(argv)
     try:
-        if args.command != "pair":
-            raise BuildVerificationError("only pair releases are supported")
-        release_index = verify_release_pair(
-            scanner_build_dir=args.scanner_build_dir,
-            scanner_partition_csv=args.scanner_partition_csv,
-            scanner_sdkconfig=args.scanner_sdkconfig,
+        if args.command != "uplink":
+            raise BuildVerificationError("only uplink releases are supported")
+        release_index = verify_uplink_release(
             uplink_build_dir=args.uplink_build_dir,
             uplink_partition_csv=args.uplink_partition_csv,
             uplink_sdkconfig=args.uplink_sdkconfig,

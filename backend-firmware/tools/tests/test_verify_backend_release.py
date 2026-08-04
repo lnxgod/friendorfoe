@@ -26,20 +26,14 @@ from tools.verify_backend_release import (
 )
 
 
-VERSION = "0.1.0-backend"
+VERSION = "0.2.0-backend"
 HARDWARE = "seeed_xiao_esp32s3"
 TARGETS = {
-    "scanner-s3-combo-backend": {
-        "kind": "scanner",
-        "project": "fof_backend_scanner",
-        "manifest_title": "Friend or Foe Backend Scanner (XIAO ESP32-S3)",
-        "identity_crc32": 0x9DD382FF,
-    },
     "uplink-s3-backend": {
         "kind": "uplink",
         "project": "fof_backend_uplink",
         "manifest_title": "Friend or Foe Backend Uplink (XIAO ESP32-S3)",
-        "identity_crc32": 0xF08BCDE4,
+        "identity_crc32": 0xB42AE8FC,
     },
 }
 BACKEND_FW = Path(__file__).resolve().parents[2]
@@ -300,10 +294,7 @@ def test_release_index_and_flasher_are_identical(tmp_path: Path) -> None:
 
     result = verify_release(index=index, flasher=flasher)
 
-    assert result.targets == (
-        "scanner-s3-combo-backend",
-        "uplink-s3-backend",
-    )
+    assert result.targets == ("uplink-s3-backend",)
     tampered = (
         flasher
         / "firmware/uplink-s3-backend/uplink-s3-backend-firmware.bin"
@@ -313,21 +304,15 @@ def test_release_index_and_flasher_are_identical(tmp_path: Path) -> None:
         verify_release(index=index, flasher=flasher)
 
 
-def test_release_audit_rejects_cross_target_app_after_index_rehash(
+def test_release_audit_rejects_a_backend_scanner_target(
     tmp_path: Path,
 ) -> None:
     index, flasher = make_valid_release(tmp_path)
-    scanner = flasher / (
-        "firmware/scanner-s3-combo-backend/"
-        "scanner-s3-combo-backend-firmware.bin"
-    )
-    uplink = flasher / (
-        "firmware/uplink-s3-backend/uplink-s3-backend-firmware.bin"
-    )
-    scanner.write_bytes(uplink.read_bytes())
-    _rehash_artifact(index, flasher, "scanner-s3-combo-backend", "firmware")
+    body = _read_index(index)
+    body["targets"]["scanner-s3-combo-backend"] = {}
+    _write_index(index, body)
 
-    with pytest.raises(ReleaseVerificationError, match="identity"):
+    with pytest.raises(ReleaseVerificationError, match="Lite uplink"):
         verify_release(index=index, flasher=flasher)
 
 
@@ -474,6 +459,16 @@ def test_release_audit_rejects_manifest_identity_drift(tmp_path: Path) -> None:
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
     with pytest.raises(ReleaseVerificationError, match="manifest name"):
+        verify_release(index=index, flasher=flasher)
+
+
+def test_release_audit_rejects_a_scanner_manifest(tmp_path: Path) -> None:
+    index, flasher = make_valid_release(tmp_path)
+    (flasher / "manifest-scanner-s3-combo-backend.json").write_text(
+        "{}\n", encoding="utf-8"
+    )
+
+    with pytest.raises(ReleaseVerificationError, match="extra.*manifest"):
         verify_release(index=index, flasher=flasher)
 
 
@@ -990,8 +985,6 @@ def test_workflow_resolves_event_base_and_runs_exact_backend_gates_in_order() ->
         "cd backend-firmware && python -m pytest tools/tests -q",
         "cd backend-firmware && pio test -e backend-native",
         "python tools/emit_serializer_fixture.py --check",
-        "pio run -e scanner-s3-combo-backend -t clean",
-        "pio run -e scanner-s3-combo-backend",
         "pio run -e uplink-s3-backend -t clean",
         "pio run -e uplink-s3-backend",
         "bash backend-firmware/web-flasher/build.sh",
@@ -1002,7 +995,7 @@ def test_workflow_resolves_event_base_and_runs_exact_backend_gates_in_order() ->
     ]
     positions = [commands.index(fragment) for fragment in required_in_order]
     assert positions == sorted(positions)
-    assert "scanner-s3-combo-backend" in commands
+    assert "scanner-s3-combo-backend" not in commands
     assert "uplink-s3-backend" in commands
     assert "HEAD^" not in commands
 
@@ -1019,7 +1012,7 @@ def test_workflow_uploads_only_private_backend_package_for_seven_days() -> None:
     assert len(uploads) == 1
     upload = uploads[0]["with"]
     assert {key: value for key, value in upload.items() if key != "path"} == {
-        "name": "friend-or-foe-backend-firmware-0.1.0-backend",
+        "name": "friend-or-foe-backend-firmware-0.2.0-backend",
         "retention-days": "7",
         "if-no-files-found": "error",
     }

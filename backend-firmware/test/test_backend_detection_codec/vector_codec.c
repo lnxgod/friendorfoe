@@ -256,6 +256,127 @@ void test_detection_codec_rejects_hostile_and_boundary_inputs(void)
     assert_rejects_overlong_strings_without_modifying_output();
 }
 
+void test_production_detection_codec_normalizes_native_wire_units(void)
+{
+    static const char unsynced[] =
+        "{\"type\":\"detection\",\"drone_id\":\"rid_FOF-SIM-001\","
+        "\"src\":0,\"conf\":0.9,\"fused\":0.95,\"rssi\":-42,"
+        "\"ts\":28123,\"seq\":7,\"mfr\":\"OpenDroneID\","
+        "\"model\":\"Simulator\",\"first\":27100,\"last\":28123,"
+        "\"ble_ival\":125}";
+    drone_detection_t detection = {0};
+    backend_scanner_stamp_t stamp = {0};
+
+    TEST_ASSERT_EQUAL(
+        BACKEND_DECODE_SCHEMA_MISMATCH,
+        backend_detection_uart_decode(
+            unsynced, sizeof(unsynced) - 1U, BACKEND_SCANNER_SLOT_BLE,
+            &detection, &stamp));
+    TEST_ASSERT_EQUAL(
+        BACKEND_DECODE_OK,
+        backend_detection_uart_decode_production(
+            unsynced, sizeof(unsynced) - 1U, BACKEND_SCANNER_SLOT_BLE,
+            &detection, &stamp));
+    TEST_ASSERT_EQUAL_STRING("rid_FOF-SIM-001", detection.drone_id);
+    TEST_ASSERT_EQUAL_UINT8(DETECTION_SRC_BLE_RID, detection.source);
+    TEST_ASSERT_FLOAT_WITHIN(0.0001f, 0.9f, detection.confidence);
+    TEST_ASSERT_EQUAL_INT64(0, detection.first_seen_ms);
+    TEST_ASSERT_EQUAL_INT64(0, detection.last_updated_ms);
+    TEST_ASSERT_EQUAL_INT64(INT64_C(125000),
+                            detection.ble_adv_interval_us);
+    TEST_ASSERT_EQUAL_UINT8(BACKEND_SCANNER_SLOT_BLE,
+                            detection.scanner_slot);
+    TEST_ASSERT_EQUAL_UINT8(1U << BACKEND_SCANNER_SLOT_BLE,
+                            detection.scanner_slots_seen);
+    TEST_ASSERT_EQUAL_UINT32(7U, stamp.sequence);
+    TEST_ASSERT_FALSE(stamp.time_valid);
+    TEST_ASSERT_EQUAL_INT64(0, stamp.observed_epoch_ms);
+
+    static const char synced[] =
+        "{\"type\":\"detection\",\"drone_id\":\"rid-epoch\","
+        "\"src\":0,\"conf\":0.8,\"ts\":1785600000123,\"seq\":8,"
+        "\"first\":27000,\"last\":28000}";
+    TEST_ASSERT_EQUAL(
+        BACKEND_DECODE_OK,
+        backend_detection_uart_decode_production(
+            synced, sizeof(synced) - 1U, BACKEND_SCANNER_SLOT_WIFI,
+            &detection, &stamp));
+    TEST_ASSERT_TRUE(stamp.time_valid);
+    TEST_ASSERT_EQUAL_INT64(INT64_C(1785600000123),
+                            stamp.observed_epoch_ms);
+    TEST_ASSERT_EQUAL_INT64(0, detection.first_seen_ms);
+    TEST_ASSERT_EQUAL_INT64(0, detection.last_updated_ms);
+}
+
+void test_production_detection_codec_accepts_probe_string_and_array(void)
+{
+    static const char array_frame[] =
+        "{\"type\":\"detection\",\"drone_id\":\"probe-array\","
+        "\"src\":5,\"conf\":0.6,\"ts\":41000,\"seq\":9,"
+        "\"probed\":[\"FieldNet\",\"Guest WiFi\"]}";
+    drone_detection_t detection = {0};
+    backend_scanner_stamp_t stamp = {0};
+    TEST_ASSERT_EQUAL(
+        BACKEND_DECODE_OK,
+        backend_detection_uart_decode_production(
+            array_frame, sizeof(array_frame) - 1U,
+            BACKEND_SCANNER_SLOT_WIFI, &detection, &stamp));
+    TEST_ASSERT_EQUAL_STRING("FieldNet,Guest WiFi", detection.probed_ssids);
+
+    static const char string_frame[] =
+        "{\"type\":\"detection\",\"drone_id\":\"probe-string\","
+        "\"src\":5,\"conf\":0.6,\"ts\":42000,\"seq\":10,"
+        "\"probed\":\"FieldNet,Guest WiFi\"}";
+    TEST_ASSERT_EQUAL(
+        BACKEND_DECODE_OK,
+        backend_detection_uart_decode_production(
+            string_frame, sizeof(string_frame) - 1U,
+            BACKEND_SCANNER_SLOT_WIFI, &detection, &stamp));
+    TEST_ASSERT_EQUAL_STRING("FieldNet,Guest WiFi", detection.probed_ssids);
+}
+
+void test_production_detection_codec_rejects_backend_and_hostile_dialects(void)
+{
+    static const char backend_tv[] =
+        "{\"type\":\"detection\",\"drone_id\":\"backend\",\"src\":0,"
+        "\"conf\":0.5,\"seq\":1,\"tv\":true,\"ts\":1785600000000}";
+    static const char missing_sequence[] =
+        "{\"type\":\"detection\",\"drone_id\":\"missing-seq\","
+        "\"src\":0,\"conf\":0.5,\"ts\":1234}";
+    static const char invalid_probe_array[] =
+        "{\"type\":\"detection\",\"drone_id\":\"bad-probe\","
+        "\"src\":5,\"conf\":0.5,\"ts\":1234,\"seq\":2,"
+        "\"probed\":[\"ok\",7]}";
+    static const char interval_overflow[] =
+        "{\"type\":\"detection\",\"drone_id\":\"bad-interval\","
+        "\"src\":0,\"conf\":0.5,\"ts\":1234,\"seq\":3,"
+        "\"ble_ival\":9223372036854776}";
+    const struct {
+        const char *json;
+        size_t length;
+    } cases[] = {
+        {backend_tv, sizeof(backend_tv) - 1U},
+        {missing_sequence, sizeof(missing_sequence) - 1U},
+        {invalid_probe_array, sizeof(invalid_probe_array) - 1U},
+        {interval_overflow, sizeof(interval_overflow) - 1U},
+    };
+
+    for (size_t index = 0U; index < sizeof(cases) / sizeof(cases[0]);
+         ++index) {
+        drone_detection_t detection;
+        backend_scanner_stamp_t stamp;
+        memset(&detection, 0xa5, sizeof(detection));
+        memset(&stamp, 0xa5, sizeof(stamp));
+        TEST_ASSERT_EQUAL(
+            BACKEND_DECODE_SCHEMA_MISMATCH,
+            backend_detection_uart_decode_production(
+                cases[index].json, cases[index].length,
+                BACKEND_SCANNER_SLOT_BLE, &detection, &stamp));
+        TEST_ASSERT_EQUAL_HEX8(0xa5, ((const uint8_t *)&detection)[0]);
+        TEST_ASSERT_EQUAL_HEX8(0xa5, ((const uint8_t *)&stamp)[0]);
+    }
+}
+
 void test_detection_assert_helper_detects_each_field_group(void)
 {
     drone_detection_t base = fixture_full_detection();

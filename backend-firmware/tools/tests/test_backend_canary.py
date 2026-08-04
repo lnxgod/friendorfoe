@@ -7,6 +7,7 @@ from pathlib import Path
 import stat
 import struct
 import subprocess
+from types import SimpleNamespace
 
 import pytest
 
@@ -143,7 +144,7 @@ def backend_identity(role: str, mac: str, *, boot_id: int = 100) -> dict[str, ob
         "target": "scanner-s3-combo-backend" if scanner else "uplink-s3-backend",
         "project": "fof_backend_scanner" if scanner else "fof_backend_uplink",
         "hardware": "seeed_xiao_esp32s3",
-        "version": "0.1.0-backend",
+        "version": "0.2.0-backend",
         "mac": mac,
         "boot_id": boot_id,
         "nvs_erased": False,
@@ -406,17 +407,14 @@ def test_original_uplink_backup_order_and_never_restart(tmp_path: Path):
         ))
 
 
-def test_uplink_is_refused_until_both_scanners_are_verified(tmp_path: Path):
+def test_uplink_does_not_require_backend_scanner_migration(tmp_path: Path):
     state = ready_state(tmp_path)
-    state.record_provisional_backend_identity(
-        "scanner0", backend_identity("scanner0", "AA:00:00:00:00:01"),
+    challenge, _token = state.issue_challenge(
+        role="uplink", port="/dev/cu.usbmodem-uplink",
+        mac="AA:00:00:00:00:03", artifact_sha256="a" * 64,
+        offsets_sha256="b" * 64, now=100,
     )
-    with pytest.raises(CanaryOrderError, match="scanner1"):
-        state.issue_challenge(
-            role="uplink", port="/dev/cu.usbmodem-uplink",
-            mac="AA:00:00:00:00:03", artifact_sha256="a" * 64,
-            offsets_sha256="b" * 64, now=100,
-        )
+    assert challenge.role == "uplink"
 
 
 def test_scanner1_cannot_be_skipped(tmp_path: Path):
@@ -692,13 +690,13 @@ def make_release(tmp_path: Path, target: str) -> tuple[Path, Path]:
             "target": release_target,
             "project": "fof_backend_scanner" if kind == "scanner" else "fof_backend_uplink",
             "hardware": "seeed_xiao_esp32s3",
-            "identity_crc32": 0x9DD382FF if kind == "scanner" else 0xF08BCDE4,
+            "identity_crc32": 0xD972A7E7 if kind == "scanner" else 0xB42AE8FC,
             "partition_capacity": 0x200000,
             "parts": parts,
         }
     index = {
         "schema": 1,
-        "version": "0.1.0-backend",
+        "version": "0.2.0-backend",
         "targets": index_targets,
     }
     index_path = private_file(tmp_path / "index.json", json.dumps(index).encode())
@@ -708,7 +706,6 @@ def make_release(tmp_path: Path, target: str) -> tuple[Path, Path]:
 @pytest.mark.parametrize(
     ("role", "target"),
     [
-        ("scanner0", "scanner-s3-combo-backend"),
         ("uplink", "uplink-s3-backend"),
     ],
 )
@@ -778,21 +775,56 @@ def inventory_runner(calls: list[list[str]]):
     return run
 
 
+@pytest.mark.parametrize("role", ["scanner0", "scanner1"])
+@pytest.mark.parametrize(
+    "handler",
+    [backend_canary._handle_challenge_flash, backend_canary._handle_flash_initial],
+)
+def test_initial_flash_commands_reject_production_scanners_before_io(
+    role: str, handler,
+) -> None:
+    with pytest.raises(CanaryOrderError, match="production ComboFO"):
+        handler(SimpleNamespace(role=role))
+
+
+@pytest.mark.parametrize("role", ["scanner0", "scanner1"])
+def test_initial_flash_api_rejects_production_scanners_before_io(
+    role: str, tmp_path: Path,
+) -> None:
+    with pytest.raises(CanaryOrderError, match="production ComboFO"):
+        issue_initial_flash_challenge(
+            None,  # type: ignore[arg-type]
+            role=role,
+            artifact=None,  # type: ignore[arg-type]
+            receipt=None,  # type: ignore[arg-type]
+            output=tmp_path / "unused.json",
+        )
+    with pytest.raises(CanaryOrderError, match="production ComboFO"):
+        execute_initial_flash(
+            None,  # type: ignore[arg-type]
+            role=role,
+            artifact=None,  # type: ignore[arg-type]
+            challenge_id="unused",
+            token="unused",
+            receipt=None,  # type: ignore[arg-type]
+        )
+
+
 @pytest.mark.parametrize("part_index", range(4))
 def test_initial_flash_rejects_each_staged_part_mutation_before_write(
     tmp_path: Path, part_index: int,
 ):
     state = ready_state(tmp_path / "backups")
     index, directory = make_release(
-        tmp_path / "release", "scanner-s3-combo-backend",
+        tmp_path / "release", "uplink-s3-backend",
     )
-    artifact = verify_release_artifact(index, directory, role="scanner0")
+    artifact = verify_release_artifact(index, directory, role="uplink")
     calls: list[list[str]] = []
     runner = inventory_runner(calls)
-    receipt_path = tmp_path / ".canary" / "receipts" / "scanner0.json"
+    receipt_path = tmp_path / ".canary" / "receipts" / "uplink.json"
     challenge, token = issue_initial_flash_challenge(
         state,
-        role="scanner0",
+        role="uplink",
         artifact=artifact,
         receipt=toolchain(),
         output=receipt_path,
@@ -808,7 +840,7 @@ def test_initial_flash_rejects_each_staged_part_mutation_before_write(
     with pytest.raises(CanaryReleaseError, match="staged"):
         execute_initial_flash(
             state,
-            role="scanner0",
+            role="uplink",
             artifact=artifact,
             challenge_id=challenge.challenge_id,
             token=token,
@@ -821,15 +853,15 @@ def test_initial_flash_rejects_each_staged_part_mutation_before_write(
     assert not staged.parent.exists()
     assert not receipt_path.exists()
     assert state.challenges[challenge.challenge_id].consumed_at == 101
-    assert state.boards["scanner0"].status != "restore_required"
+    assert state.boards["uplink"].status != "restore_required"
 
 
 def test_initial_flash_writes_only_frozen_challenge_parts(tmp_path: Path):
     state = ready_state(tmp_path / "backups")
     index, directory = make_release(
-        tmp_path / "release", "scanner-s3-combo-backend",
+        tmp_path / "release", "uplink-s3-backend",
     )
-    artifact = verify_release_artifact(index, directory, role="scanner0")
+    artifact = verify_release_artifact(index, directory, role="uplink")
     calls: list[list[str]] = []
     base_runner = inventory_runner(calls)
     inherited_bytes: list[bytes] = []
@@ -861,17 +893,17 @@ def test_initial_flash_writes_only_frozen_challenge_parts(tmp_path: Path):
 
     challenge, token = issue_initial_flash_challenge(
         state,
-        role="scanner0",
+        role="uplink",
         artifact=artifact,
         receipt=toolchain(),
-        output=tmp_path / ".canary" / "receipts" / "scanner0.json",
+        output=tmp_path / ".canary" / "receipts" / "uplink.json",
         runner=runner,
         now=100,
     )
     staged_directory = Path(challenge.staging_directory or "")
     execute_initial_flash(
         state,
-        role="scanner0",
+        role="uplink",
         artifact=artifact,
         challenge_id=challenge.challenge_id,
         token=token,
@@ -899,9 +931,9 @@ def test_initial_flash_writes_only_frozen_challenge_parts(tmp_path: Path):
     assert calls[write_index - 1][-1] == "read_mac"
     assert calls[write_index - 1][
         calls[write_index - 1].index("--port") + 1
-    ] == "/dev/cu.usbmodem-scanner0"
+    ] == "/dev/cu.usbmodem-uplink"
     assert not staged_directory.exists()
-    assert state.boards["scanner0"].status == (
+    assert state.boards["uplink"].status == (
         "initial-flashed-awaiting-provisional"
     )
 
@@ -909,14 +941,14 @@ def test_initial_flash_writes_only_frozen_challenge_parts(tmp_path: Path):
 def test_staging_cleanup_never_follows_replaced_challenge_symlink(tmp_path: Path):
     state = ready_state(tmp_path / "backups")
     index, directory = make_release(
-        tmp_path / "release", "scanner-s3-combo-backend",
+        tmp_path / "release", "uplink-s3-backend",
     )
-    artifact = verify_release_artifact(index, directory, role="scanner0")
+    artifact = verify_release_artifact(index, directory, role="uplink")
     calls: list[list[str]] = []
-    receipt_path = tmp_path / ".canary/receipts/scanner0.json"
+    receipt_path = tmp_path / ".canary/receipts/uplink.json"
     challenge, _token = issue_initial_flash_challenge(
         state,
-        role="scanner0",
+        role="uplink",
         artifact=artifact,
         receipt=toolchain(),
         output=receipt_path,
@@ -942,9 +974,9 @@ def test_staging_cleanup_never_follows_replaced_challenge_symlink(tmp_path: Path
 def test_staging_creation_rejects_symlinked_challenges_parent(tmp_path: Path):
     state = ready_state(tmp_path / "backups")
     index, directory = make_release(
-        tmp_path / "release", "scanner-s3-combo-backend",
+        tmp_path / "release", "uplink-s3-backend",
     )
-    artifact = verify_release_artifact(index, directory, role="scanner0")
+    artifact = verify_release_artifact(index, directory, role="uplink")
     canary = tmp_path / ".canary"
     canary.mkdir(mode=0o700)
     outside = tmp_path / "outside-staging"
@@ -955,10 +987,10 @@ def test_staging_creation_rejects_symlinked_challenges_parent(tmp_path: Path):
     with pytest.raises(CanarySecurityError, match="exact private"):
         issue_initial_flash_challenge(
             state,
-            role="scanner0",
+            role="uplink",
             artifact=artifact,
             receipt=toolchain(),
-            output=canary / "receipts/scanner0.json",
+            output=canary / "receipts/uplink.json",
             runner=inventory_runner(calls),
             now=100,
         )
@@ -970,14 +1002,14 @@ def test_staging_creation_rejects_symlinked_challenges_parent(tmp_path: Path):
 def test_stale_generation_cleans_frozen_parts_and_receipt(tmp_path: Path):
     state = ready_state(tmp_path / "backups")
     index, directory = make_release(
-        tmp_path / "release", "scanner-s3-combo-backend",
+        tmp_path / "release", "uplink-s3-backend",
     )
-    artifact = verify_release_artifact(index, directory, role="scanner0")
+    artifact = verify_release_artifact(index, directory, role="uplink")
     calls: list[list[str]] = []
-    receipt_path = tmp_path / ".canary/receipts/scanner0.json"
+    receipt_path = tmp_path / ".canary/receipts/uplink.json"
     challenge, token = issue_initial_flash_challenge(
         state,
-        role="scanner0",
+        role="uplink",
         artifact=artifact,
         receipt=toolchain(),
         output=receipt_path,
@@ -999,14 +1031,14 @@ def test_receipt_cleanup_fails_closed_if_parent_is_replaced_by_symlink(
 ):
     state = ready_state(tmp_path / "backups")
     index, directory = make_release(
-        tmp_path / "release", "scanner-s3-combo-backend",
+        tmp_path / "release", "uplink-s3-backend",
     )
-    artifact = verify_release_artifact(index, directory, role="scanner0")
+    artifact = verify_release_artifact(index, directory, role="uplink")
     canary = tmp_path / ".canary"
-    receipt_path = canary / "receipts/scanner0.json"
+    receipt_path = canary / "receipts/uplink.json"
     challenge, _token = issue_initial_flash_challenge(
         state,
-        role="scanner0",
+        role="uplink",
         artifact=artifact,
         receipt=toolchain(),
         output=receipt_path,
@@ -1033,9 +1065,9 @@ def test_initial_challenge_save_failure_rolls_back_receipt_stage_and_hash(
 ):
     state = ready_state(tmp_path / "backups")
     index, directory = make_release(
-        tmp_path / "release", "scanner-s3-combo-backend",
+        tmp_path / "release", "uplink-s3-backend",
     )
-    artifact = verify_release_artifact(index, directory, role="scanner0")
+    artifact = verify_release_artifact(index, directory, role="uplink")
     original_save = state.save
     failed = False
 
@@ -1051,10 +1083,10 @@ def test_initial_challenge_save_failure_rolls_back_receipt_stage_and_hash(
     with pytest.raises(OSError, match="injected"):
         issue_initial_flash_challenge(
             state,
-            role="scanner0",
+            role="uplink",
             artifact=artifact,
             receipt=toolchain(),
-            output=canary / "receipts/scanner0.json",
+            output=canary / "receipts/uplink.json",
             runner=inventory_runner([]),
             now=100,
         )
@@ -1074,13 +1106,13 @@ def test_load_retires_expired_challenge_receipt_and_staging(tmp_path: Path):
     state.state_path = str(state_path.resolve())
     state.save(initial=True)
     index, directory = make_release(
-        tmp_path / "release", "scanner-s3-combo-backend",
+        tmp_path / "release", "uplink-s3-backend",
     )
-    artifact = verify_release_artifact(index, directory, role="scanner0")
-    receipt_path = state_path.parent / "receipts/scanner0.json"
+    artifact = verify_release_artifact(index, directory, role="uplink")
+    receipt_path = state_path.parent / "receipts/uplink.json"
     challenge, _token = issue_initial_flash_challenge(
         state,
-        role="scanner0",
+        role="uplink",
         artifact=artifact,
         receipt=toolchain(),
         output=receipt_path,
@@ -1108,15 +1140,15 @@ def test_load_cleans_staging_left_after_consumed_challenge(tmp_path: Path):
     state.state_path = str(state_path.resolve())
     state.save(initial=True)
     index, directory = make_release(
-        tmp_path / "release", "scanner-s3-combo-backend",
+        tmp_path / "release", "uplink-s3-backend",
     )
-    artifact = verify_release_artifact(index, directory, role="scanner0")
+    artifact = verify_release_artifact(index, directory, role="uplink")
     challenge, token = issue_initial_flash_challenge(
         state,
-        role="scanner0",
+        role="uplink",
         artifact=artifact,
         receipt=toolchain(),
-        output=state_path.parent / "receipts/scanner0.json",
+        output=state_path.parent / "receipts/uplink.json",
         runner=inventory_runner([]),
         now=100,
     )
@@ -1310,7 +1342,7 @@ def valid_probe(component: str = "scanner0") -> dict[str, object]:
         "catalog_name": "scanner-s3-combo-backend" if scanner else "uplink-s3-backend",
         "target": "scanner-s3-combo-backend" if scanner else "uplink-s3-backend",
         "project": "fof_backend_scanner" if scanner else "fof_backend_uplink",
-        "hardware": "seeed_xiao_esp32s3", "version": "0.1.0-backend",
+        "hardware": "seeed_xiao_esp32s3", "version": "0.2.0-backend",
         "sha256": "d" * 64, "crc32": 0, "size": 1000,
         "partition_capacity": 0x200000, "allow_same_version": True,
         "decision": "admit", "complete_image_validated": True,

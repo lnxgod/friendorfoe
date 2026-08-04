@@ -374,6 +374,57 @@ static bool copy_optional_string(const char *json,
     return backend_json_copy_string(json, &tokens[index], output, capacity);
 }
 
+static bool copy_probe_string_or_array(
+    const char *json,
+    const backend_json_token_t *tokens,
+    size_t token_count,
+    bool production_dialect,
+    char *output,
+    size_t capacity)
+{
+    size_t index = 0U;
+    if (!find_value(json, tokens, token_count, JSON_KEY_PROBED_SSIDS,
+                    &index)) {
+        return true;
+    }
+    if (tokens[index].kind == BACKEND_JSON_STRING) {
+        return backend_json_copy_string(
+            json, &tokens[index], output, capacity);
+    }
+    if (!production_dialect || tokens[index].kind != BACKEND_JSON_ARRAY ||
+        tokens[index].child_count == 0U) {
+        return false;
+    }
+
+    size_t used = 0U;
+    size_t found = 0U;
+    for (size_t token_index = index + 1U;
+         token_index < token_count; ++token_index) {
+        if (tokens[token_index].parent != (int16_t)index) {
+            continue;
+        }
+        char ssid[33];
+        if (tokens[token_index].kind != BACKEND_JSON_STRING ||
+            !backend_json_copy_string(
+                json, &tokens[token_index], ssid, sizeof(ssid))) {
+            return false;
+        }
+        const size_t length = strlen(ssid);
+        if (length == 0U || strchr(ssid, ',') != NULL ||
+            used + (found == 0U ? 0U : 1U) + length >= capacity) {
+            return false;
+        }
+        if (found != 0U) {
+            output[used++] = ',';
+        }
+        memcpy(output + used, ssid, length);
+        used += length;
+        output[used] = '\0';
+        ++found;
+    }
+    return found == tokens[index].child_count;
+}
+
 static bool get_required_u64(const char *json,
                              const backend_json_token_t *tokens,
                              size_t token_count,
@@ -542,12 +593,13 @@ static bool decode_u128_array(const char *json,
     return found == 2U;
 }
 
-backend_detection_decode_result_t backend_detection_uart_decode(
+static backend_detection_decode_result_t decode_detection_uart(
     const char *json,
     size_t length,
     backend_scanner_slot_t slot,
     drone_detection_t *out_detection,
-    backend_scanner_stamp_t *out_stamp)
+    backend_scanner_stamp_t *out_stamp,
+    bool production_dialect)
 {
     if (length > BACKEND_DETECTION_UART_MAX_LINE) {
         return BACKEND_DECODE_TOO_LARGE;
@@ -683,7 +735,11 @@ backend_detection_decode_result_t backend_detection_uart_decode(
         return BACKEND_DECODE_SCHEMA_MISMATCH;
     }
     READ_U64_RANGE("wifi_gen", wifi_generation, 6, uint8_t);
-    READ_STRING(JSON_KEY_PROBED_SSIDS, probed_ssids);
+    if (!copy_probe_string_or_array(
+            json, tokens, token_count, production_dialect,
+            detection.probed_ssids, sizeof(detection.probed_ssids))) {
+        return BACKEND_DECODE_SCHEMA_MISMATCH;
+    }
     if (!get_optional_hex32(json, tokens, token_count, "ie_hash",
                             &detection.probe_ie_hash)) {
         return BACKEND_DECODE_SCHEMA_MISMATCH;
@@ -761,12 +817,42 @@ backend_detection_decode_result_t backend_detection_uart_decode(
     if (mfr_len_present) {
         detection.ble_raw_mfr_len = (uint8_t)mfr_len;
     }
-    READ_I64_RANGE(JSON_KEY_BLE_ADV_INTERVAL, ble_adv_interval_us,
-                   0, INT64_MAX, int64_t);
-    READ_I64_RANGE(JSON_KEY_FIRST_SEEN, first_seen_ms,
-                   0, INT64_MAX, int64_t);
-    READ_I64_RANGE(JSON_KEY_LAST_UPDATED, last_updated_ms,
-                   0, INT64_MAX, int64_t);
+    bool interval_present = false;
+    int64_t interval_value = 0;
+    if (!get_optional_i64(
+            json, tokens, token_count, JSON_KEY_BLE_ADV_INTERVAL,
+            &interval_value, &interval_present) ||
+        interval_value < 0 ||
+        (production_dialect && interval_present &&
+         interval_value > INT64_MAX / INT64_C(1000))) {
+        return BACKEND_DECODE_SCHEMA_MISMATCH;
+    }
+    if (interval_present) {
+        detection.ble_adv_interval_us = production_dialect
+            ? interval_value * INT64_C(1000) : interval_value;
+    }
+
+    bool first_present = false;
+    bool last_present = false;
+    if (!get_optional_i64(
+            json, tokens, token_count, JSON_KEY_FIRST_SEEN,
+            &detection.first_seen_ms, &first_present) ||
+        !get_optional_i64(
+            json, tokens, token_count, JSON_KEY_LAST_UPDATED,
+            &detection.last_updated_ms, &last_present) ||
+        detection.first_seen_ms < 0 || detection.last_updated_ms < 0) {
+        return BACKEND_DECODE_SCHEMA_MISMATCH;
+    }
+    if (production_dialect) {
+        if (first_present &&
+            detection.first_seen_ms < BACKEND_DETECTION_EPOCH_MIN_MS) {
+            detection.first_seen_ms = 0;
+        }
+        if (last_present &&
+            detection.last_updated_ms < BACKEND_DETECTION_EPOCH_MIN_MS) {
+            detection.last_updated_ms = 0;
+        }
+    }
     READ_FLOAT(JSON_KEY_FUSED_CONFIDENCE, fused_confidence);
     READ_U64_RANGE(JSON_KEY_BLE_THREAT_KIND, ble_threat_kind,
                    BLE_THREAT_KIND_SERIAL_SKIMMER, uint8_t);
@@ -784,7 +870,8 @@ backend_detection_decode_result_t backend_detection_uart_decode(
     bool seq_present = false;
     if (!get_optional_u64(json, tokens, token_count, JSON_KEY_SEQ,
                           &unsigned_value, &seq_present) ||
-        unsigned_value > UINT32_MAX) {
+        unsigned_value > UINT32_MAX ||
+        (production_dialect && !seq_present)) {
         return BACKEND_DECODE_SCHEMA_MISMATCH;
     }
     if (seq_present) {
@@ -792,20 +879,34 @@ backend_detection_decode_result_t backend_detection_uart_decode(
     }
     bool tv_present = find_value(json, tokens, token_count, "tv",
                                  &string_index);
-    if (tv_present && !backend_json_get_bool(
-            json, &tokens[string_index], &stamp.time_valid)) {
+    if ((production_dialect && tv_present) ||
+        (tv_present && !backend_json_get_bool(
+            json, &tokens[string_index], &stamp.time_valid))) {
         return BACKEND_DECODE_SCHEMA_MISMATCH;
     }
     bool ts_present = false;
     if (!get_optional_i64(json, tokens, token_count, JSON_KEY_TIMESTAMP,
-                          &stamp.observed_epoch_ms, &ts_present) ||
-        (ts_present &&
-         stamp.observed_epoch_ms < BACKEND_DETECTION_EPOCH_MIN_MS) ||
-        (tv_present && stamp.time_valid != ts_present)) {
+                          &stamp.observed_epoch_ms, &ts_present)) {
         return BACKEND_DECODE_SCHEMA_MISMATCH;
     }
-    if (!tv_present && ts_present) {
-        stamp.time_valid = true;
+    if (production_dialect) {
+        if (!ts_present || stamp.observed_epoch_ms < 0) {
+            return BACKEND_DECODE_SCHEMA_MISMATCH;
+        }
+        if (stamp.observed_epoch_ms >= BACKEND_DETECTION_EPOCH_MIN_MS) {
+            stamp.time_valid = true;
+        } else {
+            stamp.observed_epoch_ms = 0;
+        }
+    } else {
+        if ((ts_present &&
+             stamp.observed_epoch_ms < BACKEND_DETECTION_EPOCH_MIN_MS) ||
+            (tv_present && stamp.time_valid != ts_present)) {
+            return BACKEND_DECODE_SCHEMA_MISMATCH;
+        }
+        if (!tv_present && ts_present) {
+            stamp.time_valid = true;
+        }
     }
 
     detection.scanner_slot = (uint8_t)slot;
@@ -822,4 +923,26 @@ backend_detection_decode_result_t backend_detection_uart_decode(
 #undef READ_FLOAT
 #undef READ_I64_RANGE
 #undef READ_U64_RANGE
+}
+
+backend_detection_decode_result_t backend_detection_uart_decode(
+    const char *json,
+    size_t length,
+    backend_scanner_slot_t slot,
+    drone_detection_t *out_detection,
+    backend_scanner_stamp_t *out_stamp)
+{
+    return decode_detection_uart(
+        json, length, slot, out_detection, out_stamp, false);
+}
+
+backend_detection_decode_result_t backend_detection_uart_decode_production(
+    const char *json,
+    size_t length,
+    backend_scanner_slot_t slot,
+    drone_detection_t *out_detection,
+    backend_scanner_stamp_t *out_stamp)
+{
+    return decode_detection_uart(
+        json, length, slot, out_detection, out_stamp, true);
 }

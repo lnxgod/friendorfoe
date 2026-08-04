@@ -31,7 +31,7 @@ PROTECTED_PREFIXES = (
 PROTECTED_FILES = frozenset({".github/workflows/esp32-web-flasher.yml"})
 
 RELEASE_SCHEMA = 1
-RELEASE_VERSION = "0.1.0-backend"
+RELEASE_VERSION = "0.2.0-backend"
 BACKEND_HARDWARE = "seeed_xiao_esp32s3"
 PINNED_VENDOR_BASE = "2cca5ad8df17ebd8d5f48dc72051441e30df1b8f"
 FLASH_SIZE = 0x800000
@@ -41,19 +41,12 @@ APP_END = APP_OFFSET + APP_CAPACITY
 NVS_RANGE = (0x9000, 0xF000)
 
 EXPECTED_TARGETS: Mapping[str, Mapping[str, object]] = {
-    "scanner-s3-combo-backend": {
-        "kind": "scanner",
-        "project": "fof_backend_scanner",
-        "manifest": "manifest-scanner-s3-combo-backend.json",
-        "manifest_name": "Friend or Foe Backend Scanner (XIAO ESP32-S3)",
-        "identity_crc32": 0x9DD382FF,
-    },
     "uplink-s3-backend": {
         "kind": "uplink",
         "project": "fof_backend_uplink",
         "manifest": "manifest-uplink-s3-backend.json",
         "manifest_name": "Friend or Foe Backend Uplink (XIAO ESP32-S3)",
-        "identity_crc32": 0xF08BCDE4,
+        "identity_crc32": 0xB42AE8FC,
     },
 }
 EXPECTED_PARTS = (
@@ -724,7 +717,7 @@ def _verify_target(
 
 
 def verify_release(*, index: Path, flasher: Path) -> VerifiedRelease:
-    """Verify an exact scanner/uplink package without trusting its index."""
+    """Verify the exact Lite uplink package without trusting its index."""
 
     index = Path(index)
     flasher = Path(flasher)
@@ -736,7 +729,9 @@ def verify_release(*, index: Path, flasher: Path) -> VerifiedRelease:
         raise ReleaseVerificationError("release index version mismatch")
     targets = body["targets"]
     if not isinstance(targets, dict) or set(targets) != set(EXPECTED_TARGETS):
-        raise ReleaseVerificationError("release index must contain exactly two targets")
+        raise ReleaseVerificationError(
+            "release index must contain exactly the Lite uplink target"
+        )
 
     indexed_artifacts: set[Path] = set()
     for target in sorted(EXPECTED_TARGETS):
@@ -759,6 +754,13 @@ def verify_release(*, index: Path, flasher: Path) -> VerifiedRelease:
         actual_artifacts.add(artifact.resolve())
     if actual_artifacts != indexed_artifacts:
         raise ReleaseVerificationError("extra or missing binary files beneath web flasher")
+
+    actual_manifests = {path.name for path in flasher.glob("manifest-*.json")}
+    expected_manifests = {
+        str(spec["manifest"]) for spec in EXPECTED_TARGETS.values()
+    }
+    if actual_manifests != expected_manifests:
+        raise ReleaseVerificationError("extra or missing web-flasher manifest")
 
     return VerifiedRelease(
         index=index,

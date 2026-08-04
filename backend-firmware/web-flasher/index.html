@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Friend or Foe Backend Sensor Recovery</title>
+  <title>Friend or Foe Backend Lite Uplink Recovery</title>
   <script
     type="module"
     src="https://unpkg.com/esp-web-tools@10.4.0/dist/web/install-button.js?module"
@@ -53,23 +53,17 @@
 </head>
 <body>
   <main>
-    <h1>Backend Sensor Recovery</h1>
+    <h1>Backend Lite Uplink Recovery</h1>
     <div class="warning">
       <strong>UNPUBLISHED BACKEND RECOVERY/MAINTENANCE TOOL — NOT THE INITIAL CANARY PATH.</strong>
-      <p>Use tools/backend_canary.py for inventory, backup, MAC binding, initial migration, and restore.</p>
-      <p>This page cannot distinguish a Lite sensor board from a badge because both use XIAO ESP32-S3.</p>
-      <p>Do not connect or select a badge. Do not use this page until all three Lite boards already have verified backend identities.</p>
+      <p>This page flashes only the screenless Lite uplink. It cannot distinguish that board from a badge because both use XIAO ESP32-S3.</p>
+      <p>Do not connect or select a badge or scanner. Production ComboFO scanner firmware is intentionally not offered here.</p>
     </div>
     <div class="choices">
       <section>
         <h2>Backend Uplink</h2>
-        <p>Recovery or maintenance image for the backend Lite sensor uplink.</p>
+        <p>Backend Lite 0.2.0 recovery or maintenance image for the uplink board only.</p>
         <esp-web-install-button manifest="manifest-uplink-s3-backend.json"></esp-web-install-button>
-      </section>
-      <section>
-        <h2>Backend Scanner</h2>
-        <p>Recovery or maintenance image for a backend Lite sensor scanner.</p>
-        <esp-web-install-button manifest="manifest-scanner-s3-combo-backend.json"></esp-web-install-button>
       </section>
     </div>
   </main>

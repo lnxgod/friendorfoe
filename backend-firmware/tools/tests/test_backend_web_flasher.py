@@ -24,12 +24,6 @@ TARGETS = {
         "manifest": "manifest-uplink-s3-backend.json",
         "title": "Friend or Foe Backend Uplink (XIAO ESP32-S3)",
     },
-    "scanner-s3-combo-backend": {
-        "kind": "scanner",
-        "project": "fof_backend_scanner",
-        "manifest": "manifest-scanner-s3-combo-backend.json",
-        "title": "Friend or Foe Backend Scanner (XIAO ESP32-S3)",
-    },
 }
 LOGICAL_PARTS = (
     "bootloader",
@@ -45,6 +39,9 @@ FORBIDDEN_REFERENCES = (
     "badge-scanner",
     "badge-uplink",
     "scanner-s3-combo-seed",
+    "scanner-s3-combo-backend",
+    "fof_backend_scanner",
+    "manifest-scanner",
     "uplink-s3/",
 )
 PACKAGE_CHILD = os.environ.get("FOF_BUILD_SCRIPT_CHILD") == "1"
@@ -90,7 +87,7 @@ def test_manifest_is_backend_named_and_complete(target: str, spec: dict):
     )
 
     assert manifest["name"] == spec["title"]
-    assert manifest["version"] == "0.1.0-backend"
+    assert manifest["version"] == "0.2.0-backend"
     assert len(manifest["builds"]) == 1
     assert manifest["builds"][0]["chipFamily"] == "ESP32-S3"
     parts = manifest["builds"][0]["parts"]
@@ -132,7 +129,7 @@ def test_backend_flasher_text_scan_ignores_binary_artifacts(tmp_path: Path):
 
 @pytest.mark.skipif(
     PACKAGE_CHILD or PACKAGE_CHILD_EXPECTED,
-    reason="the child package run has materialized both target directories",
+    reason="the child package run has materialized the uplink target directory",
 )
 def test_source_tree_keeps_only_the_parent_firmware_placeholder():
     firmware = FLASHER / "firmware"
@@ -162,7 +159,7 @@ class _FlasherPageParser(HTMLParser):
         self.text.append(data)
 
 
-def test_static_page_has_only_two_pinned_backend_recovery_choices():
+def test_static_page_has_only_the_pinned_backend_uplink_choice():
     parser = _FlasherPageParser()
     parser.feed((FLASHER / "index.html").read_text(encoding="utf-8"))
     visible_text = " ".join(" ".join(parser.text).split())
@@ -170,34 +167,26 @@ def test_static_page_has_only_two_pinned_backend_recovery_choices():
     assert parser.script_sources == [
         "https://unpkg.com/esp-web-tools@10.4.0/dist/web/install-button.js?module"
     ]
-    assert parser.manifests == [
-        "manifest-uplink-s3-backend.json",
-        "manifest-scanner-s3-combo-backend.json",
-    ]
+    assert parser.manifests == ["manifest-uplink-s3-backend.json"]
     assert "Backend Uplink" in visible_text
-    assert "Backend Scanner" in visible_text
+    assert "Backend Scanner" not in visible_text
     assert (
         "UNPUBLISHED BACKEND RECOVERY/MAINTENANCE TOOL — NOT THE INITIAL "
         "CANARY PATH."
     ) in visible_text
     assert (
-        "Use tools/backend_canary.py for inventory, backup, MAC binding, "
-        "initial migration, and restore."
+        "This page flashes only the screenless Lite uplink. It cannot "
+        "distinguish that board from a badge because both use XIAO ESP32-S3."
     ) in visible_text
     assert (
-        "This page cannot distinguish a Lite sensor board from a badge "
-        "because both use XIAO ESP32-S3."
-    ) in visible_text
-    assert "Do not connect or select a badge." in visible_text
-    assert (
-        "Do not use this page until all three Lite boards already have "
-        "verified backend identities."
+        "Do not connect or select a badge or scanner. Production ComboFO "
+        "scanner firmware is intentionally not offered here."
     ) in visible_text
 
 
-def _validate_release_index(index: dict) -> None:
+def _validate_release_index(index: dict, *, require_artifacts: bool) -> None:
     assert index["schema"] == 1
-    assert index["version"] == "0.1.0-backend"
+    assert index["version"] == "0.2.0-backend"
     assert set(index["targets"]) == set(TARGETS)
     for target, spec in TARGETS.items():
         release = index["targets"][target]
@@ -214,6 +203,9 @@ def _validate_release_index(index: dict) -> None:
             relative = PurePosixPath(part["path"])
             assert relative.parts == (target, part["name"])
             artifact = FLASHER / "firmware" / Path(*relative.parts)
+            if not artifact.exists():
+                assert not require_artifacts
+                continue
             data = artifact.read_bytes()
             assert part["size"] == len(data) > 0
             assert part["sha256"] == hashlib.sha256(data).hexdigest()
@@ -227,7 +219,8 @@ def test_release_index_is_strictly_backend_only_when_present():
         return
 
     _validate_release_index(
-        json.loads(RELEASE_INDEX.read_text(encoding="utf-8"))
+        json.loads(RELEASE_INDEX.read_text(encoding="utf-8")),
+        require_artifacts=required,
     )
 
 
@@ -277,19 +270,13 @@ import zlib
 
 parser = argparse.ArgumentParser()
 parser.add_argument("command")
-parser.add_argument("--scanner-build-dir")
-parser.add_argument("--scanner-partition-csv")
-parser.add_argument("--scanner-sdkconfig")
 parser.add_argument("--uplink-build-dir")
 parser.add_argument("--uplink-partition-csv")
 parser.add_argument("--uplink-sdkconfig")
 parser.add_argument("--output-dir", type=Path, required=True)
 parser.add_argument("--index", type=Path, required=True)
 args = parser.parse_args()
-assert args.command == "pair"
-assert args.scanner_sdkconfig == (
-    "scanner/.pio/build/scanner-s3-combo-backend/config/sdkconfig.h"
-)
+assert args.command == "uplink"
 assert args.uplink_sdkconfig == (
     "uplink/.pio/build/uplink-s3-backend/config/sdkconfig.h"
 )
@@ -304,7 +291,6 @@ if mode == "invalid":
 offsets = [0, 32768, 61440, 131072]
 logical = ["bootloader", "partition-table", "ota-data-initial", "firmware"]
 specs = {
-    "scanner-s3-combo-backend": ("scanner", "fof_backend_scanner"),
     "uplink-s3-backend": ("uplink", "fof_backend_uplink"),
 }
 targets = {}
@@ -337,7 +323,7 @@ for target, (kind, project) in specs.items():
     }
 args.index.write_text(json.dumps({
     "schema": 1,
-    "version": "0.1.0-backend",
+    "version": "0.2.0-backend",
     "targets": targets,
 }, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 '''
@@ -357,7 +343,6 @@ def _package_fixture(tmp_path: Path) -> tuple[Path, Path]:
         ignore=ignore_generated_targets,
     )
     for directory in (
-        "scanner",
         "uplink",
         "tools/tests",
         "release",
@@ -410,15 +395,14 @@ def _run_package(tmp_path: Path, mode: str) -> subprocess.CompletedProcess[str]:
     PACKAGE_CHILD or PACKAGE_CHILD_EXPECTED,
     reason="avoid recursively exercising build orchestration",
 )
-def test_build_script_packages_and_checks_both_backend_targets(tmp_path: Path):
+def test_build_script_packages_and_checks_only_the_backend_uplink(tmp_path: Path):
     result = _run_package(tmp_path, "valid")
 
     assert result.returncode == 0, result.stdout + result.stderr
     assert result.pio_log.read_text(encoding="utf-8").splitlines() == [
-        f"{result.backend_fw / 'scanner'}|run -e scanner-s3-combo-backend",
         f"{result.backend_fw / 'uplink'}|run -e uplink-s3-backend",
     ]
-    assert "scanner-s3-combo-backend-firmware.bin" in result.stdout
+    assert "scanner-s3-combo-backend" not in result.stdout
     assert "uplink-s3-backend-firmware.bin" in result.stdout
     assert "sha256=" in result.stdout
 

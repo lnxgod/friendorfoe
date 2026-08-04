@@ -51,7 +51,7 @@ CATALOG_TTL_SECONDS = 300
 PROBE_TTL_SECONDS = 300
 MAX_SERIAL_LINE = 8192
 MAX_HTTP_JSON = 1024 * 1024
-BACKEND_VERSION = "0.1.0-backend"
+BACKEND_VERSION = "0.2.0-backend"
 BACKEND_HARDWARE = "seeed_xiao_esp32s3"
 
 PartitionEntry = tuple[str, str, str, int, int]
@@ -102,8 +102,8 @@ BACKEND_IDENTITIES = {
     ),
 }
 BACKEND_IDENTITY_CRC32 = {
-    "scanner": 0x9DD382FF,
-    "uplink": 0xF08BCDE4,
+    "scanner": 0xD972A7E7,
+    "uplink": 0xB42AE8FC,
 }
 
 # Direct USB migration may recognize these installed identities.  Recognition
@@ -426,6 +426,15 @@ def _role_kind(role: str) -> str:
     if role not in BOARD_ROLES:
         raise CanaryInventoryError(f"unknown board role: {role}")
     return "uplink" if role == "uplink" else "scanner"
+
+
+def _require_initial_flash_role(role: str) -> None:
+    _role_kind(role)
+    if role != "uplink":
+        raise CanaryOrderError(
+            "initial scanner flashing is disabled: scanner0/scanner1 must retain "
+            "production ComboFO firmware; only inventory, backup, and restore are allowed"
+        )
 
 
 def _private_mode(path: Path, expected: int, label: str) -> None:
@@ -1902,16 +1911,24 @@ def _load_release_index(index: Path) -> tuple[dict[str, Any], bytes]:
     except (OSError, UnicodeError, CanaryInventoryError) as exc:
         raise CanaryReleaseError("release index is unavailable or invalid") from exc
     targets = document.get("targets") if isinstance(document, dict) else None
+    target_names = set(targets) if isinstance(targets, dict) else set()
     if (
         not isinstance(document, dict)
         or document.get("schema") != 1
         or document.get("version") != BACKEND_VERSION
         or not isinstance(targets, dict)
-        or set(targets) != {"scanner-s3-combo-backend", "uplink-s3-backend"}
+        or "uplink-s3-backend" not in target_names
+        or not target_names.issubset(
+            {"scanner-s3-combo-backend", "uplink-s3-backend"}
+        )
     ):
-        raise CanaryReleaseError("release index must contain exactly both backend targets")
+        raise CanaryReleaseError(
+            "release index must contain the Lite uplink and no unknown targets"
+        )
     for kind, identity in BACKEND_IDENTITIES.items():
         target, project, hardware, _version = identity
+        if target not in targets:
+            continue
         entry = targets[target]
         if (
             not isinstance(entry, dict)
@@ -2704,8 +2721,8 @@ def verify_strict_release_artifact(
         verified = verify_release(index=index.expanduser().resolve(), flasher=flasher)
     except ReleaseVerificationError as exc:
         raise CanaryReleaseError(f"strict backend release verification failed: {exc}") from exc
-    if set(verified.targets) != {"scanner-s3-combo-backend", "uplink-s3-backend"}:
-        raise CanaryReleaseError("strict verifier did not return both backend targets")
+    if set(verified.targets) != {"uplink-s3-backend"}:
+        raise CanaryReleaseError("strict verifier did not return only the Lite uplink")
     return verify_release_artifact(index, directory, role=role)
 
 
@@ -3443,6 +3460,7 @@ def issue_initial_flash_challenge(
     runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
     now: int | None = None,
 ) -> tuple[ApprovalChallenge, str]:
+    _require_initial_flash_role(role)
     require_toolchain_binding(state, receipt)
     board = state.boards[role]
     if board.inventory is None or board.installed is None:
@@ -3504,6 +3522,7 @@ def execute_initial_flash(
     runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
     now: int | None = None,
 ) -> None:
+    _require_initial_flash_role(role)
     require_toolchain_binding(state, receipt)
     board = state.boards[role]
     if board.inventory is None or board.installed is None:
@@ -4408,10 +4427,10 @@ class CanaryState:
             raise CanaryOrderError("original uplink is not quiescent")
         if role == "scanner1" and self.boards["scanner0"].provisional is None:
             raise CanaryOrderError("scanner0 must be provisionally verified first")
-        if role == "uplink":
-            for scanner in ("scanner0", "scanner1"):
-                if self.boards[scanner].provisional is None:
-                    raise CanaryOrderError(f"{scanner} must be provisionally verified before uplink")
+        # Production ComboFO scanners are inventoried and backed up, but are
+        # never migrated to the backend scanner image. Their backend
+        # provisional identity is therefore not a prerequisite for the sole
+        # permitted initial write: the Lite uplink.
 
     def _issue(
         self,
@@ -5338,6 +5357,7 @@ def _handle_quiescence(args: argparse.Namespace) -> None:
 
 
 def _handle_challenge_flash(args: argparse.Namespace) -> None:
+    _require_initial_flash_role(args.role)
     state = _load_state(args.state)
     receipt = _resolve_for_state(state, args.pio)
     artifact = verify_strict_release_artifact(
@@ -5378,6 +5398,7 @@ def _handle_challenge_flash(args: argparse.Namespace) -> None:
 
 
 def _handle_flash_initial(args: argparse.Namespace) -> None:
+    _require_initial_flash_role(args.role)
     state = _load_state(args.state)
     receipt = _resolve_for_state(state, args.pio)
     artifact = verify_strict_release_artifact(
@@ -5594,7 +5615,8 @@ def _build_parser() -> argparse.ArgumentParser:
         description=(
             "Fail-closed three-board backend sensor canary. Native badge 0.67 "
             "firmware remains the default; backend/Lite writes require an exact "
-            "one-use approval. Scanners are direct USB first and uplink is last. "
+            "one-use approval. Production scanners are inventory/backup/restore "
+            "only; initial backend writes are limited to the Lite uplink. "
             "The web flasher is not the canary path; restore is the only permitted "
             "next write after a partial failure."
         )

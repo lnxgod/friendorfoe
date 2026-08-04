@@ -9,6 +9,7 @@ extern "C" {
 #endif
 
 #define BACKEND_JSON_MAX_TOKENS 256
+#define BACKEND_JSON_EXTENDED_MAX_TOKENS 384
 #define BACKEND_JSON_MAX_DEPTH 4
 
 typedef enum {

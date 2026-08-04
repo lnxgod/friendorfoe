@@ -21,11 +21,11 @@ from tools.verify_backend_build import (
     expected_packaged_parts,
     verify_artifact_set,
     verify_packaged_target,
-    verify_release_pair,
+    verify_uplink_release,
 )
 
 
-VERSION = "0.1.0-backend"
+VERSION = "0.2.0-backend"
 FLASH_SIZE = 0x800000
 PARTITION_BINARY_SIZE = 0xC00
 PARTITION_ENTRY = struct.Struct("<HBBII16sI")
@@ -161,6 +161,7 @@ def make_fake_build(tmp_path: Path, *, kind: str) -> Path:
 
     firmware = fake_app_image(
         project,
+        VERSION,
         image_kind=int(spec["image_kind"]),
         target=environment,
     )
@@ -464,17 +465,10 @@ def test_release_set_accepts_idf_trailing_empty_component_sentinel(
     assert release.target == "scanner-s3-combo-backend"
 
 
-def pair_args(tmp_path: Path) -> tuple[Path, Path, dict[str, object]]:
-    scanner = make_fake_build(tmp_path, kind="scanner")
+def uplink_release_args(tmp_path: Path) -> tuple[Path, dict[str, object]]:
     uplink = make_fake_build(tmp_path, kind="uplink")
-    scanner_spec = spec_for("scanner")
     uplink_spec = spec_for("uplink")
     args: dict[str, object] = {
-        "scanner_build_dir": scanner,
-        "scanner_partition_csv": project_root(scanner)
-        / str(scanner_spec["partition_csv"]),
-        "scanner_sdkconfig": project_root(scanner)
-        / f"sdkconfig.{scanner_spec['environment']}",
         "uplink_build_dir": uplink,
         "uplink_partition_csv": project_root(uplink)
         / str(uplink_spec["partition_csv"]),
@@ -484,14 +478,14 @@ def pair_args(tmp_path: Path) -> tuple[Path, Path, dict[str, object]]:
         "index_path": tmp_path / "backend-release-index.json",
         "version": VERSION,
     }
-    return scanner, uplink, args
+    return uplink, args
 
 
-def test_pair_release_is_exact_deterministic_and_contains_no_generic_names(
+def test_uplink_release_is_exact_deterministic_and_contains_no_generic_names(
     tmp_path: Path,
 ) -> None:
-    scanner, uplink, args = pair_args(tmp_path)
-    release_index = verify_release_pair(**args)
+    uplink, args = uplink_release_args(tmp_path)
+    release_index = verify_uplink_release(**args)
     output_dir = args["output_dir"]
     index_path = args["index_path"]
     assert isinstance(output_dir, Path)
@@ -499,22 +493,15 @@ def test_pair_release_is_exact_deterministic_and_contains_no_generic_names(
 
     assert release_index["schema"] == 1
     assert release_index["version"] == VERSION
-    assert list(release_index["targets"]) == [
-        "scanner-s3-combo-backend",
-        "uplink-s3-backend",
-    ]
+    assert list(release_index["targets"]) == ["uplink-s3-backend"]
     assert stat.S_IMODE(index_path.stat().st_mode) == 0o600
     rendered = index_path.read_text(encoding="utf-8")
     assert rendered == json.dumps(release_index, indent=2, sort_keys=True) + "\n"
     assert "firmware.bin\"" not in rendered.replace(
-        "scanner-s3-combo-backend-firmware.bin\"",
-        "",
-    ).replace("uplink-s3-backend-firmware.bin\"", "")
+        "uplink-s3-backend-firmware.bin\"", ""
+    )
 
-    builds = {
-        "scanner-s3-combo-backend": scanner,
-        "uplink-s3-backend": uplink,
-    }
+    builds = {"uplink-s3-backend": uplink}
     for target, target_data in release_index["targets"].items():
         assert set(target_data) == {
             "kind",
@@ -556,33 +543,33 @@ def test_pair_release_is_exact_deterministic_and_contains_no_generic_names(
             assert part["size"] == len(source)
 
 
-def test_pair_check_only_performs_no_writes(tmp_path: Path) -> None:
-    _scanner, _uplink, args = pair_args(tmp_path)
+def test_uplink_release_check_only_performs_no_writes(tmp_path: Path) -> None:
+    _uplink, args = uplink_release_args(tmp_path)
     args["check_only"] = True
 
-    release_index = verify_release_pair(**args)
+    release_index = verify_uplink_release(**args)
 
     assert release_index["schema"] == 1
     assert not Path(args["output_dir"]).exists()
     assert not Path(args["index_path"]).exists()
 
 
-def test_pair_validates_both_targets_before_copying_either(tmp_path: Path) -> None:
-    _scanner, uplink, args = pair_args(tmp_path)
+def test_uplink_release_validates_before_copying(tmp_path: Path) -> None:
+    uplink, args = uplink_release_args(tmp_path)
     (uplink / "ota_data_initial.bin").write_bytes(b"bad")
 
     with pytest.raises(BuildVerificationError):
-        verify_release_pair(**args)
+        verify_uplink_release(**args)
 
     assert not Path(args["output_dir"]).exists()
     assert not Path(args["index_path"]).exists()
 
 
-def test_pair_index_is_byte_deterministic_across_output_roots(tmp_path: Path) -> None:
-    _scanner, _uplink, args = pair_args(tmp_path)
+def test_uplink_index_is_byte_deterministic_across_output_roots(tmp_path: Path) -> None:
+    _uplink, args = uplink_release_args(tmp_path)
     args["check_only"] = True
-    first = verify_release_pair(**args)
-    second = verify_release_pair(**args)
+    first = verify_uplink_release(**args)
+    second = verify_uplink_release(**args)
 
     assert json.dumps(first, indent=2, sort_keys=True) == json.dumps(
         second, indent=2, sort_keys=True
@@ -593,9 +580,9 @@ def test_pair_index_is_byte_deterministic_across_output_roots(tmp_path: Path) ->
 def test_published_partition_table_requires_exact_ff_padded_flash_span(
     tmp_path: Path, mutation: str
 ) -> None:
-    scanner, _uplink, args = pair_args(tmp_path)
-    verify_release_pair(**args)
-    release = verify_artifact_set(scanner, **verifier_args(scanner, "scanner"))
+    uplink, args = uplink_release_args(tmp_path)
+    verify_uplink_release(**args)
+    release = verify_artifact_set(uplink, **verifier_args(uplink, "uplink"))
     target_dir = Path(args["output_dir"]) / release.target
     partition_path = target_dir / f"{release.target}-partition-table.bin"
     payload = bytearray(partition_path.read_bytes())
@@ -611,17 +598,20 @@ def test_published_partition_table_requires_exact_ff_padded_flash_span(
         verify_packaged_target(target_dir, release)
 
 
-def test_pair_refuses_existing_target_directory_without_overwriting(
-    tmp_path: Path,
+@pytest.mark.parametrize(
+    "directory_name", ["uplink-s3-backend", "scanner-s3-combo-backend"]
+)
+def test_uplink_release_refuses_any_existing_target_directory_without_overwriting(
+    tmp_path: Path, directory_name: str,
 ) -> None:
-    _scanner, _uplink, args = pair_args(tmp_path)
-    existing = Path(args["output_dir"]) / "scanner-s3-combo-backend"
+    _uplink, args = uplink_release_args(tmp_path)
+    existing = Path(args["output_dir"]) / directory_name
     existing.mkdir(parents=True)
     sentinel = existing / "keep.txt"
     sentinel.write_text("keep", encoding="utf-8")
 
-    with pytest.raises(BuildVerificationError, match="already exists"):
-        verify_release_pair(**args)
+    with pytest.raises(BuildVerificationError, match="not empty"):
+        verify_uplink_release(**args)
 
     assert sentinel.read_text(encoding="utf-8") == "keep"
     assert not Path(args["index_path"]).exists()

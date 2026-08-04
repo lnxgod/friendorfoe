@@ -5,36 +5,34 @@ copies under `shared/`, `scanner/`, and `uplink/`; the immutable `vendor/` tree
 is provenance evidence only and is never compiled. Nothing in this tree is a
 badge build input.
 
-The headless three-board Lite assembly uses two
-`scanner-s3-combo-backend` images and one `uplink-s3-backend` image on Seeed
-XIAO ESP32-S3 boards. Scanners retain the badge-derived BLE/Wi-Fi detectors.
-The uplink replaces the screen with HTTP upload, heartbeat, command, time,
-configuration-AP, and backend-only OTA workers. GPIO21 drives the board's
-single yellow LED with distinct timing patterns for health, drone, Meta
-glasses, combined threats, and failure states.
+The headless three-board Lite assembly uses two unchanged production ComboFO
+scanner boards and one `uplink-s3-backend` image on a Seeed XIAO ESP32-S3.
+Only the uplink is a backend firmware release. It consumes the production
+scanner UART protocol and replaces the screen with USB/network uplink,
+heartbeat, command, time, configuration-AP, and backend-only OTA workers.
+GPIO21 drives the uplink board's single yellow LED with distinct timing
+patterns for health, drone, Meta glasses, combined threats, and failure
+states.
 
 The native badge USB/factory firmware is a different firmware family.
 `0.67.2-badge-defcon34` remains the normal badge default; never use the badge
 flasher to install these Lite images, and never rename a backend image as a
 badge target.
 
-## Build the device images
+## Build the Lite uplink image
 
 ```sh
-cd scanner
-pio run -e scanner-s3-combo-backend
-
-cd ../uplink
+cd uplink
 pio run -e uplink-s3-backend
 ```
 
-Both projects use an 8 MB DIO layout with two 2 MB rollback-capable OTA
-slots. A successful compile is not authorization to flash hardware. Initial
-migration is direct USB through the backend canary tooling after all three
-boards have been identified and fully backed up; scanners are migrated first
-and the uplink last.
+Do not build or flash `backend-firmware/scanner` for the Lite production
+assembly. Scanner0 and scanner1 remain on the production
+`scanner-s3-combo-fof_badge` ComboFO image. The uplink uses an 8 MB DIO layout
+with two 2 MB rollback-capable OTA slots. A successful compile is not
+authorization to flash hardware.
 
-On every board, the read-only USB command `FOF_BACKEND_STATUS` reprints the
+On the Lite uplink, the read-only USB command `FOF_BACKEND_STATUS` reprints
 current boot and health evidence without changing configuration or firmware.
 The uplink configuration portal is available as
 `FriendOrFoe-Backend-XXXXXX` when configuration is missing, after a prolonged
@@ -68,11 +66,13 @@ decisions.
 
 ## Canary and flashing boundary
 
-The initial hardware canary is the guarded, direct-USB three-board procedure in
+The legacy hardware canary remains the guarded, direct-USB procedure in
 [`docs/backend-firmware-canary.md`](../docs/backend-firmware-canary.md). It
-requires no-write inventory and complete backups first, then a fresh explicit
-approval for scanner0, scanner1, and uplink in that order. The web flasher is
-never the initial-canary path or a fallback after failure.
+still permits inventory, complete backup, and restore for scanner0/scanner1,
+but it fails closed if `challenge-flash` or `flash-initial` selects either
+scanner. Only the uplink can receive an initial backend image. The maintenance
+web flasher likewise publishes only `uplink-s3-backend`; it contains no scanner
+manifest or scanner binary.
 
 Confirm all three boards are physical no-screen Lite XIAO ESP32-S3 sensors and
 that no XIAO Sense SD expansion is connected; its GPIO3 SD chip-select conflicts
