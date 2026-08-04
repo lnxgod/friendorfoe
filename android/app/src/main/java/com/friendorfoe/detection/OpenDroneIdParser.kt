@@ -33,6 +33,9 @@ object OpenDroneIdParser {
     const val MSG_TYPE_OPERATOR_ID = 5
     const val MSG_TYPE_MESSAGE_PACK = 0xF
 
+    private const val ODID_MESSAGE_SIZE = 25
+    private const val MESSAGE_PACK_HEADER_SIZE = 3
+
     // Location message field constants
     private const val LAT_LON_SCALE = 1e-7
     private const val ALT_SCALE = 0.5
@@ -158,11 +161,11 @@ object OpenDroneIdParser {
             }
         }
 
-        // Accuracy (byte 19): high nibble = horizontal, low nibble = vertical
+        // Accuracy (byte 19): high nibble = vertical, low nibble = horizontal
         if (data.size >= 20) {
             val accByte = data[19].toInt() and 0xFF
-            val hCode = (accByte ushr 4) and 0x0F
-            val vCode = accByte and 0x0F
+            val hCode = accByte and 0x0F
+            val vCode = (accByte ushr 4) and 0x0F
             state.horizontalAccuracyCode = hCode
             state.verticalAccuracyCode = vCode
         }
@@ -206,21 +209,24 @@ object OpenDroneIdParser {
         if (data.size >= 12) {
             state.areaCount = buffer.getShort(10).toInt() and 0xFFFF
         }
-        // Area radius (bytes 12-13): x 10m
-        if (data.size >= 14) {
-            state.areaRadius = buffer.getShort(12).toInt() and 0xFFFF
+        // Area radius (byte 12): 10 m units.
+        if (data.size >= 13) {
+            state.areaRadius = (data[12].toInt() and 0xFF) * 10
         }
-        // Area ceiling (bytes 14-15): x 0.5 - 1000
-        if (data.size >= 16) {
-            state.areaCeiling = (buffer.getShort(14).toInt() and 0xFFFF) * ALT_SCALE + ALT_OFFSET
+        // Area ceiling (bytes 13-14): x 0.5 - 1000; encoded zero is unknown.
+        if (data.size >= 15) {
+            val raw = buffer.getShort(13).toInt() and 0xFFFF
+            state.areaCeiling = if (raw == 0) null else raw * ALT_SCALE + ALT_OFFSET
         }
-        // Area floor (bytes 16-17): x 0.5 - 1000
-        if (data.size >= 18) {
-            state.areaFloor = (buffer.getShort(16).toInt() and 0xFFFF) * ALT_SCALE + ALT_OFFSET
+        // Area floor (bytes 15-16): x 0.5 - 1000; encoded zero is unknown.
+        if (data.size >= 17) {
+            val raw = buffer.getShort(15).toInt() and 0xFFFF
+            state.areaFloor = if (raw == 0) null else raw * ALT_SCALE + ALT_OFFSET
         }
-        // Classification type (byte 18)
-        if (data.size >= 19) {
-            state.classificationTypeCode = data[18].toInt() and 0xFF
+        // Classification type is bits 2-4 of byte 1. Byte 17 carries EU
+        // category/class values only when this type is EU.
+        if (data.size >= 2) {
+            state.classificationTypeCode = (data[1].toInt() ushr 2) and 0x07
         }
     }
 
@@ -261,24 +267,39 @@ object OpenDroneIdParser {
      *
      * Format:
      *   Byte 0: [msg type (4 bits)] [protocol version (4 bits)]
-     *   Byte 1: Message count
-     *   Bytes 2+: N x 25-byte messages
+     *   Byte 1: Size of each nested message (25 bytes)
+     *   Byte 2: Message count
+     *   Bytes 3+: N x 25-byte messages
      */
     private fun parseMessagePack(data: ByteArray, state: DronePartialState, depth: Int) {
         if (depth >= 2) {
             Log.w(TAG, "Message Pack recursion depth exceeded, skipping")
             return
         }
-        if (data.size < 2) return
-        val messageCount = data[1].toInt() and 0xFF
-        val messagesStart = 2
+        val messageCount = messagePackCountOrNull(data) ?: return
 
         for (i in 0 until messageCount) {
-            val offset = messagesStart + i * 25
-            if (offset + 25 > data.size) break
-            val msgData = data.copyOfRange(offset, offset + 25)
+            val offset = MESSAGE_PACK_HEADER_SIZE + i * ODID_MESSAGE_SIZE
+            val msgData = data.copyOfRange(offset, offset + ODID_MESSAGE_SIZE)
             parseMessage(msgData, state, depth + 1)
         }
+    }
+
+    /** Returns true only for a complete standard OpenDroneID Message Pack. */
+    internal fun isValidMessagePack(data: ByteArray): Boolean =
+        messagePackCountOrNull(data) != null
+
+    private fun messagePackCountOrNull(data: ByteArray): Int? {
+        if (data.size < MESSAGE_PACK_HEADER_SIZE) return null
+        val messageType = (data[0].toInt() and 0xF0) ushr 4
+        if (messageType != MSG_TYPE_MESSAGE_PACK) return null
+
+        val singleMessageSize = data[1].toInt() and 0xFF
+        val messageCount = data[2].toInt() and 0xFF
+        if (singleMessageSize != ODID_MESSAGE_SIZE || messageCount == 0) return null
+
+        val expectedSize = MESSAGE_PACK_HEADER_SIZE + singleMessageSize * messageCount
+        return messageCount.takeIf { data.size == expectedSize }
     }
 
     /**

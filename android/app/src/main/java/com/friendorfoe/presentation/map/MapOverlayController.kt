@@ -14,6 +14,7 @@ import com.friendorfoe.domain.model.Drone
 import com.friendorfoe.domain.model.ObjectCategory
 import com.friendorfoe.domain.model.Position
 import com.friendorfoe.domain.model.SkyObject
+import com.friendorfoe.domain.model.isFormationDroneId
 import com.friendorfoe.presentation.util.categoryColorArgb
 import org.osmdroid.util.GeoPoint
 import org.osmdroid.views.MapView
@@ -68,6 +69,29 @@ internal data class AircraftMarkerPresentation(
     val category: ObjectCategory,
     val visuallyConfirmed: Boolean,
 )
+
+internal data class LocalMapTrackLayers(
+    val markerTracks: List<MapTrack>,
+    val formationTracks: List<MapTrack>,
+)
+
+/** Routes C5 formation pixels to their shared canvas layer instead of Marker instances. */
+internal fun splitLocalMapTracks(tracks: List<MapTrack>): LocalMapTrackLayers {
+    val markerTracks = ArrayList<MapTrack>(tracks.size)
+    val formationTracks = ArrayList<MapTrack>()
+    tracks.forEach { track ->
+        val drone = track.skyObject as? Drone
+        if (drone != null && isFormationDroneId(drone.droneId)) {
+            formationTracks += track
+        } else {
+            markerTracks += track
+        }
+    }
+    return LocalMapTrackLayers(
+        markerTracks = markerTracks,
+        formationTracks = formationTracks,
+    )
+}
 
 internal fun MapTrack.toAircraftMarkerPresentation(
     visuallyConfirmed: Boolean,
@@ -193,6 +217,8 @@ internal class MapOverlayController(
     )
 
     private val aircraftMarkers = RetainedOverlayStore<AircraftOverlay>()
+    private val formationOverlay = FormationOverlay(context)
+    private var formationOverlayAttached = false
     private val remoteMarkers = RetainedOverlayStore<RemoteOverlay>()
     private val sensorMarkers = RetainedOverlayStore<Marker>()
     private val sensorDroneMarkers = RetainedOverlayStore<SensorDroneOverlay>()
@@ -263,8 +289,12 @@ internal class MapOverlayController(
         tracks: List<MapTrack>,
         activeVisualFocusIds: Set<String>,
     ) {
-        val presentations = tracks
-            .filter { it.position.hasValidMapCoordinates() }
+        val layers = splitLocalMapTracks(
+            tracks.filter { it.position.hasValidMapCoordinates() }
+        )
+        updateFormationOverlay(layers.formationTracks)
+
+        val presentations = layers.markerTracks
             .map { track ->
                 track.toAircraftMarkerPresentation(track.skyObject.id in activeVisualFocusIds)
             }
@@ -306,6 +336,23 @@ internal class MapOverlayController(
             },
             remove = { it.marker.remove(map) },
         )
+    }
+
+    private fun updateFormationOverlay(tracks: List<MapTrack>) {
+        val points = tracks.map { track ->
+            GeoPoint(track.position.latitude, track.position.longitude)
+        }
+        formationOverlay.replacePoints(points)
+
+        if (points.isEmpty()) {
+            if (formationOverlayAttached) {
+                map.overlays.remove(formationOverlay)
+                formationOverlayAttached = false
+            }
+        } else if (!formationOverlayAttached) {
+            map.overlays.add(formationOverlay)
+            formationOverlayAttached = true
+        }
     }
 
     private fun updateRemoteMarkers(

@@ -8,6 +8,7 @@ import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
 import android.os.ParcelUuid
+import android.os.SystemClock
 import android.util.Log
 import com.friendorfoe.domain.model.Drone
 import kotlinx.coroutines.channels.awaitClose
@@ -38,10 +39,11 @@ class RemoteIdScanner @Inject constructor(
     private val bluetoothAdapter: BluetoothAdapter? = bluetoothManager.adapter
     private var bleScanner: BluetoothLeScanner? = null
     private var activeScanCallback: ScanCallback? = null
+    private val dropLogLock = Any()
+    private var droppedSinceLastLog = 0
+    private var lastDropLogAtMs = 0L
 
-    // Track parsed data per drone MAC address. We may receive Basic ID and Location
-    // in separate advertisements, so we accumulate partial state.
-    private val droneStates = java.util.concurrent.ConcurrentHashMap<String, OpenDroneIdParser.DronePartialState>()
+    private val payloadProcessor = BleRemoteIdPayloadProcessor()
 
     /**
      * Start scanning for Remote ID broadcasts.
@@ -54,13 +56,25 @@ class RemoteIdScanner @Inject constructor(
     @SuppressLint("MissingPermission")
     fun startScanning(): Flow<Drone> = callbackFlow {
         val adapter = bluetoothAdapter
-        if (adapter == null || !adapter.isEnabled) {
+        val bluetoothEnabled = try {
+            adapter?.isEnabled == true
+        } catch (e: SecurityException) {
+            Log.w(TAG, "Bluetooth permission missing, skipping Remote ID scan")
+            false
+        }
+        if (!bluetoothEnabled) {
             Log.w(TAG, "Bluetooth not available or disabled, skipping Remote ID scan")
             close()
             return@callbackFlow
         }
 
-        val scanner = adapter.bluetoothLeScanner
+        val scanner = try {
+            adapter?.bluetoothLeScanner
+        } catch (e: SecurityException) {
+            Log.w(TAG, "Bluetooth scan permission missing; Remote ID scan deferred")
+            close()
+            return@callbackFlow
+        }
         if (scanner == null) {
             Log.w(TAG, "BLE scanner not available")
             close()
@@ -70,6 +84,9 @@ class RemoteIdScanner @Inject constructor(
 
         val scanSettings = ScanSettings.Builder()
             .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
+            // The C5 simulator uses a 109-byte Bluetooth 5 extended
+            // advertisement; Android otherwise defaults to legacy-only scans.
+            .setLegacy(false)
             .setReportDelay(0) // Immediate callback per result
             .build()
 
@@ -78,7 +95,9 @@ class RemoteIdScanner @Inject constructor(
                 try {
                     val drone = processScanResult(result)
                     if (drone != null) {
-                        trySend(drone)
+                        if (trySend(drone).isFailure) {
+                            recordDroppedUpdate()
+                        }
                     }
                 } catch (e: Exception) {
                     Log.e(TAG, "Error processing BLE scan result", e)
@@ -90,7 +109,9 @@ class RemoteIdScanner @Inject constructor(
                     try {
                         val drone = processScanResult(result)
                         if (drone != null) {
-                            trySend(drone)
+                            if (trySend(drone).isFailure) {
+                                recordDroppedUpdate()
+                            }
                         }
                     } catch (e: Exception) {
                         Log.e(TAG, "Error processing batch BLE scan result", e)
@@ -107,7 +128,24 @@ class RemoteIdScanner @Inject constructor(
         // Some phones miss ODID packets when service-data filtering is pushed
         // into the controller. Scan unfiltered and parse the FFFA payload here.
         Log.i(TAG, "Starting BLE Remote ID scan (unfiltered compatibility mode)")
-        scanner.startScan(null, scanSettings, callback)
+        try {
+            scanner.startScan(null, scanSettings, callback)
+        } catch (e: SecurityException) {
+            // The app lifecycle may reach this point while the startup runtime
+            // permission dialog is still open. A missing optional radio
+            // permission must disable this source, never terminate the app.
+            Log.w(TAG, "Bluetooth scan permission missing; Remote ID scan deferred")
+            activeScanCallback = null
+            bleScanner = null
+            close()
+            return@callbackFlow
+        } catch (e: IllegalStateException) {
+            Log.w(TAG, "Bluetooth scanner is not ready; Remote ID scan skipped", e)
+            activeScanCallback = null
+            bleScanner = null
+            close()
+            return@callbackFlow
+        }
 
         awaitClose {
             Log.i(TAG, "Stopping BLE Remote ID scan")
@@ -116,7 +154,23 @@ class RemoteIdScanner @Inject constructor(
             } catch (e: Exception) {
                 Log.w(TAG, "Error stopping BLE scan", e)
             }
-            droneStates.clear()
+            payloadProcessor.clear()
+        }
+    }
+
+    /** Aggregate overload warnings so a busy scanner cannot create a log storm. */
+    private fun recordDroppedUpdate() {
+        val nowMs = SystemClock.elapsedRealtime()
+        synchronized(dropLogLock) {
+            droppedSinceLastLog++
+            if (lastDropLogAtMs == 0L || nowMs - lastDropLogAtMs >= 5_000L) {
+                Log.w(
+                    TAG,
+                    "Dropped $droppedSinceLastLog Remote ID update(s) while the consumer was busy"
+                )
+                droppedSinceLastLog = 0
+                lastDropLogAtMs = nowMs
+            }
         }
     }
 
@@ -130,7 +184,7 @@ class RemoteIdScanner @Inject constructor(
         } finally {
             activeScanCallback = null
             bleScanner = null
-            droneStates.clear()
+            payloadProcessor.clear()
         }
     }
 
@@ -148,67 +202,26 @@ class RemoteIdScanner @Inject constructor(
 
         if (serviceData.isEmpty()) return null
 
-        // OpenDroneID BLE service data: the 25-byte ODID message.
-        // Android's getServiceData() already strips the UUID prefix.
-        // Some implementations prepend App Code (0x0D) + counter byte (27 bytes total),
-        // others send the raw 25-byte message directly.
-        val messageData = when {
-            serviceData.size >= 27 -> serviceData.copyOfRange(2, 27) // Skip app code + counter
-            serviceData.size >= 25 -> serviceData.copyOfRange(0, 25) // Raw 25-byte message
-            else -> {
-                Log.d(TAG, "Service data too short: ${serviceData.size} bytes")
-                return null
-            }
+        // Android has already stripped the service UUID. Preserve complete raw
+        // or App Code-prefixed payloads, including 103-byte Message Packs.
+        val messageData = BleRemoteIdPayloadSelector.select(serviceData) ?: run {
+            Log.d(TAG, "Invalid OpenDroneID service data: ${serviceData.size} bytes")
+            return null
         }
 
         val now = Instant.now()
+        val txPowerDbm = result.txPower.takeIf { it != ScanResult.TX_POWER_NOT_PRESENT }
+        val estimatedDistanceMeters = RssiDistanceEstimator.estimateBleRemoteId(
+            rssi = result.rssi,
+            txPowerDbm = txPowerDbm
+        )
 
-        // Parse into a temporary state first to extract the serial number
-        val tempState = droneStates.getOrPut(deviceAddress) {
-            OpenDroneIdParser.DronePartialState(deviceAddress = deviceAddress, firstSeen = now)
-        }
-
-        synchronized(tempState) {
-            tempState.lastUpdated = now
-            tempState.signalStrengthDbm = result.rssi
-            val txPowerDbm = result.txPower.takeIf { it != ScanResult.TX_POWER_NOT_PRESENT }
-            tempState.estimatedDistanceMeters = RssiDistanceEstimator.estimateBleRemoteId(
-                rssi = result.rssi,
-                txPowerDbm = txPowerDbm
-            )
-            OpenDroneIdParser.parseMessage(messageData, tempState)
-        }
-
-        // If we now have a serial, use it as the canonical key (handles multi-drone on same MAC)
-        val serial = tempState.droneId ?: return null
-        val canonicalState = droneStates.getOrPut(serial) {
-            OpenDroneIdParser.DronePartialState(deviceAddress = deviceAddress, firstSeen = now)
-        }
-
-        synchronized(canonicalState) {
-            // Copy latest data from the MAC-keyed state to the serial-keyed state
-            canonicalState.lastUpdated = now
-            canonicalState.signalStrengthDbm = result.rssi
-            canonicalState.estimatedDistanceMeters = tempState.estimatedDistanceMeters
-            canonicalState.droneId = serial
-            canonicalState.latitude = tempState.latitude
-            canonicalState.longitude = tempState.longitude
-            canonicalState.altitudeMeters = tempState.altitudeMeters
-            canonicalState.heading = tempState.heading
-            canonicalState.speedMps = tempState.speedMps
-            canonicalState.verticalSpeedMps = tempState.verticalSpeedMps
-            canonicalState.heightAglMeters = tempState.heightAglMeters
-            canonicalState.geodeticAltitudeMeters = tempState.geodeticAltitudeMeters
-            canonicalState.operatorLatitude = tempState.operatorLatitude
-            canonicalState.operatorLongitude = tempState.operatorLongitude
-            canonicalState.operatorId = tempState.operatorId
-            canonicalState.selfIdText = tempState.selfIdText
-            canonicalState.uaType = tempState.uaType
-            canonicalState.idType = tempState.idType
-            canonicalState.horizontalAccuracyCode = tempState.horizontalAccuracyCode
-            canonicalState.verticalAccuracyCode = tempState.verticalAccuracyCode
-
-            return canonicalState.toDroneOrNull(idPrefix = "rid_")
-        }
+        return payloadProcessor.process(
+            deviceAddress = deviceAddress,
+            payload = messageData,
+            now = now,
+            signalStrengthDbm = result.rssi,
+            estimatedDistanceMeters = estimatedDistanceMeters
+        )
     }
 }

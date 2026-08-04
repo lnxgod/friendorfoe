@@ -81,21 +81,34 @@ class BayesianFusionEngine @Inject constructor() {
      * @param candidateId Unique ID for the candidate detection
      * @param source Which sensor produced this detection
      * @param sensorConfidence The sensor's own confidence (0-1)
-     * @param now Current timestamp
+     * @param observedAt Timestamp of this sensor observation
      * @return Updated fused probability (0-1)
      */
+    @Synchronized
     fun updateWithEvidence(
         candidateId: String,
         source: DetectionSource,
         sensorConfidence: Float,
-        now: Instant
+        observedAt: Instant
     ): Float {
         val state = beliefStates.getOrPut(candidateId) {
-            BeliefState(probabilityToLogOdds(PRIOR_PROBABILITY.toDouble()), now)
+            BeliefState(
+                logOdds = probabilityToLogOdds(PRIOR_PROBABILITY.toDouble()),
+                lastEvidenceAt = observedAt,
+                lastDecayAt = observedAt,
+            )
+        }
+
+        // A merged-list rebuild may revisit the same cached observation many
+        // times. Count each source timestamp once so presentation refreshes do
+        // not manufacture Bayesian evidence.
+        val previousContribution = state.sensorContributions[source]
+        if (previousContribution != null && !observedAt.isAfter(previousContribution.timestamp)) {
+            return logOddsToProbability(state.logOdds).toFloat()
         }
 
         // Time-decay existing evidence
-        state.applyTimeDecay(now)
+        state.applyTimeDecay(observedAt)
 
         // Compute likelihood ratio for this observation, scaled by sensor confidence
         val baseLR = SENSOR_LIKELIHOOD_RATIOS[source] ?: 2.0
@@ -105,8 +118,10 @@ class BayesianFusionEngine @Inject constructor() {
         // Update log-odds with new evidence
         val logLR = ln(scaledLR)
         state.logOdds = (state.logOdds + logLR).coerceIn(MIN_LOG_ODDS, MAX_LOG_ODDS)
-        state.lastUpdate = now
-        state.sensorContributions[source] = SensorContribution(sensorConfidence, now)
+        if (observedAt.isAfter(state.lastEvidenceAt)) {
+            state.lastEvidenceAt = observedAt
+        }
+        state.sensorContributions[source] = SensorContribution(sensorConfidence, observedAt)
 
         val fusedProb = logOddsToProbability(state.logOdds)
         Log.d(TAG, "Fused $candidateId: $source(conf=${"%.2f".format(sensorConfidence)}) → " +
@@ -124,6 +139,7 @@ class BayesianFusionEngine @Inject constructor() {
      * @param now Current timestamp
      * @return Updated fused probability
      */
+    @Synchronized
     fun applyNegativeEvidence(
         candidateId: String,
         source: DetectionSource,
@@ -136,7 +152,9 @@ class BayesianFusionEngine @Inject constructor() {
         state.applyTimeDecay(now)
         val logLR = ln(negLR)
         state.logOdds = (state.logOdds + logLR).coerceIn(MIN_LOG_ODDS, MAX_LOG_ODDS)
-        state.lastUpdate = now
+        if (now.isAfter(state.lastEvidenceAt)) {
+            state.lastEvidenceAt = now
+        }
 
         return logOddsToProbability(state.logOdds).toFloat()
     }
@@ -148,6 +166,7 @@ class BayesianFusionEngine @Inject constructor() {
      * @param now Current timestamp (for time decay)
      * @return Fused probability (0-1), or the prior if no evidence
      */
+    @Synchronized
     fun getFusedProbability(candidateId: String, now: Instant): Float {
         val state = beliefStates[candidateId] ?: return PRIOR_PROBABILITY
         state.applyTimeDecay(now)
@@ -162,6 +181,7 @@ class BayesianFusionEngine @Inject constructor() {
      * @param now Current timestamp
      * @return The best representative object with fused confidence
      */
+    @Synchronized
     fun fuseObjects(candidates: List<SkyObject>, now: Instant): SkyObject? {
         if (candidates.isEmpty()) return null
         if (candidates.size == 1) return candidates.first()
@@ -171,7 +191,12 @@ class BayesianFusionEngine @Inject constructor() {
 
         // Update belief with each source
         for (candidate in candidates) {
-            updateWithEvidence(fusionId, candidate.source, candidate.confidence, now)
+            updateWithEvidence(
+                fusionId,
+                candidate.source,
+                candidate.confidence,
+                candidate.lastUpdated,
+            )
         }
 
         val fusedConfidence = getFusedProbability(fusionId, now)
@@ -193,9 +218,10 @@ class BayesianFusionEngine @Inject constructor() {
     }
 
     /** Remove stale candidates that haven't been updated recently. */
+    @Synchronized
     fun pruneStale(now: Instant, maxAge: Duration = Duration.ofMinutes(2)) {
         val expiredKeys = beliefStates.filter { (_, state) ->
-            Duration.between(state.lastUpdate, now) > maxAge
+            Duration.between(state.lastEvidenceAt, now) > maxAge
         }.keys
         expiredKeys.forEach { beliefStates.remove(it) }
 
@@ -203,7 +229,7 @@ class BayesianFusionEngine @Inject constructor() {
         if (beliefStates.size > MAX_BELIEF_STATES) {
             val excess = beliefStates.size - MAX_BELIEF_STATES
             beliefStates.entries
-                .sortedBy { it.value.lastUpdate }
+                .sortedBy { it.value.lastEvidenceAt }
                 .take(excess)
                 .map { it.key }
                 .forEach { beliefStates.remove(it) }
@@ -212,6 +238,7 @@ class BayesianFusionEngine @Inject constructor() {
     }
 
     /** Reset all belief states. */
+    @Synchronized
     fun reset() {
         beliefStates.clear()
     }
@@ -250,7 +277,8 @@ private data class SensorContribution(
 /** Internal belief state for a candidate detection. */
 private class BeliefState(
     var logOdds: Double,
-    var lastUpdate: Instant
+    var lastEvidenceAt: Instant,
+    var lastDecayAt: Instant,
 ) {
     val sensorContributions = mutableMapOf<DetectionSource, SensorContribution>()
 
@@ -259,7 +287,7 @@ private class BeliefState(
      * Uses exponential decay with half-life of [BayesianFusionEngine.EVIDENCE_HALF_LIFE_SEC].
      */
     fun applyTimeDecay(now: Instant) {
-        val elapsedSec = Duration.between(lastUpdate, now).toMillis() / 1000.0
+        val elapsedSec = Duration.between(lastDecayAt, now).toMillis() / 1000.0
         if (elapsedSec <= 0) return
 
         val priorLogOdds = kotlin.math.ln(0.1 / 0.9) // log-odds of prior
@@ -267,6 +295,7 @@ private class BeliefState(
 
         // Decay toward prior
         logOdds = priorLogOdds + (logOdds - priorLogOdds) * decayFactor
+        lastDecayAt = now
     }
 
     companion object {

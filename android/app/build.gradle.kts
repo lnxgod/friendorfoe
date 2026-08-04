@@ -23,8 +23,8 @@ android {
         applicationId = "com.friendorfoe"
         minSdk = 26
         targetSdk = 34
-        versionCode = 120
-        versionName = "0.67.11-android-20mi-ar-range"
+        versionCode = 121
+        versionName = "0.67.12-android-rid-formation-stability"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

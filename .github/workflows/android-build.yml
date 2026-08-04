@@ -111,7 +111,7 @@ jobs:
           "$APKSIGNER" verify --verbose --print-certs "$APK" | tee /tmp/apksigner-output.txt
           grep -F "certificate SHA-256 digest: 3a1581ba5d10df59fdb28e09987851d6c7d79ce26df4eb69b9f6d262b9b68e95" /tmp/apksigner-output.txt
           "$AAPT" dump badging "$APK" | tee /tmp/aapt-output.txt
-          grep -F "package: name='com.friendorfoe' versionCode='120' versionName='0.67.11-android-20mi-ar-range'" /tmp/aapt-output.txt
+          grep -F "package: name='com.friendorfoe' versionCode='121' versionName='0.67.12-android-rid-formation-stability'" /tmp/aapt-output.txt
           cp "$APK" "$ASSET"
           sha256sum "$ASSET" > "$ASSET.sha256"
 
