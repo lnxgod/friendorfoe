@@ -308,6 +308,51 @@ void test_production_detection_codec_normalizes_native_wire_units(void)
     TEST_ASSERT_EQUAL_INT64(0, detection.last_updated_ms);
 }
 
+void test_production_detection_codec_treats_optional_nulls_as_unknown(void)
+{
+    /* Production ComboFO scanners serialize NAN Remote ID optionals as JSON
+     * null.  Basic ID commonly arrives before Location, so those nulls must
+     * not discard the otherwise valid partial aircraft identity. */
+    static const char partial_remote_id[] =
+        "{\"type\":\"detection\","
+        "\"drone_id\":\"rid_2095FH04BULX58060127\","
+        "\"src\":0,\"conf\":0.6,\"rssi\":-47,"
+        "\"hdg\":null,\"vspd\":null,\"h_agl\":null,"
+        "\"g_alt\":null,\"h_acc\":null,\"v_acc\":null,"
+        "\"ts\":28123,\"seq\":7}";
+    static const char malformed_remote_id[] =
+        "{\"type\":\"detection\",\"drone_id\":\"rid_bad\","
+        "\"src\":0,\"conf\":0.6,\"hdg\":\"null\","
+        "\"ts\":28123,\"seq\":8}";
+    drone_detection_t detection = {0};
+    backend_scanner_stamp_t stamp = {0};
+
+    TEST_ASSERT_EQUAL(
+        BACKEND_DECODE_SCHEMA_MISMATCH,
+        backend_detection_uart_decode(
+            partial_remote_id, sizeof(partial_remote_id) - 1U,
+            BACKEND_SCANNER_SLOT_BLE, &detection, &stamp));
+    TEST_ASSERT_EQUAL(
+        BACKEND_DECODE_OK,
+        backend_detection_uart_decode_production(
+            partial_remote_id, sizeof(partial_remote_id) - 1U,
+            BACKEND_SCANNER_SLOT_BLE, &detection, &stamp));
+    TEST_ASSERT_EQUAL_STRING("rid_2095FH04BULX58060127", detection.drone_id);
+    TEST_ASSERT_EQUAL_UINT8(DETECTION_SRC_BLE_RID, detection.source);
+    TEST_ASSERT_EQUAL_DOUBLE(0.0, detection.heading_deg);
+    TEST_ASSERT_EQUAL_DOUBLE(0.0, detection.vertical_speed_mps);
+    TEST_ASSERT_EQUAL_DOUBLE(0.0, detection.height_agl_m);
+    TEST_ASSERT_EQUAL_DOUBLE(0.0, detection.geodetic_alt_m);
+    TEST_ASSERT_EQUAL_DOUBLE(0.0, detection.h_accuracy_m);
+    TEST_ASSERT_EQUAL_DOUBLE(0.0, detection.v_accuracy_m);
+
+    TEST_ASSERT_EQUAL(
+        BACKEND_DECODE_SCHEMA_MISMATCH,
+        backend_detection_uart_decode_production(
+            malformed_remote_id, sizeof(malformed_remote_id) - 1U,
+            BACKEND_SCANNER_SLOT_BLE, &detection, &stamp));
+}
+
 void test_production_detection_codec_accepts_probe_string_and_array(void)
 {
     static const char array_frame[] =

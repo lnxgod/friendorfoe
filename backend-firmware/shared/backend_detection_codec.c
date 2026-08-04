@@ -476,11 +476,19 @@ static bool get_optional_double(const char *json,
                                 size_t token_count,
                                 const char *key,
                                 double *out,
-                                bool *present)
+                                bool *present,
+                                bool null_as_missing)
 {
     size_t index = 0;
     *present = find_value(json, tokens, token_count, key, &index);
-    return !*present || backend_json_get_double(json, &tokens[index], out);
+    if (!*present) {
+        return true;
+    }
+    if (null_as_missing && tokens[index].kind == BACKEND_JSON_NULL) {
+        *present = false;
+        return true;
+    }
+    return backend_json_get_double(json, &tokens[index], out);
 }
 
 static int hex_nibble(char value)
@@ -662,7 +670,8 @@ static backend_detection_decode_result_t decode_detection_uart(
     bool present_ = false; \
     double value_ = 0.0; \
     if (!get_optional_double(json, tokens, token_count, key, \
-            &value_, &present_) || (present_ && !isfinite(value_))) { \
+            &value_, &present_, production_dialect) || \
+        (present_ && !isfinite(value_))) { \
         return BACKEND_DECODE_SCHEMA_MISMATCH; \
     } \
     if (present_) detection.member = value_; \
@@ -671,7 +680,8 @@ static backend_detection_decode_result_t decode_detection_uart(
     bool present_ = false; \
     double value_ = 0.0; \
     if (!get_optional_double(json, tokens, token_count, key, \
-            &value_, &present_) || (present_ && !isfinite(value_))) { \
+            &value_, &present_, production_dialect) || \
+        (present_ && !isfinite(value_))) { \
         return BACKEND_DECODE_SCHEMA_MISMATCH; \
     } \
     if (present_) detection.member = (float)value_; \
