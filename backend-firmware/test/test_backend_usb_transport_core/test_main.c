@@ -140,6 +140,23 @@ void test_oversize_frames_are_rejected_before_queue_mutation(void)
     TEST_ASSERT_EQUAL_UINT64(1, s_transport.optional_drops);
 }
 
+void test_exact_status_ceiling_is_accepted_and_preserved(void)
+{
+    static char required[BACKEND_USB_STATUS_MAX];
+    memset(required, 'R', sizeof(required));
+    required[sizeof(required) - 1U] = '\n';
+
+    TEST_ASSERT_TRUE(backend_usb_transport_enqueue(
+        &s_transport, BACKEND_USB_FRAME_REQUIRED,
+        BACKEND_USB_FRAME_GENERIC, 7,
+        required, sizeof(required)));
+    backend_usb_frame_t popped;
+    TEST_ASSERT_TRUE(backend_usb_transport_pop(&s_transport, &popped));
+    TEST_ASSERT_EQUAL_size_t(BACKEND_USB_STATUS_MAX, popped.length);
+    TEST_ASSERT_EQUAL_CHAR('R', popped.bytes[0]);
+    TEST_ASSERT_EQUAL_CHAR('\n', popped.bytes[popped.length - 1U]);
+}
+
 void test_live_start_is_unconfirmed_and_first_heartbeat_is_immediate(void)
 {
     backend_usb_live_state_t state;
@@ -471,6 +488,7 @@ int main(int argc, char **argv)
     BACKEND_RUN_TEST(test_optional_full_queue_drops_whole_new_frame_without_corrupting_old_frames);
     BACKEND_RUN_TEST(test_required_full_queue_fails_bounded_and_counts_failure);
     BACKEND_RUN_TEST(test_oversize_frames_are_rejected_before_queue_mutation);
+    BACKEND_RUN_TEST(test_exact_status_ceiling_is_accepted_and_preserved);
     BACKEND_RUN_TEST(test_live_start_is_unconfirmed_and_first_heartbeat_is_immediate);
     BACKEND_RUN_TEST(test_failed_heartbeat_releases_same_sequence_for_immediate_retry);
     BACKEND_RUN_TEST(test_completed_heartbeats_schedule_the_next_at_exactly_5000_ms);

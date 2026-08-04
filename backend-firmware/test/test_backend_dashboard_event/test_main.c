@@ -155,6 +155,7 @@ void test_dashboard_json_escapes_every_text_field_exactly(void)
         .distance_m = 2.5,
         .aircraft_lat = 1.25,
         .aircraft_lon = -2.5,
+        .altitude_m = 12.25,
         .operator_lat = 3.75,
         .operator_lon = -4.5,
         .scanner_slot_mask = UINT8_C(0x03),
@@ -165,6 +166,7 @@ void test_dashboard_json_escapes_every_text_field_exactly(void)
     strcpy(event.badge_label, "Drone");
     strcpy(event.badge_class, "drone");
     strcpy(event.badge_entity_key, "WIFI:AA\\BB");
+    strcpy(event.operator_id, "pilot-1");
     char encoded[1024] = {0};
 
     const size_t length = backend_dashboard_event_encode_json(
@@ -179,8 +181,9 @@ void test_dashboard_json_escapes_every_text_field_exactly(void)
         "\"badge_entity_key\":\"WIFI:AA\\\\BB\",\"source\":1,"
         "\"confidence\":0.75,\"threat_score\":75,\"rssi\":-60,"
         "\"distance_m\":2.5,\"aircraft_lat\":1.25,"
-        "\"aircraft_lon\":-2.5,\"operator_lat\":3.75,"
-        "\"operator_lon\":-4.5,\"scanner_slot_mask\":3}";
+        "\"aircraft_lon\":-2.5,\"altitude_m\":12.25,"
+        "\"operator_lat\":3.75,\"operator_lon\":-4.5,"
+        "\"operator_id\":\"pilot-1\",\"scanner_slot_mask\":3}";
     TEST_ASSERT_EQUAL_size_t(strlen(expected), length);
     TEST_ASSERT_EQUAL_STRING(expected, encoded);
 

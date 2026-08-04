@@ -56,7 +56,7 @@ CRLF input is tolerated by the host fixture, but New Dash should send LF.
 | Limit | Contract |
 | --- | --- |
 | Host command | at most 2047 bytes before LF |
-| `FOF_STATUS` frame | at most 8192 bytes |
+| `FOF_STATUS` frame | at most 16384 bytes |
 | `FOF_DET` frame | at most 1535 bytes |
 | USB driver write | no individual call larger than 4096 bytes |
 | Required response queue | 4 complete frames |
@@ -98,7 +98,7 @@ mandatory.
 | Host to Lite | `FOF_PING` | Read-only liveness probe. |
 | Lite to host | `FOF_PONG:<version>` | Firmware version, not sufficient identity proof by itself. |
 | Host to Lite | `FOF_STATUS` | Request one bounded status snapshot. |
-| Lite to host | `FOF_STATUS:<json>` | Truthful Lite identity, capabilities, Wi-Fi/backend/scanner/AP/LED/OTA/upload/USB/live/history state. |
+| Lite to host | `FOF_STATUS:<json>` | Truthful Lite identity, capabilities, Wi-Fi/backend/scanner/AP/LED/OTA/upload/USB/live/history state, plus a bounded native-compatible active `entities` array. |
 | Lite to host | `FOF_DET:<json>` | Optional canonical detection event. |
 | Lite to host | `FOF_INV:<json>` | Optional completed investigation result when available. |
 | Lite to host | `FOF_CTL_OK:<json>` | Supported headless control accepted. |
@@ -126,6 +126,17 @@ upload queue capacity is `512`. Legal `led` values are `healthy`,
 `backend.last_success_age_s` is `null` until the uploader has received its
 first successful backend acknowledgement; afterward it is the elapsed whole
 seconds, saturated to an unsigned 32-bit value.
+
+USB status also carries at most eight active `entities`, using the native badge
+field contract (`label`, `class`, `category`, `code`, `display_id`, `source`,
+`source_id`, `score`, `confidence_pct`, `last_seen_s`, RSSI and event counters,
+and `stale`). Drone and operator `lat`/`lon` fields are included only when the
+scanner supplied valid nonzero coordinate pairs. Lite normalizes the active
+Meta class to `meta` while preserving the existing `FOF_DET.badge_class` value
+`meta_glasses`. Remote ID and Meta entries expire after 90 seconds; SSID/OUI
+drone clues expire after 15 seconds. The recovery-AP dashboard continues to use
+its redacted status plus the session event endpoint; active entities are added
+only to the USB `FOF_STATUS` frame.
 
 ## Acknowledged live delivery
 
@@ -372,7 +383,7 @@ line. The host writes LF after each host frame.
 > FOF_PING
 < FOF_PONG:0.2.0-backend
 > FOF_STATUS
-< FOF_STATUS:{"product_family":"badge_lite","target":"uplink-s3-backend","project":"fof_backend_uplink","hardware":"seeed_xiao_esp32s3","version":"0.2.0-backend","firmware_name":"uplink-s3-backend","app_project":"fof_backend_uplink","hardware_type":"seeed_xiao_esp32s3","hardware_id":"AA:BB:CC:DD:EE:FF","mac":"AA:BB:CC:DD:EE:FF","boot_id":305419896,"mode":"headless","mode_label":"Backend Badge Lite","config_generation":9,"capabilities":["display_none","usb_live","usb_live_ack","usb_buffered","usb_config","http_uplink","config_ap","ap_dashboard","remote_ota","uart_relay_ota"],"wifi":{"configured":false,"connected":false,"full_pass_failed":false},"recovery":{"reason":"wifi_unconfigured","ap_running":true},"scanner":[{"slot":0,"connected":true,"identity_valid":true},{"slot":1,"connected":false,"identity_valid":false}],"threats":{"drone_active":false,"meta_active":false,"drone_count":0,"meta_count":0,"drone_last_seen_age_ms":-1,"meta_last_seen_age_ms":-1},"led":"network_degraded","ota_ready":true,"upload":{"depth":0,"capacity":512,"dropped":0,"ok":0,"failed":0,"retries":0},"usb":{"available":true,"host_connected":true,"required_depth":0,"optional_depth":0,"optional_drops":0,"required_failures":0,"bytes_transmitted":0,"bytes_received":0,"output_poisoned":false},"live":{"started":false,"session_id":"","last_ack_sequence":0,"confirmed":false,"lease_remaining_ms":0},"history":{"available":true,"count":0,"contention_drops":0},"dashboard":{"enabled":true,"degraded_reason":null},"backend":{"reachable":false,"last_success_age_s":null},"counts":{"drone":0,"meta":0,"tracker":0,"wifi_anomaly":0,"ble":0,"other":0},"scanners":[{"slot":0,"connected":true,"identity_valid":true,"status_available":true,"identity":{"target":"scanner-s3-combo-backend","project":"fof_backend_scanner","hardware":"seeed_xiao_esp32s3","version":"0.2.0-backend"},"profile":1,"health":{"command":true,"radio":true,"role_acked":true},"errors":{"rx":0,"tx_drops":0},"uptime_ms":9000},{"slot":1,"connected":false,"identity_valid":false,"status_available":false,"identity":null,"profile":null,"health":{"command":false,"radio":false,"role_acked":false},"errors":null,"uptime_ms":null}],"scanner_summaries":[{"slot":0,"connected":true,"identity_valid":true,"status_available":true,"identity":{"target":"scanner-s3-combo-backend","project":"fof_backend_scanner","hardware":"seeed_xiao_esp32s3","version":"0.2.0-backend"},"profile":1,"health":{"command":true,"radio":true,"role_acked":true},"errors":{"rx":0,"tx_drops":0},"uptime_ms":9000},{"slot":1,"connected":false,"identity_valid":false,"status_available":false,"identity":null,"profile":null,"health":{"command":false,"radio":false,"role_acked":false},"errors":null,"uptime_ms":null}]}
+< FOF_STATUS:{"product_family":"badge_lite","target":"uplink-s3-backend","project":"fof_backend_uplink","hardware":"seeed_xiao_esp32s3","version":"0.2.0-backend","firmware_name":"uplink-s3-backend","app_project":"fof_backend_uplink","hardware_type":"seeed_xiao_esp32s3","hardware_id":"AA:BB:CC:DD:EE:FF","mac":"AA:BB:CC:DD:EE:FF","boot_id":305419896,"mode":"headless","mode_label":"Backend Badge Lite","config_generation":9,"capabilities":["display_none","usb_live","usb_live_ack","usb_buffered","usb_config","http_uplink","config_ap","ap_dashboard","remote_ota","uart_relay_ota"],"wifi":{"configured":false,"connected":false,"full_pass_failed":false},"recovery":{"reason":"wifi_unconfigured","ap_running":true},"scanner":[{"slot":0,"connected":true,"identity_valid":true},{"slot":1,"connected":false,"identity_valid":false}],"threats":{"drone_active":false,"meta_active":false,"drone_count":0,"meta_count":0,"drone_last_seen_age_ms":-1,"meta_last_seen_age_ms":-1},"led":"network_degraded","ota_ready":true,"upload":{"depth":0,"capacity":512,"dropped":0,"ok":0,"failed":0,"retries":0},"usb":{"available":true,"host_connected":true,"required_depth":0,"optional_depth":0,"optional_drops":0,"required_failures":0,"bytes_transmitted":0,"bytes_received":0,"output_poisoned":false},"live":{"started":false,"session_id":"","last_ack_sequence":0,"confirmed":false,"lease_remaining_ms":0},"history":{"available":true,"count":0,"contention_drops":0},"dashboard":{"enabled":true,"degraded_reason":null},"backend":{"reachable":false,"last_success_age_s":null},"counts":{"drone":0,"meta":0,"tracker":0,"wifi_anomaly":0,"ble":0,"other":0},"scanners":[{"slot":0,"connected":true,"identity_valid":true,"status_available":true,"identity":{"target":"scanner-s3-combo-backend","project":"fof_backend_scanner","hardware":"seeed_xiao_esp32s3","version":"0.2.0-backend"},"profile":1,"health":{"command":true,"radio":true,"role_acked":true},"errors":{"rx":0,"tx_drops":0},"uptime_ms":9000},{"slot":1,"connected":false,"identity_valid":false,"status_available":false,"identity":null,"profile":null,"health":{"command":false,"radio":false,"role_acked":false},"errors":null,"uptime_ms":null}],"entities":[],"scanner_summaries":[{"slot":0,"connected":true,"identity_valid":true,"status_available":true,"identity":{"target":"scanner-s3-combo-backend","project":"fof_backend_scanner","hardware":"seeed_xiao_esp32s3","version":"0.2.0-backend"},"profile":1,"health":{"command":true,"radio":true,"role_acked":true},"errors":{"rx":0,"tx_drops":0},"uptime_ms":9000},{"slot":1,"connected":false,"identity_valid":false,"status_available":false,"identity":null,"profile":null,"health":{"command":false,"radio":false,"role_acked":false},"errors":null,"uptime_ms":null}]}
 > FOF_CONFIG_GET
 < FOF_CONFIG:{"schema_version":1,"generation":9,"networks":[{"ssid":"Lab","password_set":true}],"backend_url":"http://10.0.0.2:8000","device_id":"uplink_CB77A4","display_name":"Lite Lab","ap_password_set":true,"auto_update_enabled":false,"has_location":false,"latitude":null,"longitude":null,"altitude_m":null}
 > FOF_LIVE_START:{"client":"new_dash","protocol":1}

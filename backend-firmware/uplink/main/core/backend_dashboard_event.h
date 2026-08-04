@@ -27,8 +27,10 @@ typedef struct {
     double distance_m;
     double aircraft_lat;
     double aircraft_lon;
+    double altitude_m;
     double operator_lat;
     double operator_lon;
+    char operator_id[24];
     uint8_t scanner_slot_mask;
 } backend_dashboard_event_t;
 

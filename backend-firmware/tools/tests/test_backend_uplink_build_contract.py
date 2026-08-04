@@ -242,6 +242,7 @@ def test_lite_runtime_sources_are_explicit_and_excluded_from_fullsize() -> None:
     fullsize_branch = component[fullsize_start:profile_end]
     lite_sources = {
         "core/backend_dashboard_event.c",
+        "core/backend_live_entities.c",
         "network/backend_dashboard_page.c",
         "storage/backend_event_ring.c",
         "usb/backend_usb_config.c",
@@ -272,6 +273,22 @@ def test_lite_usb_service_owns_bounded_driver_and_strict_psram_queues() -> None:
     assert "BACKEND_USB_REQUIRED_QUEUE_CAPACITY" in service
     assert "BACKEND_USB_OPTIONAL_QUEUE_CAPACITY" in service
     assert "usb_serial_jtag_write_bytes(" in service
+
+
+def test_lite_usb_status_projects_bounded_entities_without_ap_leakage() -> None:
+    source = (UPLINK / "main/main.c").read_text(encoding="utf-8")
+    protocol = (UPLINK / "main/usb/backend_usb_protocol.h").read_text(
+        encoding="utf-8"
+    )
+    status = _c_function(source, "build_lite_status")
+    append_entities = _c_function(source, "append_lite_active_entities")
+
+    assert "#define BACKEND_USB_STATUS_MAX 16384U" in protocol
+    assert "(!usb_frame || append_lite_active_entities(&writer, now_ms))" in status
+    assert "live_entities_snapshot = s_runtime.live_entities" in append_entities
+    unlock = append_entities.index("xSemaphoreGive(s_runtime.live_entity_lock)")
+    encode = append_entities.index("backend_live_entities_append_json(")
+    assert unlock < encode
 
 
 def test_lite_usb_driver_io_runs_outside_lock_then_cleanup_is_unskippable() -> None:

@@ -18,7 +18,7 @@ ESPRESSIF_USB_SERIAL_JTAG_VID = 0x303A
 ESPRESSIF_USB_SERIAL_JTAG_PID = 0x1001
 
 COMMAND_MAX_BYTES = 2047
-STATUS_MAX_BYTES = 8192
+STATUS_MAX_BYTES = 16384
 DETECTION_MAX_BYTES = 1535
 HEARTBEAT_MS = 5000
 LEASE_MS = 15000
@@ -118,6 +118,7 @@ _STATUS_KEYS = frozenset(
         "history",
         "dashboard",
         "backend",
+        "entities",
         "scanner_summaries",
     }
 )
@@ -641,6 +642,34 @@ def parse_status(frame: str) -> dict[str, Any]:
         minimum=0,
         maximum=2**32 - 1,
     )
+
+    entities = status["entities"]
+    if not isinstance(entities, list) or len(entities) > 8:
+        raise ProtocolError("entities must be an array with at most 8 items")
+    for index, value in enumerate(entities):
+        name = f"entities[{index}]"
+        entity = _object(value, name)
+        required = frozenset(
+            {
+                "label", "class", "category", "code", "display_id",
+                "source", "source_id", "score", "confidence_pct",
+                "last_seen_s", "rssi", "best_rssi", "events",
+                "seen_count", "stale",
+            }
+        )
+        _required_keys(entity, required, name)
+        _text(entity["label"], f"{name}.label", nonempty=True)
+        threat_class = _text(
+            entity["class"], f"{name}.class", nonempty=True
+        )
+        if threat_class not in {"drone", "meta"}:
+            raise ProtocolError(f"{name}.class is unsupported")
+        _text(entity["source"], f"{name}.source", nonempty=True)
+        _integer(
+            entity["source_id"], f"{name}.source_id",
+            minimum=0, maximum=255,
+        )
+        _boolean(entity["stale"], f"{name}.stale")
 
     summaries = status["scanner_summaries"]
     if not isinstance(summaries, list) or len(summaries) != 2:

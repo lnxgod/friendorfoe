@@ -22,6 +22,7 @@ if("${BACKEND_STATUS_PROJECT_NAME}" STREQUAL "fof_backend_uplink")
     list(APPEND BACKEND_STATUS_LED_SRCS "hw/backend_yellow_led.c")
     list(APPEND BACKEND_STATUS_LED_SRCS
         "core/backend_dashboard_event.c"
+        "core/backend_live_entities.c"
         "network/backend_dashboard_page.c"
         "storage/backend_event_ring.c"
         "usb/backend_usb_config.c"

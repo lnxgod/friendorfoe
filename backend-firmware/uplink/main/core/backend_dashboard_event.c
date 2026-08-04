@@ -165,8 +165,14 @@ bool backend_dashboard_event_project(
         observation->detection.rssi);
     projected.aircraft_lat = observation->detection.latitude;
     projected.aircraft_lon = observation->detection.longitude;
+    projected.altitude_m = observation->detection.altitude_m;
     projected.operator_lat = observation->detection.operator_lat;
     projected.operator_lon = observation->detection.operator_lon;
+    if (!copy_text(projected.operator_id, sizeof(projected.operator_id),
+                   observation->detection.operator_id,
+                   sizeof(observation->detection.operator_id))) {
+        return false;
+    }
     projected.scanner_slot_mask =
         observation->detection.scanner_slots_seen;
 
@@ -199,10 +205,12 @@ static bool event_valid(const backend_dashboard_event_t *event)
            event_text_valid(event->model, sizeof(event->model)) &&
            event_text_valid(event->badge_label, sizeof(event->badge_label)) &&
            event_text_valid(event->badge_class, sizeof(event->badge_class)) &&
+           event_text_valid(event->operator_id, sizeof(event->operator_id)) &&
            event_text_valid(
                event->badge_entity_key, sizeof(event->badge_entity_key)) &&
            isfinite(event->confidence) && isfinite(event->distance_m) &&
            isfinite(event->aircraft_lat) && isfinite(event->aircraft_lon) &&
+           isfinite(event->altitude_m) &&
            isfinite(event->operator_lat) && isfinite(event->operator_lon);
 }
 
@@ -251,8 +259,8 @@ size_t backend_dashboard_event_encode_json(
         ",\"source\":%u,\"confidence\":%.9g"
         ",\"threat_score\":%u,\"rssi\":%d"
         ",\"distance_m\":%.15g,\"aircraft_lat\":%.15g"
-        ",\"aircraft_lon\":%.15g,\"operator_lat\":%.15g"
-        ",\"operator_lon\":%.15g,\"scanner_slot_mask\":%u}",
+        ",\"aircraft_lon\":%.15g,\"altitude_m\":%.15g"
+        ",\"operator_lat\":%.15g,\"operator_lon\":%.15g",
         (unsigned)event->source,
         (double)event->confidence,
         (unsigned)event->threat_score,
@@ -260,8 +268,13 @@ size_t backend_dashboard_event_encode_json(
         event->distance_m,
         event->aircraft_lat,
         event->aircraft_lon,
+        event->altitude_m,
         event->operator_lat,
-        event->operator_lon,
+        event->operator_lon);
+    append_string_field(&writer, "operator_id", event->operator_id);
+    backend_json_append_format(
+        &writer,
+        ",\"scanner_slot_mask\":%u}",
         (unsigned)event->scanner_slot_mask);
     return backend_json_writer_finish(&writer);
 }

@@ -8,11 +8,11 @@
       "partition_capacity": 2097152,
       "parts": [
         {
-          "crc32": 1121465377,
+          "crc32": 416999416,
           "name": "uplink-s3-backend-bootloader.bin",
           "offset": 0,
           "path": "uplink-s3-backend/uplink-s3-backend-bootloader.bin",
-          "sha256": "5eb7e70b4968e5f8253d57f406d57283fd4d76ee800d6a80d5fda5c6902122c1",
+          "sha256": "60b15cf5e29c0157a2087ba8e880a6e91a41bd76db14e7c486bb20ffdcd189b8",
           "size": 20928
         },
         {
@@ -32,12 +32,12 @@
           "size": 8192
         },
         {
-          "crc32": 3768511454,
+          "crc32": 1559118973,
           "name": "uplink-s3-backend-firmware.bin",
           "offset": 131072,
           "path": "uplink-s3-backend/uplink-s3-backend-firmware.bin",
-          "sha256": "0f35b40f5e7528487979d05bc90146e37e86043b477ec7af1f83bc4dd00e176c",
-          "size": 1028576
+          "sha256": "cc1730fbd427682a5f540bca72e43955eb2999c934cbe450d41aaa0600962079",
+          "size": 1031984
         }
       ],
       "project": "fof_backend_uplink",

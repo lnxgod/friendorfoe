@@ -81,7 +81,7 @@ STATUS_FRAME = (
     '"wifi_anomaly":0,"ble":0,"other":0},'
     '"scanners":'
     + SCANNER_SUMMARIES_JSON
-    + ',"scanner_summaries":'
+    + ',"entities":[],"scanner_summaries":'
     + SCANNER_SUMMARIES_JSON
     + '}'
 )
@@ -148,6 +148,7 @@ def test_literal_status_matches_final_encoder_contract():
         "backend",
         "counts",
         "scanners",
+        "entities",
         "scanner_summaries",
     ]
     assert status["firmware_name"] == "uplink-s3-backend"
@@ -205,6 +206,7 @@ def test_literal_status_matches_final_encoder_contract():
         },
     ]
     assert status["scanners"] == status["scanner_summaries"]
+    assert status["entities"] == []
 
 
 def test_handoff_document_uses_the_same_literal_status_frame():

@@ -34,6 +34,7 @@
 #include "backend_dashboard_event.h"
 #include "backend_event_ring.h"
 #include "backend_lite_ap_policy.h"
+#include "backend_live_entities.h"
 #endif
 #include "backend_detection_codec.h"
 #include "backend_detection_router.h"
@@ -155,6 +156,7 @@ typedef struct {
     SemaphoreHandle_t relay_complete;
 #if defined(FOF_BACKEND_PROFILE_BADGE_LITE)
     SemaphoreHandle_t event_ring_lock;
+    SemaphoreHandle_t live_entity_lock;
     SemaphoreHandle_t config_transaction_lock;
 #endif
 #if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
@@ -172,6 +174,8 @@ typedef struct {
     backend_usb_config_t usb_config;
     backend_event_ring_t event_ring;
     backend_dashboard_event_t *event_storage;
+    backend_live_entities_t live_entities;
+    backend_live_entities_t live_entities_snapshot;
     atomic_uint_fast64_t event_ring_contention_drops;
 #else
     backend_ap_policy_t ap_policy;
@@ -742,6 +746,7 @@ static void coordinator_canonical_sink(
     if (!backend_dashboard_event_project(observation, &event)) {
         return;
     }
+    const int64_t now_ms = monotonic_ms();
     if (s_runtime.history_available &&
         xSemaphoreTake(s_runtime.event_ring_lock, 0) == pdTRUE) {
         (void)backend_event_ring_append(&s_runtime.event_ring, &event);
@@ -751,6 +756,12 @@ static void coordinator_canonical_sink(
             &s_runtime.event_ring_contention_drops,
             1U,
             memory_order_relaxed);
+    }
+    if (xSemaphoreTake(
+            s_runtime.live_entity_lock, portMAX_DELAY) == pdTRUE) {
+        (void)backend_live_entities_ingest(
+            &s_runtime.live_entities, &event, now_ms);
+        (void)xSemaphoreGive(s_runtime.live_entity_lock);
     }
 
     char frame[BACKEND_USB_DET_MAX];
@@ -4775,6 +4786,23 @@ static bool append_lite_badge_compatibility(
     return backend_json_append(writer, "]");
 }
 
+static bool append_lite_active_entities(
+    backend_json_writer_t *writer,
+    int64_t now_ms)
+{
+    if (writer == NULL || !backend_json_append(writer, ",\"entities\":")) {
+        return false;
+    }
+    if (xSemaphoreTake(
+            s_runtime.live_entity_lock, pdMS_TO_TICKS(20U)) != pdTRUE) {
+        return backend_json_append(writer, "[]");
+    }
+    s_runtime.live_entities_snapshot = s_runtime.live_entities;
+    (void)xSemaphoreGive(s_runtime.live_entity_lock);
+    return backend_live_entities_append_json(
+        writer, &s_runtime.live_entities_snapshot, now_ms);
+}
+
 static size_t build_lite_status(
     bool usb_frame, char *output, size_t capacity)
 {
@@ -4784,9 +4812,10 @@ static size_t build_lite_status(
     output[0] = '\0';
     const backend_firmware_identity_t *identity =
         backend_identity_for_image(BACKEND_IMAGE_UPLINK);
+    const int64_t now_ms = monotonic_ms();
     lite_status_snapshot_t status;
     if (identity == NULL ||
-        !take_lite_status_snapshot(monotonic_ms(), &status)) {
+        !take_lite_status_snapshot(now_ms, &status)) {
         return 0U;
     }
     const char *led = led_state_name(status.led_state);
@@ -4910,6 +4939,7 @@ static size_t build_lite_status(
     ok = ok && backend_json_append(&writer, "}") &&
         append_lite_backend_status(&writer, &status) &&
         append_lite_badge_compatibility(&writer, &status) &&
+        (!usb_frame || append_lite_active_entities(&writer, now_ms)) &&
         backend_json_append(&writer, ",\"scanner_summaries\":[") &&
         append_lite_scanner_summary(&writer, 0U, &status) &&
         backend_json_append(&writer, ",") &&
@@ -5504,6 +5534,7 @@ static bool init_sync_objects(void)
     s_runtime.relay_complete = xSemaphoreCreateBinary();
 #if defined(FOF_BACKEND_PROFILE_BADGE_LITE)
     s_runtime.event_ring_lock = xSemaphoreCreateMutex();
+    s_runtime.live_entity_lock = xSemaphoreCreateMutex();
     s_runtime.config_transaction_lock = xSemaphoreCreateRecursiveMutex();
 #endif
 #if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
@@ -5525,6 +5556,7 @@ static bool init_sync_objects(void)
            s_runtime.relay_complete != NULL
 #if defined(FOF_BACKEND_PROFILE_BADGE_LITE)
            && s_runtime.event_ring_lock != NULL &&
+           s_runtime.live_entity_lock != NULL &&
            s_runtime.config_transaction_lock != NULL
 #endif
 #if defined(FOF_BACKEND_PROFILE_S3_FULLSIZE)
@@ -5864,6 +5896,7 @@ void app_main(void)
     }
 #if defined(FOF_BACKEND_PROFILE_BADGE_LITE)
     atomic_init(&s_runtime.event_ring_contention_drops, 0U);
+    backend_live_entities_init(&s_runtime.live_entities);
     s_runtime.event_storage = psram_alloc_strict(
         128U * sizeof(backend_dashboard_event_t));
     s_runtime.history_available = backend_event_ring_init(
