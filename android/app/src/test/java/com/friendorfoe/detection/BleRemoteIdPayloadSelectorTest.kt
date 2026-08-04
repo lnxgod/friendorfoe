@@ -21,6 +21,12 @@ class BleRemoteIdPayloadSelectorTest {
         val message = message(OpenDroneIdParser.MSG_TYPE_LOCATION)
         val serviceData = byteArrayOf(0x0D, 0x37) + message
 
+        val descriptor = requireNotNull(BleRemoteIdPayloadSelector.inspect(serviceData))
+        assertEquals(2, descriptor.payloadOffset)
+        assertEquals(25, descriptor.payloadLength)
+        assertEquals(OpenDroneIdParser.MSG_TYPE_LOCATION, descriptor.messageType)
+        assertEquals(0x37, descriptor.transactionCounter)
+
         val selection = requireNotNull(BleRemoteIdPayloadSelector.select(serviceData))
         assertArrayEquals(message, selection.payload)
         assertEquals(0x37, selection.transactionCounter)
@@ -31,6 +37,11 @@ class BleRemoteIdPayloadSelectorTest {
         val pack = fourMessagePack()
 
         assertEquals(103, pack.size)
+        val descriptor = requireNotNull(BleRemoteIdPayloadSelector.inspect(pack))
+        assertEquals(0, descriptor.payloadOffset)
+        assertEquals(103, descriptor.payloadLength)
+        assertEquals(OpenDroneIdParser.MSG_TYPE_MESSAGE_PACK, descriptor.messageType)
+        assertNull(descriptor.transactionCounter)
         val selection = requireNotNull(BleRemoteIdPayloadSelector.select(pack))
         assertArrayEquals(pack, selection.payload)
         assertNull(selection.transactionCounter)

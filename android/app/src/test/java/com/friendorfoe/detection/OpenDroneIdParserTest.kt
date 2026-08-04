@@ -95,6 +95,84 @@ class OpenDroneIdParserTest {
     }
 
     @Test
+    fun decodesEastWestDirectionAndHighSpeedMultiplier() {
+        val state = newState()
+
+        OpenDroneIdParser.parseMessage(
+            locationMessage(
+                lat = 36.13094,
+                lon = -115.15064,
+                directionRaw = 42,
+                eastWestDirection = true,
+                speedRaw = 10,
+                speedMultiplier = true,
+            ),
+            state,
+        )
+
+        assertEquals(222f, state.heading)
+        assertEquals(71.25f, state.speedMps)
+    }
+
+    @Test
+    fun preservesStationaryZeroDirectionAndSpeed() {
+        val state = newState()
+
+        OpenDroneIdParser.parseMessage(
+            locationMessage(
+                lat = 36.13094,
+                lon = -115.15064,
+                directionRaw = 0,
+                speedRaw = 0,
+            ),
+            state,
+        )
+
+        assertEquals(0f, state.heading)
+        assertEquals(0f, state.speedMps)
+    }
+
+    @Test
+    fun mapsOfficialInvalidDirectionSentinelToUnknown() {
+        val state = newState()
+        OpenDroneIdParser.parseMessage(locationMessage(36.13094, -115.15064), state)
+
+        OpenDroneIdParser.parseMessage(
+            locationMessage(
+                lat = 36.13095,
+                lon = -115.15065,
+                directionRaw = 181,
+                eastWestDirection = true,
+            ),
+            state,
+        )
+
+        assertNull(state.heading)
+        assertNull(state.toDroneOrNull()?.position?.heading)
+        assertEquals(36.13095, state.latitude ?: 0.0, 0.000001)
+    }
+
+    @Test
+    fun mapsOfficialInvalidHorizontalSpeedSentinelToUnknown() {
+        val state = newState()
+        OpenDroneIdParser.parseMessage(locationMessage(36.13094, -115.15064), state)
+
+        OpenDroneIdParser.parseMessage(
+            locationMessage(
+                lat = 36.13095,
+                lon = -115.15065,
+                speedRaw = 255,
+                speedMultiplier = true,
+            ),
+            state,
+        )
+
+        assertNull(state.speedMps)
+        assertNull(state.toDroneOrNull()?.position?.speedMps)
+        assertEquals(36.13095, state.latitude ?: 0.0, 0.000001)
+    }
+
+    @Test
     fun rejectsPackWithWrongSingleMessageSizeWithoutPartialMutation() {
         val state = newState()
         val pack = messagePack(
@@ -140,11 +218,20 @@ class OpenDroneIdParserTest {
         return data
     }
 
-    private fun locationMessage(lat: Double, lon: Double): ByteArray {
+    private fun locationMessage(
+        lat: Double,
+        lon: Double,
+        directionRaw: Int = 45,
+        eastWestDirection: Boolean = false,
+        speedRaw: Int = 20,
+        speedMultiplier: Boolean = false,
+    ): ByteArray {
         val data = ByteArray(25)
         data[0] = (OpenDroneIdParser.MSG_TYPE_LOCATION shl 4).toByte()
-        data[2] = 45
-        data[3] = 20
+        data[1] = ((if (speedMultiplier) 0x01 else 0x00) or
+            (if (eastWestDirection) 0x02 else 0x00)).toByte()
+        data[2] = directionRaw.toByte()
+        data[3] = speedRaw.toByte()
         val buffer = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN)
         buffer.putInt(5, (lat / 1e-7).toInt())
         buffer.putInt(9, (lon / 1e-7).toInt())

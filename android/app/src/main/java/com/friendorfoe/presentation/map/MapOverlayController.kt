@@ -14,7 +14,6 @@ import com.friendorfoe.domain.model.Drone
 import com.friendorfoe.domain.model.ObjectCategory
 import com.friendorfoe.domain.model.Position
 import com.friendorfoe.domain.model.SkyObject
-import com.friendorfoe.domain.model.isFormationDroneId
 import com.friendorfoe.presentation.util.categoryColorArgb
 import org.osmdroid.util.GeoPoint
 import org.osmdroid.views.MapView
@@ -70,28 +69,10 @@ internal data class AircraftMarkerPresentation(
     val visuallyConfirmed: Boolean,
 )
 
-internal data class LocalMapTrackLayers(
-    val markerTracks: List<MapTrack>,
-    val formationTracks: List<MapTrack>,
-)
-
-/** Routes C5 formation pixels to their shared canvas layer instead of Marker instances. */
-internal fun splitLocalMapTracks(tracks: List<MapTrack>): LocalMapTrackLayers {
-    val markerTracks = ArrayList<MapTrack>(tracks.size)
-    val formationTracks = ArrayList<MapTrack>()
-    tracks.forEach { track ->
-        val drone = track.skyObject as? Drone
-        if (drone != null && isFormationDroneId(drone.droneId)) {
-            formationTracks += track
-        } else {
-            markerTracks += track
-        }
-    }
-    return LocalMapTrackLayers(
-        markerTracks = markerTracks,
-        formationTracks = formationTracks,
-    )
-}
+internal fun formationPointsChanged(
+    previous: List<FormationMapPoint>?,
+    next: List<FormationMapPoint>,
+): Boolean = previous !== next && previous != next
 
 internal fun MapTrack.toAircraftMarkerPresentation(
     visuallyConfirmed: Boolean,
@@ -219,6 +200,7 @@ internal class MapOverlayController(
     private val aircraftMarkers = RetainedOverlayStore<AircraftOverlay>()
     private val formationOverlay = FormationOverlay(context)
     private var formationOverlayAttached = false
+    private var renderedFormationPoints: List<FormationMapPoint>? = null
     private val remoteMarkers = RetainedOverlayStore<RemoteOverlay>()
     private val sensorMarkers = RetainedOverlayStore<Marker>()
     private val sensorDroneMarkers = RetainedOverlayStore<SensorDroneOverlay>()
@@ -236,6 +218,7 @@ internal class MapOverlayController(
 
     fun render(
         mapTracks: List<MapTrack>,
+        formationPoints: List<FormationMapPoint>,
         userPosition: Position,
         followCompass: Boolean,
         stabilizedMapHeading: Float,
@@ -256,10 +239,13 @@ internal class MapOverlayController(
         )
 
         if (overlayPlan.renderTargets) {
+            updateFormationOverlay(formationPoints)
             updateAircraftMarkers(mapTracks, activeVisualFocusIds)
             updateSensorMarkers(remoteSensors)
             updateSensorDroneOverlays(sensorDrones)
-            updateRemoteMarkers(remoteSearchResults, mapTracks.mapTo(mutableSetOf()) { it.skyObject.id })
+            val localObjectIds = mapTracks.mapTo(mutableSetOf()) { it.skyObject.id }
+            formationPoints.mapTo(localObjectIds, FormationMapPoint::objectId)
+            updateRemoteMarkers(remoteSearchResults, localObjectIds)
             updateRemoteSearchMarker(remoteSearchCenter, remoteSearchResults.size)
             updateRemoteSearchRing(remoteSearchCenter)
         }
@@ -289,12 +275,8 @@ internal class MapOverlayController(
         tracks: List<MapTrack>,
         activeVisualFocusIds: Set<String>,
     ) {
-        val layers = splitLocalMapTracks(
-            tracks.filter { it.position.hasValidMapCoordinates() }
-        )
-        updateFormationOverlay(layers.formationTracks)
-
-        val presentations = layers.markerTracks
+        val presentations = tracks
+            .filter { it.position.hasValidMapCoordinates() }
             .map { track ->
                 track.toAircraftMarkerPresentation(track.skyObject.id in activeVisualFocusIds)
             }
@@ -338,13 +320,22 @@ internal class MapOverlayController(
         )
     }
 
-    private fun updateFormationOverlay(tracks: List<MapTrack>) {
-        val points = tracks.map { track ->
-            GeoPoint(track.position.latitude, track.position.longitude)
-        }
-        formationOverlay.replacePoints(points)
+    private fun updateFormationOverlay(points: List<FormationMapPoint>) {
+        if (!formationPointsChanged(renderedFormationPoints, points)) return
+        renderedFormationPoints = points
 
-        if (points.isEmpty()) {
+        val geoPoints = points.mapNotNull { point ->
+            if (point.latitude.isFinite() && point.longitude.isFinite() &&
+                (point.latitude != 0.0 || point.longitude != 0.0)
+            ) {
+                GeoPoint(point.latitude, point.longitude)
+            } else {
+                null
+            }
+        }
+        formationOverlay.replacePoints(geoPoints)
+
+        if (geoPoints.isEmpty()) {
             if (formationOverlayAttached) {
                 map.overlays.remove(formationOverlay)
                 formationOverlayAttached = false

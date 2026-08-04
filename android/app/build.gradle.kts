@@ -23,8 +23,8 @@ android {
         applicationId = "com.friendorfoe"
         minSdk = 26
         targetSdk = 34
-        versionCode = 123
-        versionName = "0.67.14-android-rid-radio-reliability"
+        versionCode = 124
+        versionName = "0.67.15-android-rid-ingest-performance"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

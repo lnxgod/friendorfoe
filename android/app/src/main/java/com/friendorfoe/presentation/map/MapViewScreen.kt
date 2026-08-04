@@ -204,8 +204,8 @@ fun MapViewScreen(
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
 
-    val skyObjects by viewModel.skyObjects.collectAsStateWithLifecycle()
     val mapTracks by viewModel.mapTracks.collectAsStateWithLifecycle()
+    val formationPoints by viewModel.formationPoints.collectAsStateWithLifecycle()
     val filterState by viewModel.filterState.collectAsStateWithLifecycle()
     val userLocationFix by viewModel.userLocationFix.collectAsStateWithLifecycle()
     val selectedObjectId by viewModel.selectedObjectId.collectAsStateWithLifecycle()
@@ -336,6 +336,7 @@ fun MapViewScreen(
             update = {
                 overlayController.render(
                     mapTracks = mapTracks,
+                    formationPoints = formationPoints,
                     userPosition = userPosition,
                     followCompass = followCompass,
                     stabilizedMapHeading = stabilizedMapHeading,
@@ -425,7 +426,7 @@ fun MapViewScreen(
         FilterBar(
             filterState = filterState,
             onFilterStateChange = { viewModel.updateFilter(it) },
-            resultCount = skyObjects.size,
+            resultCount = mapTracks.size + formationPoints.size,
             modifier = Modifier
                 .align(Alignment.TopCenter)
                 .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.85f))

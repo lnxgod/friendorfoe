@@ -89,7 +89,7 @@ class SkyObjectRepository @Inject constructor(
         private const val DEDUP_DISTANCE_THRESHOLD_DEG = 0.001
         private const val MAX_TRAIL_POINTS = 60
         private const val MIN_POSITION_DELTA_DEG = 0.00001
-        private const val FORMATION_UI_UPDATE_INTERVAL_MS = 500L
+        private const val FORMATION_UI_UPDATE_INTERVAL_MS = 250L
         private const val STALE_MAINTENANCE_INTERVAL_MS = 30_000L
     }
 

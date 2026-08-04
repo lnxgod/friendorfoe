@@ -40,7 +40,13 @@ object OpenDroneIdParser {
     private const val LAT_LON_SCALE = 1e-7
     private const val ALT_SCALE = 0.5
     private const val ALT_OFFSET = -1000.0
-    private const val SPEED_SCALE = 0.25f
+    private const val SPEED_LOW_SCALE = 0.25f
+    private const val SPEED_HIGH_SCALE = 0.75f
+    private const val SPEED_LOW_RANGE_MAX = 255 * SPEED_LOW_SCALE
+    private const val LOCATION_SPEED_MULT_MASK = 0x01
+    private const val LOCATION_EW_DIRECTION_MASK = 0x02
+    private const val MAX_VALID_DIRECTION_DEGREES = 359f
+    private const val INVALID_HORIZONTAL_SPEED_MPS = 255f
 
     /**
      * Parse an OpenDroneID message and update the given partial state.
@@ -93,8 +99,8 @@ object OpenDroneIdParser {
      * Format (25 bytes):
      *   Byte 0: [msg type (4 bits)] [protocol version (4 bits)]
      *   Byte 1: Status flags
-     *   Byte 2: Direction (heading / 2, so 0-179 maps to 0-358 degrees)
-     *   Byte 3: Speed (horizontal, in 0.25 m/s increments)
+     *   Byte 2: Direction (0-179 degrees; byte 1 selects the east/west half-circle)
+     *   Byte 3: Horizontal speed (byte 1 selects the low or high speed scale)
      *   Byte 4: Vertical speed (int8, in 0.5 m/s increments)
      *   Bytes 5-8: Latitude (int32, x 1e-7 degrees)
      *   Bytes 9-12: Longitude (int32, x 1e-7 degrees)
@@ -112,11 +118,17 @@ object OpenDroneIdParser {
 
         val buffer = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN)
 
+        val locationFlags = data[1].toInt() and 0xFF
         val directionRaw = data[2].toInt() and 0xFF
-        val heading = directionRaw * 2.0f
+        val heading = directionRaw.toFloat() +
+            if ((locationFlags and LOCATION_EW_DIRECTION_MASK) != 0) 180f else 0f
 
         val speedRaw = data[3].toInt() and 0xFF
-        val speedMps = speedRaw * SPEED_SCALE
+        val speedMps = if ((locationFlags and LOCATION_SPEED_MULT_MASK) != 0) {
+            speedRaw * SPEED_HIGH_SCALE + SPEED_LOW_RANGE_MAX
+        } else {
+            speedRaw * SPEED_LOW_SCALE
+        }
 
         val latRaw = buffer.getInt(5)
         val latitude = latRaw * LAT_LON_SCALE
@@ -134,8 +146,8 @@ object OpenDroneIdParser {
         state.latitude = latitude
         state.longitude = longitude
         state.altitudeMeters = altitudeMeters
-        state.heading = if (heading <= 360f) heading else null
-        state.speedMps = speedMps
+        state.heading = if (heading <= MAX_VALID_DIRECTION_DEGREES) heading else null
+        state.speedMps = if (speedMps == INVALID_HORIZONTAL_SPEED_MPS) null else speedMps
 
         // Vertical speed (byte 4): int8, 0.5 m/s increments, 63 = unknown
         if (data.size >= 5) {
