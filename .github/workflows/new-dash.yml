@@ -1,0 +1,47 @@
+name: New Dash Tests
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*-new-dash-*']
+    paths:
+      - 'new-dash/**'
+      - '.github/workflows/new-dash.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'new-dash/**'
+      - '.github/workflows/new-dash.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install New Dash
+        run: python -m pip install -e new-dash
+
+      - name: Run Python tests
+        run: cd new-dash && PYTHONPATH=src python -m unittest discover -s tests -v
+
+      - name: Compile Python sources
+        run: cd new-dash && python -m compileall -q src tests
+
+      - name: Run browser behavior tests
+        run: cd new-dash && node --test tests/browser_behavior_test.mjs

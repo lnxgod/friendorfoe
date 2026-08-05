@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "friendorfoe-new-dash"
+version = "0.67.16"
+description = "Local USB browser dashboard for a full-size or Backend Badge Lite"
+requires-python = ">=3.11"
+dependencies = ["pyserial>=3.5,<4"]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+new_dash = ["static/*", "static/views/*", "static/vendor/leaflet/*"]

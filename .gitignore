@@ -63,6 +63,7 @@ friendorfoe.db
 friendorfoe.db-*
 *.png
 !docs/examples/screenshots/*.png
+!docs/cfp/supporting-files/screenshots/new-dash/*.png
 !images/**/*.png
 
 # Claude Code / MCP tooling
