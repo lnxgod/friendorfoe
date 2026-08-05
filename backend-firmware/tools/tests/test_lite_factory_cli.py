@@ -51,15 +51,129 @@ def test_unattended_mode_is_rejected_before_bundle_or_hardware_access(
     assert "--yes requires --once --confirm-product badge_lite" in capsys.readouterr().err
 
 
-def test_operator_confirmation_requires_exact_lite_token(
+def test_interactive_factory_uses_one_enter_and_no_typed_token(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(cli, "_prompt_operator", lambda _message: "lite")
-    with pytest.raises(KeyboardInterrupt):
-        cli.prompt_lite_confirmation(plain=True)
+    result = SimpleNamespace(
+        assignment=ASSIGNMENT,
+        version="0.2.0-backend",
+        bundle_sha256="a" * 64,
+        receipt="lite_TESTPASS",
+    )
+    bundle = SimpleNamespace(
+        version=result.version,
+        scanner_version="0.67.2-badge-defcon34",
+        bundle_sha256=result.bundle_sha256,
+    )
+    prompts: list[str] = []
+    warnings: list[bool] = []
 
-    monkeypatch.setattr(cli, "_prompt_operator", lambda _message: "LITE")
-    cli.prompt_lite_confirmation(plain=True)
+    class FakeLedger:
+        def passed_records(self) -> tuple[PassedLiteFactoryRecord, ...]:
+            return ()
+
+        def record(self, observed: object) -> bool:
+            assert observed is result
+            return True
+
+        def record_failure(self, **_kwargs: object) -> bool:
+            raise AssertionError("unexpected failure record")
+
+    monkeypatch.setattr(cli, "choose_bundle", lambda *_args: bundle)
+    monkeypatch.setattr(cli, "run_one", lambda *_args, **_kwargs: result)
+    monkeypatch.setattr(cli, "_run_factory_operation", lambda operation: operation())
+    monkeypatch.setattr(cli, "print_user_visible", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(cli, "print_factory_warning", warnings.append)
+    monkeypatch.setattr(
+        cli,
+        "_prompt_operator",
+        lambda message: prompts.append(message) or "",
+    )
+
+    status = cli._run_locked_factory(
+        Namespace(yes=False, once=True),
+        plain=True,
+        ledger=FakeLedger(),  # type: ignore[arg-type]
+    )
+
+    assert status == 0
+    assert warnings == [True]
+    assert len(prompts) == 1
+    assert "connect one complete lite assembly" in prompts[0].casefold()
+    assert "TYPE" not in prompts[0]
+
+
+def test_interactive_batch_has_no_hidden_prompt_between_units(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    second_assignment = TopologyAssignment(
+        "AA:BB:CC:DD:FF:01",
+        "AA:BB:CC:DD:FF:02",
+        "AA:BB:CC:DD:FF:03",
+    )
+    results = iter((
+        SimpleNamespace(
+            assignment=ASSIGNMENT,
+            version="0.2.0-backend",
+            bundle_sha256="a" * 64,
+            receipt="lite_TESTONE",
+        ),
+        SimpleNamespace(
+            assignment=second_assignment,
+            version="0.2.0-backend",
+            bundle_sha256="a" * 64,
+            receipt="lite_TESTTWO",
+        ),
+    ))
+    bundle = SimpleNamespace(
+        version="0.2.0-backend",
+        scanner_version="0.67.2-badge-defcon34",
+        bundle_sha256="a" * 64,
+    )
+    prompts: list[str] = []
+    warnings: list[bool] = []
+    recorded: list[object] = []
+    forbidden_macs: list[set[str]] = []
+
+    class FakeLedger:
+        def passed_records(self) -> tuple[PassedLiteFactoryRecord, ...]:
+            return ()
+
+        def record(self, observed: object) -> bool:
+            recorded.append(observed)
+            return True
+
+        def record_failure(self, **_kwargs: object) -> bool:
+            raise AssertionError("unexpected failure record")
+
+    def prompt(message: str) -> str:
+        prompts.append(message)
+        if len(prompts) == 3:
+            raise KeyboardInterrupt
+        return ""
+
+    def run_one(*_args: object, **kwargs: object) -> object:
+        forbidden_macs.append(set(kwargs["forbidden_macs"]))
+        return next(results)
+
+    monkeypatch.setattr(cli, "choose_bundle", lambda *_args: bundle)
+    monkeypatch.setattr(cli, "run_one", run_one)
+    monkeypatch.setattr(cli, "_run_factory_operation", lambda operation: operation())
+    monkeypatch.setattr(cli, "print_user_visible", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(cli, "print_factory_warning", warnings.append)
+    monkeypatch.setattr(cli, "_prompt_operator", prompt)
+
+    status = cli._run_locked_factory(
+        Namespace(yes=False, once=False),
+        plain=True,
+        ledger=FakeLedger(),  # type: ignore[arg-type]
+    )
+
+    assert status == 130
+    assert warnings == [True]
+    assert len(recorded) == 2
+    assert len(prompts) == 3
+    assert forbidden_macs == [set(), cli._assignment_macs(ASSIGNMENT)]
 
 
 def test_prior_pass_allows_only_exact_same_bundle_and_graph() -> None:

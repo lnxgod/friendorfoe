@@ -26,7 +26,7 @@ existing flashers:
 The implementation reuses the established native-badge factory's USB device
 inventory, disposable topology probe, eFuse-MAC rebinding, flash engine, and
 explicit readback machinery. It keeps a separate Lite bundle contract,
-operator confirmation, runtime verifier, and manufacturing ledger.
+operator workflow, runtime verifier, and manufacturing ledger.
 
 ## Factory-only safety boundary
 
@@ -44,11 +44,12 @@ Before connecting the assembly:
 5. Leave every port connected until the tool prints an explicit `PASS` or
    `FAIL`.
 
-The interactive tool prints the erase warning and requires the operator to
-type the exact phrase `LITE`. Entering anything else cancels without starting
-the unit. This phrase is a product-selection safety gate, not a way to detect
-the product electrically: a blank XIAO board cannot prove whether an operator
-intended it for a Lite or for a native badge.
+The interactive tool prints the erase and product warning once at startup.
+After that, connect one complete assembly and press Enter once per unit. The
+disposable probe proves the wiring graph and assigns all three roles
+automatically. A blank XIAO board cannot electrically prove whether an
+operator intended it for a Lite or for a native badge, so keep native/full
+badges and unrelated ESP32 devices away from the Lite factory station.
 
 Unattended operation is deliberately narrower. `--yes` is accepted only with
 both `--once` and the exact product acknowledgment
@@ -73,9 +74,10 @@ tools/lite_factory_flasher/resources/lite-factory-flasher-embedded.zip
 It therefore does not require GitHub or an internet connection on the factory
 Mac. The Python entry point is also offline by default; checking final GitHub
 backend releases requires the explicit `--online` option. The command loops
-for a batch: confirm `LITE`, connect one complete unit,
-wait for `PASS` or `FAIL`, remove all three boards, and then begin the next
-unit. To run one explicitly acknowledged unit without prompts:
+for a batch: remove the prior unit, connect one complete Lite assembly, press
+Enter once, and wait for `PASS` or `FAIL`. Then swap in the next assembly and
+press Enter again. No typed product token or second removal prompt is required.
+To run one explicitly acknowledged unit without prompts:
 
 ```sh
 ./flash-lite-badges.command \

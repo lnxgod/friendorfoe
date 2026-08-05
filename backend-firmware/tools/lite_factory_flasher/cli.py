@@ -154,7 +154,7 @@ def phase(label: str, detail: str, plain: bool) -> None:
     )
 
 
-def prompt_lite_confirmation(plain: bool) -> None:
+def print_factory_warning(plain: bool) -> None:
     print_user_visible(paint(
         "FACTORY FLASH ERASES ALL THREE BOARDS.\n"
         "Use this only for a HEADLESS BACKEND BADGE LITE assembly.\n"
@@ -162,11 +162,6 @@ def prompt_lite_confirmation(plain: bool) -> None:
         GOLD + BOLD,
         plain,
     ))
-    answer = _prompt_operator(
-        paint("TYPE LITE TO ARM THIS UNIT > ", GOLD + BOLD, plain)
-    ).strip()
-    if answer != "LITE":
-        raise KeyboardInterrupt
 
 
 def generate_receipt() -> str:
@@ -523,18 +518,23 @@ def _run_locked_factory(
         )
         return 1
 
+    if not args.yes:
+        print_factory_warning(plain)
+
     last_unit_macs: set[str] = set()
     while True:
         try:
             if not args.yes:
-                prompt_lite_confirmation(plain)
                 _prompt_operator(paint(
-                    "Plug one complete LITE assembly into USB, then press ENTER ",
+                    "Connect one complete LITE assembly; remove any prior unit "
+                    "first; then press ENTER ",
                     GOLD + BOLD,
                     plain,
                 ))
         except (EOFError, KeyboardInterrupt):
-            print_user_visible("\nInterrupted; no PASS record written.")
+            print_user_visible(
+                "\nInterrupted before a unit started; existing records are safe."
+            )
             return 130
 
         pass_recorded = False
@@ -632,15 +632,6 @@ def _run_locked_factory(
                 return 1
         if args.once:
             return 0
-        try:
-            _prompt_operator(paint(
-                "Press ENTER after all three LITE boards are removed ",
-                GOLD,
-                plain,
-            ))
-        except (EOFError, KeyboardInterrupt):
-            print_user_visible("\nInterrupted after PASS; PASS already recorded.")
-            return 130
 
 
 def main(argv: list[str] | None = None) -> int:

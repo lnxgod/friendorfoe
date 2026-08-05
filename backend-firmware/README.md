@@ -36,9 +36,10 @@ From a repository checkout on macOS, double-click
 
 The launcher uses the embedded offline bundle. Connect exactly three Seeed
 XIAO ESP32-S3 boards, each with 8 MB flash and 8 MB PSRAM, only when prompted.
-The operation erases and rewrites all three boards. The operator must type the
-exact phrase `LITE` before a batch begins; scripted operation additionally
-requires all three explicit arguments:
+The operation erases and rewrites all three boards. Interactive factory mode
+prints the destructive product warning once, then needs only one Enter for
+each connected assembly. Scripted operation additionally requires all three
+explicit arguments:
 
 ```sh
 ./flash-lite-badges.command \
