@@ -18,17 +18,25 @@ import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navigation
 import androidx.test.espresso.Espresso.pressBack
+import com.friendorfoe.data.AppVersion
+import com.friendorfoe.data.repository.AppUpdateMetadata
+import com.friendorfoe.presentation.about.InfoUiState
+import com.friendorfoe.presentation.about.UpdateUiState
 import com.friendorfoe.presentation.permissions.AppFeature
 import com.friendorfoe.presentation.permissions.PermissionBindings
+import com.friendorfoe.presentation.permissions.PermissionSettingsLaunchResult
 import com.friendorfoe.presentation.permissions.PermissionUiState
 import com.friendorfoe.presentation.theme.FriendOrFoeTheme
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertSame
 import org.junit.Rule
 import org.junit.Test
 
@@ -164,10 +172,10 @@ class NavigationShellTest {
                                 states = AppFeature.entries.associateWith {
                                     PermissionUiState.Granted
                                 },
-                                requestFeature = { _, onResolved ->
-                                    onResolved(PermissionUiState.Granted)
+                                requestFeature = {},
+                                openFeatureSettings = { _, _ ->
+                                    PermissionSettingsLaunchResult.Opened
                                 },
-                                openFeatureSettings = { _, _ -> },
                             ),
                         )
                     }
@@ -181,5 +189,92 @@ class NavigationShellTest {
         pressBack()
 
         compose.onNodeWithTag("about_landing").assertIsDisplayed()
+    }
+
+    @Test
+    fun productionAboutUpdateActionUsesTheReleaseUrl() {
+        var opened: String? = null
+        val remote = AppUpdateMetadata(
+            version = AppVersion(null, "0.68.0"),
+            releaseUrl = "https://github.com/lnxgod/friendorfoe/releases/tag/v0.68.0",
+        )
+
+        compose.setContent {
+            FriendOrFoeTheme {
+                val navController = rememberNavController()
+                AboutTopLevelRoute(
+                    navController = navController,
+                    state = InfoUiState(
+                        installedVersion = AppVersion(120, "0.67.7"),
+                        updateState = UpdateUiState.Available(remote),
+                    ),
+                    onOpenUpdate = { opened = it },
+                )
+            }
+        }
+
+        compose.onNodeWithTag("about_open_update").performScrollTo().performClick()
+        compose.runOnIdle { assertEquals(remote.releaseUrl, opened) }
+    }
+
+    @Test
+    fun productionAboutRouteStartsIdleCheckOncePerCompositionEntry() {
+        var checks = 0
+        val installedName = mutableStateOf("0.67.7")
+
+        compose.setContent {
+            FriendOrFoeTheme {
+                val navController = rememberNavController()
+                AboutTopLevelRoute(
+                    navController = navController,
+                    state = InfoUiState(
+                        installedVersion = AppVersion(120, installedName.value),
+                    ),
+                    onCheckForUpdatesIfIdle = { checks++ },
+                )
+            }
+        }
+
+        compose.waitForIdle()
+        compose.runOnIdle { assertEquals(1, checks) }
+        compose.runOnUiThread { installedName.value = "0.67.8" }
+        compose.waitForIdle()
+        compose.runOnIdle { assertEquals(1, checks) }
+    }
+
+    @Test
+    fun aboutAndSettingsResolveTheSameMainGraphScopeOwner() {
+        var aboutOwner: Any? = null
+        var settingsOwner: Any? = null
+
+        compose.setContent {
+            FriendOrFoeTheme {
+                val navController = rememberNavController()
+                NavHost(navController, startDestination = "main_graph") {
+                    navigation(
+                        route = "main_graph",
+                        startDestination = Screen.About.route,
+                    ) {
+                        composable(Screen.About.route) {
+                            aboutOwner = mainGraphAboutOwner(navController)
+                            Button(onClick = { navController.navigate(Screen.AboutSettings.route) }) {
+                                Text("Open settings owner")
+                            }
+                        }
+                        composable(Screen.AboutSettings.route) {
+                            settingsOwner = mainGraphAboutOwner(navController)
+                            Text("Settings owner", Modifier.testTag("test_settings_owner"))
+                        }
+                    }
+                }
+            }
+        }
+
+        compose.onNodeWithText("Open settings owner").performClick()
+        compose.onNodeWithTag("test_settings_owner").assertIsDisplayed()
+        compose.runOnIdle {
+            assertNotNull(aboutOwner)
+            assertSame(aboutOwner, settingsOwner)
+        }
     }
 }

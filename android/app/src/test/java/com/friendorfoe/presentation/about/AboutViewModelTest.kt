@@ -150,6 +150,60 @@ class AboutViewModelTest {
     }
 
     @Test
+    fun idleUpdateCheckRunsOnlyOnceForTheViewModelLifecycle() = runTest {
+        val repository = CountingUpdateRepository(Result.success(
+            AppUpdateMetadata(
+                AppVersion(null, "0.67.7"),
+                "https://github.com/lnxgod/friendorfoe/releases/tag/v0.67.7",
+            ),
+        ))
+        val viewModel = viewModel(
+            settings = FakeInfoSettingsStore(DetectionSettings.defaults()),
+            session = sessionRepository(),
+            updateRepository = repository,
+            installed = AppVersion(120, "0.67.7-android-ar-overlay-range"),
+        )
+
+        viewModel.checkForUpdatesIfIdle()
+        viewModel.checkForUpdatesIfIdle()
+        advanceUntilIdle()
+        viewModel.checkForUpdatesIfIdle()
+
+        assertEquals(1, repository.calls)
+        assertTrue(viewModel.uiState.value.updateState is UpdateUiState.UpToDate)
+    }
+
+    @Test
+    fun genuinelyNewerGitHubReleaseBecomesAvailable() = runTest {
+        val remote = AppUpdateMetadata(
+            AppVersion(null, "0.68.0"),
+            "https://github.com/lnxgod/friendorfoe/releases/tag/v0.68.0",
+        )
+        val viewModel = viewModel(
+            settings = FakeInfoSettingsStore(DetectionSettings.defaults()),
+            session = sessionRepository(),
+            updateRepository = FixedUpdateRepository(Result.success(remote)),
+            installed = AppVersion(120, "0.67.7-android-ar-overlay-range"),
+        )
+
+        viewModel.checkForUpdatesIfIdle()
+        advanceUntilIdle()
+
+        assertEquals(UpdateUiState.Available(remote), viewModel.uiState.value.updateState)
+    }
+
+    @Test
+    fun freshSettingsProjectBackendTestingAsDisabled() {
+        val viewModel = viewModel(
+            settings = FakeInfoSettingsStore(DetectionSettings.defaults()),
+            session = sessionRepository(),
+        )
+
+        assertFalse(viewModel.uiState.value.settings.sensorBackendEnabled)
+        assertFalse(viewModel.uiState.value.backendUrlCanTest)
+    }
+
+    @Test
     fun sourceStatusCallsOutMissingRuntimeAndNotificationDelivery() {
         val statuses = sourceStatus(
             settings = DetectionSettings.defaults().copy(
@@ -211,20 +265,20 @@ class AboutViewModelTest {
     }
 
     @Test
-    fun followerAndWifiAnomalyControlsWaitForAnEffectivePhoneScan() {
+    fun followerAndWifiAnomalyControlsStayInteractiveAndReportPrerequisites() {
         val configured = DetectionSettings.defaults().copy(
             phonePrivacyScanEnabled = true,
             backendOnlyMode = false,
         )
 
-        assertFalse(
+        assertTrue(
             isInfoSettingInteractive(
                 InfoSettingKey.STALKER,
                 configured,
                 PermissionUiState.Denied,
             )
         )
-        assertFalse(
+        assertTrue(
             isInfoSettingInteractive(
                 InfoSettingKey.WIFI_ANOMALY,
                 configured.copy(phonePrivacyScanEnabled = false),
@@ -238,7 +292,7 @@ class AboutViewModelTest {
                 PermissionUiState.Granted,
             )
         )
-        assertFalse(
+        assertTrue(
             isInfoSettingInteractive(
                 InfoSettingKey.WIFI_ANOMALY,
                 configured.copy(backendOnlyMode = true),
@@ -246,7 +300,7 @@ class AboutViewModelTest {
             )
         )
         assertEquals(
-            "Requires Phone privacy scan.",
+            "Inactive until Phone privacy scan is enabled and allowed.",
             infoSettingDisabledReason(
                 InfoSettingKey.STALKER,
                 configured.copy(phonePrivacyScanEnabled = false),
@@ -254,11 +308,56 @@ class AboutViewModelTest {
             ),
         )
         assertEquals(
-            "Unavailable in backend-only mode.",
+            "Inactive while backend-only mode pauses phone collectors.",
             infoSettingDisabledReason(
                 InfoSettingKey.WIFI_ANOMALY,
                 configured.copy(backendOnlyMode = true),
                 PermissionUiState.Granted,
+            ),
+        )
+    }
+
+    @Test
+    fun backendOnlyCannotRemainEnabledWithoutBackendConsent() {
+        val configured = DetectionSettings.defaults().copy(
+            sensorBackendEnabled = true,
+            backendOnlyMode = true,
+        )
+
+        val disabled = configured.withSetting(InfoSettingKey.SENSOR_BACKEND, false)
+        val rejectedEnable = DetectionSettings.defaults()
+            .withSetting(InfoSettingKey.BACKEND_ONLY, true)
+
+        assertFalse(disabled.sensorBackendEnabled)
+        assertFalse(disabled.backendOnlyMode)
+        assertFalse(rejectedEnable.backendOnlyMode)
+        assertNull(
+            infoSettingDisabledReason(
+                InfoSettingKey.BACKEND_ONLY,
+                DetectionSettings.defaults(),
+                PermissionUiState.Granted,
+            ),
+        )
+
+        assertTrue(
+            shouldRestartSkySourcesForInfoSetting(
+                key = InfoSettingKey.SENSOR_BACKEND,
+                enabled = false,
+                previousSettings = configured,
+            ),
+        )
+        assertFalse(
+            shouldRestartSkySourcesForInfoSetting(
+                key = InfoSettingKey.SENSOR_BACKEND,
+                enabled = true,
+                previousSettings = configured,
+            ),
+        )
+        assertFalse(
+            shouldRestartSkySourcesForInfoSetting(
+                key = InfoSettingKey.SENSOR_BACKEND,
+                enabled = false,
+                previousSettings = configured.copy(backendOnlyMode = false),
             ),
         )
     }
@@ -309,12 +408,14 @@ class AboutViewModelTest {
 
     @Test
     fun onlyCollectorTopologySettingsRequestASkyRestart() {
-        assertTrue(shouldRestartSkySourcesForInfoSetting(InfoSettingKey.ADS_B))
-        assertTrue(shouldRestartSkySourcesForInfoSetting(InfoSettingKey.BLE_REMOTE_ID))
-        assertTrue(shouldRestartSkySourcesForInfoSetting(InfoSettingKey.WIFI_REMOTE_ID))
-        assertTrue(shouldRestartSkySourcesForInfoSetting(InfoSettingKey.BACKEND_ONLY))
-        assertFalse(shouldRestartSkySourcesForInfoSetting(InfoSettingKey.STALKER))
-        assertFalse(shouldRestartSkySourcesForInfoSetting(InfoSettingKey.ULTRASONIC))
+        val settings = DetectionSettings.defaults()
+
+        assertTrue(shouldRestartSkySourcesForInfoSetting(InfoSettingKey.ADS_B, true, settings))
+        assertTrue(shouldRestartSkySourcesForInfoSetting(InfoSettingKey.BLE_REMOTE_ID, true, settings))
+        assertTrue(shouldRestartSkySourcesForInfoSetting(InfoSettingKey.WIFI_REMOTE_ID, true, settings))
+        assertTrue(shouldRestartSkySourcesForInfoSetting(InfoSettingKey.BACKEND_ONLY, true, settings))
+        assertFalse(shouldRestartSkySourcesForInfoSetting(InfoSettingKey.STALKER, true, settings))
+        assertFalse(shouldRestartSkySourcesForInfoSetting(InfoSettingKey.ULTRASONIC, true, settings))
     }
 
     private fun viewModel(
@@ -369,4 +470,15 @@ private class FixedUpdateRepository(
     private val result: Result<AppUpdateMetadata>,
 ) : AppUpdateRepository {
     override suspend fun latest(): Result<AppUpdateMetadata> = result
+}
+
+private class CountingUpdateRepository(
+    private val result: Result<AppUpdateMetadata>,
+) : AppUpdateRepository {
+    var calls = 0
+
+    override suspend fun latest(): Result<AppUpdateMetadata> {
+        calls++
+        return result
+    }
 }

@@ -1,11 +1,15 @@
 package com.friendorfoe.presentation.privacy
 
 import androidx.lifecycle.ViewModel
+import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.viewModelScope
 import com.friendorfoe.data.DetectionSettings
 import com.friendorfoe.detection.PrivacyCategory
 import com.friendorfoe.presentation.about.InfoSettingKey
 import com.friendorfoe.presentation.about.InfoSettingsStore
+import com.friendorfoe.presentation.permissions.PermissionStateSource
+import com.friendorfoe.presentation.permissions.PermissionUiState
+import com.friendorfoe.presentation.permissions.isUsableFor
 import com.friendorfoe.sensor.SensorFusionEngine
 import com.friendorfoe.sensor.SensorFusionLease
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -34,6 +38,8 @@ class PrivacyViewModel @Inject constructor(
     phonePrivacySourceAdapter: PhonePrivacySourceAdapter,
     private val sensorFusionEngine: SensorFusionEngine,
     private val settingsStore: InfoSettingsStore,
+    private val permissionStateSource: PermissionStateSource,
+    private val savedStateHandle: SavedStateHandle,
 ) : ViewModel() {
     private val filters = MutableStateFlow(PrivacyFilterState())
     private val directionController = RssiDirectionSweepController(
@@ -43,6 +49,8 @@ class PrivacyViewModel @Inject constructor(
     val directionSweepState = directionController.state
     val directionResultText = directionController.resultText
     private var sweepSensorLease: SensorFusionLease? = null
+    private val _pendingPermissionAction = MutableStateFlow(readPendingPermissionAction())
+    val pendingPermissionAction: StateFlow<PrivacyPermissionAction?> = _pendingPermissionAction
 
     init {
         viewModelScope.launch {
@@ -51,6 +59,11 @@ class PrivacyViewModel @Inject constructor(
                     sweepSensorLease?.close()
                     sweepSensorLease = null
                 }
+            }
+        }
+        viewModelScope.launch {
+            permissionStateSource.states.collect { states ->
+                completePendingPermissionAction(states)
             }
         }
     }
@@ -112,6 +125,36 @@ class PrivacyViewModel @Inject constructor(
         recover(PrivacySourceKind.PHONE_BLE)
     }
 
+    fun beginPermissionRecovery(source: PrivacySourceKind) {
+        val feature = permissionFeatureForPrivacySource(source)
+        if (feature == null) {
+            recover(source)
+            return
+        }
+        persistPendingPermissionAction(
+            PrivacyPermissionAction(source = source, requestLaunched = false),
+        )
+        completePendingPermissionAction(permissionStateSource.states.value)
+    }
+
+    fun markPermissionRequestLaunched() {
+        val pending = _pendingPermissionAction.value ?: return
+        persistPendingPermissionAction(
+            pending.copy(requestLaunched = true, settingsLaunchFailed = false),
+        )
+    }
+
+    fun markPermissionSettingsOpened() = markPermissionRequestLaunched()
+
+    fun markPermissionSettingsLaunchFailed() {
+        val pending = _pendingPermissionAction.value ?: return
+        persistPendingPermissionAction(
+            pending.copy(requestLaunched = false, settingsLaunchFailed = true),
+        )
+    }
+
+    fun cancelPendingPermissionAction() = persistPendingPermissionAction(null)
+
     fun onPrivacyPermissionResolved(source: PrivacySourceKind) {
         if (source == PrivacySourceKind.PHONE_BLE) {
             enablePhonePrivacyScanning()
@@ -156,9 +199,43 @@ class PrivacyViewModel @Inject constructor(
         super.onCleared()
     }
 
+    private fun completePendingPermissionAction(
+        states: Map<com.friendorfoe.presentation.permissions.AppFeature, PermissionUiState>,
+    ) {
+        val pending = _pendingPermissionAction.value ?: return
+        val feature = permissionFeatureForPrivacySource(pending.source) ?: return
+        val state = states[feature] ?: return
+        if (!state.isUsableFor(feature)) return
+        persistPendingPermissionAction(null)
+        onPrivacyPermissionResolved(pending.source)
+    }
+
+    private fun readPendingPermissionAction(): PrivacyPermissionAction? {
+        val sourceName = savedStateHandle.get<String>(PENDING_PERMISSION_SOURCE_KEY) ?: return null
+        val source = PrivacySourceKind.entries.firstOrNull { it.name == sourceName } ?: return null
+        return PrivacyPermissionAction(
+            source = source,
+            requestLaunched = savedStateHandle[PENDING_PERMISSION_REQUEST_LAUNCHED_KEY] ?: false,
+            settingsLaunchFailed = savedStateHandle[PENDING_PERMISSION_SETTINGS_FAILED_KEY] ?: false,
+        )
+    }
+
+    private fun persistPendingPermissionAction(action: PrivacyPermissionAction?) {
+        savedStateHandle[PENDING_PERMISSION_SOURCE_KEY] = action?.source?.name
+        savedStateHandle[PENDING_PERMISSION_REQUEST_LAUNCHED_KEY] = action?.requestLaunched ?: false
+        savedStateHandle[PENDING_PERMISSION_SETTINGS_FAILED_KEY] = action?.settingsLaunchFailed ?: false
+        _pendingPermissionAction.value = action
+    }
+
     private fun <T> Set<T>.toggle(value: T): Set<T> =
         if (value in this) this - value else this + value
 }
+
+private const val PENDING_PERMISSION_SOURCE_KEY = "pending_privacy_permission_source"
+private const val PENDING_PERMISSION_REQUEST_LAUNCHED_KEY =
+    "pending_privacy_permission_request_launched"
+private const val PENDING_PERMISSION_SETTINGS_FAILED_KEY =
+    "pending_privacy_permission_settings_failed"
 
 internal fun phonePrivacyEnableWrites(
     settings: DetectionSettings,

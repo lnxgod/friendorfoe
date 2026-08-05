@@ -75,6 +75,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
@@ -377,14 +378,24 @@ class ArViewModel @Inject constructor(
         resetZoom()
     }
 
-    val detectedDrones: StateFlow<List<Drone>> = skyObjectRepository.skyObjects
+    /** Shared map-only exclusion for every high-frequency AR presentation path. */
+    private val arSkyObjects = skyObjectRepository.skyObjects
+        .map { objects -> objects.withoutFormationDrones() }
+        .distinctUntilChanged()
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.Eagerly,
+            initialValue = skyObjectRepository.skyObjects.value.withoutFormationDrones(),
+        )
+
+    val detectedDrones: StateFlow<List<Drone>> = arSkyObjects
         .map { objects -> objects.filterIsInstance<Drone>() }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     // --- Drone proximity alert ---
 
     /** WiFi-only drones with strong RSSI signal (no GPS position but clearly nearby) */
-    val proximityDrones: StateFlow<List<Drone>> = skyObjectRepository.skyObjects
+    val proximityDrones: StateFlow<List<Drone>> = arSkyObjects
         .map { objects ->
             objects.filterIsInstance<Drone>().filter { drone ->
                 drone.source == DetectionSource.WIFI &&
@@ -742,7 +753,7 @@ class ArViewModel @Inject constructor(
     val screenPositions: StateFlow<List<ScreenPosition>> = combine(
         frameClockFlow,
         orientation,
-        skyObjectRepository.skyObjects,
+        arSkyObjects,
         _userPosition,
         visualDetectionAnalyzer.detections
     ) { nowMs, orient, skyObjects, userPos, visualDetections ->
@@ -867,19 +878,19 @@ class ArViewModel @Inject constructor(
 
     // --- Counts for status bar ---
 
-    val aircraftCount: StateFlow<Int> = skyObjectRepository.skyObjects
+    val aircraftCount: StateFlow<Int> = arSkyObjects
         .map { objects -> objects.count { it is Aircraft } }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0)
 
-    val droneCount: StateFlow<Int> = skyObjectRepository.skyObjects
+    val droneCount: StateFlow<Int> = arSkyObjects
         .map { objects -> objects.count { it is Drone } }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0)
 
-    val militaryCount: StateFlow<Int> = skyObjectRepository.skyObjects
+    val militaryCount: StateFlow<Int> = arSkyObjects
         .map { objects -> objects.count { it.category == ObjectCategory.MILITARY || it.category == ObjectCategory.GOVERNMENT } }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0)
 
-    val emergencyCount: StateFlow<Int> = skyObjectRepository.skyObjects
+    val emergencyCount: StateFlow<Int> = arSkyObjects
         .map { objects -> objects.count { it.category == ObjectCategory.EMERGENCY } }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0)
 
@@ -914,7 +925,7 @@ class ArViewModel @Inject constructor(
     }
 
     val detectionLog: StateFlow<List<DetectionLogEntry>> = combine(
-        skyObjectRepository.skyObjects,
+        arSkyObjects,
         screenPositions,
         skyObjectRepository.dataSourceStatus,
         skyObjectRepository.lastError

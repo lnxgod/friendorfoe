@@ -6,6 +6,8 @@ import com.friendorfoe.data.preferences.AppPreferences
 import com.friendorfoe.data.repository.RuntimePermissionChangeNotifier
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
+import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.launch
 
 @HiltViewModel
 class PermissionStateViewModel @Inject constructor(
@@ -22,16 +24,29 @@ class PermissionStateViewModel @Inject constructor(
 
     fun stateFor(feature: AppFeature): PermissionUiState = repository.stateFor(feature)
 
-    fun missingPermissionsFor(feature: AppFeature): Set<String> =
-        repository.missingPermissionsFor(feature)
+    fun requestPlanFor(feature: AppFeature): Set<String> = repository.requestPlanFor(feature)
+
+    fun missingPermissionsFor(feature: AppFeature): Set<String> = requestPlanFor(feature)
+
+    suspend fun requestPermissions(
+        feature: AppFeature,
+        launcher: PermissionLauncher,
+    ) {
+        val requestPlan = repository.requestPlanFor(feature)
+        if (requestPlan.isEmpty()) {
+            repository.refresh(emptyMap())
+            return
+        }
+        pendingRequest.begin(feature)
+        requestFeaturePermissions(requestPlan, preferences, launcher)
+    }
 
     suspend fun requestPermissions(
         feature: AppFeature,
         missing: Set<String>,
         launcher: PermissionLauncher,
     ) {
-        pendingRequest.begin(feature)
-        requestFeaturePermissions(missing, preferences, launcher)
+        requestPermissions(feature, launcher)
     }
 
     fun pendingFeature(): AppFeature? = pendingRequest.pendingFeature()
@@ -40,5 +55,26 @@ class PermissionStateViewModel @Inject constructor(
 
     fun onRuntimePermissionsChanged() {
         runtimePermissionChangeNotifier.onRuntimePermissionsChanged()
+    }
+
+    fun onPermissionResult(
+        grantResultByPermission: Map<String, Boolean>,
+        rationaleByPermission: Map<String, Boolean>,
+    ) {
+        val pending = pendingRequest.recordResult(grantResultByPermission)
+        viewModelScope.launch {
+            runtimePermissionChangeNotifier.onRuntimePermissionsChanged()
+            val evaluated = repository.refresh(
+                rationaleByPermission = rationaleByPermission,
+                grantResultByPermission = grantResultByPermission,
+            )
+            if (
+                pending != null &&
+                evaluated[pending.feature] != null &&
+                evaluated[pending.feature] != PermissionUiState.Loading
+            ) {
+                pendingRequest.clearIfFeature(pending.feature)
+            }
+        }
     }
 }

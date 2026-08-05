@@ -16,7 +16,7 @@ import com.friendorfoe.data.repository.SkyObjectRepository
 import com.friendorfoe.presentation.permissions.AppFeature
 import com.friendorfoe.presentation.permissions.PermissionStateSource
 import com.friendorfoe.presentation.permissions.PermissionUiState
-import com.friendorfoe.presentation.permissions.isUsable
+import com.friendorfoe.presentation.permissions.isUsableFor
 import dagger.hilt.android.lifecycle.HiltViewModel
 import java.util.concurrent.atomic.AtomicLong
 import javax.inject.Inject
@@ -115,6 +115,8 @@ data class InfoUiState(
 data class PendingInfoPermissionSetting(
     val key: InfoSettingKey,
     val requestLaunched: Boolean,
+    val resumeLocalCollectors: Boolean = false,
+    val settingsLaunchFailed: Boolean = false,
 )
 
 typealias InfoSettingsUiState = InfoUiState
@@ -139,6 +141,8 @@ class AndroidInfoSettingsStore @Inject constructor(
     override val settings: StateFlow<DetectionSettings> = detectionPrefs.settings
 
     override fun set(key: InfoSettingKey, enabled: Boolean) {
+        val previousSettings = settings.value
+
         when (key) {
             InfoSettingKey.ADS_B -> detectionPrefs.adsbEnabled = enabled
             InfoSettingKey.BLE_REMOTE_ID -> detectionPrefs.bleRidEnabled = enabled
@@ -156,7 +160,7 @@ class AndroidInfoSettingsStore @Inject constructor(
             InfoSettingKey.SENSOR_BACKEND -> detectionPrefs.sensorBackendEnabled = enabled
             InfoSettingKey.BACKEND_ONLY -> detectionPrefs.backendOnlyMode = enabled
         }
-        if (shouldRestartSkySourcesForInfoSetting(key)) {
+        if (shouldRestartSkySourcesForInfoSetting(key, enabled, previousSettings)) {
             skyObjectRepository.restartDetectionSources()
         }
     }
@@ -166,11 +170,19 @@ class AndroidInfoSettingsStore @Inject constructor(
     }
 }
 
-internal fun shouldRestartSkySourcesForInfoSetting(key: InfoSettingKey): Boolean = key in setOf(
+internal fun shouldRestartSkySourcesForInfoSetting(
+    key: InfoSettingKey,
+    enabled: Boolean,
+    previousSettings: DetectionSettings,
+): Boolean = key in setOf(
     InfoSettingKey.ADS_B,
     InfoSettingKey.BLE_REMOTE_ID,
     InfoSettingKey.WIFI_REMOTE_ID,
     InfoSettingKey.BACKEND_ONLY,
+) || (
+    key == InfoSettingKey.SENSOR_BACKEND &&
+        !enabled &&
+        previousSettings.backendOnlyMode
 )
 
 internal fun DetectionSettings.withSetting(
@@ -189,8 +201,13 @@ internal fun DetectionSettings.withSetting(
     InfoSettingKey.HELICOPTER_ALERTS -> copy(helicopterAlertsEnabled = enabled)
     InfoSettingKey.MILITARY_ALERTS -> copy(militaryAlertsEnabled = enabled)
     InfoSettingKey.POLICE_ALERTS -> copy(policeAlertsEnabled = enabled)
-    InfoSettingKey.SENSOR_BACKEND -> copy(sensorBackendEnabled = enabled)
-    InfoSettingKey.BACKEND_ONLY -> copy(backendOnlyMode = enabled)
+    InfoSettingKey.SENSOR_BACKEND -> copy(
+        sensorBackendEnabled = enabled,
+        backendOnlyMode = backendOnlyMode && enabled,
+    )
+    InfoSettingKey.BACKEND_ONLY -> copy(
+        backendOnlyMode = enabled && sensorBackendEnabled,
+    )
 }
 
 private data class BackendDraft(
@@ -222,6 +239,10 @@ class AboutViewModel @Inject constructor(
     private val _pendingPermissionSetting = MutableStateFlow(readPendingPermissionSetting())
     val pendingPermissionSetting: StateFlow<PendingInfoPermissionSetting?> =
         _pendingPermissionSetting
+    private val _pendingBackendOnlyConfirmation = MutableStateFlow(
+        savedStateHandle[PENDING_BACKEND_ONLY_CONFIRMATION_KEY] ?: false,
+    )
+    val pendingBackendOnlyConfirmation: StateFlow<Boolean> = _pendingBackendOnlyConfirmation
     private val updateGeneration = AtomicLong(0L)
     private var updateJob: Job? = null
 
@@ -254,7 +275,7 @@ class AboutViewModel @Inject constructor(
                 if (!pending.requestLaunched) return@collect
                 val feature = permissionFeatureForSetting(pending.key) ?: return@collect
                 val state = permissionStates[feature] ?: return@collect
-                if (state.isUsable()) resolvePendingPermission(feature, state)
+                if (state.isUsableFor(feature)) resolvePendingPermission(feature, state)
             }
         }
     }
@@ -293,22 +314,49 @@ class AboutViewModel @Inject constructor(
     )
 
     fun setSetting(key: InfoSettingKey, enabled: Boolean) {
+        if (key == InfoSettingKey.BACKEND_ONLY && enabled &&
+            !settingsStore.settings.value.sensorBackendEnabled
+        ) {
+            requestBackendOnlyConfirmation()
+            return
+        }
         settingsStore.set(key, enabled)
         if (key == InfoSettingKey.SENSOR_BACKEND && !enabled) {
             sessionHealthRepository.invalidate()
         }
     }
 
-    fun beginPermissionEnable(key: InfoSettingKey) {
-        requireNotNull(permissionFeatureForSetting(key)) {
+    fun beginPermissionEnable(
+        key: InfoSettingKey,
+        resumeLocalCollectors: Boolean = false,
+    ) {
+        val feature = requireNotNull(permissionFeatureForSetting(key)) {
             "$key is not backed by a contextual permission"
         }
-        persistPendingPermission(PendingInfoPermissionSetting(key, requestLaunched = false))
+        persistPendingPermission(
+            PendingInfoPermissionSetting(
+                key = key,
+                requestLaunched = false,
+                resumeLocalCollectors = resumeLocalCollectors,
+            ),
+        )
+        resolvePendingPermission(feature, permissionStateSource.states.value[feature])
     }
 
     fun markPermissionRequestLaunched() {
         val pending = _pendingPermissionSetting.value ?: return
-        persistPendingPermission(pending.copy(requestLaunched = true))
+        persistPendingPermission(
+            pending.copy(requestLaunched = true, settingsLaunchFailed = false),
+        )
+    }
+
+    fun markPermissionSettingsOpened() = markPermissionRequestLaunched()
+
+    fun markPermissionSettingsLaunchFailed() {
+        val pending = _pendingPermissionSetting.value ?: return
+        persistPendingPermission(
+            pending.copy(requestLaunched = false, settingsLaunchFailed = true),
+        )
     }
 
     fun cancelPendingPermission() {
@@ -317,13 +365,47 @@ class AboutViewModel @Inject constructor(
 
     fun resolvePendingPermission(
         feature: AppFeature,
-        state: PermissionUiState,
+        state: PermissionUiState?,
     ) {
         val pending = _pendingPermissionSetting.value ?: return
         if (permissionFeatureForSetting(pending.key) != feature) return
-        if (state.isUsable()) settingsStore.set(pending.key, true)
+        if (state?.isUsableFor(feature) != true) return
         persistPendingPermission(null)
+        settingsStore.set(pending.key, true)
+        if (pending.resumeLocalCollectors && settingsStore.settings.value.backendOnlyMode) {
+            settingsStore.set(InfoSettingKey.BACKEND_ONLY, false)
+        }
     }
+
+    fun enablePhonePrivacyScan() {
+        val feature = AppFeature.PHONE_PRIVACY_SCAN
+        val state = permissionStateSource.states.value[feature]
+        if (state?.isUsableFor(feature) == true) {
+            settingsStore.set(InfoSettingKey.PHONE_PRIVACY_SCAN, true)
+            if (settingsStore.settings.value.backendOnlyMode) {
+                settingsStore.set(InfoSettingKey.BACKEND_ONLY, false)
+            }
+        } else {
+            beginPermissionEnable(
+                key = InfoSettingKey.PHONE_PRIVACY_SCAN,
+                resumeLocalCollectors = true,
+            )
+        }
+    }
+
+    fun requestBackendOnlyConfirmation() {
+        savedStateHandle[PENDING_BACKEND_ONLY_CONFIRMATION_KEY] = true
+        _pendingBackendOnlyConfirmation.value = true
+    }
+
+    fun confirmBackendOnlyEnable() {
+        if (!_pendingBackendOnlyConfirmation.value) return
+        clearBackendOnlyConfirmation()
+        settingsStore.set(InfoSettingKey.SENSOR_BACKEND, true)
+        settingsStore.set(InfoSettingKey.BACKEND_ONLY, true)
+    }
+
+    fun cancelBackendOnlyConfirmation() = clearBackendOnlyConfirmation()
 
     fun editBackendUrl(raw: String) {
         backendDraft.update { draft ->
@@ -392,6 +474,10 @@ class AboutViewModel @Inject constructor(
         }
     }
 
+    fun checkForUpdatesIfIdle() {
+        if (updateState.value == UpdateUiState.Idle) checkForUpdates()
+    }
+
     // Compatibility wrappers for the previous AboutScreen while its UI is replaced.
     fun setAdsbEnabled(enabled: Boolean) = setSetting(InfoSettingKey.ADS_B, enabled)
     fun setBleRidEnabled(enabled: Boolean) = setSetting(InfoSettingKey.BLE_REMOTE_ID, enabled)
@@ -432,13 +518,22 @@ class AboutViewModel @Inject constructor(
         return PendingInfoPermissionSetting(
             key = key,
             requestLaunched = savedStateHandle[PENDING_PERMISSION_LAUNCHED_KEY] ?: false,
+            resumeLocalCollectors = savedStateHandle[PENDING_PERMISSION_RESUME_LOCAL_KEY] ?: false,
+            settingsLaunchFailed = savedStateHandle[PENDING_PERMISSION_SETTINGS_FAILED_KEY] ?: false,
         )
     }
 
     private fun persistPendingPermission(pending: PendingInfoPermissionSetting?) {
         savedStateHandle[PENDING_PERMISSION_SETTING_KEY] = pending?.key?.name
         savedStateHandle[PENDING_PERMISSION_LAUNCHED_KEY] = pending?.requestLaunched ?: false
+        savedStateHandle[PENDING_PERMISSION_RESUME_LOCAL_KEY] = pending?.resumeLocalCollectors ?: false
+        savedStateHandle[PENDING_PERMISSION_SETTINGS_FAILED_KEY] = pending?.settingsLaunchFailed ?: false
         _pendingPermissionSetting.value = pending
+    }
+
+    private fun clearBackendOnlyConfirmation() {
+        savedStateHandle[PENDING_BACKEND_ONLY_CONFIRMATION_KEY] = false
+        _pendingBackendOnlyConfirmation.value = false
     }
 
     private fun projectInfoUiState(
@@ -483,6 +578,9 @@ class AboutViewModel @Inject constructor(
 
 private const val PENDING_PERMISSION_SETTING_KEY = "pending_info_permission_setting"
 private const val PENDING_PERMISSION_LAUNCHED_KEY = "pending_info_permission_launched"
+private const val PENDING_PERMISSION_RESUME_LOCAL_KEY = "pending_info_permission_resume_local"
+private const val PENDING_PERMISSION_SETTINGS_FAILED_KEY = "pending_info_permission_settings_failed"
+private const val PENDING_BACKEND_ONLY_CONFIRMATION_KEY = "pending_backend_only_confirmation"
 
 private fun String.validationError(): String? =
     if (BackendEndpoint.parse(this).isSuccess) null else BACKEND_URL_ERROR
@@ -540,6 +638,7 @@ internal fun sourceStatus(
         InfoSourceKey.BLE_REMOTE_ID,
         "BLE Remote ID",
         settings.bleRidEnabled,
+        AppFeature.LOCAL_RADIO_DISCOVERY,
         permissionStates[AppFeature.LOCAL_RADIO_DISCOVERY] ?: PermissionUiState.Loading,
         "Bluetooth and nearby Wi-Fi access",
     ),
@@ -547,6 +646,7 @@ internal fun sourceStatus(
         InfoSourceKey.WIFI_REMOTE_ID,
         "Wi-Fi Remote ID",
         settings.wifiEnabled,
+        AppFeature.LOCAL_RADIO_DISCOVERY,
         permissionStates[AppFeature.LOCAL_RADIO_DISCOVERY] ?: PermissionUiState.Loading,
         "Nearby Wi-Fi and location-protected scan results",
     ),
@@ -554,6 +654,7 @@ internal fun sourceStatus(
         InfoSourceKey.PHONE_PRIVACY_SCAN,
         "Phone privacy scan",
         settings.phonePrivacyScanEnabled,
+        AppFeature.PHONE_PRIVACY_SCAN,
         permissionStates[AppFeature.PHONE_PRIVACY_SCAN] ?: PermissionUiState.Loading,
         "Local BLE and Wi-Fi collectors",
     ),
@@ -561,15 +662,16 @@ internal fun sourceStatus(
         InfoSourceKey.ULTRASONIC,
         "Ultrasonic",
         settings.ultrasonicEnabled,
+        AppFeature.ULTRASONIC,
         permissionStates[AppFeature.ULTRASONIC] ?: PermissionUiState.Loading,
         "Microphone access for high-frequency sampling",
     ),
     backendSource(settings.sensorBackendEnabled, endpoint, health),
-    permissionAwareSource(
+    notificationSource(
         InfoSourceKey.NOTIFICATION_DELIVERY,
         "Notification delivery",
         settings.anyAlertsEnabled(),
-        configuredNotificationState(settings, permissionStates),
+        configuredNotificationStates(settings, permissionStates),
         "Android permission, global delivery, and each configured alert channel",
     ),
 )
@@ -600,15 +702,7 @@ internal fun isInfoSettingInteractive(
     key: InfoSettingKey,
     settings: DetectionSettings,
     phonePrivacyPermission: PermissionUiState,
-): Boolean = when (key) {
-    InfoSettingKey.STALKER,
-    InfoSettingKey.WIFI_ANOMALY,
-    -> settings.phonePrivacyScanEnabled &&
-        !settings.backendOnlyMode &&
-        phonePrivacyPermission.isUsable()
-
-    else -> true
-}
+): Boolean = true
 
 internal fun infoSettingDisabledReason(
     key: InfoSettingKey,
@@ -617,9 +711,10 @@ internal fun infoSettingDisabledReason(
 ): String? {
     if (key != InfoSettingKey.STALKER && key != InfoSettingKey.WIFI_ANOMALY) return null
     return when {
-        !settings.phonePrivacyScanEnabled || !phonePrivacyPermission.isUsable() ->
-            "Requires Phone privacy scan."
-        settings.backendOnlyMode -> "Unavailable in backend-only mode."
+        !settings.phonePrivacyScanEnabled ||
+            !phonePrivacyPermission.isUsableFor(AppFeature.PHONE_PRIVACY_SCAN) ->
+            "Inactive until Phone privacy scan is enabled and allowed."
+        settings.backendOnlyMode -> "Inactive while backend-only mode pauses phone collectors."
         else -> null
     }
 }
@@ -642,6 +737,7 @@ private fun permissionAwareSource(
     key: InfoSourceKey,
     label: String,
     configured: Boolean,
+    feature: AppFeature,
     permissionState: PermissionUiState,
     detail: String,
 ): InfoSourceStatus = InfoSourceStatus(
@@ -651,12 +747,12 @@ private fun permissionAwareSource(
     effective = when {
         !configured -> null
         permissionState == PermissionUiState.Loading -> null
-        else -> permissionState.isUsable()
+        else -> permissionState.isUsableFor(feature)
     },
     statusText = when {
         !configured -> "Off"
         permissionState == PermissionUiState.Loading -> "Checking"
-        permissionState.isUsable() -> "Ready"
+        permissionState.isUsableFor(feature) -> "Ready"
         else -> "Permission needed"
     },
     detail = detail,
@@ -666,24 +762,51 @@ private fun DetectionSettings.anyAlertsEnabled(): Boolean =
     privacyNotificationsEnabled || droneAlertsEnabled || helicopterAlertsEnabled ||
         militaryAlertsEnabled || policeAlertsEnabled
 
-private fun configuredNotificationState(
+private fun configuredNotificationStates(
     settings: DetectionSettings,
     permissionStates: Map<AppFeature, PermissionUiState>,
-): PermissionUiState {
-    val configuredStates = buildList {
+): List<Pair<AppFeature, PermissionUiState>> = buildList {
         if (settings.privacyNotificationsEnabled) {
-            add(permissionStates[AppFeature.PRIVACY_ALERTS] ?: PermissionUiState.Loading)
+            add(
+                AppFeature.PRIVACY_ALERTS to
+                    (permissionStates[AppFeature.PRIVACY_ALERTS] ?: PermissionUiState.Loading),
+            )
         }
         if (
             settings.droneAlertsEnabled || settings.helicopterAlertsEnabled ||
             settings.militaryAlertsEnabled || settings.policeAlertsEnabled
         ) {
-            add(permissionStates[AppFeature.SKY_ALERTS] ?: PermissionUiState.Loading)
+            add(
+                AppFeature.SKY_ALERTS to
+                    (permissionStates[AppFeature.SKY_ALERTS] ?: PermissionUiState.Loading),
+            )
         }
     }
-    return configuredStates.firstOrNull { !it.isUsable() }
-        ?: configuredStates.firstOrNull()
-        ?: PermissionUiState.Granted
+
+private fun notificationSource(
+    key: InfoSourceKey,
+    label: String,
+    configured: Boolean,
+    permissionStates: List<Pair<AppFeature, PermissionUiState>>,
+    detail: String,
+): InfoSourceStatus {
+    val state = when {
+        !configured -> null
+        permissionStates.any { (_, permission) -> permission == PermissionUiState.Loading } -> null
+        else -> permissionStates.all { (feature, permission) -> permission.isUsableFor(feature) }
+    }
+    return InfoSourceStatus(
+        key = key,
+        label = label,
+        configured = configured,
+        effective = state,
+        statusText = when (state) {
+            true -> "Ready"
+            false -> "Permission needed"
+            null -> if (configured) "Checking" else "Off"
+        },
+        detail = detail,
+    )
 }
 
 private fun backendSource(

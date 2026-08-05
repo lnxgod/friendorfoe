@@ -1,6 +1,7 @@
 package com.friendorfoe.presentation.detail
 
 import com.friendorfoe.data.local.HistoryEntity
+import com.friendorfoe.data.remote.AircraftDetailDto
 import com.friendorfoe.domain.model.Aircraft
 import com.friendorfoe.domain.model.DetectionSource
 import com.friendorfoe.domain.model.Drone
@@ -91,6 +92,56 @@ class DetailPresentationTest {
 
         assertFalse(model.identifiers.any { it.value.equals("Unknown", ignoreCase = true) })
         assertFalse(model.advanced.any { it.value.equals("Unknown", ignoreCase = true) })
+    }
+
+    @Test
+    fun liveAircraftCarriesPhotoEvidenceIntoTheNewDetailModel() {
+        val model = presentLiveDetail(
+            aircraft = aircraft().copy(photoUrl = "https://images.example/live.jpg"),
+            remoteDetail = AircraftDetailDto(
+                icaoHex = "abc123",
+                callsign = "FOF42",
+                registration = "N42FO",
+                aircraftType = "B738",
+                aircraftDescription = "Boeing 737-800",
+                operator = null,
+                photo = null,
+                route = null,
+                country = null,
+            ),
+            remoteFailure = null,
+        )
+
+        assertEquals(
+            AircraftVisual(
+                photoUrl = "https://images.example/live.jpg",
+                typeCode = "B738",
+                description = "Boeing 737-800",
+                category = ObjectCategory.COMMERCIAL,
+            ),
+            model.aircraftVisual,
+        )
+    }
+
+    @Test
+    fun historicalAircraftUsesOnlySavedPhotoAndCategoryEvidence() {
+        val row = history(id = 12, objectId = "abc").copy(
+            objectType = "aircraft",
+            category = "commercial",
+            photoUrl = "https://images.example/saved.jpg",
+        )
+
+        assertEquals(
+            AircraftVisual(
+                photoUrl = "https://images.example/saved.jpg",
+                typeCode = null,
+                description = null,
+                category = ObjectCategory.COMMERCIAL,
+            ),
+            presentHistoricalDetail(row).aircraftVisual,
+        )
+        assertNull(presentHistoricalDetail(history(id = 13, objectId = "drone")).aircraftVisual)
+        assertNull(presentLiveDroneDetail(drone()).aircraftVisual)
     }
 
     private fun aircraft() = Aircraft(

@@ -23,8 +23,8 @@ android {
         applicationId = "com.friendorfoe"
         minSdk = 26
         targetSdk = 34
-        versionCode = 116
-        versionName = "0.67.7-android-ar-overlay-range"
+        versionCode = 124
+        versionName = "0.67.15-android-rid-ingest-performance"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

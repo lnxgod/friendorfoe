@@ -41,13 +41,32 @@ class BleFeatureExtractor @Inject constructor() {
          *
          * Static: called from the BLE scan callback hot path — no instantiation.
          *
-         * @param addrType 0=public, 1=random.
+         * @param addressType BLE address classification. Unknown and
+         *                    unavailable types get their own stable hash value.
          * @param props    advertising properties byte (legacy/ext, connectable,
          *                 scannable). Pass 0 if unavailable.
          */
-        fun computeJa3Hash(result: ScanResult, addrType: Int, props: Int): UInt {
+        fun computeJa3Hash(
+            result: ScanResult,
+            addressType: BlePacketParser.AddressType,
+            props: Int,
+        ): UInt {
             val bytes = result.scanRecord?.bytes ?: return 0u
-            return computeJa3HashBytes(bytes, addrType, props)
+            return computeJa3HashBytes(bytes, addressTypeJa3Value(addressType), props)
+        }
+
+        private fun addressTypeFeatureValue(addressType: BlePacketParser.AddressType): Int = when (addressType) {
+            BlePacketParser.AddressType.PUBLIC -> 0
+            BlePacketParser.AddressType.RANDOM -> 1
+            BlePacketParser.AddressType.UNKNOWN -> 2
+            BlePacketParser.AddressType.UNAVAILABLE -> -1
+        }
+
+        private fun addressTypeJa3Value(addressType: BlePacketParser.AddressType): Int = when (addressType) {
+            BlePacketParser.AddressType.PUBLIC -> 0
+            BlePacketParser.AddressType.RANDOM -> 1
+            BlePacketParser.AddressType.UNKNOWN,
+            BlePacketParser.AddressType.UNAVAILABLE -> 2
         }
 
         /** Pure-bytes variant of [computeJa3Hash] — exported for unit tests
@@ -144,7 +163,7 @@ class BleFeatureExtractor @Inject constructor() {
         val isConnectable: Boolean,
         val rssi: Int,
         val estimatedDistance: Float,     // From RSSI + TX power
-        val addressType: Int,            // 0=public, 1=random
+        val addressType: BlePacketParser.AddressType,
         // Byte structure fingerprint
         val payloadHash: Int,            // Hash of payload structure (not content)
         val hasAppleContinuity: Boolean,
@@ -166,7 +185,7 @@ class BleFeatureExtractor @Inject constructor() {
             if (isConnectable) 1f else 0f,
             rssi.toFloat(),
             estimatedDistance,
-            addressType.toFloat(),
+            BleFeatureExtractor.addressTypeFeatureValue(addressType).toFloat(),
             payloadHash.toFloat(),
             if (hasAppleContinuity) 1f else 0f,
             appleSubType.toFloat()
@@ -227,8 +246,8 @@ class BleFeatureExtractor @Inject constructor() {
         // Connectable
         val isConnectable = result.isConnectable
 
-        // Address type (0=public, 1=random)
-        val addressType = if (result.device.type == android.bluetooth.BluetoothDevice.DEVICE_TYPE_LE) 1 else 0
+        // Address type is independent of the device transport type.
+        val addressType = BlePacketParser.getAddressType(result)
 
         // Payload structure hash (hash of lengths, not content)
         var structHash = 0
@@ -273,4 +292,5 @@ class BleFeatureExtractor @Inject constructor() {
             appleSubType = appleSubType
         )
     }
+
 }

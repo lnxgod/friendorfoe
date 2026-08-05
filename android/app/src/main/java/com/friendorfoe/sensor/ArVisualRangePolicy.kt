@@ -6,7 +6,7 @@ import com.friendorfoe.domain.model.SkyObject
 
 internal object ArVisualRangePolicy {
     private const val METERS_PER_STATUTE_MILE = 1_609.344
-    private const val AIRCRAFT_MAX_DISTANCE_METERS = 12.0 * METERS_PER_STATUTE_MILE
+    private const val AIRCRAFT_MAX_DISTANCE_METERS = 20.0 * METERS_PER_STATUTE_MILE
     private const val DRONE_MAX_DISTANCE_METERS = 2_000.0
 
     fun includes(skyObject: SkyObject, distanceMeters: Double): Boolean =

@@ -9,10 +9,15 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.ViewModelStoreOwner
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavGraphBuilder
 import androidx.navigation.NavHostController
 import androidx.navigation.NavType
@@ -20,10 +25,12 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.navigation
 import androidx.navigation.navArgument
+import com.friendorfoe.BuildConfig
 import com.friendorfoe.data.preferences.sanitizeTopLevelRoute
 import com.friendorfoe.presentation.about.AboutLandingActions
 import com.friendorfoe.presentation.about.AboutLandingScreen
 import com.friendorfoe.presentation.about.AboutViewModel
+import com.friendorfoe.presentation.about.InfoUiState
 import com.friendorfoe.presentation.about.InfoSettingsScreen
 import com.friendorfoe.presentation.about.openUri
 import com.friendorfoe.presentation.aircraft.AircraftReferenceScreen
@@ -215,17 +222,47 @@ private fun NavGraphBuilder.registerSevenTopLevelDestinations(
     }
 
     composable(Screen.About.route) {
-        AboutTopLevelRoute(navController = navController)
+        val viewModel = mainGraphAboutViewModel(navController)
+        val state by viewModel.uiState.collectAsStateWithLifecycle()
+        AboutTopLevelRoute(
+            navController = navController,
+            state = state,
+            onCheckForUpdates = viewModel::checkForUpdates,
+            onCheckForUpdatesIfIdle = viewModel::checkForUpdatesIfIdle,
+        )
     }
+}
+
+internal fun mainGraphAboutOwner(
+    navController: NavHostController,
+): ViewModelStoreOwner = navController.getBackStackEntry(MAIN_GRAPH_ROUTE)
+
+@Composable
+private fun mainGraphAboutViewModel(
+    navController: NavHostController,
+): AboutViewModel {
+    val owner = remember(navController) {
+        mainGraphAboutOwner(navController)
+    }
+    return hiltViewModel(owner)
 }
 
 @Composable
 internal fun AboutTopLevelRoute(
     navController: NavHostController,
+    state: InfoUiState = InfoUiState(),
+    onCheckForUpdates: () -> Unit = {},
+    onCheckForUpdatesIfIdle: () -> Unit = {},
+    onOpenUpdate: ((String) -> Unit)? = null,
 ) {
     val context = LocalContext.current
+    LaunchedEffect(Unit) { onCheckForUpdatesIfIdle() }
+    val openUpdate = onOpenUpdate ?: { url: String -> context.openUri(url) }
     TopLevelRouteRoot(TopLevelDestination.ABOUT) {
         AboutLandingScreen(
+            installedVersionName = state.installedVersion.name
+                .ifBlank { BuildConfig.VERSION_NAME },
+            updateState = state.updateState,
             actions = AboutLandingActions(
                 onOpenSettings = {
                     navController.navigate(Screen.AboutSettings.route) { launchSingleTop = true }
@@ -239,6 +276,8 @@ internal fun AboutTopLevelRoute(
                 onOpenGithub = {
                     context.openUri("https://github.com/lnxgod/friendorfoe")
                 },
+                onCheckForUpdates = onCheckForUpdates,
+                onOpenUpdate = openUpdate,
             ),
         )
     }
@@ -281,7 +320,7 @@ private fun NavGraphBuilder.registerSecondaryDestinations(
     composable(Screen.AboutSettings.route) {
         AboutSettingsRoute(
             navController = navController,
-            viewModel = hiltViewModel<AboutViewModel>(),
+            viewModel = mainGraphAboutViewModel(navController),
         )
     }
 

@@ -279,14 +279,14 @@ class SkyPositionMapperTest {
     }
 
     @Test
-    fun `aircraft overlay includes twelve statute miles but excludes farther aircraft`() {
+    fun `aircraft overlay includes twenty statute miles but excludes farther aircraft`() {
         val user = Position(40.0, -74.0, 0.0)
         val orientation = DeviceOrientation(0f, 90f, 0f)
         val results = mapper.mapToScreen(
             user,
             listOf(
-                createTestAircraft("INSIDE", Position(40.0, -74.0, 19_200.0)),
-                createTestAircraft("OUTSIDE", Position(40.0, -74.0, 19_400.0)),
+                createTestAircraft("INSIDE", Position(40.0, -74.0, 32_100.0)),
+                createTestAircraft("OUTSIDE", Position(40.0, -74.0, 32_300.0)),
             ),
             orientation,
             CameraFovCalculator(),

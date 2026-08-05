@@ -7,8 +7,8 @@ ANDROID_GRADLE = REPO_ROOT / "android" / "app" / "build.gradle.kts"
 ANDROID_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "android-build.yml"
 ESP32_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "esp32-web-flasher.yml"
 
-VERSION_NAME = "0.67.7-android-ar-overlay-range"
-VERSION_CODE = 116
+VERSION_NAME = "0.67.15-android-rid-ingest-performance"
+VERSION_CODE = 124
 SIGNER_SHA256 = (
     "3a1581ba5d10df59fdb28e09987851d6c7d79ce26df4eb69b9f6d262b9b68e95"
 )
@@ -87,7 +87,7 @@ def test_release_signing_is_test_gated_verified_and_secret_scoped():
     signing = _job(workflow, "sign-release", "publish-release")
 
     assert "contents: read" in build
-    assert "./gradlew clean testDebugUnitTest assembleDebug" in build
+    assert "./gradlew clean testDebugUnitTest lintDebug assembleDebug" in build
     assert "needs: build" in signing
     assert "contents: read" in signing
     assert "contents: write" not in signing

@@ -6,6 +6,7 @@ import android.bluetooth.le.BluetoothLeScanner
 import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
+import android.os.ParcelUuid
 import android.util.Log
 import com.friendorfoe.data.DetectionPrefs
 import kotlinx.coroutines.channels.awaitClose
@@ -190,6 +191,17 @@ class GlassesDetector @Inject constructor(
     companion object {
         private const val TAG = "GlassesDetector"
         private const val MIN_STATIC_DETECTION_CONFIDENCE = 0.60f
+        private val OPEN_DRONE_ID_SERVICE_UUID by lazy(LazyThreadSafetyMode.PUBLICATION) {
+            ParcelUuid(OpenDroneIdParser.OPEN_DRONE_ID_UUID)
+        }
+
+        /**
+         * Remote ID advertisements are handled by [RemoteIdScanner], not the
+         * privacy classifier. Reuse its framing policy so malformed FFFA data
+         * cannot bypass privacy inspection.
+         */
+        internal fun shouldIgnoreOpenDroneIdPrivacyFrame(serviceData: ByteArray?): Boolean =
+            serviceData?.let(BleRemoteIdPayloadSelector::inspect) != null
 
         internal data class ManufacturerClassification(
             val manufacturer: String,
@@ -1217,18 +1229,30 @@ class GlassesDetector @Inject constructor(
 
         fun buildScanCallback(): ScanCallback = object : ScanCallback() {
             override fun onScanResult(callbackType: Int, result: ScanResult) {
-                val detection = checkScanResult(result)
-                if (detection != null) {
-                    trySend(GlassesScanEvent.Observation(detection))
-                }
-            }
-
-            override fun onBatchScanResults(results: List<ScanResult>) {
-                for (result in results) {
+                try {
                     val detection = checkScanResult(result)
                     if (detection != null) {
                         trySend(GlassesScanEvent.Observation(detection))
                     }
+                } catch (security: SecurityException) {
+                    reportPermissionBlocked(security)
+                    callbackRegistry.closeAndStopAll()
+                    close()
+                }
+            }
+
+            override fun onBatchScanResults(results: List<ScanResult>) {
+                try {
+                    for (result in results) {
+                        val detection = checkScanResult(result)
+                        if (detection != null) {
+                            trySend(GlassesScanEvent.Observation(detection))
+                        }
+                    }
+                } catch (security: SecurityException) {
+                    reportPermissionBlocked(security)
+                    callbackRegistry.closeAndStopAll()
+                    close()
                 }
             }
 
@@ -1482,18 +1506,12 @@ class GlassesDetector @Inject constructor(
         // Check connected devices immediately
         checkConnectedDevices()
 
-        // Periodic: restart BLE scan + check connected devices + Classic BT discovery
+        // Periodic: restart BLE scan and check connected devices.
         val restartJob = launch {
             while (true) {
                 delay(SCAN_RESTART_INTERVAL_MS)
                 refreshBondedList()
                 checkConnectedDevices()
-                try {
-                    val adapter = bluetoothManager.adapter
-                    if (adapter?.isDiscovering == false) {
-                        adapter.startDiscovery()
-                    }
-                } catch (_: SecurityException) {}
                 Log.d(TAG, "Scan cycle: ${myBondedAddresses.size} bonded, ${detectedDevices.size} detected")
                 rotateScannerOverlap()
             }
@@ -1526,10 +1544,16 @@ class GlassesDetector @Inject constructor(
     }
 
     private fun checkScanResult(result: ScanResult): GlassesDetection? {
-        val mac = result.device.address
-
-        val rssi = result.rssi
         val record = result.scanRecord ?: return null
+        if (shouldIgnoreOpenDroneIdPrivacyFrame(
+                record.getServiceData(OPEN_DRONE_ID_SERVICE_UUID),
+            )
+        ) {
+            return null
+        }
+
+        val mac = result.device.address
+        val rssi = result.rssi
 
         var bestConf = 0f
         var bestMfr = ""
@@ -1749,7 +1773,7 @@ class GlassesDetector @Inject constructor(
         // the same advertisement, so future backend-forwarding can correlate.
         val ja3 = BleFeatureExtractor.computeJa3Hash(
             result,
-            addrType = if (result.device.type == android.bluetooth.BluetoothDevice.DEVICE_TYPE_LE) 1 else 0,
+            addressType = BlePacketParser.getAddressType(result),
             props = 0
         )
 

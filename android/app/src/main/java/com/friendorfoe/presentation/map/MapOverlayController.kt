@@ -69,6 +69,11 @@ internal data class AircraftMarkerPresentation(
     val visuallyConfirmed: Boolean,
 )
 
+internal fun formationPointsChanged(
+    previous: List<FormationMapPoint>?,
+    next: List<FormationMapPoint>,
+): Boolean = previous !== next && previous != next
+
 internal fun MapTrack.toAircraftMarkerPresentation(
     visuallyConfirmed: Boolean,
 ): AircraftMarkerPresentation = AircraftMarkerPresentation(
@@ -193,6 +198,9 @@ internal class MapOverlayController(
     )
 
     private val aircraftMarkers = RetainedOverlayStore<AircraftOverlay>()
+    private val formationOverlay = FormationOverlay(context)
+    private var formationOverlayAttached = false
+    private var renderedFormationPoints: List<FormationMapPoint>? = null
     private val remoteMarkers = RetainedOverlayStore<RemoteOverlay>()
     private val sensorMarkers = RetainedOverlayStore<Marker>()
     private val sensorDroneMarkers = RetainedOverlayStore<SensorDroneOverlay>()
@@ -210,6 +218,7 @@ internal class MapOverlayController(
 
     fun render(
         mapTracks: List<MapTrack>,
+        formationPoints: List<FormationMapPoint>,
         userPosition: Position,
         followCompass: Boolean,
         stabilizedMapHeading: Float,
@@ -230,10 +239,13 @@ internal class MapOverlayController(
         )
 
         if (overlayPlan.renderTargets) {
+            updateFormationOverlay(formationPoints)
             updateAircraftMarkers(mapTracks, activeVisualFocusIds)
             updateSensorMarkers(remoteSensors)
             updateSensorDroneOverlays(sensorDrones)
-            updateRemoteMarkers(remoteSearchResults, mapTracks.mapTo(mutableSetOf()) { it.skyObject.id })
+            val localObjectIds = mapTracks.mapTo(mutableSetOf()) { it.skyObject.id }
+            formationPoints.mapTo(localObjectIds, FormationMapPoint::objectId)
+            updateRemoteMarkers(remoteSearchResults, localObjectIds)
             updateRemoteSearchMarker(remoteSearchCenter, remoteSearchResults.size)
             updateRemoteSearchRing(remoteSearchCenter)
         }
@@ -306,6 +318,32 @@ internal class MapOverlayController(
             },
             remove = { it.marker.remove(map) },
         )
+    }
+
+    private fun updateFormationOverlay(points: List<FormationMapPoint>) {
+        if (!formationPointsChanged(renderedFormationPoints, points)) return
+        renderedFormationPoints = points
+
+        val geoPoints = points.mapNotNull { point ->
+            if (point.latitude.isFinite() && point.longitude.isFinite() &&
+                (point.latitude != 0.0 || point.longitude != 0.0)
+            ) {
+                GeoPoint(point.latitude, point.longitude)
+            } else {
+                null
+            }
+        }
+        formationOverlay.replacePoints(geoPoints)
+
+        if (geoPoints.isEmpty()) {
+            if (formationOverlayAttached) {
+                map.overlays.remove(formationOverlay)
+                formationOverlayAttached = false
+            }
+        } else if (!formationOverlayAttached) {
+            map.overlays.add(formationOverlay)
+            formationOverlayAttached = true
+        }
     }
 
     private fun updateRemoteMarkers(

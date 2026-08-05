@@ -38,10 +38,22 @@ class CaptureReviewViewModel @Inject constructor(
         _state.value = CaptureReviewState.Empty
     }
 
-    fun savePermissionDenied() {
+    fun savePermissionDenied(
+        recovery: LegacyPhotoPermissionRecovery = LegacyPhotoPermissionRecovery.RetryRequest,
+    ) {
         if (saveJob?.isCompleted == false) return
         val draft = currentDraft() ?: return
-        _state.value = CaptureReviewState.SavePermissionDenied(draft)
+        _state.value = CaptureReviewState.SavePermissionDenied(draft, recovery = recovery)
+    }
+
+    fun markSaveSettingsLaunchFailed() {
+        val denied = _state.value as? CaptureReviewState.SavePermissionDenied ?: return
+        _state.value = denied.copy(settingsLaunchFailed = true)
+    }
+
+    fun resumeLegacySaveIfGranted(granted: Boolean) {
+        if (!granted || _state.value !is CaptureReviewState.SavePermissionDenied) return
+        save()
     }
 
     fun share(): Job? {

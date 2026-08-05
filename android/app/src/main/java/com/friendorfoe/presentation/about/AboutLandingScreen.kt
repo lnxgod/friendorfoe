@@ -31,11 +31,15 @@ data class AboutLandingActions(
     val onOpenReference: () -> Unit = {},
     val onContactSupport: () -> Unit = {},
     val onOpenGithub: () -> Unit = {},
+    val onCheckForUpdates: () -> Unit = {},
+    val onOpenUpdate: (String) -> Unit = {},
 )
 
 @Composable
 fun AboutLandingScreen(
     actions: AboutLandingActions,
+    installedVersionName: String = BuildConfig.VERSION_NAME,
+    updateState: UpdateUiState = UpdateUiState.Idle,
     modifier: Modifier = Modifier,
 ) {
     Column(
@@ -108,10 +112,18 @@ fun AboutLandingScreen(
                 modifier = Modifier.testTag("about_github"),
             )
         }
-        Text(
-            text = "Version ${BuildConfig.VERSION_NAME}",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+        FofSection(title = "Version & updates") {
+            Text(
+                text = "Version $installedVersionName",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            AppUpdateRow(
+                update = updateState,
+                onCheck = actions.onCheckForUpdates,
+                onOpen = actions.onOpenUpdate,
+                testTagPrefix = "about",
+            )
+        }
     }
 }

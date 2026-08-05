@@ -14,6 +14,7 @@ import dagger.hilt.InstallIn
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -73,6 +74,7 @@ class PermissionStateRepository @Inject constructor(
     private val preferences: AppPreferences,
 ) : PermissionStateSource {
     private val refreshGeneration = AtomicLong(0L)
+    private val authoritativeGrantOverrides = ConcurrentHashMap<String, Boolean>()
     private val _states = MutableStateFlow<Map<AppFeature, PermissionUiState>>(
         AppFeature.entries.associateWith { PermissionUiState.Loading }
     )
@@ -80,9 +82,14 @@ class PermissionStateRepository @Inject constructor(
 
     suspend fun refresh(
         rationaleByPermission: Map<String, Boolean>,
+        grantResultByPermission: Map<String, Boolean> = emptyMap(),
     ): Map<AppFeature, PermissionUiState> {
         val generation = refreshGeneration.incrementAndGet()
-        val platformSnapshot = snapshotPlatformEvidence(rationaleByPermission)
+        authoritativeGrantOverrides.putAll(grantResultByPermission)
+        val platformSnapshot = snapshotPlatformEvidence(
+            rationaleByPermission = rationaleByPermission,
+            grantResultByPermission = grantResultByPermission,
+        )
         val requestedBefore = preferences.requestedPermissions.first()
         val next = AppFeature.entries.associateWith { feature ->
             evaluate(feature, platformSnapshot, requestedBefore)
@@ -96,10 +103,13 @@ class PermissionStateRepository @Inject constructor(
     fun stateFor(feature: AppFeature): PermissionUiState =
         states.value[feature] ?: PermissionUiState.Loading
 
-    fun missingPermissionsFor(feature: AppFeature): Set<String> =
-        requiredPermissions(feature, platform.sdkInt).filterTo(linkedSetOf()) {
-            !platform.isGranted(it)
-        }
+    fun requestPlanFor(feature: AppFeature): Set<String> {
+        val granted = requiredPermissions(feature, platform.sdkInt)
+            .filterTo(linkedSetOf(), platform::isGranted)
+        return permissionRequestPlan(feature, platform.sdkInt, granted)
+    }
+
+    fun missingPermissionsFor(feature: AppFeature): Set<String> = requestPlanFor(feature)
 
     private fun evaluate(
         feature: AppFeature,
@@ -107,12 +117,37 @@ class PermissionStateRepository @Inject constructor(
         requestedBefore: Set<String>,
     ): PermissionUiState {
         val required = requiredPermissions(feature, platformSnapshot.sdkInt)
-        val runtimeState = if (feature == AppFeature.AR_MAP_LOCATION) {
+        val runtimeState = if (
+            feature == AppFeature.AR_MAP_LOCATION ||
+            feature == AppFeature.CALIBRATION
+        ) {
+            val nonLocationState = evaluateFeaturePermission(
+                required
+                    .filterNot { permission ->
+                        permission == Manifest.permission.ACCESS_FINE_LOCATION ||
+                            permission == Manifest.permission.ACCESS_COARSE_LOCATION
+                    }
+                    .map { permission ->
+                        PermissionEvidence(
+                            permission = permission,
+                            granted = platformSnapshot.isGranted(permission),
+                            requestedBefore = permission in requestedBefore,
+                            shouldShowRationale = platformSnapshot.shouldShowRationale(permission),
+                        )
+                    },
+            )
+            if (nonLocationState != PermissionUiState.Granted) return nonLocationState
+            val locationPermissions = setOf(
+                Manifest.permission.ACCESS_FINE_LOCATION,
+                Manifest.permission.ACCESS_COARSE_LOCATION,
+            )
             evaluateLocationPermission(
                 fineGranted = platformSnapshot.isGranted(Manifest.permission.ACCESS_FINE_LOCATION),
                 coarseGranted = platformSnapshot.isGranted(Manifest.permission.ACCESS_COARSE_LOCATION),
-                requestedBefore = required.any(requestedBefore::contains),
-                shouldShowRationale = required.any(platformSnapshot::shouldShowRationale),
+                requestedBefore = locationPermissions.any(requestedBefore::contains),
+                shouldShowRationale = locationPermissions.any(
+                    platformSnapshot::shouldShowRationale,
+                ),
             )
         } else {
             evaluateFeaturePermission(
@@ -137,15 +172,26 @@ class PermissionStateRepository @Inject constructor(
 
     private fun snapshotPlatformEvidence(
         rationaleByPermission: Map<String, Boolean>,
+        grantResultByPermission: Map<String, Boolean>,
     ): PlatformPermissionSnapshot {
         val sdkInt = platform.sdkInt
         val relevantPermissions = AppFeature.entries
             .flatMapTo(linkedSetOf()) { requiredPermissions(it, sdkInt) }
+        val grantedPermissions = relevantPermissions.filterTo(linkedSetOf()) { permission ->
+            val platformGranted = platform.isGranted(permission)
+            val authoritative = authoritativeGrantOverrides[permission]
+            if (authoritative != null && authoritative == platformGranted) {
+                authoritativeGrantOverrides.remove(permission, authoritative)
+            }
+            authoritative ?: platformGranted
+        }
         return PlatformPermissionSnapshot(
             sdkInt = sdkInt,
-            grantedPermissions = relevantPermissions.filterTo(linkedSetOf(), platform::isGranted),
+            grantedPermissions = grantedPermissions,
             rationaleByPermission = rationaleByPermission.toMap(),
-            notificationsEnabled = platform.notificationsEnabled(),
+            notificationsEnabled = grantResultByPermission[
+                Manifest.permission.POST_NOTIFICATIONS
+            ] ?: platform.notificationsEnabled(),
             enabledChannels = setOf(PRIVACY_ALERT_CHANNEL_ID, SKY_ALERT_CHANNEL_ID)
                 .filterTo(linkedSetOf(), platform::channelEnabled),
         )

@@ -1,8 +1,8 @@
 package com.friendorfoe.di
 
 import com.friendorfoe.BuildConfig
+import com.friendorfoe.data.BackendRequestInterceptor
 import com.friendorfoe.data.DetectionPrefs
-import com.friendorfoe.data.configuredBackendRequestUrl
 import com.friendorfoe.data.remote.AdsbFiApiService
 import com.friendorfoe.data.remote.AdsbLolApiService
 import com.friendorfoe.data.remote.AdsbOneApiService
@@ -196,31 +196,21 @@ object NetworkModule {
         return retrofit.create(OpenMeteoApiService::class.java)
     }
 
-    /**
-     * Interceptor that rewrites every request's base URL to the value
-     * currently stored in DetectionPrefs. This means changing the backend
-     * URL in settings takes effect immediately — no app restart needed.
-     */
     @Provides
     @Singleton
-    @Named("backendUrlInterceptor")
-    fun provideBackendUrlInterceptor(detectionPrefs: DetectionPrefs): Interceptor {
-        return Interceptor { chain ->
-            val original = chain.request()
-            val newUrl = configuredBackendRequestUrl(detectionPrefs.backendUrl, original.url)
-            chain.proceed(original.newBuilder().url(newUrl).build())
-        }
-    }
+    @Named("backendRequestInterceptor")
+    fun provideBackendRequestInterceptor(detectionPrefs: DetectionPrefs): Interceptor =
+        BackendRequestInterceptor(detectionPrefs)
 
     @Provides
     @Singleton
     @Named("backendClient")
     fun provideBackendOkHttpClient(
         loggingInterceptor: HttpLoggingInterceptor,
-        @Named("backendUrlInterceptor") urlInterceptor: Interceptor
+        @Named("backendRequestInterceptor") backendRequestInterceptor: Interceptor,
     ): OkHttpClient {
         return OkHttpClient.Builder()
-            .addInterceptor(urlInterceptor)
+            .addInterceptor(backendRequestInterceptor)
             .addInterceptor(loggingInterceptor)
             .connectTimeout(8, TimeUnit.SECONDS)
             .readTimeout(8, TimeUnit.SECONDS)
