@@ -6,8 +6,10 @@ and serves them for OTA push to ESP32 nodes.
 
 import hashlib
 import logging
+import re
 import struct
 import time
+import zlib
 from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
@@ -24,9 +26,30 @@ CACHE_TTL_S = 1800  # Re-check GitHub every 30 minutes
 IMAGE_VERSION_CACHE_SIZE = 32
 
 _ESP_IMAGE_MAGIC = 0xE9
-_APP_DESC_OFFSET = 0x20
+_ESP_IMAGE_HEADER_SIZE = 24
+_ESP_SEGMENT_HEADER_SIZE = 8
+_ESP32_S3_CHIP_ID = 9
+_MIN_ESP_APP_IMAGE_SIZE = 64 * 1024
+_ESP32_S3_EXECUTABLE_RANGES = (
+    (0x40370000, 0x403E0000),
+    (0x42000000, 0x44000000),
+)
+_ESP32_S3_SEGMENT_RANGES = (
+    (0x3C000000, 0x3E000000),
+    (0x3FC88000, 0x3FD00000),
+    (0x40370000, 0x403E0000),
+    (0x42000000, 0x44000000),
+    (0x50000000, 0x50002000),
+)
 _APP_DESC_MAGIC = 0xABCD5432
 _APP_DESC_MIN_SIZE = 112
+_BACKEND_IDENTITY_MAGIC = struct.pack("<I", 0x42464F46)
+_BACKEND_IDENTITY_STRUCT = struct.Struct("<IHH40s40s40s32sI")
+_BACKEND_IDENTITY_OFFSET = 0x120
+_BACKEND_VERSION_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+-backend$")
+_BADGE_VERSION_RE = re.compile(
+    r"^[0-9]+\.[0-9]+\.[0-9]+-badge(?:-[0-9A-Za-z][0-9A-Za-z._-]*)?$"
+)
 
 # Repo root relative to backend/app/services/firmware_manager.py
 _REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -38,33 +61,324 @@ FIRMWARE_TYPES = {
         "description": "Uplink node (ESP32-S3 N16R8)",
         "asset_pattern": "uplink-s3",
         "board": "esp32s3",
+        "project": "fof_uplink",
+        "hardware": "esp32-s3-devkitc-1",
+        "product_family": None,
+        "firmware_line": "legacy",
+        "component": "uplink",
+        "capabilities": ["legacy_scanner_uart", "attended_usb_migration"],
+        "partition_capacity": 0x200000,
+        "scanner_cache_capacity": 0x200000,
+        "companion_target": "scanner-s3-combo",
+        "desired_firmware_line": "backend",
+        "migration_required": True,
+        "supported": False,
+        "remote_update_eligible": False,
         "local_bin": _REPO_ROOT / "esp32/uplink/.pio/build/uplink-s3/firmware.bin",
     },
     "uplink-s3-fof_badge": {
         "description": "FoF Badge uplink (Seeed XIAO ESP32-S3)",
         "asset_pattern": "uplink-s3-fof_badge",
         "board": "esp32s3",
+        "project": "fof_badge_uplink",
+        "hardware": "seeed_xiao_esp32s3",
+        "product_family": "badge",
+        "firmware_line": "native_badge",
+        "component": "uplink",
+        "capabilities": ["display_badge", "scanner_uart", "native_badge_ota"],
+        "partition_capacity": 0x200000,
+        "scanner_cache_capacity": 0x200000,
+        "companion_target": "scanner-s3-combo-fof_badge",
+        "desired_firmware_line": "native_badge",
+        "migration_required": False,
+        "supported": True,
+        "remote_update_eligible": True,
         "local_bin": _REPO_ROOT / "esp32/uplink/.pio/build/uplink-s3-fof_badge/firmware.bin",
     },
     "scanner-s3-combo-seed": {
         "description": "BLE + WiFi scanner (ESP32-S3 Seed/Mini N8R8)",
         "asset_pattern": "scanner-s3-combo-seed",
         "board": "esp32s3",
+        "project": "fof_scanner_seed",
+        "hardware": "esp32-s3-devkitc-1",
+        "product_family": None,
+        "firmware_line": "legacy",
+        "component": "scanner",
+        "capabilities": ["legacy_scanner", "attended_usb_only"],
+        "partition_capacity": 0x200000,
+        "companion_target": "uplink-s3",
+        "desired_firmware_line": "backend",
+        "migration_required": False,
+        "supported": False,
+        "remote_update_eligible": False,
         "local_bin": _REPO_ROOT / "esp32/scanner/.pio/build/scanner-s3-combo-seed/firmware.bin",
     },
     "scanner-s3-combo-fof_badge": {
         "description": "FoF Badge BLE + WiFi scanner (Seeed XIAO ESP32-S3)",
         "asset_pattern": "scanner-s3-combo-fof_badge",
         "board": "esp32s3",
+        "project": "fof_badge_scanner",
+        "hardware": "seeed_xiao_esp32s3",
+        "product_family": "badge",
+        "firmware_line": "native_badge",
+        "component": "scanner",
+        "capabilities": ["display_badge", "ble_wifi_sensing", "native_badge_ota"],
+        "partition_capacity": 0x200000,
+        "companion_target": "uplink-s3-fof_badge",
+        "desired_firmware_line": "native_badge",
+        "migration_required": False,
+        "supported": True,
+        "remote_update_eligible": True,
         "local_bin": _REPO_ROOT / "esp32/scanner/.pio/build/scanner-s3-combo-fof_badge/firmware.bin",
     },
     "scanner-s3-combo": {
         "description": "BLE + WiFi scanner (ESP32-S3)",
         "asset_pattern": "scanner-s3-combo",
         "board": "esp32s3",
+        "project": "fof_scanner",
+        "hardware": "esp32-s3-devkitc-1",
+        "product_family": None,
+        "firmware_line": "legacy",
+        "component": "scanner",
+        "capabilities": ["legacy_scanner", "attended_usb_migration"],
+        "partition_capacity": 0x300000,
+        "companion_target": "uplink-s3",
+        "desired_firmware_line": "backend",
+        "migration_required": True,
+        "supported": False,
+        "remote_update_eligible": False,
         "local_bin": _REPO_ROOT / "esp32/scanner/.pio/build/scanner-s3-combo/firmware.bin",
     },
+    "uplink-s3-backend": {
+        "description": "Backend sensor uplink (Seeed XIAO ESP32-S3)",
+        "asset_pattern": "uplink-s3-backend",
+        "board": "esp32s3",
+        "project": "fof_backend_uplink",
+        "hardware": "seeed_xiao_esp32s3",
+        "product_family": "badge_lite",
+        "firmware_line": "backend",
+        "component": "uplink",
+        "capabilities": [
+            "display_none", "yellow_led", "scanner_uart", "http_uplink",
+            "config_ap", "remote_ota", "uart_relay_ota",
+        ],
+        "image_kind": 0,
+        "partition_capacity": 0x200000,
+        "scanner_cache_capacity": 0x200000,
+        "companion_target": "scanner-s3-combo-backend",
+        "desired_firmware_line": "backend",
+        "migration_required": False,
+        "supported": True,
+        "remote_update_eligible": True,
+        "local_bin": _REPO_ROOT / "backend-firmware/uplink/.pio/build/uplink-s3-backend/firmware.bin",
+    },
+    "scanner-s3-combo-backend": {
+        "description": "Backend sensor BLE + Wi-Fi scanner (Seeed XIAO ESP32-S3)",
+        "asset_pattern": "scanner-s3-combo-backend",
+        "board": "esp32s3",
+        "project": "fof_backend_scanner",
+        "hardware": "seeed_xiao_esp32s3",
+        "product_family": "badge_lite",
+        "firmware_line": "backend",
+        "component": "scanner",
+        "capabilities": [
+            "display_none", "yellow_led", "ble_wifi_sensing", "uart_control",
+            "uart_ota", "remote_ota_via_uplink",
+        ],
+        "image_kind": 1,
+        "partition_capacity": 0x200000,
+        "companion_target": "uplink-s3-backend",
+        "desired_firmware_line": "backend",
+        "migration_required": False,
+        "supported": True,
+        "remote_update_eligible": True,
+        "local_bin": _REPO_ROOT / "backend-firmware/scanner/.pio/build/scanner-s3-combo-backend/firmware.bin",
+    },
+    "uplink-s3-fullsize-backend": {
+        "description": "S3 Fullsize backend uplink (ESP32-S3 N16R8)",
+        "asset_pattern": "uplink-s3-fullsize-backend",
+        "board": "esp32s3",
+        "project": "fof_backend_uplink_fullsize",
+        "hardware": "esp32s3_n16r8_fullsize",
+        "product_family": "s3_fullsize",
+        "firmware_line": "backend",
+        "component": "uplink",
+        "capabilities": [
+            "display_none", "rgb_led", "scanner_uart", "http_uplink",
+            "config_ap", "remote_ota", "uart_relay_ota",
+        ],
+        "image_kind": 0,
+        "partition_capacity": 0x200000,
+        "scanner_cache_capacity": 0x300000,
+        "companion_target": "scanner-s3-combo-fullsize-backend",
+        "desired_firmware_line": "backend",
+        "migration_required": False,
+        "supported": True,
+        "remote_update_eligible": True,
+        "local_bin": _REPO_ROOT / "backend-firmware/uplink/.pio/build/uplink-s3-fullsize-backend/firmware.bin",
+    },
+    "scanner-s3-combo-fullsize-backend": {
+        "description": "S3 Fullsize backend BLE + Wi-Fi scanner (ESP32-S3 N16R8)",
+        "asset_pattern": "scanner-s3-combo-fullsize-backend",
+        "board": "esp32s3",
+        "project": "fof_backend_scanner_fullsize",
+        "hardware": "esp32s3_n16r8_fullsize",
+        "product_family": "s3_fullsize",
+        "firmware_line": "backend",
+        "component": "scanner",
+        "capabilities": [
+            "display_none", "rgb_led", "ble_wifi_sensing", "uart_control",
+            "uart_ota", "remote_ota_via_uplink",
+        ],
+        "image_kind": 1,
+        "partition_capacity": 0x300000,
+        "companion_target": "uplink-s3-fullsize-backend",
+        "desired_firmware_line": "backend",
+        "migration_required": False,
+        "supported": True,
+        "remote_update_eligible": True,
+        "local_bin": _REPO_ROOT / "backend-firmware/scanner/.pio/build/scanner-s3-combo-fullsize-backend/firmware.bin",
+    },
 }
+
+
+def _decode_identity_string(raw: bytes) -> str | None:
+    nul = raw.find(b"\0")
+    if nul <= 0 or any(raw[nul + 1:]):
+        return None
+    try:
+        value = raw[:nul].decode("ascii")
+    except UnicodeDecodeError:
+        return None
+    if any(ord(char) < 0x21 or ord(char) > 0x7E for char in value):
+        return None
+    return value
+
+
+def _parse_backend_identity_record(image: bytes, offset: int) -> dict | None:
+    end = offset + _BACKEND_IDENTITY_STRUCT.size
+    if end > len(image):
+        return None
+    record = image[offset:end]
+    magic, schema, image_kind, target_raw, project_raw, hardware_raw, version_raw, crc32 = (
+        _BACKEND_IDENTITY_STRUCT.unpack(record)
+    )
+    if magic != 0x42464F46 or schema != 1 or image_kind not in (0, 1):
+        return None
+    if (zlib.crc32(record[:160]) & 0xFFFFFFFF) != crc32:
+        return None
+    target = _decode_identity_string(target_raw)
+    project = _decode_identity_string(project_raw)
+    hardware = _decode_identity_string(hardware_raw)
+    version = _decode_identity_string(version_raw)
+    if None in (target, project, hardware, version):
+        return None
+    return {
+        "offset": offset,
+        "schema": schema,
+        "image_kind": image_kind,
+        "target": target,
+        "project": project,
+        "hardware": hardware,
+        "version": version,
+    }
+
+
+def _parse_backend_identity(image: bytes) -> dict | None:
+    canonical = _parse_backend_identity_record(image, _BACKEND_IDENTITY_OFFSET)
+    if canonical is None:
+        return None
+
+    start = 0
+    while True:
+        offset = image.find(_BACKEND_IDENTITY_MAGIC, start)
+        if offset < 0:
+            break
+        if offset != _BACKEND_IDENTITY_OFFSET and (
+            _parse_backend_identity_record(image, offset) is not None
+            or _looks_like_backend_identity_candidate(image, offset)
+        ):
+            return None
+        start = offset + 1
+    return canonical
+
+
+def _relaxed_identity_string(raw: bytes) -> str | None:
+    nul = raw.find(b"\0")
+    if nul <= 0:
+        return None
+    value = raw[:nul]
+    if any(byte < 0x20 or byte > 0x7E for byte in value):
+        return None
+    try:
+        return value.decode("ascii")
+    except UnicodeDecodeError:
+        return None
+
+
+def _looks_like_backend_identity_candidate(image: bytes, offset: int) -> bool:
+    end = offset + _BACKEND_IDENTITY_STRUCT.size
+    if end > len(image):
+        return False
+    (
+        _magic,
+        schema,
+        image_kind,
+        target_raw,
+        project_raw,
+        hardware_raw,
+        version_raw,
+        _crc32,
+    ) = _BACKEND_IDENTITY_STRUCT.unpack(image[offset:end])
+    values = tuple(
+        _relaxed_identity_string(raw)
+        for raw in (target_raw, project_raw, hardware_raw, version_raw)
+    )
+    target, project, hardware, version = values
+    identity_markers = sum((
+        bool(target and target.endswith("-backend")),
+        bool(project and project.startswith("fof_backend_")),
+        bool(hardware and "esp32" in hardware.lower()),
+        bool(version and version.endswith("-backend")),
+    ))
+    printable_fields = sum(value is not None for value in values)
+    return identity_markers >= 2 or (
+        schema <= 16 and image_kind in (0, 1) and printable_fields >= 2
+    )
+
+
+def _validated_backend_image_info(name: str, image: bytes) -> dict | None:
+    info = FIRMWARE_TYPES.get(name)
+    if info is None or not name.endswith("-backend"):
+        return None
+    desc = _parse_app_desc_bytes(image)
+    identity = _parse_backend_identity(image)
+    if desc is None or identity is None:
+        return None
+    expected = {
+        "target": name,
+        "project": info["project"],
+        "hardware": info["hardware"],
+        "image_kind": info["image_kind"],
+    }
+    if any(identity[key] != value for key, value in expected.items()):
+        return None
+    if identity["project"] != desc["project"] or identity["version"] != desc["version"]:
+        return None
+    if _BACKEND_VERSION_RE.fullmatch(identity["version"]) is None:
+        return None
+    if not (0 < len(image) <= info["partition_capacity"]):
+        return None
+    return {**identity, "size": len(image)}
+
+
+def _asset_target(asset_name: str, release_tag: str) -> str | None:
+    ordered = sorted(FIRMWARE_TYPES.items(), key=lambda item: len(item[1]["asset_pattern"]), reverse=True)
+    for target, info in ordered:
+        pattern = info["asset_pattern"]
+        if asset_name in {f"{pattern}.bin", f"{pattern}-{release_tag}.bin"}:
+            return target
+    return None
 
 
 def _decode_app_desc_field(data: bytes) -> str | None:
@@ -78,14 +392,85 @@ def _decode_app_desc_field(data: bytes) -> str | None:
     return text
 
 
-def _parse_app_desc_bytes(image: bytes) -> dict | None:
-    """Parse esp_app_desc_t from an ESP-IDF app image, failing closed."""
-    if len(image) < _APP_DESC_OFFSET + _APP_DESC_MIN_SIZE:
+def _parse_esp_image_layout(image: bytes) -> tuple[int, int] | None:
+    """Return the first segment payload bounds for one intact ESP32-S3 app."""
+    if not isinstance(image, bytes) or len(image) < _MIN_ESP_APP_IMAGE_SIZE:
         return None
     if image[0] != _ESP_IMAGE_MAGIC:
         return None
+    segment_count = image[1]
+    if not 1 <= segment_count <= 16:
+        return None
+    if struct.unpack_from("<H", image, 12)[0] != _ESP32_S3_CHIP_ID:
+        return None
+    if image[23] != 1:
+        return None
+    entry_address = struct.unpack_from("<I", image, 4)[0]
+    if entry_address % 4 or not any(
+        low <= entry_address < high
+        for low, high in _ESP32_S3_EXECUTABLE_RANGES
+    ):
+        return None
 
-    desc = image[_APP_DESC_OFFSET:_APP_DESC_OFFSET + _APP_DESC_MIN_SIZE]
+    cursor = _ESP_IMAGE_HEADER_SIZE
+    checksum = 0xEF
+    first_segment_offset = 0
+    first_segment_size = 0
+    entry_covered_by_executable_segment = False
+    for segment_index in range(segment_count):
+        header_end = cursor + _ESP_SEGMENT_HEADER_SIZE
+        if header_end > len(image):
+            return None
+        load_address, segment_size = struct.unpack_from("<II", image, cursor)
+        load_end = load_address + segment_size
+        if segment_size == 0 or load_address % 4 or not any(
+            low <= load_address and load_end <= high
+            for low, high in _ESP32_S3_SEGMENT_RANGES
+        ):
+            return None
+        if load_address <= entry_address < load_end and any(
+            low <= load_address and load_end <= high
+            for low, high in _ESP32_S3_EXECUTABLE_RANGES
+        ):
+            entry_covered_by_executable_segment = True
+        payload_offset = header_end
+        payload_end = payload_offset + segment_size
+        if payload_end > len(image):
+            return None
+        if segment_index == 0:
+            first_segment_offset = payload_offset
+            first_segment_size = segment_size
+        for value in image[payload_offset:payload_end]:
+            checksum ^= value
+        cursor = payload_end
+
+    if not entry_covered_by_executable_segment:
+        return None
+
+    checksum_offset = ((cursor + 16) // 16) * 16 - 1
+    digest_offset = checksum_offset + 1
+    expected_end = digest_offset + hashlib.sha256().digest_size
+    if expected_end != len(image):
+        return None
+    if any(image[cursor:checksum_offset]):
+        return None
+    if image[checksum_offset] != checksum:
+        return None
+    if image[digest_offset:] != hashlib.sha256(image[:digest_offset]).digest():
+        return None
+    return first_segment_offset, first_segment_size
+
+
+def _parse_app_desc_bytes(image: bytes) -> dict | None:
+    """Parse esp_app_desc_t from an ESP-IDF app image, failing closed."""
+    layout = _parse_esp_image_layout(image)
+    if layout is None:
+        return None
+    descriptor_offset, first_segment_size = layout
+    if first_segment_size < _APP_DESC_MIN_SIZE:
+        return None
+
+    desc = image[descriptor_offset:descriptor_offset + _APP_DESC_MIN_SIZE]
     if struct.unpack_from("<I", desc)[0] != _APP_DESC_MAGIC:
         return None
 
@@ -112,6 +497,64 @@ def _parse_app_desc(bin_path: Path) -> dict | None:
         return _parse_app_desc_bytes(bin_path.read_bytes())
     except OSError:
         return None
+
+
+def _validated_named_image_info(name: str, image: bytes) -> dict | None:
+    """Validate a non-backend image against its exact catalog identity."""
+    info = FIRMWARE_TYPES.get(name)
+    if info is None or name.endswith("-backend"):
+        return None
+    desc = _parse_app_desc_bytes(image)
+    if desc is None or desc["project"] != info["project"]:
+        return None
+    badge_version = _BADGE_VERSION_RE.fullmatch(desc["version"]) is not None
+    backend_version = _BACKEND_VERSION_RE.fullmatch(desc["version"]) is not None
+    if name.endswith("-fof_badge"):
+        if not badge_version:
+            return None
+    elif badge_version or backend_version:
+        return None
+    required_markers = (
+        name.encode("ascii") + b"\0",
+        info["hardware"].encode("ascii") + b"\0",
+    )
+    if any(marker not in image for marker in required_markers):
+        return None
+    return {
+        "target": name,
+        "project": info["project"],
+        "hardware": info["hardware"],
+        "version": desc["version"],
+        "size": len(image),
+    }
+
+
+def _validated_badge_image_info(name: str, image: bytes) -> dict | None:
+    """Validate one badge image without pinning it to a specific release."""
+    if not name.endswith("-fof_badge"):
+        return None
+    return _validated_named_image_info(name, image)
+
+
+def _resolve_firmware_image_info(image: bytes) -> dict | None:
+    """Resolve bytes to exactly one validated catalog firmware family."""
+    desc = _parse_app_desc_bytes(image)
+    if desc is None:
+        return None
+    candidates = [
+        name for name, info in FIRMWARE_TYPES.items()
+        if info.get("project") == desc["project"]
+    ]
+    matches = []
+    for name in candidates:
+        validated = (
+            _validated_backend_image_info(name, image)
+            if name.endswith("-backend")
+            else _validated_named_image_info(name, image)
+        )
+        if validated is not None:
+            matches.append(validated)
+    return matches[0] if len(matches) == 1 else None
 
 
 @dataclass
@@ -171,64 +614,40 @@ class FirmwareManager:
                 # the existing catalog without hammering GitHub until TTL.
                 self.last_check = now
 
-                # GitHub returns releases newest first. APK-only releases must
-                # not replace the firmware catalog with an empty one.
-                data = next(
-                    (
-                        release
-                        for release in releases
-                        if not release.get("draft", False)
-                        and any(
-                            a["name"].lower().endswith(".bin")
-                            and any(
-                                fw_info["asset_pattern"] in a["name"].lower()
-                                for fw_info in FIRMWARE_TYPES.values()
-                            )
-                            for a in release.get("assets", [])
+                # Releases are newest first, but each target may have an
+                # independently published newest release.
+                new_assets: dict[str, FirmwareAsset] = {}
+                selected_tags: list[str] = []
+                for fw_name, fw_info in FIRMWARE_TYPES.items():
+                    for release in releases:
+                        if release.get("draft", False):
+                            continue
+                        tag = release.get("tag_name", "")
+                        asset = next(
+                            (
+                                item for item in release.get("assets", [])
+                                if _asset_target(item.get("name", ""), tag) == fw_name
+                            ),
+                            None,
                         )
-                    ),
-                    None,
-                )
-                if data is None:
+                        if asset is None:
+                            continue
+                        cached = CACHE_DIR / f"{tag}_{fw_name}.bin"
+                        new_assets[fw_name] = FirmwareAsset(
+                            name=fw_name,
+                            description=fw_info["description"],
+                            release_tag=tag,
+                            size=asset["size"],
+                            download_url=asset["browser_download_url"],
+                            cached_path=str(cached) if cached.exists() else None,
+                        )
+                        selected_tags.append(tag)
+                        break
+
+                if not new_assets:
                     logger.warning("No GitHub release with supported firmware found")
                     return
-
-                tag = data.get("tag_name", "")
-                if tag == self.release_tag and self.assets:
-                    return  # No change
-
-                self.release_tag = tag
-                gh_assets = data.get("assets", [])
-
-                logger.info("GitHub release: %s with %d assets", tag, len(gh_assets))
-
-                new_assets = {}
-                used_assets = set()
-                fw_items = sorted(
-                    FIRMWARE_TYPES.items(),
-                    key=lambda item: len(item[1]["asset_pattern"]),
-                    reverse=True,
-                )
-                for fw_name, fw_info in fw_items:
-                    pattern = fw_info["asset_pattern"]
-                    # Find matching asset
-                    for a in gh_assets:
-                        aname = a["name"].lower()
-                        if a["name"] in used_assets:
-                            continue
-                        if pattern in aname and aname.endswith(".bin"):
-                            cached = CACHE_DIR / f"{tag}_{fw_name}.bin"
-                            new_assets[fw_name] = FirmwareAsset(
-                                name=fw_name,
-                                description=fw_info["description"],
-                                release_tag=tag,
-                                size=a["size"],
-                                download_url=a["browser_download_url"],
-                                cached_path=str(cached) if cached.exists() else None,
-                            )
-                            used_assets.add(a["name"])
-                            break
-
+                self.release_tag = selected_tags[0]
                 self.assets = new_assets
                 logger.info("Firmware catalog: %d types available", len(new_assets))
 
@@ -239,7 +658,8 @@ class FirmwareManager:
         """Get firmware binary by name. Prefers custom upload → local build → GitHub."""
         # Custom upload overrides everything
         if name in self._custom_firmware:
-            return self._custom_firmware[name]
+            data = self._custom_firmware[name]
+            return data if self.validate_firmware_image(name, data) else None
 
         # Local .pio build (present when running backend from the repo with fresh builds)
         fw_info = FIRMWARE_TYPES.get(name)
@@ -249,7 +669,7 @@ class FirmwareManager:
                 try:
                     data = local_bin.read_bytes()
                     logger.info("Serving %s from local build (%s, %d bytes)", name, local_bin, len(data))
-                    return data
+                    return data if self.validate_firmware_image(name, data) else None
                 except Exception as e:
                     logger.warning("Failed reading local bin %s: %s", local_bin, e)
 
@@ -264,7 +684,7 @@ class FirmwareManager:
             try:
                 data = cached.read_bytes()
                 asset.cached_path = str(cached)
-                return data
+                return data if self.validate_firmware_image(name, data) else None
             except OSError as e:
                 logger.warning("Failed reading cached firmware %s: %s", cached, e)
                 asset.cached_path = None
@@ -280,6 +700,9 @@ class FirmwareManager:
                 r = await client.get(asset.download_url)
                 if r.status_code == 200:
                     data = r.content
+                    if not self.validate_firmware_image(name, data):
+                        logger.error("Downloaded firmware %s failed validation", name)
+                        return None
                     cached.write_bytes(data)
                     asset.cached_path = str(cached)
                     asset.cached_at = time.time()
@@ -294,11 +717,26 @@ class FirmwareManager:
 
     async def get_firmware_version(self, name: str) -> str | None:
         """Return the version for the firmware image that get_firmware_binary serves."""
-        if name in self._custom_firmware:
+        if name in self._custom_firmware and not name.endswith("-backend"):
             return "custom"
 
         image = await self.get_firmware_binary(name)
-        return self._version_from_image(image) if image is not None else None
+        return self.get_firmware_version_for_bytes(name, image) if image is not None else None
+
+    def get_firmware_version_for_bytes(self, name: str, image: bytes) -> str | None:
+        """Return a version for bytes already selected for serving.
+
+        Legacy custom images retain their literal ``custom`` sentinel, while
+        backend images always use their validated embedded app version.
+        """
+        if not name.endswith("-backend") and self._custom_firmware.get(name) is image:
+            return "custom"
+        return self._version_from_image(image)
+
+    def validate_firmware_image(self, name: str, image: bytes) -> bool:
+        if name.endswith("-backend"):
+            return _validated_backend_image_info(name, image) is not None
+        return _validated_named_image_info(name, image) is not None
 
     def set_custom_firmware(self, name: str, data: bytes):
         """Upload a custom firmware binary (overrides GitHub for testing)."""
@@ -328,10 +766,16 @@ class FirmwareManager:
             available = False
             source = "unavailable"
             if is_custom:
-                version = "custom"
-                size = len(self._custom_firmware[fw_name])
-                available = True
                 source = "custom"
+                image = await self.get_firmware_binary(fw_name)
+                if image is not None:
+                    version = (
+                        self._version_from_image(image)
+                        if fw_name.endswith("-backend")
+                        else "custom"
+                    )
+                    size = len(image)
+                    available = True
             elif local_present or asset:
                 image = await self.get_firmware_binary(fw_name)
                 source = "local" if local_present else "github"
@@ -348,8 +792,22 @@ class FirmwareManager:
 
             result.append({
                 "name": fw_name,
+                "target": fw_name,
                 "description": fw_info["description"],
                 "board": fw_info["board"],
+                "project": fw_info.get("project"),
+                "hardware": fw_info.get("hardware"),
+                "product_family": fw_info.get("product_family"),
+                "firmware_line": fw_info.get("firmware_line"),
+                "component": fw_info.get("component"),
+                "capabilities": list(fw_info.get("capabilities") or []),
+                "partition_capacity": fw_info.get("partition_capacity"),
+                "scanner_cache_capacity": fw_info.get("scanner_cache_capacity"),
+                "companion_target": fw_info.get("companion_target"),
+                "desired_firmware_line": fw_info.get("desired_firmware_line"),
+                "migration_required": bool(fw_info.get("migration_required")),
+                "supported": bool(fw_info.get("supported")),
+                "remote_update_eligible": bool(fw_info.get("remote_update_eligible")),
                 "version": version,
                 "size": size,
                 "available": available,

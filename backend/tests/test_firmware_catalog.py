@@ -1,29 +1,250 @@
+import hashlib
+import json
+import re
 import struct
+import subprocess
 import time
+import zipfile
+from pathlib import Path
+import zlib
 
 import pytest
 
 from app.services import firmware_manager
 from app.services.firmware_manager import FIRMWARE_TYPES, FirmwareAsset, FirmwareManager
+from tests.firmware_images import esp32s3_app_image, resign_esp_image
 
 
 PRODUCTION_VERSION = "0.64.68-live-follow"
-BADGE_VERSION = "0.64.76-badge-defcon34"
+BADGE_VERSION = "0.67.2-badge-defcon34"
 RELEASE_TAG = "v0.64.68-live-follow"
 
+BADGE_IDENTITIES = {
+    "uplink-s3-fof_badge": ("fof_badge_uplink", "seeed_xiao_esp32s3"),
+    "scanner-s3-combo-fof_badge": (
+        "fof_badge_scanner",
+        "seeed_xiao_esp32s3",
+    ),
+}
+NONBACKEND_IDENTITIES = {
+    "uplink-s3": ("fof_uplink", "esp32-s3-devkitc-1"),
+    "uplink-s3-fof_badge": BADGE_IDENTITIES["uplink-s3-fof_badge"],
+    "scanner-s3-combo": ("fof_scanner", "esp32-s3-devkitc-1"),
+    "scanner-s3-combo-seed": ("fof_scanner_seed", "esp32-s3-devkitc-1"),
+    "scanner-s3-combo-fof_badge": BADGE_IDENTITIES[
+        "scanner-s3-combo-fof_badge"
+    ],
+}
+BACKEND_IDENTITIES = {
+    "uplink-s3-backend": (
+        "fof_backend_uplink", "seeed_xiao_esp32s3", 0,
+    ),
+    "scanner-s3-combo-backend": (
+        "fof_backend_scanner", "seeed_xiao_esp32s3", 1,
+    ),
+    "uplink-s3-fullsize-backend": (
+        "fof_backend_uplink_fullsize", "esp32s3_n16r8_fullsize", 0,
+    ),
+    "scanner-s3-combo-fullsize-backend": (
+        "fof_backend_scanner_fullsize", "esp32s3_n16r8_fullsize", 1,
+    ),
+}
 
-def _esp_firmware_image(version: str) -> bytes:
-    encoded_version = version.encode("ascii")
-    assert len(encoded_version) < 32
 
-    image = bytearray(0x20 + 256)
-    image[0] = 0xE9
-    struct.pack_into("<I", image, 0x20, 0xABCD5432)
-    image[0x30:0x50] = encoded_version.ljust(32, b"\x00")
-    image[0x50:0x70] = b"friendorfoe".ljust(32, b"\x00")
-    image[0x70:0x80] = b"12:34:56".ljust(16, b"\x00")
-    image[0x80:0x90] = b"Jul 16 2026".ljust(16, b"\x00")
-    return bytes(image)
+def _dashboard_legacy_ota_control_state(
+    node: dict,
+    firmware: dict,
+    requested_component: str,
+) -> dict:
+    html = (
+        Path(__file__).resolve().parents[1] / "app/static/dashboard.html"
+    ).read_text()
+    match = re.search(
+        r"// BEGIN LEGACY OTA CONTROL STATE\n(.*?)"
+        r"// END LEGACY OTA CONTROL STATE",
+        html,
+        re.DOTALL,
+    )
+    assert match is not None, "dashboard legacy OTA control behavior is missing"
+    script = "\n".join((
+        match.group(1),
+        f"const node = {json.dumps(node)};",
+        f"const firmware = {json.dumps(firmware)};",
+        "const submit = {disabled:false, style:{}, title:''};",
+        "const state = applyLegacyOtaControlState(",
+        f"  node, firmware, {json.dumps(requested_component)}, submit",
+        ");",
+        "console.log(JSON.stringify({state, submit}));",
+    ))
+    result = subprocess.run(
+        ["node", "-e", script],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return json.loads(result.stdout)
+
+
+def test_dashboard_legacy_flash_control_is_channel_specific():
+    fullsize = _dashboard_legacy_ota_control_state(
+        {
+            "product_family": "s3_fullsize",
+            "remote_update_eligible": True,
+        },
+        {
+            "name": "uplink-s3-fullsize-backend",
+            "product_family": "s3_fullsize",
+            "component": "uplink",
+            "remote_update_eligible": True,
+        },
+        "uplink",
+    )
+    lite = _dashboard_legacy_ota_control_state(
+        {
+            "product_family": "badge_lite",
+            "remote_update_eligible": True,
+        },
+        {
+            "name": "uplink-s3-backend",
+            "product_family": "badge_lite",
+            "component": "uplink",
+            "remote_update_eligible": True,
+        },
+        "uplink",
+    )
+
+    assert fullsize["state"] == {
+        "eligible": False,
+        "reason": "S3 Fullsize requires the dedicated /backend-ota channel",
+        "next_action": (
+            "Keep uplink-s3-fullsize-backend selected for visibility; use the "
+            "dedicated /backend-ota channel when available"
+        ),
+    }
+    assert fullsize["submit"]["disabled"] is True
+    assert fullsize["submit"]["title"] == fullsize["state"]["reason"]
+    assert lite["state"] == {"eligible": True, "reason": "", "next_action": ""}
+    assert lite["submit"]["disabled"] is False
+
+
+def _esp_firmware_image(
+    version: str,
+    *,
+    project: str = "friendorfoe",
+    identity_records: tuple[bytes, ...] = (),
+    trailer: bytes = b"",
+    payload_fill: bytes = b"A",
+) -> bytes:
+    placements: list[tuple[int, bytes]] = []
+    cursor = 0x120
+    for record in identity_records:
+        placements.append((cursor, record))
+        cursor += len(record)
+    if trailer:
+        placements.append((cursor, trailer))
+    return esp32s3_app_image(
+        version,
+        project=project,
+        placements=tuple(placements),
+        payload_fill=payload_fill,
+    )
+
+
+BACKEND_IDENTITY_STRUCT = struct.Struct("<IHH40s40s40s32sI")
+RAW_INVALID_MAGIC = struct.pack("<I", 0x42464F46) + bytes(160)
+
+
+def _fixed_identity_string(value: str, width: int) -> bytes:
+    encoded = value.encode("ascii")
+    assert 0 < len(encoded) < width
+    return encoded + bytes(width - len(encoded))
+
+
+def _backend_identity_record(
+    *, target: str, project: str, hardware: str, version: str, image_kind: int,
+) -> bytes:
+    prefix = struct.pack("<IHH", 0x42464F46, 1, image_kind) + b"".join((
+        _fixed_identity_string(target, 40),
+        _fixed_identity_string(project, 40),
+        _fixed_identity_string(hardware, 40),
+        _fixed_identity_string(version, 32),
+    ))
+    assert len(prefix) == 160
+    return prefix + struct.pack("<I", zlib.crc32(prefix) & 0xFFFFFFFF)
+
+
+def _backend_image(
+    target: str,
+    *,
+    identity_records: tuple[bytes, ...] | None = None,
+    descriptor_project: str | None = None,
+    descriptor_version: str = "0.1.0-backend",
+    trailer: bytes = b"",
+    payload_fill: bytes = b"A",
+) -> bytes:
+    project, hardware, image_kind = BACKEND_IDENTITIES[target]
+    identity = _backend_identity_record(
+        target=target,
+        project=project,
+        hardware=hardware,
+        version="0.1.0-backend",
+        image_kind=image_kind,
+    )
+    return _esp_firmware_image(
+        descriptor_version,
+        project=descriptor_project or project,
+        identity_records=identity_records or (identity,),
+        trailer=trailer,
+        payload_fill=payload_fill,
+    )
+
+
+def _badge_image(
+    target: str,
+    *,
+    version: str = BADGE_VERSION,
+    project: str | None = None,
+    target_marker: str | None = None,
+    hardware_marker: str | None = None,
+) -> bytes:
+    expected_project, expected_hardware = BADGE_IDENTITIES[target]
+    trailer = b"\0".join((
+        (target_marker or target).encode("ascii"),
+        (hardware_marker or expected_hardware).encode("ascii"),
+    )) + b"\0"
+    return _esp_firmware_image(
+        version,
+        project=project or expected_project,
+        trailer=trailer,
+    )
+
+
+def _named_nonbackend_image(
+    target: str,
+    *,
+    version: str | None = None,
+) -> bytes:
+    project, hardware = NONBACKEND_IDENTITIES[target]
+    embedded_version = version or (
+        BADGE_VERSION if target.endswith("-fof_badge") else PRODUCTION_VERSION
+    )
+    return _esp_firmware_image(
+        embedded_version,
+        project=project,
+        trailer=f"{target}\0{hardware}\0".encode("ascii"),
+    )
+
+
+def release(tag: str, asset_name: str) -> dict:
+    return {
+        "tag_name": tag,
+        "draft": False,
+        "assets": [{
+            "name": asset_name,
+            "size": 1024,
+            "browser_download_url": f"https://example.test/{asset_name}",
+        }],
+    }
 
 
 def _github_manager(
@@ -89,9 +310,82 @@ def test_live_fleet_firmware_targets_are_present():
         "scanner-s3-combo",
         "scanner-s3-combo-fof_badge",
         "scanner-s3-combo-seed",
+        "scanner-s3-combo-backend",
+        "scanner-s3-combo-fullsize-backend",
         "uplink-s3",
         "uplink-s3-fof_badge",
+        "uplink-s3-backend",
+        "uplink-s3-fullsize-backend",
     }
+
+
+def test_three_family_catalog_has_exact_server_owned_management_matrix():
+    expected = {
+        "uplink-s3": (None, "legacy", "uplink", 0x200000, 0x200000, True, False),
+        "scanner-s3-combo": (None, "legacy", "scanner", 0x300000, None, True, False),
+        "scanner-s3-combo-seed": (None, "legacy", "scanner", 0x200000, None, False, False),
+        "uplink-s3-fof_badge": ("badge", "native_badge", "uplink", 0x200000, 0x200000, False, True),
+        "scanner-s3-combo-fof_badge": ("badge", "native_badge", "scanner", 0x200000, None, False, True),
+        "uplink-s3-backend": ("badge_lite", "backend", "uplink", 0x200000, 0x200000, False, True),
+        "scanner-s3-combo-backend": ("badge_lite", "backend", "scanner", 0x200000, None, False, True),
+        "uplink-s3-fullsize-backend": ("s3_fullsize", "backend", "uplink", 0x200000, 0x300000, False, True),
+        "scanner-s3-combo-fullsize-backend": ("s3_fullsize", "backend", "scanner", 0x300000, None, False, True),
+    }
+
+    actual = {
+        name: (
+            info["product_family"], info["firmware_line"], info["component"],
+            info["partition_capacity"], info.get("scanner_cache_capacity"),
+            info["migration_required"], info["remote_update_eligible"],
+        )
+        for name, info in FIRMWARE_TYPES.items()
+    }
+
+    assert actual == expected
+    assert FIRMWARE_TYPES["uplink-s3-fullsize-backend"]["companion_target"] == (
+        "scanner-s3-combo-fullsize-backend"
+    )
+    assert FIRMWARE_TYPES["scanner-s3-combo-fullsize-backend"]["companion_target"] == (
+        "uplink-s3-fullsize-backend"
+    )
+    assert str(FIRMWARE_TYPES["uplink-s3-fullsize-backend"]["local_bin"]).endswith(
+        "/backend-firmware/uplink/.pio/build/uplink-s3-fullsize-backend/firmware.bin"
+    )
+    assert str(FIRMWARE_TYPES["scanner-s3-combo-fullsize-backend"]["local_bin"]).endswith(
+        "/backend-firmware/scanner/.pio/build/scanner-s3-combo-fullsize-backend/firmware.bin"
+    )
+
+
+def test_every_catalog_target_declares_its_exact_runtime_family_identity():
+    expected = {
+        "uplink-s3": ("fof_uplink", "esp32-s3-devkitc-1"),
+        "uplink-s3-fof_badge": ("fof_badge_uplink", "seeed_xiao_esp32s3"),
+        "uplink-s3-backend": ("fof_backend_uplink", "seeed_xiao_esp32s3"),
+        "uplink-s3-fullsize-backend": (
+            "fof_backend_uplink_fullsize", "esp32s3_n16r8_fullsize",
+        ),
+        "scanner-s3-combo": ("fof_scanner", "esp32-s3-devkitc-1"),
+        "scanner-s3-combo-seed": ("fof_scanner_seed", "esp32-s3-devkitc-1"),
+        "scanner-s3-combo-fof_badge": (
+            "fof_badge_scanner",
+            "seeed_xiao_esp32s3",
+        ),
+        "scanner-s3-combo-backend": (
+            "fof_backend_scanner",
+            "seeed_xiao_esp32s3",
+        ),
+        "scanner-s3-combo-fullsize-backend": (
+            "fof_backend_scanner_fullsize",
+            "esp32s3_n16r8_fullsize",
+        ),
+    }
+
+    actual = {
+        name: (info.get("project"), info.get("hardware"))
+        for name, info in FIRMWARE_TYPES.items()
+    }
+
+    assert actual == expected
 
 
 def test_live_fleet_targets_point_at_expected_local_builds():
@@ -224,6 +518,134 @@ def test_bytes_parser_rejects_malformed_images():
     assert parser(_esp_firmware_image("")) is None
 
 
+def _descriptor_only_image(size: int, *, project: str, version: str) -> bytearray:
+    image = bytearray(size)
+    image[0] = 0xE9
+    struct.pack_into("<I", image, 0x20, 0xABCD5432)
+    image[0x30:0x50] = version.encode("ascii").ljust(32, b"\0")
+    image[0x50:0x70] = project.encode("ascii").ljust(32, b"\0")
+    image[0x70:0x80] = b"12:34:56".ljust(16, b"\0")
+    image[0x80:0x90] = b"Aug 02 2026".ljust(16, b"\0")
+    return image
+
+
+def test_catalog_rejects_descriptor_only_named_badge_bytes():
+    image = _descriptor_only_image(
+        183,
+        project="fof_badge_uplink",
+        version=BADGE_VERSION,
+    )
+    image[144:183] = b"uplink-s3-fof_badge\0seeed_xiao_esp32s3\0"
+
+    assert len(image) == 183
+    assert not FirmwareManager().validate_firmware_image(
+        "uplink-s3-fof_badge",
+        bytes(image),
+    )
+
+
+def test_catalog_rejects_descriptor_and_record_only_backend_bytes():
+    image = _descriptor_only_image(
+        308,
+        project="fof_backend_uplink",
+        version="0.1.0-backend",
+    )
+    image[144:308] = _backend_identity_record(
+        target="uplink-s3-backend",
+        project="fof_backend_uplink",
+        hardware="seeed_xiao_esp32s3",
+        version="0.1.0-backend",
+        image_kind=0,
+    )
+
+    assert len(image) == 308
+    assert not FirmwareManager().validate_firmware_image(
+        "uplink-s3-backend",
+        bytes(image),
+    )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "entry_address",
+        "entry_uncovered",
+        "load_address",
+        "load_range",
+        "chip_id",
+        "zero_segments",
+        "too_many_segments",
+        "missing_hash_flag",
+        "padding",
+        "checksum",
+        "digest",
+        "truncated",
+        "trailing_data",
+    ],
+)
+def test_catalog_rejects_invalid_esp32s3_image_layout(mutation: str):
+    image = bytearray(_badge_image("uplink-s3-fof_badge"))
+    if mutation == "entry_address":
+        struct.pack_into("<I", image, 4, 0)
+        image = bytearray(resign_esp_image(bytes(image)))
+    elif mutation == "entry_uncovered":
+        struct.pack_into("<I", image, 4, 0x40375000)
+        image = bytearray(resign_esp_image(bytes(image)))
+    elif mutation == "load_address":
+        struct.pack_into("<I", image, 24, 0)
+        image = bytearray(resign_esp_image(bytes(image)))
+    elif mutation == "load_range":
+        struct.pack_into("<I", image, 24, 0x3DFFF000)
+        image = bytearray(resign_esp_image(bytes(image)))
+    elif mutation == "chip_id":
+        struct.pack_into("<H", image, 12, 5)
+        image = bytearray(resign_esp_image(bytes(image)))
+    elif mutation == "zero_segments":
+        image[1] = 0
+        image = bytearray(resign_esp_image(bytes(image)))
+    elif mutation == "too_many_segments":
+        image[1] = 17
+        image = bytearray(resign_esp_image(bytes(image)))
+    elif mutation == "missing_hash_flag":
+        image[23] = 0
+        image = bytearray(resign_esp_image(bytes(image)))
+    elif mutation == "padding":
+        image[-34] ^= 1
+        image = bytearray(resign_esp_image(bytes(image)))
+    elif mutation == "checksum":
+        image[-33] ^= 1
+        image = bytearray(resign_esp_image(bytes(image)))
+    elif mutation == "digest":
+        image[-1] ^= 1
+    elif mutation == "truncated":
+        image = image[:-1]
+    elif mutation == "trailing_data":
+        image.extend(b"\0")
+
+    assert not FirmwareManager().validate_firmware_image(
+        "uplink-s3-fof_badge",
+        bytes(image),
+    )
+
+
+def test_catalog_rejects_tiny_but_fully_checksummed_named_app():
+    image = esp32s3_app_image(
+        BADGE_VERSION,
+        project="fof_badge_uplink",
+        placements=((
+            0x200,
+            b"uplink-s3-fof_badge\0seeed_xiao_esp32s3\0",
+        ),),
+        payload_size=1200,
+    )
+
+    assert len(image) < 64 * 1024
+    assert not FirmwareManager().validate_firmware_image(
+        "uplink-s3-fof_badge",
+        image,
+    )
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("name", "embedded_version"),
@@ -241,7 +663,12 @@ async def test_cached_github_firmware_version_comes_from_image(
     manager = _github_manager(
         monkeypatch,
         tmp_path,
-        {name: _esp_firmware_image(embedded_version)},
+        {
+            name: _named_nonbackend_image(
+                name,
+                version=embedded_version,
+            )
+        },
     )
 
     assert await manager.get_firmware_version(name) == embedded_version
@@ -256,8 +683,12 @@ async def test_catalog_uses_production_and_badge_versions_from_github_images(
         monkeypatch,
         tmp_path,
         {
-            "scanner-s3-combo": _esp_firmware_image(PRODUCTION_VERSION),
-            "scanner-s3-combo-fof_badge": _esp_firmware_image(BADGE_VERSION),
+            "scanner-s3-combo": _named_nonbackend_image(
+                "scanner-s3-combo",
+            ),
+            "scanner-s3-combo-fof_badge": _badge_image(
+                "scanner-s3-combo-fof_badge",
+            ),
         },
     )
 
@@ -280,7 +711,7 @@ async def test_malformed_github_image_version_fails_closed(
     assert await manager.get_firmware_version(name) is None
     catalog = {row["name"]: row for row in await manager.get_catalog()}
     assert catalog[name]["version"] is None
-    assert catalog[name]["available"] is True
+    assert catalog[name]["available"] is False
 
 
 @pytest.mark.asyncio
@@ -297,7 +728,10 @@ async def test_local_binary_version_wins_over_repo_source_header(
     embedded_version = "0.64.60-stale-local"
     local_bin = tmp_path / "local" / name / "firmware.bin"
     local_bin.parent.mkdir(parents=True)
-    local_bin.write_bytes(_esp_firmware_image(embedded_version))
+    local_bin.write_bytes(_named_nonbackend_image(
+        name,
+        version=embedded_version,
+    ))
     monkeypatch.setitem(FIRMWARE_TYPES[name], "local_bin", local_bin)
 
     manager = FirmwareManager()
@@ -310,7 +744,7 @@ async def test_local_binary_version_wins_over_repo_source_header(
         name,
         FIRMWARE_TYPES[name]["description"],
         RELEASE_TAG,
-        len(_esp_firmware_image(PRODUCTION_VERSION)),
+        len(_named_nonbackend_image(name)),
         f"https://example.test/{name}.bin",
     )
 
@@ -329,7 +763,7 @@ async def test_unusable_github_cache_clears_stale_cached_path(
     cache_state: str,
 ):
     name = "uplink-s3"
-    image = _esp_firmware_image(PRODUCTION_VERSION)
+    image = _named_nonbackend_image(name)
     manager = _github_manager(monkeypatch, tmp_path, {name: image}, cached=False)
     asset = manager.assets[name]
     cache_path = firmware_manager.CACHE_DIR / f"{RELEASE_TAG}_{name}.bin"
@@ -369,7 +803,7 @@ async def test_downloaded_github_image_version_is_parsed_and_download_reused(
     tmp_path,
 ):
     name = "uplink-s3"
-    image = _esp_firmware_image(PRODUCTION_VERSION)
+    image = _named_nonbackend_image(name)
     manager = _github_manager(monkeypatch, tmp_path, {name: image}, cached=False)
     download_url = manager.assets[name].download_url
     download_calls: list[str] = []
@@ -400,3 +834,260 @@ async def test_downloaded_github_image_version_is_parsed_and_download_reused(
     catalog = {row["name"]: row for row in await manager.get_catalog()}
     assert catalog[name]["version"] == PRODUCTION_VERSION
     assert download_calls == [download_url]
+
+
+@pytest.mark.asyncio
+async def test_backend_catalog_has_exact_identity(monkeypatch, tmp_path):
+    name = "uplink-s3-backend"
+    image = _backend_image(name)
+    manager = _github_manager(monkeypatch, tmp_path, {name: image})
+    catalog = {row["name"]: row for row in await manager.get_catalog()}
+    assert catalog[name]["target"] == name
+    assert catalog[name]["project"] == "fof_backend_uplink"
+    assert catalog[name]["hardware"] == "seeed_xiao_esp32s3"
+    assert catalog[name]["version"] == "0.1.0-backend"
+
+
+@pytest.mark.asyncio
+async def test_backend_catalog_rejects_badge_project_under_backend_target(monkeypatch, tmp_path):
+    wrong = _esp_firmware_image(
+        "0.1.0-backend",
+        project="fof_badge_uplink",
+        identity_records=(_backend_identity_record(
+            target="uplink-s3-backend",
+            project="fof_backend_uplink",
+            hardware="seeed_xiao_esp32s3",
+            version="0.1.0-backend",
+            image_kind=0,
+        ),),
+    )
+    manager = _github_manager(monkeypatch, tmp_path, {"uplink-s3-backend": wrong})
+    assert await manager.get_firmware_binary("uplink-s3-backend") is None
+
+
+@pytest.mark.parametrize("target", sorted(BADGE_IDENTITIES))
+@pytest.mark.parametrize(
+    "version",
+    [BADGE_VERSION, "0.68.0-badge-defcon34"],
+)
+def test_badge_catalog_accepts_exact_identity_for_current_and_future_versions(
+    target: str,
+    version: str,
+):
+    manager = FirmwareManager()
+
+    assert manager.validate_firmware_image(
+        target,
+        _badge_image(target, version=version),
+    )
+
+
+@pytest.mark.parametrize("target", sorted(BADGE_IDENTITIES))
+@pytest.mark.parametrize(
+    "mutation",
+    ["descriptor", "version", "project", "target", "hardware"],
+)
+def test_badge_catalog_rejects_missing_or_cross_family_identity(
+    target: str,
+    mutation: str,
+):
+    kwargs: dict[str, str] = {}
+    if mutation == "version":
+        kwargs["version"] = "0.68.0-backend"
+    elif mutation == "project":
+        kwargs["project"] = "fof_backend_uplink"
+    elif mutation == "target":
+        kwargs["target_marker"] = "uplink-s3-backend"
+    elif mutation == "hardware":
+        kwargs["hardware_marker"] = "esp32-s3-devkitc-1"
+    image = b"not-an-esp-image" if mutation == "descriptor" else _badge_image(target, **kwargs)
+
+    assert not FirmwareManager().validate_firmware_image(target, image)
+
+
+@pytest.mark.parametrize(
+    ("role", "target"),
+    [
+        ("uplink", "uplink-s3-fof_badge"),
+        ("scanner", "scanner-s3-combo-fof_badge"),
+    ],
+)
+def test_badge_catalog_accepts_the_native_0672_usb_bundle(role: str, target: str):
+    bundle = (
+        Path(__file__).resolve().parents[2]
+        / "tools/badge_flasher/resources/badge-factory-flasher-embedded.zip"
+    )
+    with zipfile.ZipFile(bundle) as archive:
+        manifest = __import__("json").loads(archive.read("manifest.json"))
+        image = archive.read(f"{role}/firmware.bin")
+
+    assert manifest["version"] == "0.67.2-badge-defcon34"
+    assert manifest["layouts"][role]["identity"]["target"] == target
+    assert set(BADGE_IDENTITIES) == {
+        "uplink-s3-fof_badge", "scanner-s3-combo-fof_badge",
+    }
+    assert FirmwareManager().validate_firmware_image(target, image)
+
+
+@pytest.mark.parametrize(
+    ("requested_target", "image_target"),
+    [
+        ("uplink-s3", "uplink-s3-fof_badge"),
+        ("scanner-s3-combo", "scanner-s3-combo-seed"),
+        ("scanner-s3-combo-seed", "scanner-s3-combo-fof_badge"),
+    ],
+)
+def test_nonbadge_catalog_rejects_another_named_family_image(
+    requested_target: str,
+    image_target: str,
+):
+    assert not FirmwareManager().validate_firmware_image(
+        requested_target,
+        _named_nonbackend_image(image_target),
+    )
+
+
+@pytest.mark.asyncio
+async def test_each_firmware_target_selects_its_newest_matching_release(monkeypatch, tmp_path):
+    _mock_github_releases(monkeypatch, [
+        release("backend-fw-0.1.0-backend", "uplink-s3-backend.bin"),
+        release("v0.67.2-badge-defcon34", "uplink-s3-fof_badge.bin"),
+        release("v0.64.68-live-follow", "uplink-s3.bin"),
+    ])
+    monkeypatch.setattr(firmware_manager, "CACHE_DIR", tmp_path / "cache")
+    manager = FirmwareManager()
+    await manager.refresh_from_github(force=True)
+    assert manager.assets["uplink-s3-backend"].release_tag == "backend-fw-0.1.0-backend"
+    assert manager.assets["uplink-s3-fof_badge"].release_tag == "v0.67.2-badge-defcon34"
+    assert manager.assets["uplink-s3"].release_tag == "v0.64.68-live-follow"
+
+
+@pytest.mark.parametrize("target", ["uplink-s3-backend", "scanner-s3-combo-backend"])
+def test_exactly_one_backend_identity_record_is_accepted(target):
+    image = _backend_image(target)
+    parsed = firmware_manager._parse_backend_identity(image)
+    assert parsed is not None
+    assert parsed["target"] == target
+    assert firmware_manager._validated_backend_image_info(target, image) is not None
+
+
+def test_one_valid_record_plus_raw_invalid_magic_is_accepted():
+    target = "uplink-s3-backend"
+    image = _backend_image(target, trailer=RAW_INVALID_MAGIC)
+    assert firmware_manager._parse_backend_identity(image)["target"] == target
+    assert firmware_manager._validated_backend_image_info(target, image) is not None
+
+
+def test_two_valid_identity_records_are_rejected():
+    valid = _backend_identity_record(target="uplink-s3-backend", project="fof_backend_uplink", hardware="seeed_xiao_esp32s3", version="0.1.0-backend", image_kind=0)
+    image = _backend_image("uplink-s3-backend", identity_records=(valid, valid))
+    assert firmware_manager._parse_backend_identity(image) is None
+    assert firmware_manager._validated_backend_image_info("uplink-s3-backend", image) is None
+
+
+def test_valid_canonical_record_plus_malformed_record_shaped_candidate_is_rejected():
+    candidate = bytearray(_backend_identity_record(
+        target="scanner-s3-combo-backend",
+        project="fof_backend_scanner",
+        hardware="seeed_xiao_esp32s3",
+        version="0.1.0-backend",
+        image_kind=1,
+    ))
+    candidate[-1] ^= 1
+    image = _backend_image(
+        "uplink-s3-backend",
+        trailer=bytes(candidate),
+    )
+
+    assert firmware_manager._parse_backend_identity(image) is None
+    assert firmware_manager._validated_backend_image_info(
+        "uplink-s3-backend",
+        image,
+    ) is None
+
+
+def test_raw_invalid_magic_without_a_valid_record_is_rejected():
+    image = _backend_image("uplink-s3-backend", identity_records=(RAW_INVALID_MAGIC,))
+    assert firmware_manager._parse_backend_identity(image) is None
+    assert firmware_manager._validated_backend_image_info("uplink-s3-backend", image) is None
+
+
+def _identity_recrc(prefix: bytes) -> bytes:
+    assert len(prefix) == 160
+    return prefix + struct.pack("<I", zlib.crc32(prefix) & 0xFFFFFFFF)
+
+
+def _identity_replace(record: bytes, start: int, width: int, value: str) -> bytes:
+    prefix = bytearray(record[:160])
+    prefix[start:start + width] = _fixed_identity_string(value, width)
+    return _identity_recrc(bytes(prefix))
+
+
+@pytest.mark.parametrize("mutation", [
+    "bad_crc", "schema", "image_kind", "target", "project", "hardware",
+    "invalid_backend_version", "descriptor_project", "descriptor_version",
+    "nonzero_after_nul", "oversized_partition",
+])
+def test_backend_identity_mutation_matrix_fails_closed(mutation):
+    target = "uplink-s3-backend"
+    project = "fof_backend_uplink"
+    record = _backend_identity_record(target=target, project=project, hardware="seeed_xiao_esp32s3", version="0.1.0-backend", image_kind=0)
+    descriptor_project = project
+    descriptor_version = "0.1.0-backend"
+    if mutation == "bad_crc":
+        record = record[:-1] + bytes([record[-1] ^ 0x01])
+    elif mutation == "schema":
+        prefix = bytearray(record[:160]); struct.pack_into("<H", prefix, 4, 2); record = _identity_recrc(bytes(prefix))
+    elif mutation == "image_kind":
+        prefix = bytearray(record[:160]); struct.pack_into("<H", prefix, 6, 1); record = _identity_recrc(bytes(prefix))
+    elif mutation == "target":
+        record = _identity_replace(record, 8, 40, "scanner-s3-combo-backend")
+    elif mutation == "project":
+        record = _identity_replace(record, 48, 40, "fof_badge_uplink")
+    elif mutation == "hardware":
+        record = _identity_replace(record, 88, 40, "esp32s3_other")
+    elif mutation == "invalid_backend_version":
+        record = _identity_replace(record, 128, 32, "0.1.0-badge"); descriptor_version = "0.1.0-badge"
+    elif mutation == "descriptor_project":
+        descriptor_project = "fof_badge_uplink"
+    elif mutation == "descriptor_version":
+        descriptor_version = "0.1.1-backend"
+    elif mutation == "nonzero_after_nul":
+        prefix = bytearray(record[:160]); prefix[8 + len(target) + 1] = 0x41; record = _identity_recrc(bytes(prefix))
+    image = _backend_image(target, identity_records=(record,), descriptor_project=descriptor_project, descriptor_version=descriptor_version)
+    if mutation == "oversized_partition":
+        image = image.ljust(FIRMWARE_TYPES[target]["partition_capacity"] + 1, b"\xA5")
+    assert firmware_manager._validated_backend_image_info(target, image) is None
+
+
+@pytest.mark.parametrize(("asset_name", "expected"), [
+    ("scanner-s3-combo-fullsize-backend.bin", "scanner-s3-combo-fullsize-backend"),
+    ("scanner-s3-combo-backend.bin", "scanner-s3-combo-backend"),
+    ("scanner-s3-combo-fof_badge-v0.1.0-mixed.bin", "scanner-s3-combo-fof_badge"),
+    ("scanner-s3-combo-seed.bin", "scanner-s3-combo-seed"),
+    ("scanner-s3-combo-v0.1.0-mixed.bin", "scanner-s3-combo"),
+    ("uplink-s3-fullsize-backend-v0.1.0-mixed.bin", "uplink-s3-fullsize-backend"),
+    ("uplink-s3-backend-v0.1.0-mixed.bin", "uplink-s3-backend"),
+    ("uplink-s3-fof_badge.bin", "uplink-s3-fof_badge"),
+    ("uplink-s3.bin", "uplink-s3"),
+    ("scanner-s3-combo-backendish-v0.1.0-mixed.bin", None),
+    ("scanner-s3-combo-backend-v0.1.0-mixed-extra.bin", None),
+    ("scanner-s3-combo-backend-v0.1.0-mixed.bin.sig", None),
+    ("prefix-uplink-s3-backend-v0.1.0-mixed.bin", None),
+])
+def test_asset_target_requires_longest_exact_filename(asset_name, expected):
+    assert firmware_manager._asset_target(asset_name, "v0.1.0-mixed") == expected
+
+
+@pytest.mark.asyncio
+async def test_scanner_base_target_cannot_claim_backend_or_badge_asset(monkeypatch, tmp_path):
+    tag = "v0.1.0-mixed"
+    _mock_github_releases(monkeypatch, [{"tag_name": tag, "draft": False, "assets": [
+        {"name": f"scanner-s3-combo-backend-{tag}.bin", "size": 1024, "browser_download_url": "https://example.test/backend.bin"},
+        {"name": f"scanner-s3-combo-fof_badge-{tag}.bin", "size": 1024, "browser_download_url": "https://example.test/badge.bin"},
+    ]}])
+    monkeypatch.setattr(firmware_manager, "CACHE_DIR", tmp_path / "cache")
+    manager = FirmwareManager()
+    await manager.refresh_from_github(force=True)
+    assert set(manager.assets) == {"scanner-s3-combo-backend", "scanner-s3-combo-fof_badge"}
+    assert "scanner-s3-combo" not in manager.assets

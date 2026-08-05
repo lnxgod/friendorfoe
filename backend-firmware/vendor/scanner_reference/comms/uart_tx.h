@@ -1,0 +1,191 @@
+#pragma once
+
+/**
+ * Friend or Foe -- Scanner UART TX Module
+ *
+ * Sends drone detections and status messages to the Uplink board over
+ * UART1 as newline-delimited JSON.  The TX task reads from the shared
+ * detection queue, applies Bayesian fusion, serializes to JSON, and
+ * writes bytes to the wire.
+ *
+ * Hardware: UART1, TX=GPIO17, RX=GPIO18, 921600 baud, 8N1
+ */
+
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+#include "detection_types.h"
+#include "badge_display_policy.h"
+#include "badge_easter_egg.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/queue.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/**
+ * Initialize UART1 hardware for scanner-to-uplink communication.
+ * Configures baud rate, pin mapping, and installs the driver.
+ * Must be called before uart_tx_start().
+ */
+void uart_tx_init(void);
+
+/**
+ * Serialize a single drone detection to JSON and transmit over UART.
+ * The JSON object is terminated with '\n'.
+ *
+ * Thread-safe: uses uart_write_bytes which is internally locked.
+ */
+void uart_tx_send_detection(const drone_detection_t *detection);
+
+/**
+ * Queue a high-priority detection for the UART TX task.
+ *
+ * Badge Remote ID packets must not compete with high-volume BLE privacy
+ * diagnostics in the regular scanner queue.  This queue is drained before the
+ * normal detection queue; when full it evicts its oldest priority item.
+ *
+ * @param detection    Detection to queue.
+ * @param evicted_out  Optional: set true when an older priority item was
+ *                     evicted to make room.
+ * @return true when queued for TX, false when no priority queue was available
+ *         or the item could not be enqueued.
+ */
+bool uart_tx_enqueue_priority_detection(const drone_detection_t *detection,
+                                        bool *evicted_out);
+
+/**
+ * Send a periodic status heartbeat over UART.
+ * Format: {"type":"status","ble_count":N,"wifi_count":N,"ch":N,"uptime_s":N}\n
+ */
+void uart_tx_send_status(int ble_count, int wifi_count,
+                         uint8_t current_channel, uint32_t uptime_s);
+
+/**
+ * Start the UART TX FreeRTOS task.
+ *
+ * The task blocks on @p detection_queue, applies Bayesian fusion to each
+ * incoming detection, serializes the result, and transmits it.  Every
+ * PRUNE_INTERVAL_MS it also prunes stale tracks and sends a status message.
+ *
+ * @param detection_queue  FreeRTOS queue carrying drone_detection_t items
+ *                         produced by WiFi and BLE scanner tasks.
+ */
+void uart_tx_start(QueueHandle_t detection_queue);
+
+/**
+ * Summary of the most recent detection, cached for display.
+ */
+typedef struct {
+    char    drone_id[64];
+    char    manufacturer[32];
+    uint8_t source;
+    float   confidence;
+    int8_t  rssi;
+    int64_t timestamp_ms;
+} scanner_detection_summary_t;
+
+/**
+ * Send scanner identity info over UART (thread-safe, uses mutex).
+ * Called at boot and periodically so the uplink always knows what's connected.
+ */
+void uart_tx_send_scanner_info(const char *ver, const char *board,
+                                const char *chip, const char *caps);
+
+/**
+ * Store scanner identity for deferred sending after TX startup delay.
+ * Call this before uart_tx_start(). The TX task sends it after its
+ * 10s delay to avoid flooding the uplink during boot.
+ */
+void uart_tx_set_identity(const char *board, const char *chip, const char *caps);
+
+/** Check if TX is enabled (uplink sent start/ready command) */
+bool uart_tx_is_enabled(void);
+
+/** Enable/disable TX — called by main command handler on start/stop from uplink */
+void uart_tx_set_enabled(bool enabled);
+
+/**
+ * Drop any detections queued before a mode transition. Calibration mode uses
+ * this to prevent stale WiFi/probe traffic from leaking after quiet mode starts.
+ */
+void uart_tx_flush_detection_queue(void);
+
+/**
+ * Track firmware update state for scanner_info/status telemetry.
+ * need_firmware=true means the uplink has offered a newer staged image.
+ */
+void uart_tx_set_firmware_update_state(bool need_firmware,
+                                       const char *target_version,
+                                       const char *state);
+void uart_tx_set_firmware_error(const char *reason);
+void uart_tx_clear_firmware_error(void);
+void uart_tx_note_firmware_check(void);
+bool uart_tx_firmware_update_needed(void);
+const char *uart_tx_firmware_target_version(void);
+const char *uart_tx_firmware_update_state(void);
+const char *uart_tx_firmware_last_error(void);
+uint32_t uart_tx_firmware_check_count(void);
+bool uart_tx_firmware_backoff_active(void);
+
+/**
+ * Send a raw JSON line over UART (adds trailing newline). Thread-safe.
+ * Used for protocol control messages emitted outside the normal TX loop:
+ * stop_ack, ota_nack, etc. Caller must provide valid null-terminated JSON.
+ */
+void uart_tx_send_raw_json(const char *json_str);
+
+#if defined(FOF_DC34_GAME_CANARY)
+void uart_tx_set_firmware_quiet_window(bool active);
+#endif
+
+#ifdef FOF_BADGE_VARIANT
+void uart_tx_note_badge_easter_egg(badge_easter_egg_source_t source);
+
+bool uart_tx_set_display_policy_json(const char *json,
+                                     uint32_t expected_hash,
+                                     char *err,
+                                     size_t err_len);
+void uart_tx_reset_display_policy(void);
+uint32_t uart_tx_display_policy_hash(void);
+uint32_t uart_tx_display_policy_ack_hash(void);
+uint32_t uart_tx_display_policy_filtered_count(
+    badge_display_policy_class_t cls);
+#endif
+
+/** Get cumulative BLE detection count. */
+int uart_tx_get_ble_count(void);
+
+/** Get cumulative WiFi detection count. */
+int uart_tx_get_wifi_count(void);
+
+/** Reset per-profile BLE/WiFi transmission counters. */
+void uart_tx_reset_counts(void);
+
+/** Get total detection count (BLE + WiFi). */
+int uart_tx_get_total_count(void);
+
+/** Get current WiFi channel being scanned. */
+uint8_t uart_tx_get_current_channel(void);
+
+/**
+ * Copy the most recent detection summary.
+ * @return true if a detection has been cached, false if none yet
+ */
+bool uart_tx_get_recent_detection(scanner_detection_summary_t *out);
+
+/** Maximum number of cached detections for display scoreboard. */
+#define DETECTION_CACHE_SIZE 10
+
+/**
+ * Copy all cached detections into @p out, sorted most-recent first.
+ * @param out        Caller-allocated array of at least @p max_count entries
+ * @param max_count  Maximum entries to copy
+ * @return           Number of entries actually copied (0..max_count)
+ */
+int uart_tx_get_cached_detections(scanner_detection_summary_t *out, int max_count);
+
+#ifdef __cplusplus
+}
+#endif

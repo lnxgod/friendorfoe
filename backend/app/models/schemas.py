@@ -1,9 +1,17 @@
 """Pydantic v2 models for API request/response schemas."""
 
 import math
-from typing import Any, Literal
+import re
+from typing import Annotated, Any, Literal
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_validator,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -129,6 +137,12 @@ class DroneDetectionItem(BaseModel):
     altitude_m: float | None = Field(None, description="Altitude in meters MSL")
     heading_deg: float | None = Field(None, description="Heading 0-360 degrees true north")
     speed_mps: float | None = Field(None, description="Ground speed in m/s")
+    fused_confidence: float | None = Field(None, ge=0.0, le=1.0)
+    vertical_speed_mps: float | None = None
+    freq_mhz: int | None = Field(
+        None,
+        validation_alias=AliasChoices("freq_mhz", "frequency_mhz"),
+    )
     rssi: int | None = Field(None, description="Signal strength in dBm")
     estimated_distance_m: float | None = Field(
         None,
@@ -152,27 +166,44 @@ class DroneDetectionItem(BaseModel):
     ssid: str | None = Field(None, description="WiFi SSID if detected via WiFi")
     bssid: str | None = Field(None, description="WiFi BSSID (MAC address)")
     channel: int | None = Field(None, description="WiFi channel if available from the scanner")
-    auth_m: int | None = Field(
-        None,
-        description="WiFi AP authentication mode (v0.61+, Marauder-parity). "
-                    "0=open, 1=WEP, 2=WPA-PSK, 3=WPA2-PSK, 4=WPA/WPA2-PSK, "
-                    "5=WPA2-Enterprise, 6=WPA3-PSK, 7=WPA2/WPA3-PSK, 8=WAPI, "
-                    "9=OWE, 10=WPA3-Enterprise-192. Absent for non-WiFi or pre-v0.61. "
-                    "Key is 'auth_m' (not 'auth') to avoid substring collision with 'auth_fr'."
-    )
+    channel_width_mhz: int | None = None
+    ua_type: int | None = Field(None, ge=0, le=255)
+    id_type: int | None = Field(None, ge=0, le=255)
+    self_id_desc_type: int | None = Field(None, ge=0, le=255)
+    height_agl_m: float | None = None
+    geodetic_alt_m: float | None = None
+    h_accuracy_m: float | None = Field(None, ge=0.0)
+    v_accuracy_m: float | None = Field(None, ge=0.0)
+    area_count: int | None = Field(None, ge=0, le=65535)
+    area_radius: int | None = Field(None, ge=0, le=65535)
+    area_ceiling: float | None = None
+    area_floor: float | None = None
+    classification_type: int | None = Field(None, ge=0, le=255)
+    first_seen_ms: int | None = None
+    last_updated_ms: int | None = None
+    wifi_generation: int | None = Field(None, ge=0, le=6)
+    auth_m: int | None = Field(None, ge=0, le=10)
     # BLE fingerprinting fields (from ESP32 scanner)
     ble_company_id: int | None = Field(None, description="BLE company ID (0x004C=Apple, 0x0075=Samsung, etc.)")
     ble_apple_type: int | None = Field(None, description="Apple Continuity sub-type (0x07=AirPods, 0x10=NearbyInfo, 0x12=FindMy)")
     ble_ad_type_count: int | None = Field(None, description="Number of distinct AD types in advertisement")
     ble_payload_len: int | None = Field(None, description="Raw BLE advertisement payload length")
     ble_addr_type: int | None = Field(None, description="BLE address type (0=public, 1=random static, 2=RPA)")
-    ble_ja3: str | None = Field(None, description="BLE-JA3 structural profile hash (same for all devices of same model)")
-    ble_apple_auth: str | None = Field(None, description="Apple Continuity auth tag hex (rotates slower than MAC)")
-    ble_activity: int | None = Field(None, description="Apple activity code (0=idle, 1=audio, 2=phone, 3=video)")
-    ble_raw_mfr: str | None = Field(None, description="Raw manufacturer data hex (first 20 bytes)")
-    ble_adv_interval: float | None = Field(None, description="BLE advertisement interval in ms")
-    ble_svc_uuids: str | None = Field(None, description="Comma-separated 16-bit BLE service UUIDs (hex)")
-    ble_apple_flags: int | None = Field(None, description="Apple Nearby Info data-flags byte (v0.58+ scanners, always emitted — 0 ≠ absent).")
+    ble_ja3: str | None = Field(None, pattern=r"^[0-9A-Fa-f]{8}$")
+    ble_apple_auth: str | None = Field(None, pattern=r"^[0-9A-Fa-f]{6}$")
+    ble_activity: int | None = Field(None, ge=0, le=255)
+    ble_raw_mfr: str | None = Field(
+        None, pattern=r"^(?:[0-9A-Fa-f]{2}){1,20}$",
+    )
+    ble_adv_interval: float | None = Field(None, gt=0, allow_inf_nan=False)
+    ble_svc_uuids: str | None = Field(None, max_length=160)
+    ble_apple_flags: int | None = Field(None, ge=0, le=255)
+    ble_threat_kind: int | None = Field(None, ge=0, le=255)
+    ble_prompt_family_mask: int | None = Field(None, ge=0, le=255)
+    ble_unique_macs: int | None = Field(None, ge=0, le=65535)
+    ble_observation_count: int | None = Field(None, ge=0, le=65535)
+    ble_serial_service_uuid: int | None = Field(None, ge=0, le=65535)
+    ble_threat_evidence_mask: int | None = Field(None, ge=0, le=255)
     ble_name: str | None = Field(None, description="BLE local name evidence, if advertised")
     class_reason: str | None = Field(None, description="Short scanner classification reason/evidence")
     probed_ssids: list[str] | None = Field(
@@ -180,13 +211,7 @@ class DroneDetectionItem(BaseModel):
         validation_alias=AliasChoices("probed_ssids", "probed"),
         description="SSIDs this device is probing for (from probe requests)",
     )
-    ie_hash: str | None = Field(
-        None,
-        description="Hex FNV1a hash of WiFi probe-request Information Elements — "
-                    "a stable identity across MAC rotations (phones reuse the same "
-                    "IE ordering + capability bits after rotating MACs). Populated "
-                    "by the scanner for probe_request sources when firmware supports it.",
-    )
+    ie_hash: str | None = Field(None, pattern=r"^[0-9A-Fa-f]{8}$")
     mac_is_randomized: bool | None = Field(None, description="True when the MAC is randomized/private")
     mac_identity_kind: str | None = Field(None, description="public_oui, randomized, ble_rpa, ble_random_static, or unknown")
     mac_reason: str | None = Field(None, description="Reason for MAC identity classification")
@@ -274,6 +299,62 @@ class DroneDetectionItem(BaseModel):
         cleaned = [part for part in values if part]
         return cleaned or None
 
+    @field_validator("ie_hash", "ble_ja3", "ble_apple_auth", "ble_raw_mfr", mode="after")
+    @classmethod
+    def normalize_hex_evidence(cls, value: str | None) -> str | None:
+        return value.lower() if value is not None else None
+
+    @field_validator("ble_svc_uuids", mode="after")
+    @classmethod
+    def normalize_ble_service_uuids(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        tokens = value.split(",")
+        if not 1 <= len(tokens) <= 6:
+            raise ValueError("ble_svc_uuids must contain one through six UUIDs")
+        uuid_re = re.compile(
+            r"^(?:[0-9A-Fa-f]{4}|[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12})$"
+        )
+        if any(not token or token != token.strip() or not uuid_re.fullmatch(token) for token in tokens):
+            raise ValueError("ble_svc_uuids must be comma-separated canonical UUIDs")
+        return ",".join(token.lower() for token in tokens)
+
+
+class BackendUploadQueueTelemetry(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    depth_batches: int = Field(ge=0, le=512)
+    capacity_batches: int = Field(512, ge=1, le=512)
+    overflow_dropped_batches: int = Field(ge=0)
+    quarantined_batches: int = Field(ge=0)
+
+
+class BackendUploadTelemetry(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    ok: int = Field(ge=0)
+    failed: int = Field(ge=0)
+    retry_count: int = Field(ge=0)
+    last_success_age_s: int | None = Field(None, ge=0)
+
+
+class BackendSensorHealth(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    clock_valid: bool
+    epoch_ms: int | None = Field(None, ge=1_700_000_000_000)
+    ap_active: bool
+    config_generation: int = Field(ge=0)
+    command_success_count: int = Field(ge=0)
+    command_failure_count: int = Field(ge=0)
+    uptime_ms: int = Field(ge=0)
+
+    @model_validator(mode="after")
+    def require_epoch_only_for_valid_clock(self):
+        if self.clock_valid != (self.epoch_ms is not None):
+            raise ValueError("epoch_ms presence must match clock_valid")
+        return self
+
 
 class DroneDetectionBatch(BaseModel):
     """Batch of drone detections from a single ESP32 sensor node."""
@@ -281,11 +362,40 @@ class DroneDetectionBatch(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     device_id: str = Field(..., description="Unique identifier for the ESP32 sensor device")
+    boot_id: int | None = Field(None, strict=True, ge=1, le=0xFFFFFFFF)
+    topology_generation: int | None = Field(
+        None, strict=True, ge=1, le=0xFFFFFFFF,
+    )
     device_lat: float | None = Field(None, description="Sensor device latitude")
     device_lon: float | None = Field(None, description="Sensor device longitude")
     device_alt: float | None = Field(None, description="Sensor device altitude in meters")
     timestamp: int | None = Field(None, description="Batch timestamp (epoch seconds)")
+    product_family: Literal["badge", "badge_lite", "s3_fullsize"] | None = None
+    firmware_line: Literal["native_badge", "backend", "legacy"] | None = None
+    component: Literal["uplink", "scanner"] | None = None
     firmware_version: str | None = Field(None, description="Firmware version (e.g. 0.35.0)")
+    firmware_target: str | None = Field(
+        None,
+        validation_alias=AliasChoices("firmware_target", "firmware_name"),
+    )
+    app_project: str | None = None
+    hardware_type: str | None = None
+    hardware_mac: str | None = Field(
+        None,
+        validation_alias=AliasChoices("hardware_mac", "hardware_id"),
+        pattern=r"^[0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5}$",
+    )
+    capabilities: list[Annotated[str, Field(max_length=40)]] | None = Field(
+        None, max_length=16,
+    )
+    node_name: str | None = Field(None, max_length=64)
+    led_state: Literal[
+        "healthy", "network_degraded", "drone", "meta",
+        "drone_meta", "fatal", "uart_lost",
+    ] | None = None
+    upload_queue: BackendUploadQueueTelemetry | None = None
+    upload: BackendUploadTelemetry | None = None
+    health: BackendSensorHealth | None = None
     board_type: str | None = Field(None, description="Board type (uplink-s3)")
     scanners: list[dict] | None = Field(
         None,
@@ -318,8 +428,28 @@ class DroneDetectionResponse(BaseModel):
     """Response for POST /detections/drones."""
 
     status: str = "ok"
-    accepted: int = Field(..., description="Number of detections accepted")
+    accepted: int = Field(..., description="Number of syntactically accepted transport items")
     device_id: str = Field(..., description="Echo of the submitting device ID")
+    processed: int = 0
+    deduplicated: int = 0
+    filtered: int = 0
+
+
+class CalibrationContinuityResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    schema: Literal[1] = 1
+    device_id: str = Field(min_length=1, max_length=64)
+    calibration_status: Literal["defaults", "trusted", "untrusted"]
+    session_id: str | None = Field(None, max_length=64)
+    applied_at: float | None = None
+    listener_model_present: bool
+    listener_model_schema: Literal["rssi-ref-path-loss-v1"] = (
+        "rssi-ref-path-loss-v1"
+    )
+    listener_model_sha256: str | None = Field(
+        None, pattern=r"^[0-9a-f]{64}$",
+    )
 
 
 class StoredDetection(DroneDetectionItem):
@@ -558,6 +688,319 @@ class SensorsResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Persistent BLE investigation commands
+# ---------------------------------------------------------------------------
+
+class BleInvestigationCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    target_mac: str | None = Field(
+        None, pattern=r"^[0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5}$",
+    )
+    mode: Literal["gatt", "passive_capture"] = "gatt"
+    timeout_ms: int = Field(12000, ge=1, le=12000)
+
+    @model_validator(mode="after")
+    def target_matches_mode(self):
+        if self.mode == "gatt" and self.target_mac is None:
+            raise ValueError("gatt requires target_mac")
+        if self.mode == "passive_capture" and self.target_mac is not None:
+            raise ValueError("passive_capture forbids target_mac")
+        if self.target_mac is not None:
+            self.target_mac = self.target_mac.upper()
+        return self
+
+
+class BleInvEventBase(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    sequence: int = Field(ge=0)
+    request_id: str = Field(pattern=r"^[0-9a-f]{32}$")
+
+
+class BleInvBeginEvent(BleInvEventBase):
+    type: Literal["ble_inv_begin"]
+    mode: Literal["gatt", "passive_capture"]
+    target_mac: str | None = Field(
+        None, pattern=r"^[0-9A-F]{2}(?::[0-9A-F]{2}){5}$",
+    )
+
+    @model_validator(mode="after")
+    def target_matches_mode(self):
+        if self.mode == "gatt" and self.target_mac is None:
+            raise ValueError("gatt requires target_mac")
+        if self.mode == "passive_capture" and self.target_mac is not None:
+            raise ValueError("passive_capture forbids target_mac")
+        return self
+
+
+class BleInvProgressEvent(BleInvEventBase):
+    type: Literal["ble_inv_progress"]
+    state: Literal["queued", "scanning", "connecting", "discovering", "reading"]
+
+
+BLE_UUID_PATTERN = (
+    r"^(?i:[0-9a-f]{4}|[0-9a-f]{8}|"
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$"
+)
+
+
+class BleInvServiceEvent(BleInvEventBase):
+    type: Literal["ble_inv_service"]
+    index: int = Field(ge=0, lt=16)
+    uuid: str = Field(pattern=BLE_UUID_PATTERN, max_length=36)
+
+
+class BleInvCharacteristicEvent(BleInvEventBase):
+    type: Literal["ble_inv_char"]
+    index: int = Field(ge=0, lt=32)
+    service_uuid: str = Field(pattern=BLE_UUID_PATTERN, max_length=36)
+    uuid: str = Field(pattern=BLE_UUID_PATTERN, max_length=36)
+    properties: list[Literal[
+        "broadcast", "read", "write_without_response", "write", "notify",
+        "indicate", "authenticated_signed_writes", "extended_properties",
+    ]] = Field(default_factory=list, max_length=8)
+
+    @model_validator(mode="after")
+    def properties_are_unique(self):
+        if len(self.properties) != len(set(self.properties)):
+            raise ValueError("characteristic properties must be unique")
+        return self
+
+
+class BleInvReadEvent(BleInvEventBase):
+    type: Literal["ble_inv_read"]
+    index: int = Field(ge=0, lt=8)
+    uuid: str = Field(pattern=BLE_UUID_PATTERN, max_length=36)
+    value_hex: str = Field(max_length=128, pattern=r"^(?:[0-9A-Fa-f]{2})*$")
+
+
+class BleInvEndEvent(BleInvEventBase):
+    type: Literal["ble_inv_end"]
+    state: Literal["complete", "failed", "cancelled"]
+    summary: str = Field(max_length=127)
+    error: str | None = Field(None, max_length=63)
+    authentication_required: bool
+    truncated: bool
+
+
+NodeCommandResultRequest = Annotated[
+    BleInvBeginEvent | BleInvProgressEvent | BleInvServiceEvent |
+    BleInvCharacteristicEvent | BleInvReadEvent | BleInvEndEvent,
+    Field(discriminator="type"),
+]
+
+
+class BleInvestigateCommandEnvelope(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    command_id: str = Field(pattern=r"^[0-9a-f]{32}$")
+    type: Literal["ble_investigate"]
+    request_id: str = Field(pattern=r"^[0-9a-f]{32}$")
+    mode: Literal["gatt", "passive_capture"]
+    target: str | None
+    timeout_ms: int = Field(ge=1, le=12000)
+    next_sequence: int = Field(ge=0)
+    result_state: str | None
+
+
+class BleInvestigateCancelEnvelope(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    command_id: str = Field(pattern=r"^[0-9a-f]{32}$")
+    type: Literal["ble_investigate_cancel"]
+    request_id: str = Field(pattern=r"^[0-9a-f]{32}$")
+    mode: Literal["gatt", "passive_capture"]
+    target: str | None
+    timeout_ms: int = Field(ge=1, le=12000)
+    next_sequence: int = Field(ge=0)
+    result_state: str | None
+
+
+NodeCommandEnvelope = Annotated[
+    BleInvestigateCommandEnvelope | BleInvestigateCancelEnvelope,
+    Field(discriminator="type"),
+]
+
+
+class NodeCommandResultAck(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    ok: Literal[True] = True
+    command_id: str = Field(pattern=r"^[0-9a-f]{32}$")
+    accepted_sequence: int = Field(ge=0)
+    next_sequence: int = Field(ge=1)
+    result_state: Literal[
+        "queued", "scanning", "connecting", "discovering", "reading",
+        "complete", "failed", "cancelled",
+    ]
+    terminal: bool
+    duplicate: bool
+
+
+class NodeCommandHistoryResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    command_id: str = Field(pattern=r"^[0-9a-f]{32}$")
+    device_id: str
+    command_type: Literal["ble_investigate"]
+    state: Literal["pending", "delivered", "cancel_pending", "terminal"]
+    next_sequence: int = Field(ge=0)
+    result_state: str | None
+    terminal: bool
+    events: list[NodeCommandResultRequest]
+
+
+# ---------------------------------------------------------------------------
+# Isolated S3 Fullsize backend OTA rollout channel
+# ---------------------------------------------------------------------------
+
+class BackendOtaRolloutRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    components: Literal["all"]
+    apply_mode: Literal["newer_only", "same_version_recovery"] = "newer_only"
+
+
+class BackendOtaProbeEnvelope(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    schema: Literal[1]
+    operation_id: str = Field(pattern=r"^[0-9a-f]{32}$")
+    type: Literal["backend_ota_probe"]
+    component: Literal["scanner0", "scanner1", "uplink"]
+    catalog_name: Literal[
+        "scanner-s3-combo-fullsize-backend",
+        "uplink-s3-fullsize-backend",
+    ]
+    expected_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    expected_size: int = Field(ge=1, le=0xFFFFFFFF)
+    expected_uplink_mac: str = Field(
+        pattern=r"^[0-9A-F]{2}(?::[0-9A-F]{2}){5}$",
+    )
+    expected_uplink_boot_id: int = Field(ge=1, le=0xFFFFFFFF)
+    expected_target_mac: str = Field(
+        pattern=r"^[0-9A-F]{2}(?::[0-9A-F]{2}){5}$",
+    )
+    expected_target_boot_id: int = Field(ge=1, le=0xFFFFFFFF)
+    expected_topology_generation: int = Field(ge=1, le=0xFFFFFFFF)
+    apply_mode: Literal["newer_only", "same_version_recovery"]
+    next_sequence: int = Field(ge=0, le=0xFFFFFFFF)
+
+
+class BackendOtaApplyEnvelope(BackendOtaProbeEnvelope):
+    type: Literal["backend_ota_apply"]
+    probe_receipt_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+BackendOtaCommandEnvelope = Annotated[
+    BackendOtaProbeEnvelope | BackendOtaApplyEnvelope,
+    Field(discriminator="type"),
+]
+
+
+class BackendOtaEventBase(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    schema: Literal[1]
+    operation_id: str = Field(pattern=r"^[0-9a-f]{32}$")
+    sequence: int = Field(ge=0, le=0xFFFFFFFF)
+    component: Literal["scanner0", "scanner1", "uplink"]
+    catalog_name: Literal[
+        "scanner-s3-combo-fullsize-backend",
+        "uplink-s3-fullsize-backend",
+    ]
+
+
+class BackendOtaBeginEvent(BackendOtaEventBase):
+    type: Literal["backend_ota_begin"]
+
+
+class BackendOtaProgressEvent(BackendOtaEventBase):
+    type: Literal["backend_ota_progress"]
+    stage: Literal[
+        "metadata", "download", "validate", "stage", "uart_relay",
+        "reboot_wait", "convergence",
+    ]
+    received: int = Field(ge=0, le=0xFFFFFFFF)
+    total: int = Field(ge=0, le=0xFFFFFFFF)
+    retry_count: int = Field(ge=0, le=0xFFFFFFFF)
+
+
+_OTA_IDENTITY_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+_OTA_MAC_PATTERN = r"^[0-9A-F]{2}(?::[0-9A-F]{2}){5}$"
+
+
+class BackendOtaEndEvent(BackendOtaEventBase):
+    type: Literal["backend_ota_end"]
+    state: Literal["complete", "no_update", "failed", "rolled_back"]
+    decision: Literal[
+        "eligible", "applied", "no_update", "rejected", "rolled_back",
+    ]
+    error: Literal[
+        "none", "identity_mismatch", "stale_binding", "capacity",
+        "download", "hash_mismatch", "uart", "reboot_timeout", "health",
+        "rollback", "internal",
+    ]
+    image_writes: int = Field(ge=0, le=0xFFFFFFFF)
+    target: str = Field(max_length=64)
+    project: str = Field(max_length=64)
+    hardware: str = Field(max_length=64)
+    version: str = Field(max_length=64)
+    actual_mac: str = Field(pattern=_OTA_MAC_PATTERN)
+    actual_boot_id: int = Field(ge=1, le=0xFFFFFFFF)
+    actual_topology_generation: int = Field(ge=1, le=0xFFFFFFFF)
+    role_healthy: bool
+    radio_healthy: bool
+    rollback_clear: bool
+    receipt_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @model_validator(mode="after")
+    def identity_strings_are_canonical(self):
+        values = (self.target, self.project, self.hardware, self.version)
+        empty_allowed = self.state == "failed"
+        for value in values:
+            if value == "" and empty_allowed:
+                continue
+            if re.fullmatch(_OTA_IDENTITY_PATTERN, value) is None:
+                raise ValueError("invalid OTA identity string")
+        return self
+
+
+BackendOtaEventRequest = Annotated[
+    BackendOtaBeginEvent | BackendOtaProgressEvent | BackendOtaEndEvent,
+    Field(discriminator="type"),
+]
+
+
+class BackendOtaEventAck(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    ok: Literal[True] = True
+    operation_id: str = Field(pattern=r"^[0-9a-f]{32}$")
+    accepted_sequence: int = Field(ge=0, le=0xFFFFFFFF)
+    next_sequence: int = Field(ge=1, le=0xFFFFFFFF)
+    current_component: Literal["scanner0", "scanner1", "uplink"]
+    current_action: Literal["probe", "apply"]
+    terminal: bool
+    duplicate: bool
+
+
+class BackendOtaHistoryResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    operation_id: str = Field(pattern=r"^[0-9a-f]{32}$")
+    device_id: str
+    state: Literal["active", "complete", "failed", "rolled_back"]
+    apply_mode: Literal["newer_only", "same_version_recovery"]
+    current_component: Literal["scanner0", "scanner1", "uplink"]
+    current_action: Literal["probe", "apply"]
+    next_sequence: int = Field(ge=0, le=0xFFFFFFFF)
+    terminal: bool
+    events: list[BackendOtaEventRequest]
+
+
+# ---------------------------------------------------------------------------
 # Node management
 # ---------------------------------------------------------------------------
 
@@ -627,6 +1070,43 @@ class DetectionHistoryItem(BaseModel):
     bssid: str | None = None
     rssi: int | None = None
     confidence: float = 0.0
+    fused_confidence: float | None = None
+    vertical_speed_mps: float | None = None
+    freq_mhz: int | None = None
+    channel: int | None = None
+    channel_width_mhz: int | None = None
+    ua_type: int | None = None
+    id_type: int | None = None
+    self_id_desc_type: int | None = None
+    height_agl_m: float | None = None
+    geodetic_alt_m: float | None = None
+    h_accuracy_m: float | None = None
+    v_accuracy_m: float | None = None
+    area_count: int | None = None
+    area_radius: int | None = None
+    area_ceiling: float | None = None
+    area_floor: float | None = None
+    classification_type: int | None = None
+    first_seen_ms: int | None = None
+    last_updated_ms: int | None = None
+    wifi_generation: int | None = None
+    auth_m: int | None = None
+    ie_hash: str | None = None
+    scanner_slot: int | None = None
+    scanner_slots_seen: int | None = None
+    ble_ja3: str | None = None
+    ble_apple_auth: str | None = None
+    ble_activity: int | None = None
+    ble_apple_flags: int | None = None
+    ble_raw_mfr: str | None = None
+    ble_adv_interval: float | None = None
+    ble_svc_uuids: str | None = None
+    ble_threat_kind: int | None = None
+    ble_prompt_family_mask: int | None = None
+    ble_unique_macs: int | None = None
+    ble_observation_count: int | None = None
+    ble_serial_service_uuid: int | None = None
+    ble_threat_evidence_mask: int | None = None
     drone_lat: float | None = None
     drone_lon: float | None = None
     sensor_lat: float | None = None

@@ -1,0 +1,13 @@
+[sections:fof_backend_identity]
+entries:
+    .fof_backend_identity
+
+[scheme:fof_backend_identity_default]
+entries:
+    fof_backend_identity -> flash_rodata
+
+[mapping:fof_backend_identity]
+archive: *
+entries:
+    * (fof_backend_identity_default);
+        fof_backend_identity -> flash_rodata KEEP()

@@ -46,6 +46,19 @@ class FlashTests(unittest.TestCase):
         )
         self.assertLess(command.index("--no-stub"), command.index("write_mem"))
 
+    def test_handoff_accepts_esptool_5_force_download_receipt(self) -> None:
+        transcript = (
+            "MAC: E0:72:A1:F9:47:FC\n"
+            "Wrote 0x00000000 with mask 0x00000001 to 0x6000812c.\n"
+            "Hard resetting with a watchdog...\n"
+        )
+        device = UsbDevice(
+            "E0:72:A1:F9:47:FC", "/dev/cu.x", "ESP32-S3",
+            "v0.2", "8MB", "8MB",
+        )
+
+        FlashEngine(lambda _command: transcript).handoff_to_application(device)
+
     def test_handoff_rejects_incomplete_or_wrong_receipts(self) -> None:
         device = UsbDevice(
             "E0:72:A1:F9:47:FC", "/dev/cu.x", "ESP32-S3",
@@ -103,8 +116,36 @@ class FlashTests(unittest.TestCase):
         self.assertEqual(actions, ["flash_id", "write_flash", "verify_flash", "run"])
         self.assertIn("0x10000", calls[1])
         self.assertIn("--erase-all", calls[1])
+        self.assertNotIn("--verify", calls[1])
         before = calls[1].index("--before")
         self.assertEqual(calls[1][before + 1], "no_reset")
+
+    def test_accepts_esptool_5_explicit_readback_receipts(self) -> None:
+        calls = []
+
+        def run(command):
+            calls.append(command)
+            if "write_flash" in command:
+                return "MAC: E0:72:A1:F9:47:FC\nHash of data verified."
+            if "verify_flash" in command:
+                return (
+                    "MAC: E0:72:A1:F9:47:FC\n"
+                    + "Verification successful (digest matched).\n" * 3
+                )
+            return "MAC: E0:72:A1:F9:47:FC\n"
+
+        device = UsbDevice(
+            "E0:72:A1:F9:47:FC", "/dev/cu.x", "ESP32-S3",
+            "v0.2", "8MB", "8MB",
+        )
+        evidence = FlashEngine(run).flash_and_verify(
+            device, FakeBundle(), "uplink"
+        )
+
+        self.assertTrue(evidence.write_verified)
+        self.assertTrue(evidence.readback_verified)
+        write = next(command for command in calls if "write_flash" in command)
+        self.assertNotIn("--verify", write)
 
     def test_rejects_wrong_mac_before_readback(self) -> None:
         calls = []

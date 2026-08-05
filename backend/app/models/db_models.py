@@ -3,7 +3,8 @@
 from datetime import datetime, timezone
 
 from sqlalchemy import (
-    Boolean, DateTime, Float, Index, Integer, String, Text, UniqueConstraint, func,
+    BigInteger, Boolean, DateTime, Float, ForeignKey, Index, Integer, String,
+    Text, UniqueConstraint, func,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -32,6 +33,131 @@ class SensorNode(Base):
     )
 
 
+class NodeCommand(Base):
+    """A durable command whose active key enforces one command per node."""
+
+    __tablename__ = "node_commands"
+
+    command_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    device_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    active_key: Mapped[str | None] = mapped_column(
+        String(64), unique=True, nullable=True,
+    )
+    command_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False)
+    state: Mapped[str] = mapped_column(String(24), nullable=False, default="pending")
+    next_sequence: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    result_state: Mapped[str | None] = mapped_column(String(24), nullable=True)
+    next_service_index: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    next_characteristic_index: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0,
+    )
+    next_read_index: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    first_delivered_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )
+    last_polled_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )
+
+
+class NodeCommandResultEvent(Base):
+    """One immutable, globally sequenced result chunk for a node command."""
+
+    __tablename__ = "node_command_result_events"
+    __table_args__ = (
+        UniqueConstraint(
+            "command_id", "sequence", name="uq_node_command_result_sequence",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    command_id: Mapped[str] = mapped_column(
+        ForeignKey("node_commands.command_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    event_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class BackendOtaRollout(Base):
+    """One durable Fullsize rollout with a nullable one-active-node key."""
+
+    __tablename__ = "backend_ota_rollouts"
+
+    operation_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    device_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    active_key: Mapped[str | None] = mapped_column(
+        String(64), unique=True, nullable=True,
+    )
+    apply_mode: Mapped[str] = mapped_column(String(32), nullable=False)
+    binding_json: Mapped[str] = mapped_column(Text, nullable=False)
+    scanner_image_json: Mapped[str] = mapped_column(Text, nullable=False)
+    uplink_image_json: Mapped[str] = mapped_column(Text, nullable=False)
+    state: Mapped[str] = mapped_column(String(24), nullable=False, default="active")
+    current_component: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="scanner0",
+    )
+    current_action: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="probe",
+    )
+    next_sequence: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    accepted_probe_receipt: Mapped[str | None] = mapped_column(
+        String(64), nullable=True,
+    )
+    began: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    last_stage_rank: Mapped[int] = mapped_column(Integer, nullable=False, default=-1)
+    last_received: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    progress_total: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    retry_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    scanner0_converged_boot_id: Mapped[int | None] = mapped_column(
+        BigInteger, nullable=True,
+    )
+    scanner1_converged_boot_id: Mapped[int | None] = mapped_column(
+        BigInteger, nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    first_delivered_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )
+    last_polled_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )
+
+
+class BackendOtaEvent(Base):
+    """One immutable raw UTF-8 event body in the rollout global sequence."""
+
+    __tablename__ = "backend_ota_events"
+    __table_args__ = (
+        UniqueConstraint(
+            "operation_id", "sequence", name="uq_backend_ota_event_sequence",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    operation_id: Mapped[str] = mapped_column(
+        ForeignKey("backend_ota_rollouts.operation_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    event_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    raw_payload: Mapped[str] = mapped_column(Text, nullable=False)
+    body_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class DroneDetection(Base):
     """A single drone detection from an ESP32 sensor, persisted to PostgreSQL."""
 
@@ -46,6 +172,42 @@ class DroneDetection(Base):
     rssi: Mapped[int | None] = mapped_column(Integer, nullable=True)
     confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     fused_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    vertical_speed_mps: Mapped[float | None] = mapped_column(Float, nullable=True)
+    freq_mhz: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    channel: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    channel_width_mhz: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    ua_type: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    id_type: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    self_id_desc_type: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    height_agl_m: Mapped[float | None] = mapped_column(Float, nullable=True)
+    geodetic_alt_m: Mapped[float | None] = mapped_column(Float, nullable=True)
+    h_accuracy_m: Mapped[float | None] = mapped_column(Float, nullable=True)
+    v_accuracy_m: Mapped[float | None] = mapped_column(Float, nullable=True)
+    area_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    area_radius: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    area_ceiling: Mapped[float | None] = mapped_column(Float, nullable=True)
+    area_floor: Mapped[float | None] = mapped_column(Float, nullable=True)
+    classification_type: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    first_seen_ms: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    last_updated_ms: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    wifi_generation: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    auth_m: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    ie_hash: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    ble_ja3: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    ble_apple_auth: Mapped[str | None] = mapped_column(String(6), nullable=True)
+    ble_activity: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    ble_apple_flags: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    ble_raw_mfr: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    ble_adv_interval: Mapped[float | None] = mapped_column(Float, nullable=True)
+    ble_svc_uuids: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    scanner_slot: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    scanner_slots_seen: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    ble_threat_kind: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    ble_prompt_family_mask: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    ble_unique_macs: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    ble_observation_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    ble_serial_service_uuid: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    ble_threat_evidence_mask: Mapped[int | None] = mapped_column(Integer, nullable=True)
     drone_lat: Mapped[float | None] = mapped_column(Float, nullable=True)
     drone_lon: Mapped[float | None] = mapped_column(Float, nullable=True)
     drone_alt: Mapped[float | None] = mapped_column(Float, nullable=True)

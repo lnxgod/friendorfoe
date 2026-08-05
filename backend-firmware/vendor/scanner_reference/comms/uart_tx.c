@@ -1,0 +1,2118 @@
+/**
+ * Friend or Foe -- Scanner UART TX Implementation
+ *
+ * Serializes drone detections to newline-delimited JSON and sends them
+ * over UART1 to the Uplink board.  Bayesian fusion is applied inline
+ * as detections arrive from the shared queue.
+ */
+
+#include "uart_tx.h"
+
+#include "bayesian_fusion.h"
+#include "constants.h"
+#include "detection_types.h"
+#include "detection_policy.h"
+#include "time_sync_policy.h"
+#include "uart_protocol.h"
+#include "uart_ota.h"
+#include "task_priorities.h"
+#include "version.h"
+#include "wifi_scanner.h"
+#include "ble_remote_id.h"
+#include "calibration_mode.h"
+#include "scanner_rollback.h"
+#include "led_status.h"
+#include "badge_display_policy.h"
+#if defined(FOF_DC34_GAME_CANARY)
+#include "badge_con_observer.h"
+#include "badge_con_protocol.h"
+#endif
+
+#include "cJSON.h"
+
+#include "driver/uart.h"
+#include "esp_log.h"
+#include "esp_mac.h"
+#include "esp_random.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/portmacro.h"
+#include "freertos/task.h"
+#include "freertos/queue.h"
+#include "freertos/semphr.h"
+
+#include <string.h>
+#include <math.h>
+#include <stdlib.h>
+#include <stdatomic.h>
+#include "esp_timer.h"
+
+/* ── Constants ──────────────────────────────────────────────────────────── */
+
+static const char *TAG = "fof_uart_tx";
+
+#define UART_PORT_NUM       UART_NUM_1
+#ifdef FOF_BADGE_VARIANT
+#define TX_BUF_SIZE         4096
+#else
+#define TX_BUF_SIZE         UART_BUF_SIZE
+#endif
+#define RX_BUF_SIZE         UART_BUF_SIZE
+#define UART_TX_STACK_WARN_BYTES 1024
+#ifdef FOF_BADGE_VARIANT
+#define LOW_PRIORITY_RATE_SLOTS 32
+#else
+#define LOW_PRIORITY_RATE_SLOTS 64
+#endif
+#define WIFI_ASSOC_REEMIT_MS     30000
+#define WIFI_PROBE_REEMIT_MS     60000
+#define SCANNER_INFO_JSON_BUF_SIZE 6144
+#ifdef FOF_BADGE_VARIANT
+/* Badge scanners need to self-patch in the field. Keep relay/OTA failure
+ * backoff short enough that a transient UART miss retries without USB. */
+#define FW_ERROR_BACKOFF_MS      (2LL * 60LL * 1000LL)
+#else
+#define FW_ERROR_BACKOFF_MS      (6LL * 60LL * 60LL * 1000LL)
+#endif
+
+/* Queue receive timeout -- short enough to allow periodic maintenance. */
+#define QUEUE_RX_TIMEOUT_MS 100
+
+/* ── Counters for status messages ───────────────────────────────────────── */
+
+static int s_ble_count  = 0;
+static int s_wifi_count = 0;
+static uint8_t s_current_channel = 0;
+static uint32_t s_seq = 0;
+static uint32_t s_uart_tx_dropped = 0;
+static uint32_t s_uart_tx_queue_high_water = 0;
+static uint32_t s_uart_tx_queue_depth = 0;
+static uint32_t s_uart_tx_queue_capacity = 0;
+static uint32_t s_uart_tx_queue_pressure_pct = 0;
+static uint32_t s_noise_drop_ble = 0;
+static uint32_t s_noise_drop_wifi = 0;
+static uint32_t s_probe_seen = 0;
+static uint32_t s_probe_sent = 0;
+static uint32_t s_probe_drop_low_value = 0;
+static uint32_t s_probe_drop_rate_limit = 0;
+static uint32_t s_probe_drop_pressure = 0;
+static uint32_t s_ble_drop_profile = 0;
+
+typedef struct {
+    bool    in_use;
+    char    key[64];
+    char    aux[32];
+    int64_t last_sent_ms;
+    float   last_confidence;
+    int8_t  last_rssi;
+} rate_limit_entry_t;
+
+static rate_limit_entry_t s_ble_fp_rate[LOW_PRIORITY_RATE_SLOTS];
+static rate_limit_entry_t s_wifi_assoc_rate[LOW_PRIORITY_RATE_SLOTS];
+static rate_limit_entry_t s_wifi_probe_rate[LOW_PRIORITY_RATE_SLOTS];
+
+/* UART write mutex — prevents interleaved writes from multiple tasks */
+static SemaphoreHandle_t s_uart_mutex = NULL;
+static SemaphoreHandle_t s_scanner_info_mutex = NULL;
+static QueueHandle_t s_detection_queue = NULL;
+static char s_scanner_info_json_buf[SCANNER_INFO_JSON_BUF_SIZE];
+/* Random, non-zero for each boot. This is reboot evidence for the uplink OTA
+ * health gate; it is not persisted and is not a security credential. */
+static uint32_t s_scanner_boot_id = 0;
+
+/* ── Detection cache for OLED scoreboard ────────────────────────────────── */
+
+static scanner_detection_summary_t s_det_cache[DETECTION_CACHE_SIZE];
+static int s_det_cache_count = 0;
+static portMUX_TYPE s_cache_lock = portMUX_INITIALIZER_UNLOCKED;
+
+/* Deferred identity — set before TX task starts, sent after uplink ready */
+static char s_identity_board[40] = {0};
+static char s_identity_chip[16]  = {0};
+static char s_identity_caps[16]  = {0};
+
+/* TX enable flag — controlled by uplink start/stop commands.
+ * Production scanners start DISABLED until the uplink sends "ready".
+ * Badge scanners fail open so field evidence still appears if command
+ * ingress wiring is unhealthy during a demo or talk setup. */
+#ifdef FOF_BADGE_VARIANT
+static atomic_bool s_tx_enabled = true;
+#else
+static atomic_bool s_tx_enabled = false;
+#endif
+#if defined(FOF_DC34_GAME_CANARY)
+static atomic_bool s_firmware_quiet_window_active = false;
+#endif
+static bool s_uart_tx_stack_warned = false;
+static volatile bool s_need_firmware = false;
+static char s_fw_target_version[32] = {0};
+static char s_fw_update_state[16] = "idle";
+static char s_fw_last_error[48] = {0};
+static uint32_t s_fw_check_count = 0;
+static int64_t s_fw_error_backoff_until_ms = 0;
+#ifdef FOF_BADGE_VARIANT
+static badge_display_policy_t s_display_policy;
+static uint32_t s_display_policy_hash = 0;
+static uint32_t s_display_policy_ack_hash = 0;
+static uint32_t s_display_policy_filtered[BADGE_DISPLAY_POLICY_CLASS_COUNT];
+static portMUX_TYPE s_display_policy_lock = portMUX_INITIALIZER_UNLOCKED;
+static _Atomic uint32_t s_badge_easter_pending = 0;
+#endif
+
+static bool scanner_data_tx_allowed(void)
+{
+    return atomic_load_explicit(&s_tx_enabled, memory_order_acquire) &&
+           !scanner_quiet_mode_is_active();
+}
+
+#if defined(FOF_DC34_GAME_CANARY)
+void uart_tx_set_firmware_quiet_window(bool active)
+{
+    atomic_store_explicit(
+        &s_firmware_quiet_window_active, active, memory_order_release);
+}
+
+static bool uart_tx_firmware_quiet_window_active(void)
+{
+    return atomic_load_explicit(
+        &s_firmware_quiet_window_active, memory_order_acquire);
+}
+#endif
+
+#ifdef FOF_BADGE_VARIANT
+void uart_tx_note_badge_easter_egg(badge_easter_egg_source_t source)
+{
+    uint32_t pending_bit = badge_easter_egg_uart_pending_bit(source);
+    if (pending_bit != 0 && scanner_data_tx_allowed()) {
+        atomic_fetch_or_explicit(&s_badge_easter_pending, pending_bit,
+                                 memory_order_relaxed);
+    }
+}
+#endif
+
+bool uart_tx_is_enabled(void)
+{
+    return atomic_load_explicit(&s_tx_enabled, memory_order_acquire);
+}
+void uart_tx_set_enabled(bool enabled) {
+    if (enabled && scanner_quiet_mode_is_active()) {
+        ESP_LOGW("fof_uart_tx", "Ignoring TX enable while scanner quiet is active");
+        return;
+    }
+    atomic_store_explicit(&s_tx_enabled, enabled, memory_order_release);
+#ifdef FOF_BADGE_VARIANT
+    if (!enabled) {
+        atomic_store_explicit(&s_badge_easter_pending, 0,
+                              memory_order_relaxed);
+    }
+#endif
+    ESP_LOGI("fof_uart_tx", "TX %s by uplink command", enabled ? "ENABLED" : "DISABLED");
+}
+
+void uart_tx_flush_detection_queue(void)
+{
+    QueueHandle_t q = s_detection_queue;
+    if (!q) {
+        return;
+    }
+    drone_detection_t dropped;
+    uint32_t count = 0;
+    while (xQueueReceive(q, &dropped, 0) == pdTRUE) {
+        count++;
+    }
+    if (count > 0) {
+        s_uart_tx_queue_depth = 0;
+        ESP_LOGI(TAG, "Flushed %lu queued detections for mode transition",
+                 (unsigned long)count);
+    }
+
+}
+
+bool uart_tx_enqueue_priority_detection(const drone_detection_t *detection,
+                                        bool *evicted_out)
+{
+    if (evicted_out) {
+        *evicted_out = false;
+    }
+    if (!detection) {
+        return false;
+    }
+
+    if (!scanner_data_tx_allowed()) {
+        return false;
+    }
+
+    drone_detection_t det = *detection;
+    int64_t now_ms = esp_timer_get_time() / 1000;
+
+    float fused = bayesian_fusion_update(det.drone_id,
+                                         det.source,
+                                         det.confidence,
+                                         now_ms);
+    det.fused_confidence = fused;
+
+    if (det.source == DETECTION_SRC_BLE_RID ||
+        det.source == DETECTION_SRC_BLE_FINGERPRINT) {
+        s_ble_count++;
+    } else {
+        s_wifi_count++;
+    }
+    uart_tx_send_detection(&det);
+    led_set_pattern(LED_DETECTION);
+    return true;
+}
+
+void uart_tx_set_firmware_update_state(bool need_firmware,
+                                       const char *target_version,
+                                       const char *state)
+{
+    s_need_firmware = need_firmware;
+    if (target_version && target_version[0]) {
+        strncpy(s_fw_target_version, target_version, sizeof(s_fw_target_version) - 1);
+        s_fw_target_version[sizeof(s_fw_target_version) - 1] = '\0';
+    } else if (!need_firmware) {
+        s_fw_target_version[0] = '\0';
+    }
+    if (state && state[0]) {
+        strncpy(s_fw_update_state, state, sizeof(s_fw_update_state) - 1);
+        s_fw_update_state[sizeof(s_fw_update_state) - 1] = '\0';
+    }
+#if defined(FOF_DC34_GAME_CANARY)
+    uart_tx_set_firmware_quiet_window(
+        need_firmware && state &&
+        (strcmp(state, "ready") == 0 ||
+         strcmp(state, "updating") == 0));
+#endif
+    if (!need_firmware && (!state || strcmp(state, "current") == 0 || strcmp(state, "idle") == 0)) {
+        s_fw_last_error[0] = '\0';
+        s_fw_error_backoff_until_ms = 0;
+    }
+}
+
+void uart_tx_set_firmware_error(const char *reason)
+{
+    if (reason && reason[0]) {
+        strncpy(s_fw_last_error, reason, sizeof(s_fw_last_error) - 1);
+        s_fw_last_error[sizeof(s_fw_last_error) - 1] = '\0';
+    } else {
+        s_fw_last_error[0] = '\0';
+    }
+    s_fw_error_backoff_until_ms = (esp_timer_get_time() / 1000) + FW_ERROR_BACKOFF_MS;
+}
+
+void uart_tx_clear_firmware_error(void)
+{
+    s_fw_last_error[0] = '\0';
+    s_fw_error_backoff_until_ms = 0;
+}
+
+void uart_tx_note_firmware_check(void)
+{
+    s_fw_check_count++;
+}
+
+bool uart_tx_firmware_update_needed(void)
+{
+    return s_need_firmware;
+}
+
+const char *uart_tx_firmware_target_version(void)
+{
+    return s_fw_target_version;
+}
+
+const char *uart_tx_firmware_update_state(void)
+{
+    return s_fw_update_state;
+}
+
+const char *uart_tx_firmware_last_error(void)
+{
+    return s_fw_last_error;
+}
+
+uint32_t uart_tx_firmware_check_count(void)
+{
+    return s_fw_check_count;
+}
+
+bool uart_tx_firmware_backoff_active(void)
+{
+    return s_fw_error_backoff_until_ms > (esp_timer_get_time() / 1000);
+}
+
+/* ── Detection cache helpers ────────────────────────────────────────────── */
+
+/**
+ * Find an existing cache entry by drone_id, or allocate a new slot.
+ * Must be called inside portENTER_CRITICAL / portEXIT_CRITICAL.
+ * Returns a pointer to the slot, or NULL if the cache is full and we
+ * need to evict (in which case we evict the oldest entry).
+ */
+static scanner_detection_summary_t *cache_find_or_alloc(const char *drone_id)
+{
+    /* Search for existing entry */
+    for (int i = 0; i < s_det_cache_count; i++) {
+        if (strcmp(s_det_cache[i].drone_id, drone_id) == 0) {
+            return &s_det_cache[i];
+        }
+    }
+
+    /* Append if room */
+    if (s_det_cache_count < DETECTION_CACHE_SIZE) {
+        return &s_det_cache[s_det_cache_count++];
+    }
+
+    /* Evict oldest entry */
+    int oldest_idx = 0;
+    int64_t oldest_ts = s_det_cache[0].timestamp_ms;
+    for (int i = 1; i < s_det_cache_count; i++) {
+        if (s_det_cache[i].timestamp_ms < oldest_ts) {
+            oldest_ts = s_det_cache[i].timestamp_ms;
+            oldest_idx = i;
+        }
+    }
+    return &s_det_cache[oldest_idx];
+}
+
+/* ── Helpers ────────────────────────────────────────────────────────────── */
+
+/**
+ * Add a number to a cJSON object only if the value is non-zero / meaningful.
+ * Keeps the JSON compact by omitting default / empty fields.
+ */
+static void cjson_add_double_if(cJSON *obj, const char *key, double val)
+{
+    if (val != 0.0) {
+        cJSON_AddNumberToObject(obj, key, val);
+    }
+}
+
+static void cjson_add_string_if(cJSON *obj, const char *key, const char *val)
+{
+    if (val && val[0] != '\0') {
+        cJSON_AddStringToObject(obj, key, val);
+    }
+}
+
+static void json_escape_small(char *dst, size_t dst_len, const char *src)
+{
+    if (!dst || dst_len == 0) {
+        return;
+    }
+    dst[0] = '\0';
+    if (!src) {
+        return;
+    }
+
+    size_t out = 0;
+    for (size_t in = 0; src[in] && out + 1 < dst_len; in++) {
+        unsigned char ch = (unsigned char)src[in];
+        if ((ch == '"' || ch == '\\') && out + 2 < dst_len) {
+            dst[out++] = '\\';
+            dst[out++] = (char)ch;
+        } else if (ch >= 0x20) {
+            dst[out++] = (char)ch;
+        }
+    }
+    dst[out] = '\0';
+}
+
+static void cjson_add_csv_array_if(cJSON *obj,
+                                   const char *key,
+                                   const char *csv,
+                                   const char *fallback)
+{
+    const char *src = (csv && csv[0] != '\0') ? csv : fallback;
+    if (!src || src[0] == '\0') {
+        return;
+    }
+
+    cJSON *arr = cJSON_AddArrayToObject(obj, key);
+    if (!arr) {
+        return;
+    }
+
+    char token[33];
+    size_t pos = 0;
+    bool emitted = false;
+    for (const char *p = src;; ++p) {
+        if (*p == ',' || *p == '\0') {
+            token[pos] = '\0';
+            if (pos > 0) {
+                cJSON_AddItemToArray(arr, cJSON_CreateString(token));
+                emitted = true;
+            }
+            pos = 0;
+            if (*p == '\0') {
+                break;
+            }
+            continue;
+        }
+        if (pos < sizeof(token) - 1) {
+            token[pos++] = *p;
+        }
+    }
+
+    if (!emitted) {
+        cJSON_DeleteItemFromObject(obj, key);
+    }
+}
+
+static bool is_ble_source(uint8_t source)
+{
+    return source == DETECTION_SRC_BLE_RID ||
+           source == DETECTION_SRC_BLE_FINGERPRINT;
+}
+
+static const char *detection_rate_key(const drone_detection_t *detection)
+{
+    if (!detection) {
+        return "";
+    }
+    if (detection->bssid[0] != '\0') {
+        return detection->bssid;
+    }
+    if (detection->drone_id[0] != '\0') {
+        return detection->drone_id;
+    }
+    return "";
+}
+
+static rate_limit_entry_t *find_or_alloc_rate_slot(rate_limit_entry_t *table,
+                                                   size_t count,
+                                                   const char *key)
+{
+    int oldest_idx = 0;
+    int64_t oldest_ms = INT64_MAX;
+
+    for (size_t i = 0; i < count; i++) {
+        if (table[i].in_use && strcmp(table[i].key, key) == 0) {
+            return &table[i];
+        }
+        if (!table[i].in_use) {
+            return &table[i];
+        }
+        if (table[i].last_sent_ms < oldest_ms) {
+            oldest_ms = table[i].last_sent_ms;
+            oldest_idx = (int)i;
+        }
+    }
+
+    return &table[oldest_idx];
+}
+
+static bool allow_rate_limited_detection(rate_limit_entry_t *table,
+                                         size_t count,
+                                         const char *key,
+                                         const char *aux,
+                                         int64_t now_ms,
+                                         int window_ms,
+                                         float confidence,
+                                         int8_t rssi,
+                                         bool allow_aux_change,
+                                         bool allow_confidence_bump,
+                                         bool allow_rssi_jump)
+{
+    if (!key || key[0] == '\0') {
+        return true;
+    }
+
+    rate_limit_entry_t *slot = find_or_alloc_rate_slot(table, count, key);
+    if (!slot->in_use) {
+        memset(slot, 0, sizeof(*slot));
+        slot->in_use = true;
+        strncpy(slot->key, key, sizeof(slot->key) - 1);
+        slot->key[sizeof(slot->key) - 1] = '\0';
+        strncpy(slot->aux, aux ? aux : "", sizeof(slot->aux) - 1);
+        slot->aux[sizeof(slot->aux) - 1] = '\0';
+        slot->last_sent_ms = now_ms;
+        slot->last_confidence = confidence;
+        slot->last_rssi = rssi;
+        return true;
+    }
+
+    bool allow = false;
+    if ((now_ms - slot->last_sent_ms) >= window_ms) {
+        allow = true;
+    }
+    if (!allow && allow_aux_change && aux && aux[0] != '\0' &&
+        strcmp(slot->aux, aux) != 0) {
+        allow = true;
+    }
+    if (!allow && allow_confidence_bump &&
+        confidence >= (slot->last_confidence + 0.10f)) {
+        allow = true;
+    }
+    if (!allow && allow_rssi_jump &&
+        abs((int)rssi - (int)slot->last_rssi) >= 8) {
+        allow = true;
+    }
+    if (!allow) {
+        return false;
+    }
+
+    slot->key[0] = '\0';
+    slot->aux[0] = '\0';
+    strncpy(slot->key, key, sizeof(slot->key) - 1);
+    slot->key[sizeof(slot->key) - 1] = '\0';
+    strncpy(slot->aux, aux ? aux : "", sizeof(slot->aux) - 1);
+    slot->aux[sizeof(slot->aux) - 1] = '\0';
+    slot->last_sent_ms = now_ms;
+    slot->last_confidence = confidence;
+    slot->last_rssi = rssi;
+    return true;
+}
+
+typedef enum {
+    UART_DROP_LOW_VALUE = 0,
+    UART_DROP_RATE_LIMIT = 1,
+    UART_DROP_PRESSURE = 2,
+} uart_drop_reason_t;
+
+static void note_uart_drop(const drone_detection_t *detection,
+                           uart_drop_reason_t reason)
+{
+    s_uart_tx_dropped++;
+    if (is_ble_source(detection->source)) {
+        s_noise_drop_ble++;
+    } else {
+        s_noise_drop_wifi++;
+    }
+    if (detection->source == DETECTION_SRC_WIFI_PROBE_REQUEST) {
+        if (reason == UART_DROP_LOW_VALUE) {
+            s_probe_drop_low_value++;
+        } else if (reason == UART_DROP_RATE_LIMIT) {
+            s_probe_drop_rate_limit++;
+        } else if (reason == UART_DROP_PRESSURE) {
+            s_probe_drop_pressure++;
+        }
+    }
+}
+
+#ifdef FOF_BADGE_VARIANT
+static void display_policy_init_once(void)
+{
+    if (s_display_policy.version == BADGE_DISPLAY_POLICY_VERSION &&
+        s_display_policy_hash != 0) {
+        return;
+    }
+    badge_display_policy_defaults(&s_display_policy);
+    s_display_policy_hash = badge_display_policy_hash(&s_display_policy);
+    s_display_policy_ack_hash = s_display_policy_hash;
+}
+
+bool uart_tx_set_display_policy_json(const char *json,
+                                     uint32_t expected_hash,
+                                     char *err,
+                                     size_t err_len)
+{
+    badge_display_policy_t policy;
+    if (!badge_display_policy_parse_json(json, &policy, err, err_len)) {
+        return false;
+    }
+    uint32_t hash = badge_display_policy_hash(&policy);
+    if (expected_hash != 0 && expected_hash != hash) {
+        if (err && err_len > 0) {
+            snprintf(err, err_len, "hash mismatch");
+        }
+        return false;
+    }
+    portENTER_CRITICAL(&s_display_policy_lock);
+    s_display_policy = policy;
+    s_display_policy_hash = hash;
+    s_display_policy_ack_hash = hash;
+    portEXIT_CRITICAL(&s_display_policy_lock);
+    ESP_LOGI(TAG, "Display policy applied hash=%lu",
+             (unsigned long)hash);
+    return true;
+}
+
+void uart_tx_reset_display_policy(void)
+{
+    badge_display_policy_t policy;
+    badge_display_policy_defaults(&policy);
+    portENTER_CRITICAL(&s_display_policy_lock);
+    s_display_policy = policy;
+    s_display_policy_hash = badge_display_policy_hash(&s_display_policy);
+    s_display_policy_ack_hash = s_display_policy_hash;
+    memset(s_display_policy_filtered, 0, sizeof(s_display_policy_filtered));
+    portEXIT_CRITICAL(&s_display_policy_lock);
+}
+
+uint32_t uart_tx_display_policy_hash(void)
+{
+    display_policy_init_once();
+    return s_display_policy_hash;
+}
+
+uint32_t uart_tx_display_policy_ack_hash(void)
+{
+    display_policy_init_once();
+    return s_display_policy_ack_hash;
+}
+
+uint32_t uart_tx_display_policy_filtered_count(
+    badge_display_policy_class_t cls)
+{
+    if ((int)cls < 0 || cls >= BADGE_DISPLAY_POLICY_CLASS_COUNT) {
+        cls = BADGE_DISPLAY_CLASS_SCANNER_STATUS;
+    }
+    return s_display_policy_filtered[cls];
+}
+
+static bool display_policy_allows_detection(const drone_detection_t *det,
+                                            bool *breakthrough_out)
+{
+    display_policy_init_once();
+    bool safety = false;
+    badge_display_policy_class_t cls =
+        badge_display_policy_class_for_detection(det);
+    badge_display_policy_t policy;
+    portENTER_CRITICAL(&s_display_policy_lock);
+    policy = s_display_policy;
+    portEXIT_CRITICAL(&s_display_policy_lock);
+    bool allowed = badge_display_policy_allows_detection(&policy, det,
+                                                         &safety, &cls);
+    if (!allowed) {
+        s_display_policy_filtered[cls]++;
+    }
+    if (breakthrough_out) {
+        const badge_display_class_policy_t *cfg = &policy.classes[cls];
+        bool normally_blocked =
+            !cfg->enabled ||
+            cfg->lane == BADGE_DISPLAY_LANE_OFF ||
+            badge_display_proximity_for_rssi(det ? det->rssi : -100) <
+                cfg->min_proximity;
+        *breakthrough_out = allowed && safety && normally_blocked;
+    }
+    return allowed;
+}
+#endif
+
+static bool should_rate_limit_detection(const drone_detection_t *detection,
+                                        int64_t now_ms)
+{
+    if (detection &&
+        detection->source == DETECTION_SRC_BLE_FINGERPRINT &&
+        fof_policy_ble_has_calibration_uuid_le(
+            detection->ble_service_uuids_128,
+            detection->ble_svc_uuid_128_count
+        )) {
+        return false;
+    }
+
+    if (detection->source == DETECTION_SRC_BLE_FINGERPRINT) {
+        const char *key = detection->bssid[0] ? detection->bssid : detection->drone_id;
+        const char *aux = detection->manufacturer[0] ? detection->manufacturer :
+                          (detection->model[0] ? detection->model : "");
+        uint32_t window_ms = fof_policy_ble_fingerprint_reemit_ms(aux);
+        return !allow_rate_limited_detection(
+            s_ble_fp_rate, LOW_PRIORITY_RATE_SLOTS,
+            key, aux, now_ms, (int)window_ms,
+            detection->confidence, detection->rssi, true, true, false
+        );
+    }
+    if (detection->source == DETECTION_SRC_WIFI_ASSOC) {
+        const char *key = detection->drone_id;
+        return !allow_rate_limited_detection(
+            s_wifi_assoc_rate, LOW_PRIORITY_RATE_SLOTS,
+            key, detection->bssid, now_ms, WIFI_ASSOC_REEMIT_MS,
+            detection->confidence, detection->rssi, true, false, true
+        );
+    }
+    if (detection->source == DETECTION_SRC_WIFI_PROBE_REQUEST) {
+        const char *key = detection_rate_key(detection);
+        char aux[16];
+        fof_policy_probe_rate_aux(
+            detection->probe_ie_hash,
+            detection->probed_ssids[0] ? detection->probed_ssids : detection->ssid,
+            aux,
+            sizeof(aux)
+        );
+        return !allow_rate_limited_detection(
+            s_wifi_probe_rate, LOW_PRIORITY_RATE_SLOTS,
+            key, aux, now_ms, WIFI_PROBE_REEMIT_MS,
+            detection->confidence, detection->rssi, true, false, false
+        );
+    }
+    return false;
+}
+
+static bool should_shed_low_priority_detection(const drone_detection_t *detection,
+                                               UBaseType_t queue_depth,
+                                               UBaseType_t queue_capacity)
+{
+    if (!detection) {
+        return false;
+    }
+    return fof_policy_should_shed_low_priority(
+        detection->source,
+        detection->manufacturer,
+        detection->ble_service_uuids_128,
+        detection->ble_svc_uuid_128_count,
+        (uint32_t)queue_depth,
+        (uint32_t)queue_capacity
+    );
+}
+
+static bool uart_send_line_internal(const char *json_str,
+                                    bool require_scanner_data_tx)
+{
+    if (!json_str) return false;
+    size_t len = strlen(json_str);
+    if (s_uart_mutex) xSemaphoreTake(s_uart_mutex, portMAX_DELAY);
+    if (require_scanner_data_tx && !scanner_data_tx_allowed()) {
+        if (s_uart_mutex) xSemaphoreGive(s_uart_mutex);
+        return false;
+    }
+    bool complete = true;
+    size_t off = 0;
+    while (off < len) {
+        int written = uart_write_bytes(UART_PORT_NUM, json_str + off, len - off);
+        if (written <= 0) {
+            s_uart_tx_dropped++;
+            complete = false;
+            ESP_LOGW(TAG, "UART write stalled after %u/%u bytes",
+                     (unsigned)off, (unsigned)len);
+            break;
+        }
+        off += (size_t)written;
+    }
+    int nl_written = uart_write_bytes(UART_PORT_NUM, "\n", 1);
+    if (nl_written != 1) {
+        s_uart_tx_dropped++;
+        complete = false;
+        ESP_LOGW(TAG, "UART newline write failed (%d)", nl_written);
+    }
+    uart_wait_tx_done(UART_PORT_NUM, pdMS_TO_TICKS(250));
+    if (s_uart_mutex) xSemaphoreGive(s_uart_mutex);
+    return complete;
+}
+
+/**
+ * Transmit raw control JSON over UART with a complete checked write.  This
+ * intentionally bypasses the detection-TX gate so stop/OTA receipts remain
+ * available after normal telemetry is disabled.
+ */
+void uart_tx_send_raw_json(const char *json_str)
+{
+    (void)uart_send_line_internal(json_str, false);
+}
+
+static void uart_send_line(const char *json_str)
+{
+    (void)uart_send_line_internal(json_str, false);
+}
+
+static bool uart_send_scanner_data_line(const char *json_str)
+{
+    return uart_send_line_internal(json_str, true);
+}
+
+static void maybe_warn_uart_tx_stack_headroom(void)
+{
+    UBaseType_t free_words = uxTaskGetStackHighWaterMark(NULL);
+    size_t free_bytes = (size_t)free_words * sizeof(StackType_t);
+
+    if (free_bytes <= UART_TX_STACK_WARN_BYTES) {
+        if (!s_uart_tx_stack_warned) {
+            ESP_LOGW(TAG, "uart_tx stack headroom low: %u bytes free",
+                     (unsigned)free_bytes);
+            s_uart_tx_stack_warned = true;
+        }
+    } else if (s_uart_tx_stack_warned &&
+               free_bytes > (UART_TX_STACK_WARN_BYTES * 2)) {
+        ESP_LOGI(TAG, "uart_tx stack headroom recovered: %u bytes free",
+                 (unsigned)free_bytes);
+        s_uart_tx_stack_warned = false;
+    }
+}
+
+/* ── Public API ─────────────────────────────────────────────────────────── */
+
+void uart_tx_init(void)
+{
+    do {
+        s_scanner_boot_id = esp_random();
+    } while (s_scanner_boot_id == 0);
+
+    s_uart_mutex = xSemaphoreCreateMutex();
+    s_scanner_info_mutex = xSemaphoreCreateMutex();
+#ifdef FOF_BADGE_VARIANT
+    display_policy_init_once();
+#endif
+
+    uart_config_t uart_config = {
+        .baud_rate  = UART_BAUD_RATE,
+        .data_bits  = UART_DATA_8_BITS,
+        .parity     = UART_PARITY_DISABLE,
+        .stop_bits  = UART_STOP_BITS_1,
+        .flow_ctrl  = UART_HW_FLOWCTRL_DISABLE,
+        .source_clk = UART_SCLK_DEFAULT,
+    };
+
+    ESP_ERROR_CHECK(uart_param_config(UART_PORT_NUM, &uart_config));
+    ESP_ERROR_CHECK(uart_set_pin(UART_PORT_NUM,
+                                 SCANNER_UART_TX_PIN,
+                                 SCANNER_UART_RX_PIN,
+                                 UART_PIN_NO_CHANGE,
+                                 UART_PIN_NO_CHANGE));
+    /* RX buffer 4KB (was 2KB) to handle OTA relay bursts without overflow */
+    ESP_ERROR_CHECK(uart_driver_install(UART_PORT_NUM,
+                                        RX_BUF_SIZE * 2,
+                                        TX_BUF_SIZE,
+                                        0, NULL, 0));
+
+    ESP_LOGI(TAG, "UART%d initialised: %d baud, TX=GPIO%d, RX=GPIO%d",
+             UART_PORT_NUM, UART_BAUD_RATE,
+             SCANNER_UART_TX_PIN, SCANNER_UART_RX_PIN);
+}
+
+void uart_tx_send_detection(const drone_detection_t *detection)
+{
+    cJSON *root = cJSON_CreateObject();
+    if (!root) {
+        ESP_LOGE(TAG, "cJSON alloc failed for detection");
+        return;
+    }
+
+    /* Required fields */
+    cJSON_AddStringToObject(root, JSON_KEY_TYPE, MSG_TYPE_DETECTION);
+    cJSON_AddStringToObject(root, JSON_KEY_DRONE_ID, detection->drone_id);
+    cJSON_AddNumberToObject(root, JSON_KEY_SOURCE, detection->source);
+    cJSON_AddNumberToObject(root, JSON_KEY_CONFIDENCE, detection->confidence);
+    cJSON_AddNumberToObject(root, JSON_KEY_FUSED_CONFIDENCE, detection->fused_confidence);
+    cJSON_AddNumberToObject(root, JSON_KEY_RSSI, detection->rssi);
+    /* Emit epoch-ms when synced with uplink (v0.60+); otherwise send uptime-ms
+     * which the backend ignores via the epoch-validity threshold. */
+    extern volatile int64_t g_epoch_offset_ms;
+    int64_t ts_ms = detection->last_updated_ms;
+    if (g_epoch_offset_ms != 0) ts_ms += g_epoch_offset_ms;
+    cJSON_AddNumberToObject(root, JSON_KEY_TIMESTAMP, (double)ts_ms);
+    cJSON_AddNumberToObject(root, JSON_KEY_SEQ, s_seq++);
+
+    /* Position -- only include if we have a fix */
+    cjson_add_double_if(root, JSON_KEY_LATITUDE,  detection->latitude);
+    cjson_add_double_if(root, JSON_KEY_LONGITUDE, detection->longitude);
+    cjson_add_double_if(root, JSON_KEY_ALTITUDE,  detection->altitude_m);
+
+    /* Kinematics */
+    cjson_add_double_if(root, JSON_KEY_HEADING, detection->heading_deg);
+    cjson_add_double_if(root, JSON_KEY_SPEED,   detection->speed_mps);
+    cjson_add_double_if(root, JSON_KEY_VSPEED,  detection->vertical_speed_mps);
+
+    /* Distance estimate */
+    cjson_add_double_if(root, JSON_KEY_DISTANCE, detection->estimated_distance_m);
+
+    /* Metadata */
+    cjson_add_string_if(root, JSON_KEY_MANUFACTURER, detection->manufacturer);
+    cjson_add_string_if(root, JSON_KEY_MODEL,        detection->model);
+
+    /* Operator info */
+    cjson_add_double_if(root, JSON_KEY_OPERATOR_LAT, detection->operator_lat);
+    cjson_add_double_if(root, JSON_KEY_OPERATOR_LON, detection->operator_lon);
+    cjson_add_string_if(root, JSON_KEY_OPERATOR_ID,  detection->operator_id);
+
+    /* ASTM / OpenDroneID fields */
+    if (detection->ua_type != 0) {
+        cJSON_AddNumberToObject(root, JSON_KEY_UA_TYPE, detection->ua_type);
+    }
+    if (detection->id_type != 0) {
+        cJSON_AddNumberToObject(root, JSON_KEY_ID_TYPE, detection->id_type);
+    }
+    cjson_add_string_if(root, JSON_KEY_SELF_ID, detection->self_id_text);
+    cjson_add_double_if(root, JSON_KEY_HEIGHT_AGL,    detection->height_agl_m);
+    cjson_add_double_if(root, JSON_KEY_GEODETIC_ALT,  detection->geodetic_alt_m);
+    cjson_add_double_if(root, JSON_KEY_H_ACCURACY,    detection->h_accuracy_m);
+    cjson_add_double_if(root, JSON_KEY_V_ACCURACY,    detection->v_accuracy_m);
+
+    /* WiFi-specific */
+    cjson_add_string_if(root, JSON_KEY_SSID,  detection->ssid);
+    cjson_add_string_if(root, JSON_KEY_BSSID, detection->bssid);
+    if (detection->freq_mhz != 0) {
+        cJSON_AddNumberToObject(root, JSON_KEY_FREQ, detection->freq_mhz);
+    }
+    if (detection->channel_width_mhz != 0) {
+        cJSON_AddNumberToObject(root, JSON_KEY_CHANNEL_WIDTH, detection->channel_width_mhz);
+    }
+    if (detection->wifi_auth_mode != 0xFF) {
+        cJSON_AddNumberToObject(root, JSON_KEY_WIFI_AUTH_MODE, detection->wifi_auth_mode);
+    }
+
+    /* Probe request: include every parsed targeted SSID as a JSON array. */
+    if (detection->source == DETECTION_SRC_WIFI_PROBE_REQUEST) {
+        cjson_add_csv_array_if(
+            root,
+            JSON_KEY_PROBED_SSIDS,
+            detection->probed_ssids,
+            detection->ssid
+        );
+    }
+
+    /* BLE fingerprinting fields */
+    if (detection->ble_company_id != 0) {
+        cJSON_AddNumberToObject(root, JSON_KEY_BLE_COMPANY_ID, detection->ble_company_id);
+    }
+    if (detection->ble_apple_type != 0) {
+        cJSON_AddNumberToObject(root, JSON_KEY_BLE_APPLE_TYPE, detection->ble_apple_type);
+    }
+    if (detection->ble_ad_type_count != 0) {
+        cJSON_AddNumberToObject(root, JSON_KEY_BLE_AD_TYPES, detection->ble_ad_type_count);
+    }
+    if (detection->ble_payload_len != 0) {
+        cJSON_AddNumberToObject(root, JSON_KEY_BLE_PAYLOAD_LEN, detection->ble_payload_len);
+    }
+    if (detection->ble_addr_type != 0) {
+        cJSON_AddNumberToObject(root, JSON_KEY_BLE_ADDR_TYPE, detection->ble_addr_type);
+    }
+    if (detection->ble_ja3_hash != 0) {
+        char ja3_hex[9];
+        snprintf(ja3_hex, sizeof(ja3_hex), "%08lx", (unsigned long)detection->ble_ja3_hash);
+        cJSON_AddStringToObject(root, JSON_KEY_BLE_JA3, ja3_hex);
+    }
+    cjson_add_string_if(root, JSON_KEY_BLE_NAME, detection->ble_name);
+    cjson_add_string_if(root, JSON_KEY_CLASS_REASON, detection->class_reason);
+    if (detection->ble_threat_kind != BLE_THREAT_KIND_NONE) {
+        cJSON_AddNumberToObject(root, JSON_KEY_BLE_THREAT_KIND,
+                                detection->ble_threat_kind);
+        cJSON_AddNumberToObject(root, JSON_KEY_BLE_PROMPT_FAMILIES,
+                                detection->ble_prompt_family_mask);
+        cJSON_AddNumberToObject(root, JSON_KEY_BLE_UNIQUE_MACS,
+                                detection->ble_unique_macs);
+        cJSON_AddNumberToObject(root, JSON_KEY_BLE_OBSERVATIONS,
+                                detection->ble_observation_count);
+        cJSON_AddNumberToObject(root, JSON_KEY_BLE_SERIAL_UUID,
+                                detection->ble_serial_service_uuid);
+        cJSON_AddNumberToObject(root, JSON_KEY_BLE_THREAT_EVIDENCE,
+                                detection->ble_threat_evidence_mask);
+    }
+
+    /* Apple Continuity deep fields */
+    if (detection->ble_apple_auth[0] || detection->ble_apple_auth[1] || detection->ble_apple_auth[2]) {
+        char auth_hex[7];
+        snprintf(auth_hex, sizeof(auth_hex), "%02x%02x%02x",
+                 detection->ble_apple_auth[0], detection->ble_apple_auth[1], detection->ble_apple_auth[2]);
+        cJSON_AddStringToObject(root, JSON_KEY_BLE_APPLE_AUTH, auth_hex);
+    }
+    if (detection->ble_apple_activity != 0) {
+        cJSON_AddNumberToObject(root, JSON_KEY_BLE_ACTIVITY, detection->ble_apple_activity);
+    }
+    if (detection->ble_raw_mfr_len > 0) {
+        char mfr_hex[41];  /* 20 bytes * 2 + null */
+        for (int i = 0; i < detection->ble_raw_mfr_len && i < 20; i++) {
+            snprintf(&mfr_hex[i*2], 3, "%02x", detection->ble_raw_mfr[i]);
+        }
+        mfr_hex[detection->ble_raw_mfr_len * 2] = '\0';
+        cJSON_AddStringToObject(root, JSON_KEY_BLE_RAW_MFR, mfr_hex);
+    }
+    if (detection->ble_adv_interval_us > 0) {
+        cJSON_AddNumberToObject(root, JSON_KEY_BLE_ADV_INTERVAL, (double)(detection->ble_adv_interval_us / 1000));  /* ms */
+    }
+
+    /* BLE Service UUIDs — v0.63 emits both 16-bit (comma-separated hex)
+     * and 128-bit (canonical big-endian hyphenated) in a single field.
+     * Backend substring-matches on the UUID it's looking for, so it
+     * doesn't need to know the format ordering.
+     *   Sizing: up to 4 × 4-char 16-bit + 2 × 36-char 128-bit + 5 commas
+     *   + NUL = 16 + 72 + 5 + 1 = 94. 128-byte buffer gives headroom. */
+    if (detection->ble_svc_uuid_count > 0 || detection->ble_svc_uuid_128_count > 0) {
+        char svc_buf[128];
+        int svc_off = 0;
+        for (int i = 0; i < detection->ble_svc_uuid_count && i < 4; i++) {
+            if (svc_off > 0) svc_buf[svc_off++] = ',';
+            svc_off += snprintf(&svc_buf[svc_off], sizeof(svc_buf) - svc_off,
+                                "%04x", detection->ble_service_uuids[i]);
+        }
+        for (int i = 0; i < detection->ble_svc_uuid_128_count && i < 2; i++) {
+            if (svc_off > 0) svc_buf[svc_off++] = ',';
+            /* UUID bytes are stored LE as transmitted; emit big-endian
+             * hyphenated so downstream matches "cafe9a86-0000-..." etc. */
+            const uint8_t *u = detection->ble_service_uuids_128[i];
+            svc_off += snprintf(&svc_buf[svc_off], sizeof(svc_buf) - svc_off,
+                "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+                u[15], u[14], u[13], u[12], u[11], u[10], u[9], u[8],
+                u[7],  u[6],  u[5],  u[4],  u[3],  u[2],  u[1], u[0]);
+        }
+        cJSON_AddStringToObject(root, JSON_KEY_BLE_SVC_UUIDS, svc_buf);
+    }
+
+    /* Apple Nearby Info data-flags byte — always emitted (even when 0) so
+     * the backend can distinguish "all flags false" from "field absent". */
+    cJSON_AddNumberToObject(root, JSON_KEY_BLE_APPLE_FLAGS, detection->ble_apple_flags);
+
+    /* WiFi probe fingerprint — only add if not already added as array above */
+    if (detection->probed_ssids[0] != '\0' &&
+        detection->source != DETECTION_SRC_WIFI_PROBE_REQUEST) {
+        cJSON_AddStringToObject(root, JSON_KEY_PROBED_SSIDS, detection->probed_ssids);
+    }
+    if (detection->probe_ie_hash != 0) {
+        char ie_hex[9];
+        snprintf(ie_hex, sizeof(ie_hex), "%08lx", (unsigned long)detection->probe_ie_hash);
+        cJSON_AddStringToObject(root, "ie_hash", ie_hex);
+    }
+    if (detection->wifi_generation != 0) {
+        cJSON_AddNumberToObject(root, "wifi_gen", detection->wifi_generation);
+    }
+
+    /* Timestamps */
+    if (detection->first_seen_ms != 0) {
+        cJSON_AddNumberToObject(root, JSON_KEY_FIRST_SEEN, (double)detection->first_seen_ms);
+    }
+    cJSON_AddNumberToObject(root, JSON_KEY_LAST_UPDATED, (double)detection->last_updated_ms);
+
+    /* Serialize */
+    char *json_str = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+
+    if (json_str) {
+        (void)uart_send_scanner_data_line(json_str);
+        cJSON_free(json_str);
+    } else {
+        ESP_LOGE(TAG, "cJSON_PrintUnformatted failed");
+    }
+}
+
+/* Scanner identity — set by uart_tx_send_scanner_info, included in every status */
+static const char *s_scanner_ver   = NULL;
+static const char *s_scanner_board = NULL;
+static const char *s_scanner_chip  = NULL;
+static const char *s_scanner_caps  = NULL;
+static char s_scanner_hardware_id[18] = "unknown";
+
+static int64_t scanner_time_last_valid_age_s(void)
+{
+    extern volatile int64_t g_last_valid_time_local_ms;
+
+    if (g_last_valid_time_local_ms <= 0) {
+        return -1;
+    }
+    int64_t now_ms = esp_timer_get_time() / 1000;
+    if (now_ms <= g_last_valid_time_local_ms) {
+        return 0;
+    }
+    return (now_ms - g_last_valid_time_local_ms) / 1000;
+}
+
+static int64_t scanner_cmd_last_age_s(void)
+{
+    extern volatile int64_t g_last_cmd_local_ms;
+
+    if (g_last_cmd_local_ms <= 0) {
+        return -1;
+    }
+    int64_t now_ms = esp_timer_get_time() / 1000;
+    if (now_ms <= g_last_cmd_local_ms) {
+        return 0;
+    }
+    return (now_ms - g_last_cmd_local_ms) / 1000;
+}
+
+static const char *scanner_time_sync_state(void)
+{
+    extern volatile int64_t g_epoch_offset_ms;
+    extern volatile uint32_t g_time_valid_count;
+    extern volatile int64_t g_last_valid_time_local_ms;
+
+    return fof_time_sync_state_label(
+        g_time_valid_count,
+        g_epoch_offset_ms,
+        g_last_valid_time_local_ms,
+        esp_timer_get_time() / 1000,
+        FOF_TIME_SYNC_STALE_AFTER_MS
+    );
+}
+
+void uart_tx_send_status(int ble_count, int wifi_count,
+                         uint8_t current_channel, uint32_t uptime_s)
+{
+    cJSON *root = cJSON_CreateObject();
+    if (!root) {
+        ESP_LOGE(TAG, "cJSON alloc failed for status");
+        return;
+    }
+
+    cJSON_AddStringToObject(root, JSON_KEY_TYPE, MSG_TYPE_STATUS);
+    cJSON_AddNumberToObject(root, "ble_count",  ble_count);
+    cJSON_AddNumberToObject(root, "wifi_count", wifi_count);
+    cJSON_AddNumberToObject(root, "ch",         current_channel);
+    cJSON_AddNumberToObject(root, "uptime_s",   uptime_s);
+    cJSON_AddNumberToObject(root, "boot_id",    s_scanner_boot_id);
+    cJSON_AddNumberToObject(root, "uart_tx_dropped", s_uart_tx_dropped);
+    cJSON_AddNumberToObject(root, "uart_tx_high_water", s_uart_tx_queue_high_water);
+    cJSON_AddNumberToObject(root, "tx_queue_depth", s_uart_tx_queue_depth);
+    cJSON_AddNumberToObject(root, "tx_queue_capacity", s_uart_tx_queue_capacity);
+    cJSON_AddNumberToObject(root, "tx_queue_pressure_pct", s_uart_tx_queue_pressure_pct);
+    cJSON_AddNumberToObject(root, "noise_drop_ble", s_noise_drop_ble);
+    cJSON_AddNumberToObject(root, "noise_drop_wifi", s_noise_drop_wifi);
+    cJSON_AddNumberToObject(root, "probe_seen", s_probe_seen);
+    cJSON_AddNumberToObject(root, "probe_sent", s_probe_sent);
+    cJSON_AddNumberToObject(root, "probe_drop_low_value", s_probe_drop_low_value);
+    cJSON_AddNumberToObject(root, "probe_drop_rate_limit", s_probe_drop_rate_limit);
+    cJSON_AddNumberToObject(root, "probe_drop_pressure", s_probe_drop_pressure);
+    ble_remote_id_stats_t ble_stats = {0};
+    ble_remote_id_get_stats(&ble_stats);
+    wifi_scanner_stats_t wifi_stats = {0};
+    wifi_scanner_get_stats(&wifi_stats);
+    cJSON_AddBoolToObject(root, "ble_initialized",
+                          ble_remote_id_is_initialized());
+    cJSON_AddBoolToObject(root, "ble_scanning", ble_stats.ble_scanning);
+    cJSON_AddBoolToObject(root, "ble_host_active", ble_stats.ble_host_active);
+    cJSON_AddBoolToObject(root, "ble_host_synced", ble_stats.ble_host_synced);
+    cJSON_AddBoolToObject(root, "ble_quiesced",
+                          ble_remote_id_is_quiesced());
+    cJSON_AddStringToObject(root, "slot_role", scanner_slot_role_label());
+    cJSON_AddBoolToObject(root, "wifi_initialized",
+                          wifi_scanner_is_initialized());
+    cJSON_AddBoolToObject(root, "wifi_active", wifi_scanner_is_active());
+    cJSON_AddBoolToObject(root, "wifi_quiesced",
+                          wifi_scanner_is_quiesced());
+    cJSON_AddNumberToObject(root, "wifi_init_rc", wifi_stats.init_rc);
+    cJSON_AddBoolToObject(root, "wifi_paused", wifi_scanner_is_paused());
+    cJSON_AddNumberToObject(root, "wifi_total_frames", wifi_stats.total_frames);
+    cJSON_AddNumberToObject(root, "wifi_beacon_frames", wifi_stats.beacon_frames);
+    cJSON_AddNumberToObject(root, "wifi_full_scan_count", wifi_stats.full_scan_count);
+    cJSON_AddNumberToObject(root, "wifi_full_scan_ok", wifi_stats.full_scan_ok);
+    cJSON_AddNumberToObject(root, "wifi_full_scan_err", wifi_stats.full_scan_err);
+    cJSON_AddNumberToObject(root, "wifi_full_scan_last_rc", wifi_stats.full_scan_last_rc);
+    cJSON_AddNumberToObject(root, "wifi_last_ap_count", wifi_stats.last_ap_count);
+    cJSON_AddNumberToObject(root, "wifi_last_scan_age_s", (double)wifi_stats.last_scan_age_s);
+    cJSON_AddNumberToObject(root, "wifi_drone_ssid_emit", wifi_stats.drone_ssid_emit);
+    cJSON_AddNumberToObject(root, "wifi_notable_ssid_emit", wifi_stats.notable_ssid_emit);
+    cJSON_AddStringToObject(root, "wifi_last_drone_ssid", wifi_stats.last_drone_ssid);
+    cJSON_AddStringToObject(root, "wifi_last_notable_ssid", wifi_stats.last_notable_ssid);
+    cJSON_AddNumberToObject(root, "wifi_oui_emit", wifi_stats.oui_emit);
+    cJSON_AddNumberToObject(root, "wifi_soft_ssid_emit", wifi_stats.soft_ssid_emit);
+    cJSON_AddNumberToObject(root, "wifi_hot_ch", wifi_stats.hot_channel_count);
+    cJSON_AddNumberToObject(root, "ble_adv_seen", ble_stats.ble_adv_seen);
+    cJSON_AddNumberToObject(root, "ble_any_seen", ble_stats.ble_any_seen);
+    cJSON_AddNumberToObject(root, "ble_any_with_payload_seen",
+                            ble_stats.ble_any_with_payload_seen);
+    cJSON_AddNumberToObject(root, "ble_any_empty_seen",
+                            ble_stats.ble_any_empty_seen);
+    cJSON_AddNumberToObject(root, "ble_any_last_rssi",
+                            ble_stats.ble_any_last_rssi);
+    cJSON_AddNumberToObject(root, "ble_any_best_rssi",
+                            ble_stats.ble_any_best_rssi);
+    cJSON_AddNumberToObject(root, "ble_any_last_len",
+                            ble_stats.ble_any_last_len);
+    cJSON_AddNumberToObject(root, "ble_any_last_props",
+                            ble_stats.ble_any_last_props);
+    cJSON_AddNumberToObject(root, "ble_any_last_addr_type",
+                            ble_stats.ble_any_last_addr_type);
+    cJSON_AddNumberToObject(root, "ble_fp_emit", ble_stats.ble_fp_emit);
+    cJSON_AddNumberToObject(root, "ble_meta_seen", ble_stats.ble_meta_seen);
+    cJSON_AddNumberToObject(root, "ble_meta_last_seen_age_s",
+                            (double)ble_stats.ble_meta_last_seen_age_s);
+    cJSON_AddNumberToObject(root, "ble_meta_last_emit_age_s",
+                            (double)ble_stats.ble_meta_last_emit_age_s);
+    cJSON_AddNumberToObject(root, "ble_meta_last_hash",
+                            ble_stats.ble_meta_last_hash);
+    cJSON_AddNumberToObject(root, "ble_meta_last_rssi",
+                            ble_stats.ble_meta_last_rssi);
+    cJSON_AddStringToObject(root, "ble_meta_last_reason",
+                            ble_stats.ble_meta_last_reason);
+    cJSON_AddStringToObject(root, "ble_meta_identity",
+                            ble_stats.ble_meta_identity);
+    cJSON_AddNumberToObject(root, "ble_meta_weak_age_s",
+                            (double)ble_stats.ble_meta_weak_age_s);
+    cJSON_AddNumberToObject(root, "ble_meta_reacquire_count",
+                            ble_stats.ble_meta_reacquire_count);
+    cJSON_AddNumberToObject(root, "ble_tracker_seen", ble_stats.ble_tracker_seen);
+    cJSON_AddNumberToObject(root, "ble_privacy_candidate_seen",
+                            ble_stats.ble_privacy_candidate_seen);
+    cJSON_AddNumberToObject(root, "ble_near_unknown_seen",
+                            ble_stats.ble_near_unknown_seen);
+    cJSON_AddNumberToObject(root, "ble_drop_profile", s_ble_drop_profile);
+    cJSON_AddNumberToObject(root, "ble_drop_rate", ble_stats.ble_drop_rate);
+    cJSON_AddNumberToObject(root, "ble_dbg_near_seen",
+                            ble_stats.ble_dbg_near_seen);
+    cJSON_AddNumberToObject(root, "ble_dbg_near_rssi",
+                            ble_stats.ble_dbg_near_rssi);
+    cJSON_AddStringToObject(root, "ble_dbg_near_label",
+                            ble_stats.ble_dbg_near_label);
+    cJSON_AddStringToObject(root, "ble_dbg_near_name",
+                            ble_stats.ble_dbg_near_name);
+    cJSON_AddStringToObject(root, "ble_dbg_near_reason",
+                            ble_stats.ble_dbg_near_reason);
+    cJSON_AddNumberToObject(root, "ble_dbg_near_cid",
+                            ble_stats.ble_dbg_near_cid);
+    cJSON_AddNumberToObject(root, "ble_dbg_near_svc0",
+                            ble_stats.ble_dbg_near_svc0);
+    cJSON_AddNumberToObject(root, "ble_dbg_near_svc_count",
+                            ble_stats.ble_dbg_near_svc_count);
+    cJSON_AddNumberToObject(root, "ble_dbg_near_payload_len",
+                            ble_stats.ble_dbg_near_payload_len);
+    cJSON_AddNumberToObject(root, "ble_dbg_priv_seen",
+                            ble_stats.ble_dbg_priv_seen);
+    cJSON_AddNumberToObject(root, "ble_dbg_priv_rssi",
+                            ble_stats.ble_dbg_priv_rssi);
+    cJSON_AddStringToObject(root, "ble_dbg_priv_label",
+                            ble_stats.ble_dbg_priv_label);
+    cJSON_AddStringToObject(root, "ble_dbg_priv_name",
+                            ble_stats.ble_dbg_priv_name);
+    cJSON_AddStringToObject(root, "ble_dbg_priv_reason",
+                            ble_stats.ble_dbg_priv_reason);
+    cJSON_AddNumberToObject(root, "ble_dbg_priv_cid",
+                            ble_stats.ble_dbg_priv_cid);
+    cJSON_AddNumberToObject(root, "ble_dbg_priv_svc0",
+                            ble_stats.ble_dbg_priv_svc0);
+    cJSON_AddNumberToObject(root, "ble_dbg_priv_svc_count",
+                            ble_stats.ble_dbg_priv_svc_count);
+    cJSON_AddNumberToObject(root, "ble_dbg_priv_payload_len",
+                            ble_stats.ble_dbg_priv_payload_len);
+    cJSON_AddNumberToObject(root, "ble_host_restart_count",
+                            ble_stats.ble_host_restart_count);
+    cJSON_AddNumberToObject(root, "ble_scan_start_count",
+                            ble_stats.ble_scan_start_count);
+    cJSON_AddNumberToObject(root, "ble_scan_start_ok",
+                            ble_stats.ble_scan_start_ok);
+    cJSON_AddNumberToObject(root, "ble_scan_last_rc",
+                            ble_stats.ble_scan_last_rc);
+    cJSON_AddNumberToObject(root, "ble_sync_last_rc",
+                            ble_stats.ble_sync_last_rc);
+    cJSON_AddBoolToObject(root, "ble_focus_active", ble_stats.ble_focus_active);
+    cJSON_AddNumberToObject(root, "ble_focus_age_s",
+                            (double)ble_stats.ble_focus_age_s);
+    cJSON_AddNumberToObject(root, "ble_focus_target_adv_count",
+                            ble_stats.ble_focus_target_adv_count);
+    cJSON_AddNumberToObject(root, "rid_service_seen", ble_remote_id_service_seen_count());
+    cJSON_AddNumberToObject(root, "rid_emit", ble_remote_id_emit_count());
+    cJSON_AddNumberToObject(root, "rid_queue_drop", ble_stats.rid_queue_drop);
+    cJSON_AddNumberToObject(root, "rid_queue_evict", ble_stats.rid_queue_evict);
+    cJSON_AddNumberToObject(root, "privacy_seen", ble_remote_id_privacy_seen_count());
+#ifdef FOF_BADGE_VARIANT
+    cJSON_AddNumberToObject(root, "display_policy_hash",
+                            uart_tx_display_policy_hash());
+    cJSON_AddNumberToObject(root, "display_policy_ack_hash",
+                            uart_tx_display_policy_ack_hash());
+    cJSON *filtered = cJSON_CreateObject();
+    if (filtered) {
+        for (int i = 0; i < BADGE_DISPLAY_POLICY_CLASS_COUNT; i++) {
+            badge_display_policy_class_t cls = (badge_display_policy_class_t)i;
+            cJSON_AddNumberToObject(
+                filtered,
+                badge_display_policy_class_key(cls),
+                uart_tx_display_policy_filtered_count(cls)
+            );
+        }
+        cJSON_AddItemToObject(root, "filtered_counts", filtered);
+    }
+#endif
+    cJSON_AddStringToObject(root, JSON_KEY_SCAN_MODE, scanner_calibration_mode_label());
+    cJSON_AddStringToObject(root, JSON_KEY_SCAN_PROFILE, scanner_scan_profile_label());
+    cjson_add_string_if(root, JSON_KEY_CALIBRATION_UUID, scanner_calibration_mode_uuid());
+    cJSON_AddBoolToObject(root, "quiet_mode", scanner_quiet_mode_is_active());
+    cJSON_AddNumberToObject(root, "quiet_generation", scanner_quiet_mode_generation());
+    cJSON_AddBoolToObject(root, "tx_enabled", uart_tx_is_enabled());
+    cJSON_AddNumberToObject(root, JSON_KEY_SEQ, s_seq++);
+    if (s_need_firmware) {
+        cJSON_AddTrueToObject(root, "need_firmware");
+    } else {
+        cJSON_AddFalseToObject(root, "need_firmware");
+    }
+    cJSON_AddStringToObject(root, JSON_KEY_FW_STATE, s_fw_update_state);
+    cJSON_AddNumberToObject(root, "fw_check_count", s_fw_check_count);
+    int64_t fw_backoff_ms = s_fw_error_backoff_until_ms - (esp_timer_get_time() / 1000);
+    cJSON_AddNumberToObject(root, "fw_backoff_s",
+                            fw_backoff_ms > 0 ? (double)(fw_backoff_ms / 1000) : 0.0);
+    if (s_fw_last_error[0]) {
+        cJSON_AddStringToObject(root, "last_fw_error", s_fw_last_error);
+    }
+    if (s_fw_target_version[0]) {
+        cJSON_AddStringToObject(root, JSON_KEY_FW_TARGET_VERSION, s_fw_target_version);
+    }
+    cJSON_AddStringToObject(root, "ota_state", uart_ota_state_label());
+    cJSON_AddStringToObject(root, "ota_session_id", uart_ota_session_id());
+    cJSON_AddNumberToObject(root, "ota_received", uart_ota_received());
+    cJSON_AddNumberToObject(root, "ota_total", uart_ota_total_size());
+    cJSON_AddStringToObject(root, "recovery_mode", scanner_rollback_recovery_mode());
+    cJSON_AddBoolToObject(root, "rollback_pending", scanner_rollback_is_pending_verify());
+    cJSON_AddNumberToObject(root, "crash_count", scanner_rollback_crash_count());
+    cJSON_AddStringToObject(root, "safe_reason", scanner_rollback_safe_reason());
+    cJSON_AddNumberToObject(root, "radio_restart_count",
+                            ble_stats.ble_host_restart_count);
+
+    /* Include scanner identity in every status message */
+    if (s_scanner_ver) {
+        cJSON_AddStringToObject(root, "ver", s_scanner_ver);
+        cJSON_AddStringToObject(root, "board", s_scanner_board);
+        cJSON_AddStringToObject(root, "chip", s_scanner_chip);
+        cJSON_AddStringToObject(root, "caps", s_scanner_caps);
+        cJSON_AddStringToObject(root, "firmware_name", FOF_FIRMWARE_TARGET);
+        cJSON_AddStringToObject(root, "app_project", FOF_APP_PROJECT);
+        cJSON_AddStringToObject(root, "hardware_type", FOF_HARDWARE_TYPE);
+        cJSON_AddStringToObject(root, "hardware_id", s_scanner_hardware_id);
+    }
+    {
+        extern volatile int64_t g_epoch_offset_ms;
+        extern volatile uint32_t g_time_msg_count;
+        extern volatile uint32_t g_time_valid_count;
+        extern volatile uint32_t g_cmd_msg_count;
+        extern volatile uint32_t g_cmd_parse_error_count;
+        extern volatile uint32_t g_cmd_overflow_count;
+        extern volatile uint32_t g_cmd_stale_count;
+        cJSON_AddNumberToObject(root, "toff", (double)g_epoch_offset_ms);
+        cJSON_AddNumberToObject(root, "tcnt", g_time_msg_count);
+        cJSON_AddNumberToObject(root, "time_valid_count", g_time_valid_count);
+        cJSON_AddNumberToObject(root, "time_last_valid_age_s", (double)scanner_time_last_valid_age_s());
+        cJSON_AddStringToObject(root, "time_sync_state", scanner_time_sync_state());
+        cJSON_AddNumberToObject(root, "cmd_rx", g_cmd_msg_count);
+        cJSON_AddNumberToObject(root, "cmd_parse_err", g_cmd_parse_error_count);
+        cJSON_AddNumberToObject(root, "cmd_overflow", g_cmd_overflow_count);
+        cJSON_AddNumberToObject(root, "cmd_stale", g_cmd_stale_count);
+        cJSON_AddNumberToObject(root, "cmd_last_age_s", (double)scanner_cmd_last_age_s());
+    }
+
+    /* Attack / anomaly counters (delta since last status) */
+    {
+        uint16_t deauth = 0, disassoc = 0, auth = 0;
+        bool flood = false, bcn_spam = false;
+        wifi_scanner_get_attack_counters(&deauth, &disassoc, &auth,
+                                          &flood, &bcn_spam);
+        if (deauth > 0)  cJSON_AddNumberToObject(root, "deauth",  deauth);
+        if (disassoc > 0) cJSON_AddNumberToObject(root, "disassoc", disassoc);
+        if (auth > 0)    cJSON_AddNumberToObject(root, "auth_fr",  auth);
+        if (flood)       cJSON_AddTrueToObject(root, "flood");
+        if (bcn_spam)    cJSON_AddTrueToObject(root, "bcn_spam");
+        wifi_scanner_reset_attack_counters();
+    }
+
+    /* Frame control subtype histogram (comma-separated 16 values) */
+    {
+        uint32_t hist[16];
+        wifi_scanner_get_fc_histogram(hist);
+        char hist_str[128];
+        int off = 0;
+        for (int i = 0; i < 16; i++) {
+            if (i > 0) hist_str[off++] = ',';
+            off += snprintf(&hist_str[off], sizeof(hist_str) - off,
+                            "%lu", (unsigned long)hist[i]);
+        }
+        cJSON_AddStringToObject(root, "fc_hist", hist_str);
+        wifi_scanner_reset_fc_histogram();
+    }
+
+    char *json_str = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+
+    if (json_str) {
+        (void)uart_send_scanner_data_line(json_str);
+        cJSON_free(json_str);
+    }
+}
+
+void uart_tx_send_scanner_info(const char *ver, const char *board,
+                                const char *chip, const char *caps)
+{
+    /* Store for inclusion in every future status message */
+    s_scanner_ver   = ver;
+    s_scanner_board = board;
+    s_scanner_chip  = chip;
+    s_scanner_caps  = caps;
+    uint8_t base_mac[6] = {0};
+    if (esp_efuse_mac_get_default(base_mac) == ESP_OK) {
+        snprintf(s_scanner_hardware_id, sizeof(s_scanner_hardware_id),
+                 "%02x:%02x:%02x:%02x:%02x:%02x",
+                 base_mac[0], base_mac[1], base_mac[2],
+                 base_mac[3], base_mac[4], base_mac[5]);
+    } else {
+        snprintf(s_scanner_hardware_id, sizeof(s_scanner_hardware_id), "unknown");
+    }
+
+    /* Also send as standalone message. Includes time-sync diagnostic fields
+     * (toff, tcnt) so the uplink can surface them via /api/status — that's
+     * what tells us whether the scanner has actually received uplink's time
+     * broadcasts (tcnt) and whether the value applied (toff). */
+    extern volatile int64_t g_epoch_offset_ms;
+    extern volatile uint32_t g_time_msg_count;
+    extern volatile uint32_t g_time_valid_count;
+    extern volatile uint32_t g_cmd_msg_count;
+    extern volatile uint32_t g_cmd_parse_error_count;
+    extern volatile uint32_t g_cmd_overflow_count;
+    extern volatile uint32_t g_cmd_stale_count;
+    ble_remote_id_stats_t ble_stats = {0};
+    ble_remote_id_get_stats(&ble_stats);
+    wifi_scanner_stats_t wifi_stats = {0};
+    wifi_scanner_get_stats(&wifi_stats);
+    bool info_lock_taken = false;
+    if (s_scanner_info_mutex) {
+        info_lock_taken = (xSemaphoreTake(s_scanner_info_mutex, portMAX_DELAY) == pdTRUE);
+    }
+    char *buf = s_scanner_info_json_buf;
+    const size_t buf_size = sizeof(s_scanner_info_json_buf);
+    int64_t fw_backoff_info_ms = s_fw_error_backoff_until_ms - (esp_timer_get_time() / 1000);
+    char meta_reason[64];
+    char meta_identity[32];
+    char near_label[48];
+    char near_name[64];
+    char near_reason[64];
+    char priv_label[48];
+    char priv_name[64];
+    char priv_reason[64];
+    json_escape_small(meta_reason, sizeof(meta_reason),
+                      ble_stats.ble_meta_last_reason);
+    json_escape_small(meta_identity, sizeof(meta_identity),
+                      ble_stats.ble_meta_identity);
+    json_escape_small(near_label, sizeof(near_label),
+                      ble_stats.ble_dbg_near_label);
+    json_escape_small(near_name, sizeof(near_name),
+                      ble_stats.ble_dbg_near_name);
+    json_escape_small(near_reason, sizeof(near_reason),
+                      ble_stats.ble_dbg_near_reason);
+    json_escape_small(priv_label, sizeof(priv_label),
+                      ble_stats.ble_dbg_priv_label);
+    json_escape_small(priv_name, sizeof(priv_name),
+                      ble_stats.ble_dbg_priv_name);
+    json_escape_small(priv_reason, sizeof(priv_reason),
+                      ble_stats.ble_dbg_priv_reason);
+    int n = snprintf(buf, buf_size,
+             "{\"type\":\"scanner_info\",\"ver\":\"%s\",\"board\":\"%s\","
+             "\"chip\":\"%s\",\"caps\":\"%s\","
+             "\"firmware_name\":\"%s\",\"app_project\":\"%s\","
+             "\"hardware_type\":\"%s\",\"hardware_id\":\"%s\","
+             "\"boot_id\":%lu,"
+             "\"toff\":%lld,\"tcnt\":%lu,"
+             "\"time_valid_count\":%lu,\"time_last_valid_age_s\":%lld,\"time_sync_state\":\"%s\","
+             "\"cmd_rx\":%lu,\"cmd_parse_err\":%lu,\"cmd_overflow\":%lu,"
+             "\"cmd_stale\":%lu,\"cmd_last_age_s\":%lld,"
+             "\"scan_mode\":\"%s\",\"scan_profile\":\"%s\",\"slot_role\":\"%s\","
+             "\"calibration_uuid\":\"%s\","
+             "\"quiet_mode\":%s,\"quiet_generation\":%lu,\"tx_enabled\":%s,"
+             "\"ble_initialized\":%s,\"ble_scanning\":%s,"
+             "\"ble_host_active\":%s,\"ble_host_synced\":%s,"
+             "\"ble_quiesced\":%s,"
+             "\"wifi_initialized\":%s,\"wifi_active\":%s,"
+             "\"wifi_quiesced\":%s,"
+             "\"wifi_init_rc\":%d,\"wifi_paused\":%s,"
+             "\"wifi_full_scan_count\":%lu,\"wifi_full_scan_ok\":%lu,"
+             "\"wifi_last_ap_count\":%lu,\"wifi_last_scan_age_s\":%lld,"
+             "\"wifi_drone_ssid_emit\":%lu,\"wifi_notable_ssid_emit\":%lu,"
+             "\"ble_adv_seen\":%lu,\"ble_any_seen\":%lu,"
+             "\"ble_any_with_payload_seen\":%lu,\"ble_any_empty_seen\":%lu,"
+             "\"ble_any_last_rssi\":%d,\"ble_any_best_rssi\":%d,"
+             "\"ble_any_last_len\":%u,\"ble_any_last_props\":%u,"
+             "\"ble_any_last_addr_type\":%u,"
+             "\"ble_fp_emit\":%lu,\"ble_tracker_seen\":%lu,"
+             "\"ble_near_unknown_seen\":%lu,"
+             "\"ble_privacy_candidate_seen\":%lu,"
+             "\"ble_meta_seen\":%lu,\"ble_meta_last_seen_age_s\":%lld,"
+             "\"ble_meta_last_emit_age_s\":%lld,"
+             "\"ble_meta_last_hash\":%lu,\"ble_meta_last_rssi\":%d,"
+             "\"ble_meta_last_reason\":\"%s\",\"ble_meta_identity\":\"%s\","
+             "\"ble_meta_weak_age_s\":%lld,\"ble_meta_reacquire_count\":%lu,"
+             "\"ble_dbg_near_seen\":%lu,\"ble_dbg_near_rssi\":%d,"
+             "\"ble_dbg_near_label\":\"%s\",\"ble_dbg_near_name\":\"%s\","
+             "\"ble_dbg_near_reason\":\"%s\","
+             "\"ble_dbg_near_cid\":%u,\"ble_dbg_near_svc0\":%u,"
+             "\"ble_dbg_near_svc_count\":%u,"
+             "\"ble_dbg_near_payload_len\":%u,"
+             "\"ble_dbg_priv_seen\":%lu,\"ble_dbg_priv_rssi\":%d,"
+             "\"ble_dbg_priv_label\":\"%s\",\"ble_dbg_priv_name\":\"%s\","
+             "\"ble_dbg_priv_reason\":\"%s\","
+             "\"ble_dbg_priv_cid\":%u,\"ble_dbg_priv_svc0\":%u,"
+             "\"ble_dbg_priv_svc_count\":%u,"
+             "\"ble_dbg_priv_payload_len\":%u,"
+             "\"ble_focus_active\":%s,\"ble_focus_age_s\":%lld,"
+             "\"ble_focus_target_adv_count\":%lu,"
+             "\"ble_scan_start_ok\":%lu,"
+             "\"ble_scan_start_count\":%lu,\"ble_scan_last_rc\":%d,"
+             "\"rid_queue_drop\":%lu,\"rid_queue_evict\":%lu,"
+             "\"need_firmware\":%s,\"fw_state\":\"%s\",\"target_ver\":\"%s\","
+             "\"fw_check_count\":%lu,\"fw_backoff_s\":%lld,\"last_fw_error\":\"%s\","
+             "\"ota_state\":\"%s\",\"ota_session_id\":\"%s\","
+             "\"ota_received\":%lu,\"ota_total\":%lu,"
+             "\"recovery_mode\":\"%s\",\"safe_reason\":\"%s\","
+             "\"rollback_pending\":%s,\"crash_count\":%lu,"
+             "\"radio_restart_count\":%lu}",
+             ver ? ver : "?", board ? board : "?",
+             chip ? chip : "?", caps ? caps : "?",
+             FOF_FIRMWARE_TARGET, FOF_APP_PROJECT,
+             FOF_HARDWARE_TYPE, s_scanner_hardware_id,
+             (unsigned long)s_scanner_boot_id,
+             (long long)g_epoch_offset_ms,
+             (unsigned long)g_time_msg_count,
+             (unsigned long)g_time_valid_count,
+             (long long)scanner_time_last_valid_age_s(),
+             scanner_time_sync_state(),
+             (unsigned long)g_cmd_msg_count,
+             (unsigned long)g_cmd_parse_error_count,
+             (unsigned long)g_cmd_overflow_count,
+             (unsigned long)g_cmd_stale_count,
+             (long long)scanner_cmd_last_age_s(),
+             scanner_calibration_mode_label(),
+             scanner_scan_profile_label(),
+             scanner_slot_role_label(),
+             scanner_calibration_mode_uuid(),
+             scanner_quiet_mode_is_active() ? "true" : "false",
+             (unsigned long)scanner_quiet_mode_generation(),
+             uart_tx_is_enabled() ? "true" : "false",
+             ble_remote_id_is_initialized() ? "true" : "false",
+             ble_stats.ble_scanning ? "true" : "false",
+             ble_stats.ble_host_active ? "true" : "false",
+             ble_stats.ble_host_synced ? "true" : "false",
+             ble_remote_id_is_quiesced() ? "true" : "false",
+             wifi_scanner_is_initialized() ? "true" : "false",
+             wifi_scanner_is_active() ? "true" : "false",
+             wifi_scanner_is_quiesced() ? "true" : "false",
+             wifi_stats.init_rc,
+             wifi_scanner_is_paused() ? "true" : "false",
+             (unsigned long)wifi_stats.full_scan_count,
+             (unsigned long)wifi_stats.full_scan_ok,
+             (unsigned long)wifi_stats.last_ap_count,
+             (long long)wifi_stats.last_scan_age_s,
+             (unsigned long)wifi_stats.drone_ssid_emit,
+             (unsigned long)wifi_stats.notable_ssid_emit,
+             (unsigned long)ble_stats.ble_adv_seen,
+             (unsigned long)ble_stats.ble_any_seen,
+             (unsigned long)ble_stats.ble_any_with_payload_seen,
+             (unsigned long)ble_stats.ble_any_empty_seen,
+             (int)ble_stats.ble_any_last_rssi,
+             (int)ble_stats.ble_any_best_rssi,
+             (unsigned)ble_stats.ble_any_last_len,
+             (unsigned)ble_stats.ble_any_last_props,
+             (unsigned)ble_stats.ble_any_last_addr_type,
+             (unsigned long)ble_stats.ble_fp_emit,
+             (unsigned long)ble_stats.ble_tracker_seen,
+             (unsigned long)ble_stats.ble_near_unknown_seen,
+             (unsigned long)ble_stats.ble_privacy_candidate_seen,
+             (unsigned long)ble_stats.ble_meta_seen,
+             (long long)ble_stats.ble_meta_last_seen_age_s,
+             (long long)ble_stats.ble_meta_last_emit_age_s,
+             (unsigned long)ble_stats.ble_meta_last_hash,
+             (int)ble_stats.ble_meta_last_rssi,
+             meta_reason,
+             meta_identity,
+             (long long)ble_stats.ble_meta_weak_age_s,
+             (unsigned long)ble_stats.ble_meta_reacquire_count,
+             (unsigned long)ble_stats.ble_dbg_near_seen,
+             (int)ble_stats.ble_dbg_near_rssi,
+             near_label,
+             near_name,
+             near_reason,
+             (unsigned)ble_stats.ble_dbg_near_cid,
+             (unsigned)ble_stats.ble_dbg_near_svc0,
+             (unsigned)ble_stats.ble_dbg_near_svc_count,
+             (unsigned)ble_stats.ble_dbg_near_payload_len,
+             (unsigned long)ble_stats.ble_dbg_priv_seen,
+             (int)ble_stats.ble_dbg_priv_rssi,
+             priv_label,
+             priv_name,
+             priv_reason,
+             (unsigned)ble_stats.ble_dbg_priv_cid,
+             (unsigned)ble_stats.ble_dbg_priv_svc0,
+             (unsigned)ble_stats.ble_dbg_priv_svc_count,
+             (unsigned)ble_stats.ble_dbg_priv_payload_len,
+             ble_stats.ble_focus_active ? "true" : "false",
+             (long long)ble_stats.ble_focus_age_s,
+             (unsigned long)ble_stats.ble_focus_target_adv_count,
+             (unsigned long)ble_stats.ble_scan_start_ok,
+             (unsigned long)ble_stats.ble_scan_start_count,
+             ble_stats.ble_scan_last_rc,
+             (unsigned long)ble_stats.rid_queue_drop,
+             (unsigned long)ble_stats.rid_queue_evict,
+             s_need_firmware ? "true" : "false",
+             s_fw_update_state,
+             s_fw_target_version,
+             (unsigned long)s_fw_check_count,
+             (long long)(fw_backoff_info_ms > 0 ? fw_backoff_info_ms / 1000 : 0),
+             s_fw_last_error,
+             uart_ota_state_label(),
+             uart_ota_session_id(),
+             (unsigned long)uart_ota_received(),
+             (unsigned long)uart_ota_total_size(),
+             scanner_rollback_recovery_mode(),
+             scanner_rollback_safe_reason(),
+             scanner_rollback_is_pending_verify() ? "true" : "false",
+             (unsigned long)scanner_rollback_crash_count(),
+             (unsigned long)ble_stats.ble_host_restart_count);
+    if (n < 0 || n >= (int)buf_size) {
+        ESP_LOGW(TAG, "scanner_info truncated (%d/%u), sending compact identity",
+                 n, (unsigned)buf_size);
+        snprintf(buf, buf_size,
+                 "{\"type\":\"scanner_info\",\"ver\":\"%s\",\"board\":\"%s\","
+                 "\"chip\":\"%s\",\"caps\":\"%s\","
+                 "\"firmware_name\":\"%s\",\"app_project\":\"%s\","
+                 "\"hardware_type\":\"%s\",\"hardware_id\":\"%s\","
+                 "\"boot_id\":%lu,"
+                 "\"cmd_rx\":%lu,"
+                 "\"scan_profile\":\"%s\",\"slot_role\":\"%s\",\"quiet_mode\":%s,"
+                 "\"quiet_generation\":%lu,\"tx_enabled\":%s,"
+                 "\"ble_initialized\":%s,\"ble_scanning\":%s,"
+                 "\"ble_host_active\":%s,\"ble_host_synced\":%s,"
+                 "\"ble_quiesced\":%s,"
+                 "\"wifi_initialized\":%s,\"wifi_active\":%s,"
+                 "\"wifi_quiesced\":%s,"
+                 "\"wifi_init_rc\":%d,\"wifi_paused\":%s,"
+                 "\"wifi_full_scan_ok\":%lu,\"ble_adv_seen\":%lu,"
+                 "\"ble_any_seen\":%lu,\"ble_any_with_payload_seen\":%lu,"
+                 "\"ble_any_empty_seen\":%lu,\"ble_any_last_rssi\":%d,"
+                 "\"ble_any_best_rssi\":%d,\"ble_any_last_len\":%u,"
+                 "\"ble_meta_seen\":%lu,\"ble_meta_last_seen_age_s\":%lld,"
+                 "\"ble_meta_reacquire_count\":%lu,"
+                 "\"ble_focus_active\":%s,\"wifi_drone_ssid_emit\":%lu,"
+                 "\"wifi_notable_ssid_emit\":%lu,\"ota_state\":\"%s\","
+                 "\"recovery_mode\":\"%s\"}",
+                 ver ? ver : "?", board ? board : "?",
+                 chip ? chip : "?", caps ? caps : "?",
+                 FOF_FIRMWARE_TARGET, FOF_APP_PROJECT,
+                 FOF_HARDWARE_TYPE, s_scanner_hardware_id,
+                 (unsigned long)s_scanner_boot_id,
+                 (unsigned long)g_cmd_msg_count,
+                 scanner_scan_profile_label(),
+                 scanner_slot_role_label(),
+                 scanner_quiet_mode_is_active() ? "true" : "false",
+                 (unsigned long)scanner_quiet_mode_generation(),
+                 uart_tx_is_enabled() ? "true" : "false",
+                 ble_remote_id_is_initialized() ? "true" : "false",
+                 ble_stats.ble_scanning ? "true" : "false",
+                 ble_stats.ble_host_active ? "true" : "false",
+                 ble_stats.ble_host_synced ? "true" : "false",
+                 ble_remote_id_is_quiesced() ? "true" : "false",
+                 wifi_scanner_is_initialized() ? "true" : "false",
+                 wifi_scanner_is_active() ? "true" : "false",
+                 wifi_scanner_is_quiesced() ? "true" : "false",
+                 wifi_stats.init_rc,
+                 wifi_scanner_is_paused() ? "true" : "false",
+                 (unsigned long)wifi_stats.full_scan_ok,
+                 (unsigned long)ble_stats.ble_adv_seen,
+                 (unsigned long)ble_stats.ble_any_seen,
+                 (unsigned long)ble_stats.ble_any_with_payload_seen,
+                 (unsigned long)ble_stats.ble_any_empty_seen,
+                 (int)ble_stats.ble_any_last_rssi,
+                 (int)ble_stats.ble_any_best_rssi,
+                 (unsigned)ble_stats.ble_any_last_len,
+                 (unsigned long)ble_stats.ble_meta_seen,
+                 (long long)ble_stats.ble_meta_last_seen_age_s,
+                 (unsigned long)ble_stats.ble_meta_reacquire_count,
+                 ble_stats.ble_focus_active ? "true" : "false",
+                 (unsigned long)wifi_stats.drone_ssid_emit,
+                 (unsigned long)wifi_stats.notable_ssid_emit,
+                 uart_ota_state_label(),
+                 scanner_rollback_recovery_mode());
+    }
+    uart_send_line(buf);
+    if (info_lock_taken) {
+        xSemaphoreGive(s_scanner_info_mutex);
+    }
+    ESP_LOGD(TAG, "Scanner info TX: %s v%s (%s) toff=%lld tcnt=%lu valid=%lu state=%s",
+             board, ver, caps, (long long)g_epoch_offset_ms,
+             (unsigned long)g_time_msg_count,
+             (unsigned long)g_time_valid_count,
+             scanner_time_sync_state());
+}
+
+#if defined(FOF_DC34_GAME_CANARY)
+static void uart_tx_maybe_send_badge_con_packet(
+    QueueHandle_t detection_queue)
+{
+    if (!detection_queue ||
+        !scanner_data_tx_allowed() ||
+        uart_ota_is_active_snapshot() ||
+        uart_tx_firmware_quiet_window_active() ||
+        uxQueueMessagesWaiting(detection_queue) != 0U) {
+        return;
+    }
+
+    badge_con_packet_t packet;
+    if (!badge_con_observer_take_pending(&packet)) {
+        return;
+    }
+
+    char line[BADGE_CON_UART_BUFFER_BYTES];
+    size_t wire_size = 0U;
+    if (!badge_con_render_uart_line(
+            &packet, line, sizeof(line), &wire_size) ||
+        wire_size == 0U ||
+        line[wire_size - 1U] != '\n') {
+        return;
+    }
+
+    /* The checked line writer owns the delimiter. Replace the codec's
+     * trailing newline so the wire still contains exactly one. */
+    line[wire_size - 1U] = '\0';
+    (void)uart_send_scanner_data_line(line);
+}
+#endif
+
+/* ── UART TX Task ───────────────────────────────────────────────────────── */
+
+/**
+ * FreeRTOS task: reads detections from the shared queue, fuses, and sends.
+ *
+ * Also performs periodic maintenance:
+ *  - Prunes stale Bayesian tracks every PRUNE_INTERVAL_MS
+ *  - Sends a status heartbeat alongside the prune
+ */
+static void uart_tx_task(void *arg)
+{
+    QueueHandle_t detection_queue = (QueueHandle_t)arg;
+    drone_detection_t det;
+
+    TickType_t last_prune_tick = xTaskGetTickCount();
+    const TickType_t prune_interval = pdMS_TO_TICKS(PRUNE_INTERVAL_MS);
+    const TickType_t queue_timeout  = pdMS_TO_TICKS(QUEUE_RX_TIMEOUT_MS);
+
+    ESP_LOGI(TAG, "UART TX task started (prune every %d ms)", PRUNE_INTERVAL_MS);
+
+    /* Wait for uplink to enable TX via the "ready"/"start" command.
+     * Auto-start after 30s if no command received (handles wiring issues
+     * where uplink→scanner UART direction doesn't work). */
+    ESP_LOGI(TAG, "TX paused — waiting for uplink start command (30s timeout)...");
+    led_set_pattern(LED_IDLE);
+
+    int wait_count = 0;
+    while (!atomic_load_explicit(&s_tx_enabled, memory_order_acquire)) {
+        vTaskDelay(pdMS_TO_TICKS(500));
+        if (scanner_quiet_mode_is_active()) {
+            wait_count = 0;
+            continue;
+        }
+        wait_count++;
+        if (wait_count >= 60) {  /* 60 x 500ms = 30 seconds */
+            ESP_LOGW(TAG, "No start command after 30s — auto-enabling TX");
+            uart_tx_set_enabled(true);
+        }
+    }
+
+    /* Send scanner identity now that uplink enabled us */
+    if (s_identity_board[0]) {
+        /* Keep using the shared Friend or Foe version here. The ESP-IDF app
+         * descriptor can lag or collapse to "1", which makes live scanner
+         * heartbeats look stale even after a successful OTA. */
+        uart_tx_send_scanner_info(FOF_VERSION,
+                                  s_identity_board, s_identity_chip, s_identity_caps);
+    }
+    led_set_pattern(LED_UPLINK_OK);
+    ESP_LOGI(TAG, "TX enabled — transmitting detections.");
+
+    for (;;) {
+        /* If uplink sent stop command, pause TX until re-enabled */
+        if (!atomic_load_explicit(&s_tx_enabled, memory_order_acquire)) {
+            led_set_pattern(LED_IDLE);
+            ESP_LOGI(TAG, "TX paused by uplink stop command");
+            while (!atomic_load_explicit(&s_tx_enabled, memory_order_acquire)) {
+                vTaskDelay(pdMS_TO_TICKS(500));
+            }
+            led_set_pattern(LED_UPLINK_OK);
+            ESP_LOGI(TAG, "TX resumed by uplink start command");
+        }
+
+#ifdef FOF_BADGE_VARIANT
+        uint32_t easter_pending = atomic_exchange_explicit(
+            &s_badge_easter_pending, 0, memory_order_relaxed);
+        if ((easter_pending & BADGE_EASTER_EGG_UART_PENDING_BLE_REMOTE_ID) != 0) {
+            (void)uart_send_scanner_data_line(badge_easter_egg_uart_frame(
+                BADGE_EASTER_EGG_SOURCE_BLE_REMOTE_ID));
+        }
+        if ((easter_pending & BADGE_EASTER_EGG_UART_PENDING_WIFI_SSID) != 0) {
+            (void)uart_send_scanner_data_line(badge_easter_egg_uart_frame(
+                BADGE_EASTER_EGG_SOURCE_WIFI_SSID));
+        }
+#endif
+
+        /* Block on detection queue with a short timeout so we can do
+         * periodic maintenance even when no detections are flowing. */
+        if (xQueueReceive(detection_queue, &det, queue_timeout) == pdTRUE) {
+            if (!scanner_data_tx_allowed()) {
+                continue;
+            }
+            int64_t tx_now_ms = esp_timer_get_time() / 1000;
+            UBaseType_t queue_depth = uxQueueMessagesWaiting(detection_queue);
+            UBaseType_t queue_capacity = queue_depth +
+                                         uxQueueSpacesAvailable(detection_queue);
+            s_uart_tx_queue_depth = (uint32_t)queue_depth;
+            s_uart_tx_queue_capacity = (uint32_t)queue_capacity;
+            s_uart_tx_queue_pressure_pct = fof_policy_queue_pressure_pct(
+                (uint32_t)queue_depth,
+                (uint32_t)queue_capacity
+            );
+            if ((uint32_t)queue_depth > s_uart_tx_queue_high_water) {
+                s_uart_tx_queue_high_water = (uint32_t)queue_depth;
+            }
+
+            if (det.source == DETECTION_SRC_WIFI_PROBE_REQUEST) {
+                s_probe_seen++;
+            }
+
+            if (!scanner_calibration_mode_allows_detection(&det)) {
+                if (is_ble_source(det.source)) {
+                    s_ble_drop_profile++;
+                }
+                note_uart_drop(&det, UART_DROP_PRESSURE);
+                continue;
+            }
+
+#ifdef FOF_BADGE_VARIANT
+            bool filter_breakthrough = false;
+            if (!display_policy_allows_detection(&det, &filter_breakthrough)) {
+                note_uart_drop(&det, UART_DROP_LOW_VALUE);
+                continue;
+            }
+            if (filter_breakthrough &&
+                !strstr(det.class_reason, "filter")) {
+                size_t used = strlen(det.class_reason);
+                if (used + 8 < sizeof(det.class_reason)) {
+                    strncat(det.class_reason, " filter",
+                            sizeof(det.class_reason) - used - 1);
+                }
+            }
+#endif
+
+            if (fof_policy_should_drop_low_value(det.source,
+                                                 det.confidence,
+                                                 det.manufacturer,
+                                                 det.ble_service_uuids_128,
+                                                 det.ble_svc_uuid_128_count)) {
+                note_uart_drop(&det, UART_DROP_LOW_VALUE);
+                continue;
+            }
+            if (should_rate_limit_detection(&det, tx_now_ms)) {
+                note_uart_drop(&det, UART_DROP_RATE_LIMIT);
+                continue;
+            }
+            if (should_shed_low_priority_detection(&det,
+                                                   queue_depth,
+                                                   queue_capacity)) {
+                note_uart_drop(&det, UART_DROP_PRESSURE);
+                continue;
+            }
+
+            /* Track per-source counters for status messages */
+            if (is_ble_source(det.source)) {
+                s_ble_count++;
+            } else {
+                s_wifi_count++;
+            }
+
+            /* Keep track of WiFi channel if available */
+            if (det.freq_mhz > 0) {
+                /* 2.4 GHz channel derivation: (freq - 2407) / 5 */
+                if (det.freq_mhz >= 2412 && det.freq_mhz <= 2484) {
+                    s_current_channel = (uint8_t)((det.freq_mhz - 2407) / 5);
+                }
+            }
+
+            /* Run Bayesian sensor fusion -- updates internal state and
+             * returns the fused probability for this drone_id. */
+            int64_t now_ms = esp_timer_get_time() / 1000;
+            float fused = bayesian_fusion_update(det.drone_id,
+                                                 det.source,
+                                                 det.confidence,
+                                                 now_ms);
+            det.fused_confidence = fused;
+
+            /* Cache for OLED scoreboard */
+            portENTER_CRITICAL(&s_cache_lock);
+            {
+                scanner_detection_summary_t *slot = cache_find_or_alloc(det.drone_id);
+                strncpy(slot->drone_id, det.drone_id, sizeof(slot->drone_id) - 1);
+                slot->drone_id[sizeof(slot->drone_id) - 1] = '\0';
+                strncpy(slot->manufacturer, det.manufacturer, sizeof(slot->manufacturer) - 1);
+                slot->manufacturer[sizeof(slot->manufacturer) - 1] = '\0';
+                slot->source = det.source;
+                slot->confidence = det.fused_confidence;
+                slot->rssi = det.rssi;
+                slot->timestamp_ms = det.last_updated_ms;
+            }
+            portEXIT_CRITICAL(&s_cache_lock);
+
+            /* Serialize and transmit */
+            if (!scanner_data_tx_allowed()) {
+                continue;
+            }
+            if (det.source == DETECTION_SRC_WIFI_PROBE_REQUEST) {
+                s_probe_sent++;
+            }
+            uart_tx_send_detection(&det);
+            led_set_pattern(LED_DETECTION);
+
+            ESP_LOGD(TAG, "TX: %s src=%d raw=%.2f fused=%.2f rssi=%d",
+                     det.drone_id, det.source,
+                     det.confidence, det.fused_confidence, det.rssi);
+        }
+
+        /* Periodic maintenance */
+        TickType_t now = xTaskGetTickCount();
+        if ((now - last_prune_tick) >= prune_interval) {
+            last_prune_tick = now;
+
+            int64_t prune_now_ms = esp_timer_get_time() / 1000;
+            bayesian_fusion_prune(prune_now_ms);
+
+            /* Badge scanners must keep collecting even if the uplink->scanner
+             * command direction is unhealthy. Re-applying the profile here
+             * restarts BLE/WiFi radios if a scan silently stopped after OTA,
+             * role changes, or coexistence churn. */
+            bool ota_active = uart_ota_is_active_snapshot();
+            if (!ota_active) {
+                scanner_scan_profile_apply();
+            }
+            ble_remote_id_meta_reacquire_tick(!scanner_calibration_mode_is_active() &&
+                                              !scanner_quiet_mode_is_active() &&
+                                              !ota_active);
+
+            /* Prune stale entries from display cache */
+            portENTER_CRITICAL(&s_cache_lock);
+            {
+                int dst = 0;
+                for (int src = 0; src < s_det_cache_count; src++) {
+                    int64_t age_ms = prune_now_ms - s_det_cache[src].timestamp_ms;
+                    if (age_ms <= DETECTION_STALE_MS) {
+                        if (dst != src) {
+                            s_det_cache[dst] = s_det_cache[src];
+                        }
+                        dst++;
+                    }
+                }
+                s_det_cache_count = dst;
+            }
+            portEXIT_CRITICAL(&s_cache_lock);
+
+            /* Compute uptime in seconds */
+            uint32_t uptime_s = (uint32_t)(xTaskGetTickCount() /
+                                           configTICK_RATE_HZ);
+            UBaseType_t queue_depth = uxQueueMessagesWaiting(detection_queue);
+            UBaseType_t queue_capacity = queue_depth +
+                                         uxQueueSpacesAvailable(detection_queue);
+            s_uart_tx_queue_depth = (uint32_t)queue_depth;
+            s_uart_tx_queue_capacity = (uint32_t)queue_capacity;
+            s_uart_tx_queue_pressure_pct = fof_policy_queue_pressure_pct(
+                (uint32_t)queue_depth,
+                (uint32_t)queue_capacity
+            );
+
+            if (scanner_data_tx_allowed()) {
+                maybe_warn_uart_tx_stack_headroom();
+                uart_tx_send_status(s_ble_count, s_wifi_count,
+                                    s_current_channel, uptime_s);
+                led_set_pattern(LED_UPLINK_OK);  /* purple — UART flowing */
+
+                ESP_LOGD(TAG, "Status TX: ble=%d wifi=%d ch=%d uptime=%lus",
+                         s_ble_count, s_wifi_count,
+                         s_current_channel, (unsigned long)uptime_s);
+            }
+        }
+#if defined(FOF_DC34_GAME_CANARY)
+        uart_tx_maybe_send_badge_con_packet(detection_queue);
+#endif
+    }
+    /* Task should never return; if it does, clean up. */
+    vTaskDelete(NULL);
+}
+
+void uart_tx_set_identity(const char *board, const char *chip, const char *caps)
+{
+    strncpy(s_identity_board, board, sizeof(s_identity_board) - 1);
+    strncpy(s_identity_chip,  chip,  sizeof(s_identity_chip) - 1);
+    strncpy(s_identity_caps,  caps,  sizeof(s_identity_caps) - 1);
+    s_identity_board[sizeof(s_identity_board) - 1] = '\0';
+    s_identity_chip[sizeof(s_identity_chip) - 1] = '\0';
+    s_identity_caps[sizeof(s_identity_caps) - 1] = '\0';
+}
+
+void uart_tx_start(QueueHandle_t detection_queue)
+{
+    s_detection_queue = detection_queue;
+    xTaskCreatePinnedToCore(
+        uart_tx_task,
+        "uart_tx",
+        UART_TX_TASK_STACK_SIZE,
+        (void *)detection_queue,
+        UART_TX_TASK_PRIORITY,
+        NULL,
+        UART_TX_TASK_CORE
+    );
+
+    ESP_LOGI(TAG, "UART TX task created on core %d, priority %d",
+             UART_TX_TASK_CORE, UART_TX_TASK_PRIORITY);
+}
+
+/* ── Display getters ───────────────────────────────────────────────────── */
+
+int uart_tx_get_ble_count(void)
+{
+    return s_ble_count;
+}
+
+int uart_tx_get_wifi_count(void)
+{
+    return s_wifi_count;
+}
+
+void uart_tx_reset_counts(void)
+{
+    s_ble_count = 0;
+    s_wifi_count = 0;
+    s_uart_tx_dropped = 0;
+    s_uart_tx_queue_high_water = 0;
+    s_uart_tx_queue_depth = 0;
+    s_uart_tx_queue_capacity = 0;
+    s_uart_tx_queue_pressure_pct = 0;
+    s_noise_drop_ble = 0;
+    s_noise_drop_wifi = 0;
+    s_probe_seen = 0;
+    s_probe_sent = 0;
+    s_probe_drop_low_value = 0;
+    s_probe_drop_rate_limit = 0;
+    s_probe_drop_pressure = 0;
+    s_ble_drop_profile = 0;
+}
+
+int uart_tx_get_total_count(void)
+{
+    return s_ble_count + s_wifi_count;
+}
+
+uint8_t uart_tx_get_current_channel(void)
+{
+    return s_current_channel;
+}
+
+bool uart_tx_get_recent_detection(scanner_detection_summary_t *out)
+{
+    if (!out) {
+        return false;
+    }
+
+    portENTER_CRITICAL(&s_cache_lock);
+    if (s_det_cache_count == 0) {
+        portEXIT_CRITICAL(&s_cache_lock);
+        return false;
+    }
+
+    /* Find the entry with the highest timestamp */
+    int best = 0;
+    for (int i = 1; i < s_det_cache_count; i++) {
+        if (s_det_cache[i].timestamp_ms > s_det_cache[best].timestamp_ms) {
+            best = i;
+        }
+    }
+    *out = s_det_cache[best];
+    portEXIT_CRITICAL(&s_cache_lock);
+    return true;
+}
+
+int uart_tx_get_cached_detections(scanner_detection_summary_t *out, int max_count)
+{
+    if (!out || max_count <= 0) {
+        return 0;
+    }
+
+    portENTER_CRITICAL(&s_cache_lock);
+    int count = s_det_cache_count < max_count ? s_det_cache_count : max_count;
+    memcpy(out, s_det_cache, count * sizeof(scanner_detection_summary_t));
+    portEXIT_CRITICAL(&s_cache_lock);
+
+    /* Insertion sort by timestamp descending (most recent first, max 10 items) */
+    for (int i = 1; i < count; i++) {
+        scanner_detection_summary_t tmp = out[i];
+        int j = i - 1;
+        while (j >= 0 && out[j].timestamp_ms < tmp.timestamp_ms) {
+            out[j + 1] = out[j];
+            j--;
+        }
+        out[j + 1] = tmp;
+    }
+
+    return count;
+}

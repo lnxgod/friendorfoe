@@ -1,0 +1,10 @@
+.pio/
+.pytest_cache/
+__pycache__/
+*.py[cod]
+compile_commands.json
+/web-flasher/firmware/**/*.bin
+/scanner/sdkconfig.scanner-s3-combo-backend
+/uplink/sdkconfig.uplink-s3-backend
+.canary/*
+!.canary/.gitkeep

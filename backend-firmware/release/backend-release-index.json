@@ -1,0 +1,48 @@
+{
+  "schema": 1,
+  "targets": {
+    "uplink-s3-backend": {
+      "hardware": "seeed_xiao_esp32s3",
+      "identity_crc32": 3022711036,
+      "kind": "uplink",
+      "partition_capacity": 2097152,
+      "parts": [
+        {
+          "crc32": 416999416,
+          "name": "uplink-s3-backend-bootloader.bin",
+          "offset": 0,
+          "path": "uplink-s3-backend/uplink-s3-backend-bootloader.bin",
+          "sha256": "60b15cf5e29c0157a2087ba8e880a6e91a41bd76db14e7c486bb20ffdcd189b8",
+          "size": 20928
+        },
+        {
+          "crc32": 487943074,
+          "name": "uplink-s3-backend-partition-table.bin",
+          "offset": 32768,
+          "path": "uplink-s3-backend/uplink-s3-backend-partition-table.bin",
+          "sha256": "66ffc5f3e5aad08070a5756dae5e7ebd0ff0571aee3b81e18db0ad22a8235550",
+          "size": 4096
+        },
+        {
+          "crc32": 3022599221,
+          "name": "uplink-s3-backend-ota-data-initial.bin",
+          "offset": 61440,
+          "path": "uplink-s3-backend/uplink-s3-backend-ota-data-initial.bin",
+          "sha256": "7d2c7ac4888bfd75cd5f56e8d61f69595121183afc81556c876732fd3782c62f",
+          "size": 8192
+        },
+        {
+          "crc32": 1559118973,
+          "name": "uplink-s3-backend-firmware.bin",
+          "offset": 131072,
+          "path": "uplink-s3-backend/uplink-s3-backend-firmware.bin",
+          "sha256": "cc1730fbd427682a5f540bca72e43955eb2999c934cbe450d41aaa0600962079",
+          "size": 1031984
+        }
+      ],
+      "project": "fof_backend_uplink",
+      "target": "uplink-s3-backend"
+    }
+  },
+  "version": "0.2.0-backend"
+}

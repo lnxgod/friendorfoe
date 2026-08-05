@@ -23,7 +23,9 @@ part of a multi-node sensor platform.
 > remain on `0.64.68-live-follow`; published badge/factory firmware is
 > `0.67.2-badge-defcon34`. New Dash is released independently as source at
 > `0.67.16-new-dash-usb-parity`; it does not change any Android, backend, badge,
-> scanner, or production firmware version.
+> scanner, or production firmware version. The native badge, production
+> sensor fleet, and backend/Lite sensor firmware intentionally remain separate
+> firmware families.
 
 ## What The Badge Does
 
@@ -168,6 +170,7 @@ field console.
 | `android/` | Kotlin + Jetpack Compose app, badge console, privacy views, AR/list/map screens |
 | `new-dash/` | Compact macOS USB browser console for full-size or Lite badge; local SQLite history, formation map, and capability-gated controls |
 | `backend/` | FastAPI ingest, enrichment, dashboard, triangulation, calibration, firmware endpoints |
+| `backend-firmware/` | Isolated Backend Badge Lite/Fullsize ESP32 firmware, offline Lite factory flasher, release verification, and canary tooling |
 | `esp32/scanner/` | ESP32-S3 scanner firmware for BLE/Wi-Fi detection |
 | `esp32/uplink/` | ESP32-S3 uplink firmware, display, USB-C control, read-only local status, UART OTA relay |
 | `esp32/shared/` | Shared C detection policy, badge display policy, themes, signatures, protocol types |
@@ -315,11 +318,10 @@ run as a fleet.
 
 ## AI Workflow
 
-Friend or Foe is built with AI-assisted engineering. Claude helped bootstrap
-the earliest Android architecture and first implementation wave. Codex is now
-the primary engineering orchestrator for repo maintenance, firmware work,
-reviews, tests, Android badge controls, docs, and release prep. Grok contributed
-design direction, Gemini helped with technology-stack research, and ML Kit runs
+Friend or Foe is built with AI-assisted engineering. Codex is the primary
+engineering orchestrator for repo maintenance, firmware work, reviews, tests,
+Android badge controls, docs, and release prep. Grok contributed design
+direction, Gemini helped with technology-stack research, and ML Kit runs
 on-device for visual detection.
 
 ## Security And Configuration

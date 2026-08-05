@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Friend or Foe Backend Lite Uplink Recovery</title>
+  <script
+    type="module"
+    src="https://unpkg.com/esp-web-tools@10.4.0/dist/web/install-button.js?module"
+  ></script>
+  <style>
+    :root {
+      color-scheme: dark;
+      font-family: ui-sans-serif, system-ui, sans-serif;
+      background: #101317;
+      color: #f5f7fa;
+    }
+    body {
+      margin: 0;
+      padding: 2rem 1rem;
+    }
+    main {
+      width: min(52rem, 100%);
+      margin: 0 auto;
+    }
+    .warning {
+      padding: 1.25rem;
+      border: 2px solid #ffb020;
+      border-radius: 0.75rem;
+      background: #2b220f;
+    }
+    .warning strong {
+      display: block;
+      margin-bottom: 0.75rem;
+      color: #ffd27a;
+    }
+    .choices {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr));
+      gap: 1rem;
+      margin-top: 1.5rem;
+    }
+    section {
+      padding: 1.25rem;
+      border: 1px solid #3b4654;
+      border-radius: 0.75rem;
+      background: #191f26;
+    }
+    h1, h2 {
+      margin-top: 0;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Backend Lite Uplink Recovery</h1>
+    <div class="warning">
+      <strong>UNPUBLISHED BACKEND RECOVERY/MAINTENANCE TOOL — NOT THE INITIAL CANARY PATH.</strong>
+      <p>This page flashes only the screenless Lite uplink. It cannot distinguish that board from a badge because both use XIAO ESP32-S3.</p>
+      <p>Do not connect or select a badge or scanner. Production ComboFO scanner firmware is intentionally not offered here.</p>
+    </div>
+    <div class="choices">
+      <section>
+        <h2>Backend Uplink</h2>
+        <p>Backend Lite 0.2.0 recovery or maintenance image for the uplink board only.</p>
+        <esp-web-install-button manifest="manifest-uplink-s3-backend.json"></esp-web-install-button>
+      </section>
+    </div>
+  </main>
+</body>
+</html>

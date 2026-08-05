@@ -18,8 +18,13 @@ class FlashError(RuntimeError):
     """Production write/readback evidence did not meet the release gate."""
 
 
-_FORCE_DOWNLOAD_CLEAR = (
-    "Wrote 00000000, mask 00000001 to 6000812c"
+_FORCE_DOWNLOAD_CLEAR = re.compile(
+    r"(?:"
+    r"Wrote 00000000, mask 00000001 to 6000812c"
+    r"|"
+    r"Wrote 0x00000000 with mask 0x00000001 to 0x6000812c\."
+    r")",
+    re.IGNORECASE,
 )
 _WATCHDOG_RESET = "Hard resetting with a watchdog..."
 
@@ -60,7 +65,12 @@ def _verify_handoff_receipt(output: str, expected_mac: str) -> None:
     if _reported_mac(output) != normalize_mac(expected_mac):
         raise FlashError("BADGE application handoff reached a different ESP32")
     lines = [line.strip() for line in output.splitlines() if line.strip()]
-    if lines.count(_FORCE_DOWNLOAD_CLEAR) != 1:
+    clear_indices = [
+        index
+        for index, line in enumerate(lines)
+        if _FORCE_DOWNLOAD_CLEAR.fullmatch(line)
+    ]
+    if len(clear_indices) != 1:
         raise FlashError(
             "BADGE application handoff did not prove force-download clear"
         )
@@ -68,7 +78,7 @@ def _verify_handoff_receipt(output: str, expected_mac: str) -> None:
         raise FlashError(
             "BADGE application handoff did not prove watchdog reset"
         )
-    if lines.index(_FORCE_DOWNLOAD_CLEAR) >= lines.index(_WATCHDOG_RESET):
+    if clear_indices[0] >= lines.index(_WATCHDOG_RESET):
         raise FlashError("BADGE application handoff receipts are out of order")
 
 
@@ -128,7 +138,7 @@ class FlashEngine:
             # the macOS port binding to change between proof and first erase.
             "--before", "no_reset", "--after", "no_reset",
             "write_flash", "--erase-all", "--flash_size", layout["flash_size"],
-            "--flash_mode", "dio", "--flash_freq", "80m", "--verify",
+            "--flash_mode", "dio", "--flash_freq", "80m",
         ] + parts
         write_output = self._run(write)
         if _reported_mac(write_output) != device.mac:
@@ -150,9 +160,10 @@ class FlashEngine:
                 f"{_role_alias(role)}: readback came from a different ESP32"
             )
         verified_regions = len(re.findall(
-            r"--\s+verify OK\s+\(digest matched\)",
+            r"^\s*(?:--\s+verify OK|Verification successful)\s+"
+            r"\(digest matched\)\.?\s*$",
             readback_output,
-            re.IGNORECASE,
+            re.IGNORECASE | re.MULTILINE,
         ))
         if verified_regions != len(layout["parts"]):
             raise FlashError(

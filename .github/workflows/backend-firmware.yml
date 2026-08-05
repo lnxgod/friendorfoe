@@ -1,0 +1,150 @@
+name: Backend Firmware Verification
+
+on:
+  pull_request:
+    paths:
+      - "backend-firmware/**"
+      - "backend/app/models/**"
+      - "backend/app/routers/detections.py"
+      - "backend/app/routers/nodes.py"
+      - "backend/app/services/backend_node_status.py"
+      - "backend/app/services/database.py"
+      - "backend/app/services/firmware_manager.py"
+      - "backend/app/services/node_commands.py"
+      - "backend/tests/**"
+      - ".github/workflows/backend-firmware.yml"
+  push:
+    branches: [main]
+    paths:
+      - "backend-firmware/**"
+      - "backend/app/models/**"
+      - "backend/app/routers/detections.py"
+      - "backend/app/routers/nodes.py"
+      - "backend/app/services/backend_node_status.py"
+      - "backend/app/services/database.py"
+      - "backend/app/services/firmware_manager.py"
+      - "backend/app/services/node_commands.py"
+      - "backend/tests/**"
+      - ".github/workflows/backend-firmware.yml"
+
+permissions:
+  contents: read
+
+env:
+  BACKEND_AUDIT_EVENT_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+  BACKEND_AUDIT_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out full history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install verification dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r backend/requirements.txt
+          python -m pip install platformio pytest PyYAML
+
+      - name: Resolve protected-path audit base
+        run: |
+          set -euo pipefail
+          BACKEND_AUDIT_BASE="$(
+            python backend-firmware/tools/verify_backend_release.py \
+              --resolve-audit-base \
+              --repository . \
+              --event-name "$GITHUB_EVENT_NAME" \
+              --event-base "$BACKEND_AUDIT_EVENT_BASE" \
+              --default-branch "$BACKEND_AUDIT_DEFAULT_BRANCH"
+          )"
+          if [[ ! "$BACKEND_AUDIT_BASE" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "resolved backend audit base is not one commit" >&2
+            exit 1
+          fi
+          echo "BACKEND_AUDIT_BASE=$BACKEND_AUDIT_BASE" >> "$GITHUB_ENV"
+
+      - name: Prepare test logs
+        run: mkdir -p backend-firmware/test-logs
+
+      - name: Run backend test suite
+        run: |
+          set -o pipefail
+          (cd backend && pytest tests -q) 2>&1 |
+            tee backend-firmware/test-logs/backend-pytest.log
+
+      - name: Run backend firmware Python tool tests
+        run: |
+          set -o pipefail
+          (cd backend-firmware && python -m pytest tools/tests -q) 2>&1 |
+            tee backend-firmware/test-logs/backend-firmware-pytest.log
+
+      - name: Run backend firmware native Unity suite
+        run: |
+          set -o pipefail
+          (cd backend-firmware && pio test -e backend-native) 2>&1 |
+            tee backend-firmware/test-logs/backend-firmware-unity.log
+
+      - name: Check real serializer fixture
+        run: >-
+          cd backend-firmware &&
+          python tools/emit_serializer_fixture.py --check
+          ../backend/tests/fixtures/backend_firmware_detection_batch.json
+
+      - name: Clean-build backend uplink
+        run: |
+          cd backend-firmware/uplink
+          pio run -e uplink-s3-backend -t clean
+          pio run -e uplink-s3-backend
+
+      - name: Verify real native badge and backend image separation
+        env:
+          FOF_REQUIRE_REAL_BACKEND_FIRMWARE: "1"
+        run: >-
+          cd backend &&
+          pytest -q
+          tests/test_backend_firmware_ingest.py::test_real_native_0672_bundle_routes_to_exact_badge_family
+          tests/test_backend_firmware_ingest.py::test_real_backend_apps_are_rejected_against_native_badge_family
+
+      - name: Package backend-only maintenance flasher
+        run: bash backend-firmware/web-flasher/build.sh
+
+      - name: Verify packaged backend release
+        run: >-
+          cd backend-firmware &&
+          python tools/verify_backend_release.py --index
+          release/backend-release-index.json --flasher web-flasher
+
+      - name: Audit backend firmware source isolation
+        run: >-
+          cd backend-firmware &&
+          python tools/check_source_isolation.py --root .
+
+      - name: Audit protected paths from exact event base
+        run: >-
+          cd backend-firmware &&
+          python tools/verify_backend_release.py --index
+          release/backend-release-index.json --flasher web-flasher
+          --audit-protected "$BACKEND_AUDIT_BASE"
+
+      - name: Check whitespace errors
+        run: git diff --check
+
+      - name: Upload private backend verification artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: friend-or-foe-backend-firmware-0.2.0-backend
+          path: |
+            backend-firmware/web-flasher
+            backend-firmware/release/backend-release-index.json
+            backend-firmware/test-logs
+          retention-days: 7
+          if-no-files-found: error

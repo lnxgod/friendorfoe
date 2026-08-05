@@ -61,7 +61,11 @@ def parse_esptool_probe(
     output: str, port: str, location_id: str | None = None
 ) -> UsbDevice:
     """Parse the bounded identity emitted by ``esptool flash_id``."""
-    chip = _match(r"Chip is\s+(ESP32-[A-Za-z0-9]+)", output, "chip identity").upper()
+    chip = _match(
+        r"^\s*Chip (?:is|type:)\s+(ESP32-[A-Za-z0-9-]+)(?=\s|\()",
+        output,
+        "chip identity",
+    ).upper()
     if chip != "ESP32-S3":
         raise DeviceError(f"unsupported chip on {port}: {chip}; ESP32-S3 required")
     revision = _match(r"revision\s+(v[0-9.]+)", output, "chip revision")

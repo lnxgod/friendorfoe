@@ -619,6 +619,15 @@ internal class BadgeUsbReconnectGate {
         ?.hardwareId
 
     @Synchronized
+    fun expectedProductKind(
+        ticket: BadgeUsbReconnectTicket,
+        lifecycleSession: Long,
+    ): BadgeUsbProductKind? = currentTicket
+        ?.takeIf { ticketsMatch(it, ticket) && lifecycleSession == it.lifecycleSession }
+        ?.oldOwner
+        ?.productKind
+
+    @Synchronized
     fun clear(ticket: BadgeUsbReconnectTicket): Boolean {
         if (!ticketsMatch(currentTicket, ticket)) return false
         currentTicket = null
