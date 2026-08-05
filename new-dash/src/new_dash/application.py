@@ -55,6 +55,8 @@ class BadgeTransportLike(Protocol):
         self, payload: object, timeout: float = 5.0
     ) -> LiteConfigWriteReply: ...
 
+    def select_port(self, port: str, timeout: float = 3.0) -> None: ...
+
 
 class ApplicationError(RuntimeError):
     """A stable, bounded application-level operation failure."""
@@ -311,6 +313,15 @@ class NewDashApplication:
         if transport is None:
             raise TransportUnavailable()
         return transport.set_lite_config(payload, timeout=timeout)
+
+    def select_port(self, port: str, timeout: float = 3.0) -> None:
+        """Reconnect the local serial bridge to a browser-selected badge port."""
+
+        with self._lock:
+            transport = self._transport if self._accepting else None
+        if transport is None:
+            raise TransportUnavailable()
+        transport.select_port(port, timeout=timeout)
 
     def _require_display_controls(self) -> None:
         with self._lock:

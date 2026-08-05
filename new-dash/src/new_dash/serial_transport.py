@@ -182,9 +182,15 @@ def choose_candidate(
         for port in available:
             if port.device == explicit_path:
                 return port
+        exact = tuple(
+            port
+            for port in available
+            if port.vid == ESPRESSIF_VID and port.pid == USB_SERIAL_JTAG_PID
+        )
         raise DiscoveryError(
             "explicit_port_missing",
             f"The requested serial port is not present: {explicit_path}",
+            _candidate_paths(exact),
         )
 
     exact = tuple(
@@ -270,6 +276,7 @@ class BadgeSerialTransport:
         self._on_connection = on_connection or (lambda _update: None)
         self._write_lock = threading.Lock()
         self._lifecycle_lock = threading.Lock()
+        self._selection_lock = threading.Lock()
         self._control_lock = threading.Lock()
         self._side_effect_condition = threading.Condition()
         self._stop_requests: set[threading.Event] = set()
@@ -358,6 +365,29 @@ class BadgeSerialTransport:
             if self._worker_stop is stop_event:
                 self._worker_stop = None
             self._stopping = False
+
+    def select_port(self, port: str, timeout: float = 3.0) -> None:
+        """Safely switch the running bridge to one present badge USB port."""
+
+        if type(port) is not str or not port or len(port) > 512:
+            raise TransportError("invalid_port", "Select one available badge port.")
+        with self._selection_lock:
+            exact = tuple(
+                candidate
+                for candidate in self._read_port_identities()
+                if candidate.vid == ESPRESSIF_VID
+                and candidate.pid == USB_SERIAL_JTAG_PID
+            )
+            if not any(candidate.device == port for candidate in exact):
+                raise TransportError(
+                    "port_unavailable",
+                    "The selected badge port is no longer available.",
+                )
+            self.stop(timeout=timeout)
+            with self._lifecycle_lock:
+                self._explicit_port = port
+                self._remembered_identity = None
+            self.start()
 
     def _commit_stop(
         self,

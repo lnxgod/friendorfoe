@@ -29,6 +29,11 @@
       <span id="connection-scanners">Scanners missing</span>
       <span id="connection-port">Port missing</span>
     </div>
+    <form id="connection-picker" class="connection-picker" hidden>
+      <label for="connection-port-select">Detected ESP32 boards</label>
+      <select id="connection-port-select" name="port"></select>
+      <button id="connection-connect" type="submit">Find ESP32 uplink</button>
+    </form>
   </header>
 
   <main id="dashboard-main">

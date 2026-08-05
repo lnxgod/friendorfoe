@@ -22,6 +22,7 @@ from .controls import ControlValidationError
 from .models import ControlReply, LiteConfiguration, LiteConfigWriteReply
 from .serial_transport import (
     ControlTimeout,
+    TransportError,
     TransportUnavailable,
     UnsupportedCapability,
 )
@@ -106,6 +107,7 @@ _EXPORT_PARAMETERS = frozenset(
 _POST_ROUTES = frozenset(
     {
         "/api/history/clear",
+        "/api/connection/select",
         "/api/control/display-nav",
         "/api/control/theme",
         "/api/control/theme/reset",
@@ -412,6 +414,15 @@ class _NewDashRequestHandler(BaseHTTPRequestHandler):
 
     def _dispatch_post(self, path: str, payload: dict[str, object]) -> None:
         try:
+            if path == "/api/connection/select":
+                if set(payload) != {"port"} or type(payload["port"]) is not str:
+                    raise ControlValidationError("invalid connection selection")
+                port = payload["port"]
+                if not port or len(port) > 512:
+                    raise ControlValidationError("invalid connection selection")
+                self.server.application.select_port(port)
+                self._send_json(202, {"ok": True, "data": {"port": port}})
+                return
             if path == "/api/history/clear":
                 if payload != {"confirm": "clear-history"}:
                     raise ControlValidationError("invalid clear confirmation")
@@ -473,6 +484,9 @@ class _NewDashRequestHandler(BaseHTTPRequestHandler):
             return
         except ControlTimeout as error:
             self._send_error(504, "control_timeout", _bounded_message(error.message))
+            return
+        except TransportError as error:
+            self._send_error(409, error.code, _bounded_message(error.message))
             return
         except Exception:
             self._send_error(500, "internal_error", "The request could not be completed.")

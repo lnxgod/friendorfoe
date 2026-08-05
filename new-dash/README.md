@@ -69,6 +69,13 @@ factory-firmware USB signaling as Android, and begins showing live detections.
 No firmware or badge configuration change is required. If port 8765 is
 occupied, New Dash selects another available loopback port.
 
+If the complete three-board assembly exposes several ESP32 USB ports, leave
+New Dash running and press **Find ESP32 uplink**. The browser asks the local
+bridge to try each detected Espressif board. Scanner boards fail the verified
+`FOF_PING` handshake; the first real uplink to answer `FOF_PONG` is connected
+without a terminal restart. The port list remains available to choose which
+board is tried first. `--port` remains available for unattended service setups.
+
 To select a badge port explicitly:
 
 ```sh
@@ -231,8 +238,9 @@ exact source timestamps, heading, velocity, or precision flight telemetry.
 
 - **No badge:** connect the uplink board's USB-C port. New Dash stays open and
   keeps retrying; scanner-board ports are not substitutes for the uplink.
-- **Multiple devices:** automatic discovery will not guess. Read the listed
-  candidates and restart with `--port /dev/cu.usbmodem...` for the uplink.
+- **Multiple devices:** press **Find ESP32 uplink**. New Dash checks each listed
+  board and connects only the one that answers the verified `FOF_PING`
+  handshake as an uplink.
 - **Port busy:** close a flasher, serial monitor, Android bridge, or another New
   Dash process that owns the device, then retry.
 - **Wrong device or ROM bootloader:** an Espressif serial port is not enough;
