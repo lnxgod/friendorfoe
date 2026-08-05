@@ -145,6 +145,19 @@ class DiscoveryTest(unittest.TestCase):
 
         self.assertEqual(selected, explicit)
 
+    def test_missing_explicit_path_reports_current_exact_badge_candidates(self) -> None:
+        with self.assertRaises(DiscoveryError) as raised:
+            choose_candidate(
+                [espressif("101"), espressif("202")],
+                explicit_path="/dev/cu.usbmodem404",
+            )
+
+        self.assertEqual(raised.exception.code, "explicit_port_missing")
+        self.assertEqual(
+            raised.exception.candidates,
+            (("/dev/cu.usbmodem101",), ("/dev/cu.usbmodem202",)),
+        )
+
     def test_stable_aliases_count_as_one_physical_candidate_and_prefer_cu(self) -> None:
         aliases = [
             espressif("101", prefix="tty", serial_number="ABC", location="1-1"),
@@ -2116,6 +2129,44 @@ class RememberedIdentityTest(unittest.TestCase):
 
 
 class LifecycleConcurrencyTest(unittest.TestCase):
+    def test_browser_selection_restarts_worker_on_present_exact_usb_port(self) -> None:
+        ports = [espressif("101"), espressif("202")]
+        fake = FakeSerial([b"FOF_PONG:selected\n"])
+        updates: list[ConnectionUpdate] = []
+        transport = BadgeSerialTransport(
+            enumerate_ports=lambda: ports,
+            serial_factory=lambda: fake,
+            on_connection=updates.append,
+        )
+        transport.start()
+        deadline = time.monotonic() + 1.0
+        while not any(update.detail == "multiple_badges" for update in updates):
+            self.assertLess(time.monotonic(), deadline, updates)
+            time.sleep(0.001)
+
+        transport.select_port("/dev/cu.usbmodem202")
+        deadline = time.monotonic() + 1.0
+        while not any(
+            update.state == "live" and update.port == "/dev/cu.usbmodem202"
+            for update in updates
+        ):
+            self.assertLess(time.monotonic(), deadline, updates)
+            time.sleep(0.001)
+        transport.stop()
+
+        self.assertEqual(fake.port, "/dev/cu.usbmodem202")
+
+    def test_browser_selection_rejects_non_badge_or_disappeared_port(self) -> None:
+        non_badge = PortIdentity(
+            "/dev/cu.Bluetooth", 0x05AC, 1, "Apple", "Bluetooth", None, None
+        )
+        transport = BadgeSerialTransport(enumerate_ports=lambda: [non_badge])
+
+        with self.assertRaises(TransportError) as raised:
+            transport.select_port(non_badge.device)
+
+        self.assertEqual(raised.exception.code, "port_unavailable")
+
     def test_stop_timeout_bounds_an_already_active_callback(self) -> None:
         callback_active = threading.Event()
         callback_release = threading.Event()

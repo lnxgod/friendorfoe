@@ -179,6 +179,29 @@ h3 {
   border-right: 0;
 }
 
+.connection-picker {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 10px 0 0;
+  border-top: 1px solid color-mix(in srgb, var(--divider) 60%, transparent);
+}
+
+.connection-picker[hidden] {
+  display: none;
+}
+
+.connection-picker label {
+  color: var(--muted);
+  font-size: 0.86rem;
+  font-weight: 600;
+}
+
+.connection-picker select {
+  min-width: min(360px, 55vw);
+}
+
 .connection-phase::before {
   display: inline-block;
   width: 8px;

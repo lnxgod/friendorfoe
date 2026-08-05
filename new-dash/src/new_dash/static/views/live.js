@@ -154,8 +154,8 @@ export function stateBanners(state) {
     : "";
   const messages = {
     no_badge: ["No badge — connect the uplink ESP32-S3 USB-C port.", "warning"],
-    multiple_badges: [`Several badge ports were found.${candidateText} Restart with --port to select one.`, "warning"],
-    explicit_port_missing: ["The selected badge port is missing. Check the USB cable and --port value.", "warning"],
+    multiple_badges: [`Several badge ports were found.${candidateText} Press Find ESP32 uplink above.`, "warning"],
+    explicit_port_missing: ["The selected badge port is missing. Reconnect the badge and press Find ESP32 uplink above.", "warning"],
     open_error: ["The badge port could not be opened. Close any flasher, serial monitor, or other New Dash instance.", "danger"],
     wrong_device: ["The selected USB device did not return a valid FOF_PONG. Check the uplink port and boot mode.", "danger"],
     read_error: ["The USB read failed. New Dash is retaining the last valid snapshot while reconnecting.", "warning"],

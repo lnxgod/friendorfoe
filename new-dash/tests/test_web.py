@@ -30,7 +30,7 @@ from new_dash.models import (
     LiteConfigWriteReply,
     Observation,
 )
-from new_dash.serial_transport import ControlTimeout, TransportUnavailable
+from new_dash.serial_transport import ControlTimeout, TransportError, TransportUnavailable
 from new_dash.storage import HistoryPage, HistoryQuery
 from new_dash.web import create_http_server
 if __package__:
@@ -208,6 +208,11 @@ class FakeApplication:
     def clear_history(self) -> int:
         self._before_control("clear_history", None)
         return 3
+
+    def select_port(self, port: str) -> None:
+        self.control_calls.append(("select_port", port))
+        if self.control_failure is not None:
+            raise self.control_failure
 
     def display_nav(self, action: str) -> ControlReply:
         build_display_nav(action)
@@ -547,12 +552,14 @@ class StaticAndStateRouteTest(WebServerTestCase):
             "history-source", "history-text", "history-positioned",
             "history-previous", "history-next", "history-export-csv",
             "history-export-json", "history-clear-dialog", "history-clear-word",
+            "connection-picker", "connection-port-select", "connection-connect",
             "badge-scanners", "badge-status-facts", "badge-display-state",
             "badge-theme-form", "badge-policy-form", "badge-theme-current",
             "badge-policy-current", "theme-reset-dialog", "policy-reset-dialog",
         ):
             with self.subTest(control_id=control_id):
                 self.assertIn(f'id="{control_id}"', html)
+        self.assertIn(">Find ESP32 uplink</button>", html)
         for action in ("next", "detail", "page", "back"):
             self.assertIn(f'data-nav-action="{action}"', html)
         for class_name in (
@@ -945,6 +952,7 @@ class HistoryRouteTest(WebServerTestCase):
 
 
 APPROVED_POSTS = (
+    ("/api/connection/select", {"port": "/dev/cu.usbmodem101"}, "select_port"),
     ("/api/history/clear", {"confirm": "clear-history"}, "clear_history"),
     ("/api/config/read", {}, "get_lite_config"),
     (
@@ -1006,10 +1014,15 @@ class MutationRouteTest(WebServerTestCase):
             with self.subTest(path=path):
                 self.application.control_calls.clear()
                 response, body = self.post(path, payload)
-                self.assertEqual(response.status, 200)
+                self.assertEqual(
+                    response.status,
+                    202 if path == "/api/connection/select" else 200,
+                )
                 self.assertEqual([call[0] for call in self.application.control_calls], [method])
                 data = json.loads(body)["data"]
-                if path == "/api/history/clear":
+                if path == "/api/connection/select":
+                    self.assertEqual(data, {"port": "/dev/cu.usbmodem101"})
+                elif path == "/api/history/clear":
                     self.assertEqual(data, {"deleted": 3})
                 elif path == "/api/config/read":
                     self.assertEqual(data["schema_version"], 1)
@@ -1043,6 +1056,7 @@ class MutationRouteTest(WebServerTestCase):
 
     def test_every_approved_route_rejects_unknown_top_level_fields(self) -> None:
         invalid_payloads = {
+            "/api/connection/select": {"port": "/dev/cu.usbmodem101", "extra": True},
             "/api/history/clear": {"confirm": "clear-history", "extra": True},
             "/api/config/read": {"extra": True},
             "/api/config": {"extra": True},
@@ -1177,6 +1191,22 @@ class MutationRouteTest(WebServerTestCase):
                 self.application.control_reply = ControlReply.from_payload(
                     {"message": "accepted"}, ok=True
                 )
+
+    def test_connection_selection_rejects_invalid_or_unavailable_ports(self) -> None:
+        for payload in ({}, {"port": True}, {"port": ""}):
+            with self.subTest(payload=payload):
+                response, body = self.post("/api/connection/select", payload)
+                self.assertEqual(response.status, 400)
+                self.assertEqual(json.loads(body)["error"]["code"], "invalid_request")
+
+        self.application.control_failure = TransportError(
+            "port_unavailable", "The selected badge port is no longer available."
+        )
+        response, body = self.post(
+            "/api/connection/select", {"port": "/dev/cu.usbmodem404"}
+        )
+        self.assertEqual(response.status, 409)
+        self.assertEqual(json.loads(body)["error"]["code"], "port_unavailable")
 
 
 class HistoryExportRouteTest(WebServerTestCase):

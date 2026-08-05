@@ -20,6 +20,7 @@ import { createHistoryView } from "./views/history.js";
 import { createBadgeView } from "./views/badge.js";
 
 const POLL_INTERVAL_MS = 1000;
+const CONNECTION_PROBE_TIMEOUT_MS = 5000;
 const TRAIL_REFRESH_INTERVAL_MS = 5000;
 const VIEW_KEY = "newDash.v1.selectedView";
 const FILTER_KEY = "newDash.v1.presentationFilters";
@@ -57,6 +58,9 @@ const filterForm = document.querySelector("#presentation-filters");
 const filterSummary = document.querySelector("#filter-summary");
 const desktopFilterMedia = window.matchMedia("(min-width: 760px)");
 const requestStatus = document.querySelector("#request-status");
+const connectionPicker = document.querySelector("#connection-picker");
+const connectionPortSelect = document.querySelector("#connection-port-select");
+const connectionConnect = document.querySelector("#connection-connect");
 const liveRoot = document.querySelector("#live-root");
 const mapCanvas = document.querySelector("#map-canvas");
 const trailMinutesControl = document.querySelector("#map-trail-minutes");
@@ -89,6 +93,8 @@ let trailRefreshTimer = null;
 let trailRefreshInFlight = false;
 let drawingStartedAt = null;
 let initialTrailFitPending = true;
+let connectionCandidates = [];
+let connectionSelectionInFlight = false;
 
 const historyView = createHistoryView({ getHistory, post });
 const badgeView = createBadgeView({ post });
@@ -176,6 +182,62 @@ function phaseLabel(connection) {
   return labels[connection?.phase] || connection?.phase || "USB status unavailable";
 }
 
+function preferredCandidatePath(group) {
+  if (!Array.isArray(group)) return null;
+  return group.find((path) => typeof path === "string" && path.startsWith("/dev/cu."))
+    || group.find((path) => typeof path === "string")
+    || null;
+}
+
+function syncConnectionPicker(connection) {
+  const next = Array.isArray(connection?.candidates)
+    ? connection.candidates.map(preferredCandidatePath).filter(Boolean)
+    : [];
+  if (next.length) connectionCandidates = [...new Set(next)];
+  if (connection?.phase === "live") connectionCandidates = [];
+  connectionPicker.hidden = connectionCandidates.length === 0;
+  if (connectionPicker.hidden) return;
+  const selected = connectionPortSelect.value;
+  connectionPortSelect.replaceChildren(...connectionCandidates.map((path, index) => {
+    const option = document.createElement("option");
+    option.value = path;
+    option.textContent = `USB board ${index + 1} — ${path}`;
+    return option;
+  }));
+  if (connectionCandidates.includes(selected)) connectionPortSelect.value = selected;
+  connectionPortSelect.disabled = connectionSelectionInFlight;
+  connectionConnect.disabled = connectionSelectionInFlight;
+  connectionConnect.textContent = connectionSelectionInFlight
+    ? "Finding uplink…"
+    : "Find ESP32 uplink";
+}
+
+function waitForPortResult(port, timeoutMs = CONNECTION_PROBE_TIMEOUT_MS) {
+  const deadline = Date.now() + timeoutMs;
+  return new Promise((resolve) => {
+    const check = () => {
+      const connection = latestState?.connection || {};
+      if (connection.port === port && connection.phase === "live") {
+        resolve(true);
+        return;
+      }
+      if (
+        connection.port === port
+        && ["wrong_device", "open_error", "serial_error"].includes(connection.detail)
+      ) {
+        resolve(false);
+        return;
+      }
+      if (Date.now() >= deadline) {
+        resolve(false);
+        return;
+      }
+      window.setTimeout(check, 100);
+    };
+    check();
+  });
+}
+
 function renderHeader(state) {
   const connection = state?.connection || {};
   const freshness = state?.freshness || {};
@@ -192,6 +254,7 @@ function renderHeader(state) {
     : "Firmware missing";
   document.querySelector("#connection-scanners").textContent = scannerSummary(status);
   document.querySelector("#connection-port").textContent = connection.port || "Port missing";
+  syncConnectionPicker(connection);
 }
 
 function mapEntities(state) {
@@ -368,6 +431,35 @@ filterForm.addEventListener("reset", () => {
 window.addEventListener("hashchange", () => routeFromHash({ focus: true }));
 window.addEventListener("popstate", () => routeFromHash({ focus: true }));
 desktopFilterMedia.addEventListener("change", syncFilterDisclosure);
+
+connectionPicker.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const first = connectionPortSelect.value;
+  if (!connectionCandidates.includes(first) || connectionSelectionInFlight) return;
+  const ports = [first, ...connectionCandidates.filter((port) => port !== first)];
+  connectionSelectionInFlight = true;
+  syncConnectionPicker(latestState?.connection || {});
+  try {
+    for (const [index, port] of ports.entries()) {
+      requestStatuses.setState(
+        `Checking ESP32 board ${index + 1} of ${ports.length}…`,
+      );
+      await post("/api/connection/select", { port });
+      if (await waitForPortResult(port)) {
+        requestStatuses.clearState();
+        return;
+      }
+    }
+    requestStatuses.setState(
+      "No connected ESP32 answered as the Friend or Foe uplink.",
+    );
+  } catch (error) {
+    requestStatuses.setState(error.message);
+  } finally {
+    connectionSelectionInFlight = false;
+    syncConnectionPicker(latestState?.connection || {});
+  }
+});
 
 trailMinutesControl.addEventListener("input", () => {
   const next = Number.parseInt(trailMinutesControl.value, 10);

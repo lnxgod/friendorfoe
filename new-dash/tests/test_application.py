@@ -24,12 +24,16 @@ else:
 class FakeTransport:
     def __init__(self) -> None:
         self.commands: list[object] = []
+        self.selected_ports: list[tuple[str, float]] = []
 
     def send_control(self, command: object, timeout: float = 5.0) -> ControlReply:
         self.commands.append(command)
         return ControlReply.from_payload(
             {"message": getattr(command, "expected_message")}, ok=True
         )
+
+    def select_port(self, port: str, timeout: float = 3.0) -> None:
+        self.selected_ports.append((port, timeout))
 
 
 class FailingEventStore(ObservationStore):
@@ -1066,6 +1070,14 @@ class NewDashApplicationControlTest(unittest.TestCase):
             "badge_display_policy",
             "badge_display_policy_reset",
         ])
+
+    def test_port_selection_is_forwarded_only_to_attached_transport(self) -> None:
+        self.application.select_port("/dev/cu.usbmodem101", timeout=1.5)
+
+        self.assertEqual(
+            self.transport.selected_ports,
+            [("/dev/cu.usbmodem101", 1.5)],
+        )
 
     def test_invalid_control_is_rejected_before_transport(self) -> None:
         with self.assertRaises(ControlValidationError):
