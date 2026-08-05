@@ -28,6 +28,9 @@ import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
+internal fun LivePrivacyDeviceDto.isSupportedPrivacyFinding(): Boolean =
+    !privacyKind.equals("SKIMMER", ignoreCase = true)
+
 @Singleton
 class BackendPrivacySourceAdapter internal constructor(
     private val settings: StateFlow<DetectionSettings>,
@@ -141,15 +144,18 @@ class BackendPrivacySourceAdapter internal constructor(
                         currentCoroutineContext().ensureActive()
                         if (activeEndpoint != endpoint) continue
                         val sequence = responseSequence.incrementAndGet()
-                        val mapped = response.devices.mapIndexed { index, dto ->
-                            mapDevice(
-                                dto = dto,
-                                endpointNamespace = endpoint,
-                                responseSequence = sequence,
-                                rowIndex = index,
-                                clock = clock,
-                            )
-                        }.sortedBy { it.observationKey.encoded }
+                        val mapped = response.devices
+                            .filter(LivePrivacyDeviceDto::isSupportedPrivacyFinding)
+                            .mapIndexed { index, dto ->
+                                mapDevice(
+                                    dto = dto,
+                                    endpointNamespace = endpoint,
+                                    responseSequence = sequence,
+                                    rowIndex = index,
+                                    clock = clock,
+                                )
+                            }
+                            .sortedBy { it.observationKey.encoded }
                         retainedRows = mapped
                         val nowElapsed = clock.nowElapsedMs()
                         val nowWall = clock.nowWallClock().toEpochMilli()

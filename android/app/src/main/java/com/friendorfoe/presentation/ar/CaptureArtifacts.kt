@@ -34,9 +34,18 @@ sealed interface CaptureReviewState {
     data class Reviewing(val draft: CaptureDraft) : CaptureReviewState
     data class Saving(val draft: CaptureDraft) : CaptureReviewState
     data class Saved(val photo: SavedPhoto) : CaptureReviewState
-    data class SavePermissionDenied(val draft: CaptureDraft) : CaptureReviewState
+    data class SavePermissionDenied(
+        val draft: CaptureDraft,
+        val recovery: LegacyPhotoPermissionRecovery = LegacyPhotoPermissionRecovery.RetryRequest,
+        val settingsLaunchFailed: Boolean = false,
+    ) : CaptureReviewState
     data class SaveFailed(val draft: CaptureDraft, val message: String) : CaptureReviewState
     data class ShareFailed(val draft: CaptureDraft, val message: String) : CaptureReviewState
+}
+
+enum class LegacyPhotoPermissionRecovery {
+    RetryRequest,
+    OpenAppSettings,
 }
 
 sealed interface CaptureSavePermissionDecision {

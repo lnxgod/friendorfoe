@@ -1,0 +1,361 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="new-dash-control-token" content="{{CONTROL_TOKEN}}">
+  <title>New Dash — Friend or Foe</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/static/vendor/leaflet/leaflet.css">
+  <link rel="stylesheet" href="/static/styles.css">
+  <script defer src="/static/vendor/leaflet/leaflet.js"></script>
+  <script type="module" src="/static/app.js"></script>
+</head>
+<body>
+  <header class="app-header">
+    <div class="header-primary">
+      <h1>New Dash</h1>
+      <nav class="view-tabs" aria-label="Primary views" role="tablist">
+        <button id="tab-live" type="button" role="tab" data-view-target="live" aria-controls="view-live">Live</button>
+        <button id="tab-map" type="button" role="tab" data-view-target="map" aria-controls="view-map">Map</button>
+        <button id="tab-history" type="button" role="tab" data-view-target="history" aria-controls="view-history">History</button>
+        <button id="tab-badge" type="button" role="tab" data-view-target="badge" aria-controls="view-badge">Badge</button>
+      </nav>
+    </div>
+    <div id="connection-status" class="connection-status" aria-live="polite" aria-atomic="true">
+      <span id="connection-phase" class="connection-phase">USB status unavailable</span>
+      <span id="connection-freshness">Freshness unavailable</span>
+      <span id="connection-firmware">Firmware missing</span>
+      <span id="connection-scanners">Scanners missing</span>
+      <span id="connection-port">Port missing</span>
+    </div>
+  </header>
+
+  <main id="dashboard-main">
+    <div id="request-status" class="request-status" role="status" aria-live="polite" hidden></div>
+
+    <details id="presentation-filter-panel" class="presentation-filter-panel" open>
+      <summary>Presentation filters <span id="filter-summary">All</span></summary>
+    <form id="presentation-filters" class="filter-rail" aria-label="Dashboard presentation filters">
+      <label>Class
+        <select id="filter-class" name="class">
+          <option value="all">All classes</option>
+          <option value="drone">Drone</option>
+          <option value="meta">Meta</option>
+          <option value="tracker">Tracker</option>
+          <option value="wifi_attack">Wi-Fi attack</option>
+          <option value="other">Other</option>
+        </select>
+      </label>
+      <label>Source
+        <select id="filter-source" name="source">
+          <option value="all">All sources</option>
+          <option value="ble_rid">BLE Remote ID</option>
+          <option value="wifi_rid">Wi-Fi Remote ID</option>
+          <option value="wifi_dji_ie">DJI vendor IE</option>
+          <option value="wifi_ssid">Wi-Fi SSID</option>
+          <option value="wifi_oui">Wi-Fi OUI</option>
+          <option value="wifi_probe">Wi-Fi probe</option>
+          <option value="ble_fingerprint">BLE fingerprint</option>
+          <option value="wifi_assoc">Wi-Fi association</option>
+          <option value="wifi_inventory">Wi-Fi inventory</option>
+        </select>
+      </label>
+      <label>Minimum confidence
+        <select id="filter-confidence" name="confidence">
+          <option value="all">Any reported value</option>
+          <option value="50">50% or higher</option>
+          <option value="70">70% or higher</option>
+          <option value="90">90% or higher</option>
+        </select>
+      </label>
+      <label>Live / stale
+        <select id="filter-freshness" name="freshness">
+          <option value="all">Live and host-stale</option>
+          <option value="live">Live only</option>
+          <option value="stale">Host-stale only</option>
+        </select>
+      </label>
+      <button id="reset-filters" class="secondary-button" type="reset">Reset filters</button>
+    </form>
+    </details>
+
+    <section id="view-live" class="view-panel" role="tabpanel" aria-label="Live" aria-labelledby="tab-live" tabindex="-1">
+      <h2 class="visually-hidden">Live</h2>
+      <div id="live-root"></div>
+    </section>
+
+    <section id="view-map" class="view-panel map-view" role="tabpanel" aria-label="Map" aria-labelledby="tab-map" tabindex="-1" hidden>
+      <h2 class="visually-hidden">Map</h2>
+      <div class="map-layout">
+        <aside class="map-context" aria-label="Map entities and legend">
+          <div>
+            <p class="rail-label">Selected Remote ID</p>
+            <p id="map-selected" class="map-selected">None</p>
+          </div>
+          <div class="rail-section map-trail-control">
+            <label for="map-trail-minutes">
+              <span>Formation persistence</span>
+              <output id="map-trail-minutes-output" for="map-trail-minutes">120 min</output>
+            </label>
+            <input
+              id="map-trail-minutes"
+              type="range"
+              min="1"
+              max="120"
+              step="1"
+              value="120"
+              aria-describedby="map-trail-help map-trail-dot-count"
+            >
+            <p class="map-trail-meta">
+              <span id="map-trail-help">Distinct Remote ID positions</span>
+              <span id="map-trail-dot-count" aria-live="polite">0 dots</span>
+            </p>
+            <div class="map-drawing-actions">
+              <button id="map-drawing-reset" class="secondary-button" type="button">
+                Clear &amp; start timer
+              </button>
+              <output id="map-drawing-elapsed">Saved trail shown</output>
+            </div>
+            <p class="map-drawing-help">Dots and live drones restart; saved history stays intact.</p>
+          </div>
+          <div class="rail-section map-entities-section">
+            <h3>Positioned entities</h3>
+            <div id="map-entity-list" class="map-entity-list"></div>
+          </div>
+          <div class="rail-section map-legend" aria-label="Map legend">
+            <h3>Legend</h3>
+            <p><span class="legend-symbol marker-drone" aria-hidden="true"></span>Remote ID drone</p>
+            <p><span class="legend-symbol marker-operator" aria-hidden="true"></span>Operator</p>
+            <p><span class="legend-line link-line" aria-hidden="true"></span>Drone to operator link</p>
+            <p><span class="legend-trail-dot" aria-hidden="true"></span>Retained Remote ID positions</p>
+          </div>
+          <div id="map-offline" class="map-offline" role="status" hidden></div>
+        </aside>
+        <div id="map-canvas" class="map-canvas" aria-label="Remote ID coordinate map"></div>
+      </div>
+    </section>
+
+    <section id="view-history" class="view-panel history-view" role="tabpanel" aria-label="History" aria-labelledby="tab-history" tabindex="-1" hidden>
+      <h2 class="visually-hidden">History</h2>
+      <form id="history-filters" class="history-filter-rail" aria-label="History filters">
+        <label>From
+          <input id="history-since" name="since" type="datetime-local">
+        </label>
+        <label>Until
+          <input id="history-until" name="until" type="datetime-local">
+        </label>
+        <label>Observation kind
+          <select id="history-kind" name="kind">
+            <option value="">All kinds</option>
+            <option value="event">Events</option>
+            <option value="track">Tracks</option>
+          </select>
+        </label>
+        <label>Class
+          <select id="history-class" name="class">
+            <option value="">All classes</option>
+            <option value="drone">Drone</option>
+            <option value="meta">Meta</option>
+            <option value="tracker">Tracker</option>
+            <option value="wifi_attack">Wi-Fi attack</option>
+            <option value="skimmer">Skimmer</option>
+            <option value="camera">Camera</option>
+            <option value="flock">Flock</option>
+            <option value="lock">Lock</option>
+            <option value="hid">HID</option>
+            <option value="beacon">Beacon</option>
+            <option value="event_badge">Event badge</option>
+            <option value="auracast">Auracast</option>
+            <option value="scanner_status">Scanner status</option>
+          </select>
+        </label>
+        <label>Source
+          <select id="history-source" name="source">
+            <option value="">All sources</option>
+            <option value="ble_rid">BLE Remote ID</option>
+            <option value="wifi_rid">Wi-Fi Remote ID</option>
+            <option value="wifi_dji_ie">DJI vendor IE</option>
+            <option value="wifi_ssid">Wi-Fi SSID</option>
+            <option value="wifi_oui">Wi-Fi OUI</option>
+            <option value="wifi_probe">Wi-Fi probe</option>
+            <option value="ble_fingerprint">BLE fingerprint</option>
+            <option value="wifi_assoc">Wi-Fi association</option>
+            <option value="wifi_inventory">Wi-Fi inventory</option>
+          </select>
+        </label>
+        <label>Identity text
+          <input id="history-text" name="text" type="search" maxlength="256" placeholder="Display ID, label, or stable key">
+        </label>
+        <label class="checkbox-label">
+          <input id="history-positioned" name="positioned" type="checkbox">
+          Positioned only
+        </label>
+        <div class="history-filter-actions">
+          <button type="submit">Apply filters</button>
+          <button class="secondary-button" type="reset">Reset</button>
+        </div>
+      </form>
+      <div class="history-toolbar">
+        <p>Newest first · bounded local observations, not a complete RF packet capture.</p>
+        <div class="history-export-actions">
+          <a id="history-export-csv" class="button-link" href="/api/history/export.csv">Export CSV</a>
+          <a id="history-export-json" class="button-link" href="/api/history/export.json">Export JSON</a>
+        </div>
+      </div>
+      <div id="history-state" class="history-state idle" role="status" aria-live="polite"></div>
+      <div id="history-table" class="history-table-wrap" hidden>
+        <table>
+          <thead>
+            <tr><th>Time</th><th>Kind</th><th>Identity</th><th>Class</th><th>Source</th><th>Confidence</th><th>Score</th><th>RSSI</th><th>Position</th><th>Details</th></tr>
+          </thead>
+          <tbody id="history-results"></tbody>
+        </table>
+      </div>
+      <div class="history-pagination" aria-label="History pagination">
+        <button id="history-previous" class="secondary-button" type="button" disabled>Previous</button>
+        <span id="history-page">Page 1</span>
+        <button id="history-next" class="secondary-button" type="button" disabled>Next</button>
+      </div>
+      <div class="history-danger-row">
+        <p>Clearing affects local history only. The live USB connection remains active.</p>
+        <button id="history-clear-open" class="danger-button" type="button">Clear local history</button>
+      </div>
+      <dialog id="history-clear-dialog" class="confirmation-dialog" aria-labelledby="history-clear-title">
+        <h2 id="history-clear-title">Clear local history</h2>
+        <p>This permanently removes locally stored host observations. Live USB state is not changed.</p>
+        <label>Type <strong>CLEAR</strong> to confirm
+          <input id="history-clear-word" type="text" autocomplete="off" spellcheck="false">
+        </label>
+        <div class="dialog-actions">
+          <button id="history-clear-cancel" class="secondary-button" type="button">Cancel</button>
+          <button id="history-clear-confirm" class="danger-button" type="button" disabled>Clear history</button>
+        </div>
+      </dialog>
+    </section>
+
+    <section id="view-badge" class="view-panel badge-view" role="tabpanel" aria-label="Badge" aria-labelledby="tab-badge" tabindex="-1" hidden>
+      <h2 class="visually-hidden">Badge</h2>
+      <div class="badge-layout">
+        <aside class="badge-diagnostics" aria-label="Badge diagnostics">
+          <section>
+            <h3>Badge status</h3>
+            <div id="badge-status-facts"></div>
+          </section>
+          <section>
+            <h3>Scanners</h3>
+            <div id="badge-scanners"></div>
+          </section>
+          <section id="badge-headless-section" hidden>
+            <h3>Headless uplink</h3>
+            <p class="diagnostic-note">No LCD is present. USB live delivery, Wi-Fi, backend upload, and scanner health are shown here.</p>
+            <div id="badge-headless-diagnostics"></div>
+          </section>
+          <section data-display-only>
+            <h3>Display state</h3>
+            <div id="badge-display-state"></div>
+          </section>
+        </aside>
+        <div id="badge-display-controls" class="badge-controls" data-display-only>
+          <header class="badge-workspace-heading">
+            <div>
+              <h2>Badge display settings</h2>
+              <p>These controls change the connected badge. Dashboard filters are separate.</p>
+            </div>
+            <div id="badge-command-result" class="command-result" role="status" aria-live="polite" hidden></div>
+          </header>
+          <section class="display-navigation">
+            <h3>Display navigation</h3>
+            <div class="navigation-actions">
+              <button type="button" data-nav-action="next" data-mutation>Next</button>
+              <button type="button" data-nav-action="detail" data-mutation>Detail</button>
+              <button type="button" data-nav-action="page" data-mutation>Page</button>
+              <button type="button" data-nav-action="back" data-mutation>Back</button>
+            </div>
+          </section>
+          <div class="display-editor-grid">
+            <section class="theme-editor">
+              <div class="editor-heading">
+                <div><h3>Theme</h3><p>Firmware snapshot and editable draft</p></div>
+                <button id="theme-reset-open" class="secondary-button" type="button" data-mutation>Reset theme</button>
+              </div>
+              <section class="current-settings" aria-labelledby="current-theme-title">
+                <h4 id="current-theme-title">Current firmware theme</h4>
+                <div id="badge-theme-current"></div>
+              </section>
+              <p id="theme-unavailable" class="form-note warning">Apply is unavailable until firmware supplies a complete version-1 theme.</p>
+              <h4 class="draft-heading">Draft to apply</h4>
+              <form id="badge-theme-form">
+                <div class="theme-fields">
+                  <label>Palette
+                    <select id="theme-palette"><option value="">Unavailable</option><option value="field">Field</option><option value="night">Night</option><option value="neon">Neon</option><option value="mono">Mono</option></select>
+                  </label>
+                  <label>Background
+                    <select id="theme-background"><option value="">Unavailable</option><option value="dark">Dark</option><option value="dim">Dim</option><option value="scanline">Scanline</option></select>
+                  </label>
+                  <label>Brightness
+                    <input id="theme-brightness" type="number" min="25" max="100" step="1" inputmode="numeric">
+                  </label>
+                </div>
+                <fieldset class="accent-fields">
+                  <legend>RGB565 accents</legend>
+                  <label>Drone <input id="theme-accent-drone" type="number" min="0" max="65535" step="1" inputmode="numeric"></label>
+                  <label>Meta <input id="theme-accent-meta" type="number" min="0" max="65535" step="1" inputmode="numeric"></label>
+                  <label>Tracker <input id="theme-accent-tracker" type="number" min="0" max="65535" step="1" inputmode="numeric"></label>
+                  <label>Flock <input id="theme-accent-flock" type="number" min="0" max="65535" step="1" inputmode="numeric"></label>
+                  <label>Wi-Fi attack <input id="theme-accent-wifi_attack" type="number" min="0" max="65535" step="1" inputmode="numeric"></label>
+                  <label>Clear <input id="theme-accent-clear" type="number" min="0" max="65535" step="1" inputmode="numeric"></label>
+                </fieldset>
+                <button id="theme-apply" type="submit" data-mutation disabled>Apply theme</button>
+              </form>
+            </section>
+            <section class="policy-editor">
+              <div class="editor-heading">
+                <div><h3>Display policy</h3><p>Firmware snapshot and complete version-1 draft</p></div>
+                <button id="policy-reset-open" class="secondary-button" type="button" data-mutation>Reset policy</button>
+              </div>
+              <section class="current-settings" aria-labelledby="current-policy-title">
+                <h4 id="current-policy-title">Current firmware display policy</h4>
+                <div id="badge-policy-current" class="current-policy-wrap"></div>
+              </section>
+              <p id="policy-unavailable" class="form-note warning">Apply is unavailable until firmware supplies all 13 policy classes.</p>
+              <h4 class="draft-heading">Draft to apply</h4>
+              <form id="badge-policy-form">
+                <div class="policy-table-wrap">
+                  <table class="policy-table">
+                    <thead><tr><th>Class</th><th>Enabled</th><th>Lane</th><th>Minimum proximity</th><th>Priority</th></tr></thead>
+                    <tbody>
+                      <tr data-policy-class="drone"><th>drone</th><td><input aria-label="Drone enabled" data-policy-field="enabled" type="checkbox"></td><td><select aria-label="Drone lane" data-policy-field="lane"><option value="">—</option><option value="off">Off</option><option value="lower">Lower</option><option value="top">Top</option><option value="both">Both</option></select></td><td><select aria-label="Drone minimum proximity" data-policy-field="min_proximity"><option value="">—</option><option value="present">Present</option><option value="near">Near</option><option value="close">Close</option></select></td><td><input aria-label="Drone priority" data-policy-field="priority" type="number" min="0" max="100" step="1"></td></tr>
+                      <tr data-policy-class="meta"><th>meta</th><td><input aria-label="Meta enabled" data-policy-field="enabled" type="checkbox"></td><td><select aria-label="Meta lane" data-policy-field="lane"><option value="">—</option><option value="off">Off</option><option value="lower">Lower</option><option value="top">Top</option><option value="both">Both</option></select></td><td><select aria-label="Meta minimum proximity" data-policy-field="min_proximity"><option value="">—</option><option value="present">Present</option><option value="near">Near</option><option value="close">Close</option></select></td><td><input aria-label="Meta priority" data-policy-field="priority" type="number" min="0" max="100" step="1"></td></tr>
+                      <tr data-policy-class="tracker"><th>tracker</th><td><input aria-label="Tracker enabled" data-policy-field="enabled" type="checkbox"></td><td><select aria-label="Tracker lane" data-policy-field="lane"><option value="">—</option><option value="off">Off</option><option value="lower">Lower</option><option value="top">Top</option><option value="both">Both</option></select></td><td><select aria-label="Tracker minimum proximity" data-policy-field="min_proximity"><option value="">—</option><option value="present">Present</option><option value="near">Near</option><option value="close">Close</option></select></td><td><input aria-label="Tracker priority" data-policy-field="priority" type="number" min="0" max="100" step="1"></td></tr>
+                      <tr data-policy-class="wifi_attack"><th>wifi_attack</th><td><input aria-label="Wi-Fi attack enabled" data-policy-field="enabled" type="checkbox"></td><td><select aria-label="Wi-Fi attack lane" data-policy-field="lane"><option value="">—</option><option value="off">Off</option><option value="lower">Lower</option><option value="top">Top</option><option value="both">Both</option></select></td><td><select aria-label="Wi-Fi attack minimum proximity" data-policy-field="min_proximity"><option value="">—</option><option value="present">Present</option><option value="near">Near</option><option value="close">Close</option></select></td><td><input aria-label="Wi-Fi attack priority" data-policy-field="priority" type="number" min="0" max="100" step="1"></td></tr>
+                      <tr data-policy-class="skimmer"><th>skimmer</th><td><input aria-label="Skimmer enabled" data-policy-field="enabled" type="checkbox"></td><td><select aria-label="Skimmer lane" data-policy-field="lane"><option value="">—</option><option value="off">Off</option><option value="lower">Lower</option><option value="top">Top</option><option value="both">Both</option></select></td><td><select aria-label="Skimmer minimum proximity" data-policy-field="min_proximity"><option value="">—</option><option value="present">Present</option><option value="near">Near</option><option value="close">Close</option></select></td><td><input aria-label="Skimmer priority" data-policy-field="priority" type="number" min="0" max="100" step="1"></td></tr>
+                      <tr data-policy-class="camera"><th>camera</th><td><input aria-label="Camera enabled" data-policy-field="enabled" type="checkbox"></td><td><select aria-label="Camera lane" data-policy-field="lane"><option value="">—</option><option value="off">Off</option><option value="lower">Lower</option><option value="top">Top</option><option value="both">Both</option></select></td><td><select aria-label="Camera minimum proximity" data-policy-field="min_proximity"><option value="">—</option><option value="present">Present</option><option value="near">Near</option><option value="close">Close</option></select></td><td><input aria-label="Camera priority" data-policy-field="priority" type="number" min="0" max="100" step="1"></td></tr>
+                      <tr data-policy-class="flock"><th>flock</th><td><input aria-label="Flock enabled" data-policy-field="enabled" type="checkbox"></td><td><select aria-label="Flock lane" data-policy-field="lane"><option value="">—</option><option value="off">Off</option><option value="lower">Lower</option><option value="top">Top</option><option value="both">Both</option></select></td><td><select aria-label="Flock minimum proximity" data-policy-field="min_proximity"><option value="">—</option><option value="present">Present</option><option value="near">Near</option><option value="close">Close</option></select></td><td><input aria-label="Flock priority" data-policy-field="priority" type="number" min="0" max="100" step="1"></td></tr>
+                      <tr data-policy-class="lock"><th>lock</th><td><input aria-label="Lock enabled" data-policy-field="enabled" type="checkbox"></td><td><select aria-label="Lock lane" data-policy-field="lane"><option value="">—</option><option value="off">Off</option><option value="lower">Lower</option><option value="top">Top</option><option value="both">Both</option></select></td><td><select aria-label="Lock minimum proximity" data-policy-field="min_proximity"><option value="">—</option><option value="present">Present</option><option value="near">Near</option><option value="close">Close</option></select></td><td><input aria-label="Lock priority" data-policy-field="priority" type="number" min="0" max="100" step="1"></td></tr>
+                      <tr data-policy-class="hid"><th>hid</th><td><input aria-label="HID enabled" data-policy-field="enabled" type="checkbox"></td><td><select aria-label="HID lane" data-policy-field="lane"><option value="">—</option><option value="off">Off</option><option value="lower">Lower</option><option value="top">Top</option><option value="both">Both</option></select></td><td><select aria-label="HID minimum proximity" data-policy-field="min_proximity"><option value="">—</option><option value="present">Present</option><option value="near">Near</option><option value="close">Close</option></select></td><td><input aria-label="HID priority" data-policy-field="priority" type="number" min="0" max="100" step="1"></td></tr>
+                      <tr data-policy-class="beacon"><th>beacon</th><td><input aria-label="Beacon enabled" data-policy-field="enabled" type="checkbox"></td><td><select aria-label="Beacon lane" data-policy-field="lane"><option value="">—</option><option value="off">Off</option><option value="lower">Lower</option><option value="top">Top</option><option value="both">Both</option></select></td><td><select aria-label="Beacon minimum proximity" data-policy-field="min_proximity"><option value="">—</option><option value="present">Present</option><option value="near">Near</option><option value="close">Close</option></select></td><td><input aria-label="Beacon priority" data-policy-field="priority" type="number" min="0" max="100" step="1"></td></tr>
+                      <tr data-policy-class="event_badge"><th>event_badge</th><td><input aria-label="Event badge enabled" data-policy-field="enabled" type="checkbox"></td><td><select aria-label="Event badge lane" data-policy-field="lane"><option value="">—</option><option value="off">Off</option><option value="lower">Lower</option><option value="top">Top</option><option value="both">Both</option></select></td><td><select aria-label="Event badge minimum proximity" data-policy-field="min_proximity"><option value="">—</option><option value="present">Present</option><option value="near">Near</option><option value="close">Close</option></select></td><td><input aria-label="Event badge priority" data-policy-field="priority" type="number" min="0" max="100" step="1"></td></tr>
+                      <tr data-policy-class="auracast"><th>auracast</th><td><input aria-label="Auracast enabled" data-policy-field="enabled" type="checkbox"></td><td><select aria-label="Auracast lane" data-policy-field="lane"><option value="">—</option><option value="off">Off</option><option value="lower">Lower</option><option value="top">Top</option><option value="both">Both</option></select></td><td><select aria-label="Auracast minimum proximity" data-policy-field="min_proximity"><option value="">—</option><option value="present">Present</option><option value="near">Near</option><option value="close">Close</option></select></td><td><input aria-label="Auracast priority" data-policy-field="priority" type="number" min="0" max="100" step="1"></td></tr>
+                      <tr data-policy-class="scanner_status"><th>scanner_status</th><td><input aria-label="Scanner status enabled" data-policy-field="enabled" type="checkbox"></td><td><select aria-label="Scanner status lane" data-policy-field="lane"><option value="">—</option><option value="off">Off</option><option value="lower">Lower</option><option value="top">Top</option><option value="both">Both</option></select></td><td><select aria-label="Scanner status minimum proximity" data-policy-field="min_proximity"><option value="">—</option><option value="present">Present</option><option value="near">Near</option><option value="close">Close</option></select></td><td><input aria-label="Scanner status priority" data-policy-field="priority" type="number" min="0" max="100" step="1"></td></tr>
+                    </tbody>
+                  </table>
+                </div>
+                <button id="policy-apply" type="submit" data-mutation disabled>Apply display policy</button>
+              </form>
+            </section>
+          </div>
+        </div>
+      </div>
+      <dialog id="theme-reset-dialog" class="confirmation-dialog" aria-labelledby="theme-reset-title">
+        <h2 id="theme-reset-title">Reset badge theme?</h2><p>This asks firmware to restore its theme defaults.</p>
+        <div class="dialog-actions"><button id="theme-reset-cancel" class="secondary-button" type="button">Cancel</button><button id="theme-reset-confirm" class="danger-button" type="button" data-mutation>Reset theme</button></div>
+      </dialog>
+      <dialog id="policy-reset-dialog" class="confirmation-dialog" aria-labelledby="policy-reset-title">
+        <h2 id="policy-reset-title">Reset display policy?</h2><p>This asks firmware to restore its display-policy defaults.</p>
+        <div class="dialog-actions"><button id="policy-reset-cancel" class="secondary-button" type="button">Cancel</button><button id="policy-reset-confirm" class="danger-button" type="button" data-mutation>Reset policy</button></div>
+      </dialog>
+    </section>
+  </main>
+</body>
+</html>

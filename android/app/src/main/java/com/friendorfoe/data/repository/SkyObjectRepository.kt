@@ -1,5 +1,6 @@
 package com.friendorfoe.data.repository
 
+import android.location.Location
 import android.util.Log
 import com.friendorfoe.data.local.HistoryDao
 import com.friendorfoe.data.local.toHistoryEntity
@@ -18,21 +19,41 @@ import com.friendorfoe.domain.model.DetectionSource
 import com.friendorfoe.domain.model.Drone
 import com.friendorfoe.domain.model.Position
 import com.friendorfoe.domain.model.SkyObject
-import android.location.Location
+import com.friendorfoe.domain.model.isFormationDroneId
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.time.Duration
 import java.time.Instant
 import java.util.Collections
 import javax.inject.Inject
 import javax.inject.Singleton
+
+private val ORDINARY_STALE_THRESHOLD = Duration.ofSeconds(120)
+
+// One 240-point formation sweep can take 120 seconds at 500 ms per point.
+// Retain formation points long enough for two complete worst-case sweeps.
+private val FORMATION_STALE_THRESHOLD = Duration.ofSeconds(300)
+
+internal fun isSkyObjectStale(obj: SkyObject, now: Instant): Boolean {
+    val threshold = if (obj is Drone && isFormationDroneId(obj.droneId)) {
+        FORMATION_STALE_THRESHOLD
+    } else {
+        ORDINARY_STALE_THRESHOLD
+    }
+    return Duration.between(obj.lastUpdated, now) > threshold
+}
 
 /**
  * Unified repository that merges all detection sources into a single stream
@@ -65,16 +86,18 @@ class SkyObjectRepository @Inject constructor(
 
     companion object {
         private const val TAG = "SkyObjectRepository"
-        private val STALE_THRESHOLD = Duration.ofSeconds(120)
         private const val DEDUP_DISTANCE_THRESHOLD_DEG = 0.001
         private const val MAX_TRAIL_POINTS = 60
         private const val MIN_POSITION_DELTA_DEG = 0.00001
+        private const val FORMATION_UI_UPDATE_INTERVAL_MS = 250L
+        private const val STALE_MAINTENANCE_INTERVAL_MS = 30_000L
     }
 
     data class TrailPoint(val lat: Double, val lon: Double, val altM: Double, val timestamp: Instant)
 
     private var scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var collectionJob: Job? = null
+    private var staleMaintenanceJob: Job? = null
     private val sessionGate = DetectionSessionGate()
     @Volatile private var activeLocalPermissions = LocalDetectionPermissions.None
 
@@ -96,6 +119,8 @@ class SkyObjectRepository @Inject constructor(
     private val remoteIdObjects = mutableMapOf<String, Drone>()
     private val nanObjects = mutableMapOf<String, Drone>()
     private val wifiObjects = mutableMapOf<String, Drone>()
+    private val mergeLock = Any()
+    private var persistenceGeneration = -1L
 
     private val _skyObjects = MutableStateFlow<List<SkyObject>>(emptyList())
 
@@ -217,6 +242,9 @@ class SkyObjectRepository @Inject constructor(
     private fun startDetectionSources(generation: Long) {
         val permissions = localDetectionPermissionProvider.current()
         scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        synchronized(mergeLock) {
+            persistenceGeneration = generation
+        }
         activeLocalPermissions = permissions
         val location = userLocationFix
         bleTracker.recordUserLocation(
@@ -239,29 +267,43 @@ class SkyObjectRepository @Inject constructor(
         val localPhoneSensorsEnabled = !detectionPrefs.backendOnlyMode
         val protectedSources = allowedProtectedDetectionSources(permissions)
         collectionJob = scope.launch {
-            if (detectionPrefs.adsbEnabled) launch { collectAdsb() }
+            if (detectionPrefs.adsbEnabled) {
+                launchSource("ADS-B") { collectAdsb(generation) }
+            }
             if (localPhoneSensorsEnabled) {
                 if (detectionPrefs.bleRidEnabled &&
                     ProtectedDetectionSource.BLE_REMOTE_ID in protectedSources
-                ) launchProtected("BLE Remote ID") { collectRemoteId() }
+                ) launchSource("BLE Remote ID") { collectRemoteId(generation) }
                 if (detectionPrefs.bleRidEnabled &&
                     ProtectedDetectionSource.WIFI_REMOTE_ID in protectedSources
-                ) launchProtected("WiFi NaN Remote ID") { collectWifiNan() }
+                ) launchSource("WiFi NaN Remote ID") { collectWifiNan(generation) }
                 if (detectionPrefs.wifiEnabled &&
                     ProtectedDetectionSource.WIFI_DRONE in protectedSources
-                ) launchProtected("WiFi drone") { collectWifi() }
+                ) launchSource("WiFi drone") { collectWifi(generation) }
+            }
+        }
+        staleMaintenanceJob = scope.launchSource("stale-object maintenance") {
+            while (isActive) {
+                delay(STALE_MAINTENANCE_INTERVAL_MS)
+                sessionGate.runIfActive(generation) {
+                    synchronized(mergeLock) { rebuildMergedList() }
+                }
             }
         }
     }
 
-    private fun CoroutineScope.launchProtected(
+    private fun CoroutineScope.launchSource(
         sourceName: String,
-        collect: suspend () -> Unit,
+        collect: suspend CoroutineScope.() -> Unit,
     ): Job = launch {
         try {
             collect()
+        } catch (error: CancellationException) {
+            throw error
         } catch (error: SecurityException) {
             Log.w(TAG, "$sourceName permission changed while starting; collector deferred", error)
+        } catch (error: Exception) {
+            Log.e(TAG, "$sourceName detector stopped unexpectedly", error)
         }
     }
 
@@ -274,20 +316,26 @@ class SkyObjectRepository @Inject constructor(
         activeLocalPermissions = LocalDetectionPermissions.None
         collectionJob?.cancel()
         collectionJob = null
+        staleMaintenanceJob?.cancel()
+        staleMaintenanceJob = null
         adsbPoller.stop()
         remoteIdScanner.stopScanning()
         wifiNanRemoteIdScanner.stopScanning()
         wifiDroneScanner.stopScanning()
-        fusionEngine.reset()
-
-        adsbObjects.clear()
-        remoteIdObjects.clear()
-        nanObjects.clear()
-        wifiObjects.clear()
-        persistedObjectIds.clear()
-        positionTrails.clear()
-        _skyObjects.value = emptyList()
         scope.cancel()
+        synchronized(mergeLock) {
+            persistenceGeneration = -1L
+            fusionEngine.reset()
+            adsbObjects.clear()
+            remoteIdObjects.clear()
+            nanObjects.clear()
+            wifiObjects.clear()
+            persistedObjectIds.clear()
+            synchronized(positionTrails) {
+                positionTrails.clear()
+            }
+            _skyObjects.value = emptyList()
+        }
 
         Log.i(TAG, "All detection sources stopped")
     }
@@ -340,17 +388,21 @@ class SkyObjectRepository @Inject constructor(
      * Collect ADS-B aircraft from the poller.
      * Upserts new/updated aircraft instead of replacing the entire set,
      * so aircraft that a provider momentarily stops reporting persist
-     * until pruneStaleEntries() removes them after STALE_THRESHOLD (60s).
+     * until pruneStaleEntries() removes them after 120 seconds.
      */
-    private suspend fun collectAdsb() {
+    private suspend fun collectAdsb(generation: Long) {
         adsbPoller.aircraft.collect { aircraftList ->
-            synchronized(adsbObjects) {
-                aircraftList.forEach { aircraft ->
-                    adsbObjects[aircraft.id] = aircraft
+            sessionGate.runIfActive(generation) {
+                synchronized(mergeLock) {
+                    synchronized(adsbObjects) {
+                        aircraftList.forEach { aircraft ->
+                            adsbObjects[aircraft.id] = aircraft
+                        }
+                    }
+                    Log.d(TAG, "ADS-B updated: ${aircraftList.size} aircraft")
+                    rebuildMergedList()
                 }
             }
-            Log.d(TAG, "ADS-B updated: ${aircraftList.size} aircraft")
-            rebuildMergedList()
         }
     }
 
@@ -358,14 +410,64 @@ class SkyObjectRepository @Inject constructor(
      * Collect Remote ID drones from BLE scanner.
      * Each emission is a single drone detection/update.
      */
-    private suspend fun collectRemoteId() {
-        remoteIdScanner.startScanning().collect { drone ->
-            synchronized(remoteIdObjects) {
-                remoteIdObjects[drone.id] = drone
+    private suspend fun collectRemoteId(generation: Long) = coroutineScope {
+        val formationPublicationGate =
+            FormationPublicationGate(FORMATION_UI_UPDATE_INTERVAL_MS)
+        val trailingPublicationRequests = Channel<Unit>(Channel.CONFLATED)
+        val trailingPublicationJob = launch {
+            for (ignored in trailingPublicationRequests) {
+                while (isActive) {
+                    var waitMs: Long? = null
+                    val active = sessionGate.runIfActive(generation) {
+                        synchronized(mergeLock) {
+                            waitMs = formationPublicationGate.pendingDelayMs(
+                                android.os.SystemClock.elapsedRealtime(),
+                            )
+                        }
+                    }
+                    if (!active || waitMs == null) break
+                    delay(waitMs!!.coerceAtLeast(1L))
+                    sessionGate.runIfActive(generation) {
+                        synchronized(mergeLock) {
+                            if (formationPublicationGate.shouldPublish(
+                                    mapChanged = false,
+                                    nowMs = android.os.SystemClock.elapsedRealtime(),
+                                )
+                            ) {
+                                rebuildMergedList()
+                            }
+                        }
+                    }
+                    break
+                }
             }
-            appendTrailPoint(drone)
-            Log.d(TAG, "Remote ID updated: drone ${drone.droneId}")
-            rebuildMergedList()
+        }
+        try {
+            remoteIdScanner.startScanning().collect { drone ->
+                sessionGate.runIfActive(generation) {
+                    synchronized(mergeLock) {
+                        val mapChanged = synchronized(remoteIdObjects) {
+                            val previous = remoteIdObjects.put(drone.id, drone)
+                            previous == null || previous.position != drone.position
+                        }
+                        if (isFormationDroneId(drone.droneId)) {
+                            val nowMs = android.os.SystemClock.elapsedRealtime()
+                            if (formationPublicationGate.shouldPublish(mapChanged, nowMs)) {
+                                rebuildMergedList()
+                            } else if (mapChanged) {
+                                trailingPublicationRequests.trySend(Unit)
+                            }
+                        } else {
+                            appendTrailPoint(drone)
+                            Log.d(TAG, "Remote ID updated: drone ${drone.droneId}")
+                            rebuildMergedList()
+                        }
+                    }
+                }
+            }
+        } finally {
+            trailingPublicationRequests.close()
+            trailingPublicationJob.cancel()
         }
     }
 
@@ -373,14 +475,37 @@ class SkyObjectRepository @Inject constructor(
      * Collect WiFi NaN Remote ID drones.
      * Each emission is a single drone detection/update.
      */
-    private suspend fun collectWifiNan() {
-        wifiNanRemoteIdScanner.startScanning().collect { drone ->
-            synchronized(nanObjects) {
-                nanObjects[drone.id] = drone
+    private suspend fun collectWifiNan(generation: Long) {
+        wifiNanRemoteIdScanner.startScanning().collect { event ->
+            when (event) {
+                is com.friendorfoe.detection.WifiNanScanEvent.Observation -> {
+                    val drone = event.drone
+                    sessionGate.runIfActive(generation) {
+                        synchronized(mergeLock) {
+                            synchronized(nanObjects) {
+                                nanObjects[drone.id] = drone
+                            }
+                            if (!isFormationDroneId(drone.droneId)) {
+                                appendTrailPoint(drone)
+                                Log.d(TAG, "WiFi NaN updated: drone ${drone.droneId}")
+                            }
+                            rebuildMergedList()
+                        }
+                    }
+                }
+                is com.friendorfoe.detection.WifiNanScanEvent.PermissionBlocked -> {
+                    Log.w(TAG, "WiFi NaN scan paused: ${event.message}")
+                }
+                is com.friendorfoe.detection.WifiNanScanEvent.Unsupported -> {
+                    Log.i(TAG, "WiFi NaN unavailable: ${event.message}")
+                }
+                is com.friendorfoe.detection.WifiNanScanEvent.Failure -> {
+                    Log.w(TAG, "WiFi NaN scan failed: ${event.message}")
+                }
+                com.friendorfoe.detection.WifiNanScanEvent.Ready -> {
+                    Log.d(TAG, "WiFi NaN scan ready")
+                }
             }
-            appendTrailPoint(drone)
-            Log.d(TAG, "WiFi NaN updated: drone ${drone.droneId}")
-            rebuildMergedList()
         }
     }
 
@@ -391,21 +516,27 @@ class SkyObjectRepository @Inject constructor(
      * WiFi Beacon Remote ID drones (source == REMOTE_ID) are routed to
      * remoteIdObjects for proper dedup against BLE/NaN drones and trail tracking.
      */
-    private suspend fun collectWifi() {
+    private suspend fun collectWifi(generation: Long) {
         wifiDroneScanner.startScanning().collect { drone ->
-            if (drone.source == DetectionSource.WIFI_BEACON) {
-                synchronized(remoteIdObjects) {
-                    remoteIdObjects[drone.id] = drone
+            sessionGate.runIfActive(generation) {
+                synchronized(mergeLock) {
+                    if (drone.source == DetectionSource.WIFI_BEACON) {
+                        synchronized(remoteIdObjects) {
+                            remoteIdObjects[drone.id] = drone
+                        }
+                        if (!isFormationDroneId(drone.droneId)) {
+                            appendTrailPoint(drone)
+                            Log.d(TAG, "WiFi Beacon RID updated: drone ${drone.droneId}")
+                        }
+                    } else {
+                        synchronized(wifiObjects) {
+                            wifiObjects[drone.id] = drone
+                        }
+                        Log.d(TAG, "WiFi updated: drone ${drone.ssid}")
+                    }
+                    rebuildMergedList()
                 }
-                appendTrailPoint(drone)
-                Log.d(TAG, "WiFi Beacon RID updated: drone ${drone.droneId}")
-            } else {
-                synchronized(wifiObjects) {
-                    wifiObjects[drone.id] = drone
-                }
-                Log.d(TAG, "WiFi updated: drone ${drone.ssid}")
             }
-            rebuildMergedList()
         }
     }
 
@@ -470,8 +601,9 @@ class SkyObjectRepository @Inject constructor(
      * individual source.
      */
     private fun rebuildMergedList() {
-        val now = Instant.now()
-        val merged = mutableListOf<SkyObject>()
+        synchronized(mergeLock) {
+            val now = Instant.now()
+            val merged = mutableListOf<SkyObject>()
 
         // 1. Add all non-stale ADS-B aircraft (update fusion engine)
         //    Skip grounded aircraft and very-low-altitude aircraft (ground clutter)
@@ -481,7 +613,12 @@ class SkyObjectRepository @Inject constructor(
                     val isGrounded = obj is Aircraft && obj.isOnGround
                     val isTooLow = obj is Aircraft && obj.position.altitudeMeters < 30.0
                     if (!isGrounded && !isTooLow) {
-                        fusionEngine.updateWithEvidence(obj.id, obj.source, obj.confidence, now)
+                        fusionEngine.updateWithEvidence(
+                            obj.id,
+                            obj.source,
+                            obj.confidence,
+                            obj.lastUpdated,
+                        )
                         merged.add(obj)
                     }
                 }
@@ -496,7 +633,14 @@ class SkyObjectRepository @Inject constructor(
                 .toList()
         }
         for (drone in remoteIdList) {
-            fusionEngine.updateWithEvidence(drone.id, drone.source, drone.confidence, now)
+            if (!isFormationDroneId(drone.droneId)) {
+                fusionEngine.updateWithEvidence(
+                    drone.id,
+                    drone.source,
+                    drone.confidence,
+                    drone.lastUpdated,
+                )
+            }
         }
         merged.addAll(remoteIdList)
 
@@ -508,14 +652,23 @@ class SkyObjectRepository @Inject constructor(
                 .toList()
         }
         // Build a set of droneIds already seen via BLE RID for fast lookup
-        val bleRidDroneIds = remoteIdList.mapNotNull { it.droneId }.toSet()
+        val physicalBleRidDrones = remoteIdList
+            .filterNot { isFormationDroneId(it.droneId) }
+        val bleRidDroneIds = physicalBleRidDrones.map { it.droneId }.toSet()
         // Track BLE drones replaced by fresher NaN duplicates (avoid modifying merged during iteration)
         val replacedByNan = mutableSetOf<String>()
         val nanToAdd = mutableListOf<Drone>()
         for (nanDrone in nanList) {
-            fusionEngine.updateWithEvidence(nanDrone.id, nanDrone.source, nanDrone.confidence, now)
+            if (!isFormationDroneId(nanDrone.droneId)) {
+                fusionEngine.updateWithEvidence(
+                    nanDrone.id,
+                    nanDrone.source,
+                    nanDrone.confidence,
+                    nanDrone.lastUpdated,
+                )
+            }
             if (nanDrone.droneId in bleRidDroneIds) {
-                val bleMatch = remoteIdList.find { it.droneId == nanDrone.droneId }
+                val bleMatch = physicalBleRidDrones.find { it.droneId == nanDrone.droneId }
                 if (bleMatch != null && nanDrone.lastUpdated.isAfter(bleMatch.lastUpdated)) {
                     replacedByNan.add(bleMatch.id)
                     nanToAdd.add(nanDrone)
@@ -529,13 +682,19 @@ class SkyObjectRepository @Inject constructor(
         }
         merged.addAll(nanToAdd)
         // Combined Remote ID list for WiFi dedup (both BLE and NaN)
-        val allRemoteIdList = remoteIdList + nanList
+        val allRemoteIdList = (remoteIdList + nanList)
+            .filterNot { isFormationDroneId(it.droneId) }
 
         // 4. Add WiFi drones that are not duplicates of any Remote ID drones
         synchronized(wifiObjects) {
             wifiObjects.values.forEach { wifiDrone ->
                 if (!isStale(wifiDrone, now) && !isDuplicateOfRemoteId(wifiDrone, allRemoteIdList)) {
-                    fusionEngine.updateWithEvidence(wifiDrone.id, wifiDrone.source, wifiDrone.confidence, now)
+                    fusionEngine.updateWithEvidence(
+                        wifiDrone.id,
+                        wifiDrone.source,
+                        wifiDrone.confidence,
+                        wifiDrone.lastUpdated,
+                    )
                     merged.add(wifiDrone)
                 }
             }
@@ -589,6 +748,7 @@ class SkyObjectRepository @Inject constructor(
         Log.d(TAG, "Merged sky objects: ${enriched.size} total " +
                 "(${adsbObjects.size} ADS-B, ${remoteIdObjects.size} BLE-RID, " +
                 "${nanObjects.size} NaN-RID, ${wifiObjects.size} WiFi)")
+        }
     }
 
     /**
@@ -596,7 +756,12 @@ class SkyObjectRepository @Inject constructor(
      * Only writes each unique object once per session to avoid excessive DB writes.
      */
     private fun persistNewDetections(objects: List<SkyObject>) {
-        val newObjects = objects.filter { it.id !in persistedObjectIds }
+        val generation = persistenceGeneration
+        if (generation < 0L) return
+        val newObjects = objects.filter { obj ->
+            !(obj is Drone && isFormationDroneId(obj.droneId)) &&
+                persistedObjectIds.add(obj.id)
+        }
         if (newObjects.isEmpty()) return
         val location = userLocationFix
 
@@ -605,8 +770,19 @@ class SkyObjectRepository @Inject constructor(
                 try {
                     val entity = obj.toHistoryEntity(location.latitude, location.longitude)
                     historyDao.insert(entity)
-                    persistedObjectIds.add(obj.id)
+                } catch (error: CancellationException) {
+                    synchronized(mergeLock) {
+                        if (persistenceGeneration == generation) {
+                            persistedObjectIds.remove(obj.id)
+                        }
+                    }
+                    throw error
                 } catch (e: Exception) {
+                    synchronized(mergeLock) {
+                        if (persistenceGeneration == generation) {
+                            persistedObjectIds.remove(obj.id)
+                        }
+                    }
                     Log.w(TAG, "Failed to persist detection ${obj.id}: ${e.message}")
                 }
             }
@@ -676,7 +852,7 @@ class SkyObjectRepository @Inject constructor(
      * Check if a sky object is stale (not updated within the threshold).
      */
     private fun isStale(obj: SkyObject, now: Instant): Boolean {
-        return Duration.between(obj.lastUpdated, now) > STALE_THRESHOLD
+        return isSkyObjectStale(obj, now)
     }
 
     /**

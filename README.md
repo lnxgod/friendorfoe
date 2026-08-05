@@ -18,13 +18,14 @@ sensor node. Same radios, same policy engine, same Android control surface,
 same backend ingest path. Walk around with it during the day; mount it later as
 part of a multi-node sensor platform.
 
-> Current published tracks: Android/backend/production S3 firmware are on
-> `0.64.68-live-follow`; the native badge USB/factory default is
-> `0.67.2-badge-defcon34`. That badge release adds the themed four-lane
-> instrument UI, custom USB palettes, DEF CON 34 Easter egg, quiet/off mode,
-> and automatic integrity-checked scanner updates from the USB-connected
-> uplink. The native badge, production sensor fleet, and backend/Lite sensor
-> firmware intentionally remain separate firmware families.
+> Current published tracks: Android is
+> `0.67.15-android-rid-ingest-performance`; backend and production S3 firmware
+> remain on `0.64.68-live-follow`; published badge/factory firmware is
+> `0.67.2-badge-defcon34`. New Dash is released independently as source at
+> `0.67.16-new-dash-usb-parity`; it does not change any Android, backend, badge,
+> scanner, or production firmware version. The native badge, production
+> sensor fleet, and backend/Lite sensor firmware intentionally remain separate
+> firmware families.
 
 ## What The Badge Does
 
@@ -53,6 +54,31 @@ One physical badge trio contains:
 The two scanner boards run the same firmware image. The uplink assigns runtime
 roles and scanner profiles, which is what lets the same physical design behave
 like a handheld badge or a stationary sensor.
+
+### Build One
+
+The DEF CON badge is buildable from the fabrication and mechanical files in
+[`hardware/badge/`](hardware/badge/). One complete badge uses:
+
+| Qty | Component | Exact part used for the DEF CON run |
+|----:|-----------|--------------------------------------|
+| 3 | MCU/radio board | [Seeed Studio XIAO ESP32-S3 3-pack, SKU 102010573](https://www.seeedstudio.com/Seeed-Studio-XIAO-ESP32S3-3PCS-p-5919.html) |
+| 3 | External 2.4 GHz Wi-Fi/Bluetooth antenna | [Abracon APAGM2525-S2450 RHCP patch antenna](https://abracon.com/datasheets/APAGM2525-S2450.pdf) |
+| 3 | Antenna coax lead | Seeed lead included with the XIAO ESP32-S3 pack |
+| 1 | Battery connector | JST-clone `S2B-PH-SM4-TB(LF)(SN)` |
+| 1 | Lithium-ion cell | [NDNNAS 103665 PH2.0](https://www.aliexpress.us/item/3256811602344151.html) |
+| 2 | Push button | [4.5 x 4.5 x 3.8 mm, four-pin SMD, SPST-NO](https://www.amazon.com/dp/B07CJSV1ZW?th=1) |
+| 1 | Display | [1.8-inch, 128 x 160, full-color SPI module](https://www.aliexpress.us/item/3256805953674718.html) |
+| 1 | Badge PCB | [Single-board Gerbers](hardware/badge/fabrication/friend-or-foe-badge-single-board.zip), or one badge from the [five-badge/two-core panel](hardware/badge/fabrication/friend-or-foe-badge-oshpark-panel-5-badges-2-cores.zip) |
+| 1 | Battery cage | Printed from the [battery-cage STL](hardware/badge/mechanical/battery-cage-dc34phv.stl) |
+
+The direct board and component cost for the 45-badge DEF CON run was roughly
+**$80 per badge**, excluding tools, labor, 3D-printer time or material, and
+general shop supplies. Prices and availability will move. Read the
+[hardware guide](hardware/badge/README.md) before ordering: it records the
+battery-polarity, button-footprint, display-fit, panel, and antenna lessons from
+the actual build. The original seven-part CSV is published with its supplied
+rows and ordering intact alongside the fabrication files.
 
 ## What It Listens For
 
@@ -101,6 +127,26 @@ Relevant Android code lives under:
 - `android/app/src/main/java/com/friendorfoe/presentation/badge/`
 - `android/app/src/main/java/com/friendorfoe/presentation/privacy/`
 
+## New Dash: One Badge, One USB Cable
+
+New Dash brings the full-size factory badge and Backend Badge Lite native USB
+feeds to a compact browser dashboard on macOS. It runs directly from source,
+strictly verifies one badge uplink, shows live detections and Remote ID, keeps
+local history, and supports Lite acknowledged-live/configuration capabilities
+without using the legacy multi-node backend or reflashing compatible firmware.
+Its Map view can retain formation dots for 1–120 minutes, refresh without
+resetting zoom, and clear/restart a timed drawing session without deleting
+saved history.
+
+```sh
+cd new-dash
+./run.sh
+```
+
+See the [New Dash source and deployment guide](new-dash/README.md) for
+requirements, explicit USB-port selection, and the auto-restarting overnight
+service.
+
 ## From Badge To Sensor Platform
 
 The Packet Village demo is a badge, but the architecture is a sensor platform:
@@ -122,11 +168,13 @@ field console.
 | Path | Purpose |
 |------|---------|
 | `android/` | Kotlin + Jetpack Compose app, badge console, privacy views, AR/list/map screens |
+| `new-dash/` | Compact macOS USB browser console for full-size or Lite badge; local SQLite history, formation map, and capability-gated controls |
 | `backend/` | FastAPI ingest, enrichment, dashboard, triangulation, calibration, firmware endpoints |
 | `backend-firmware/` | Isolated Backend Badge Lite/Fullsize ESP32 firmware, offline Lite factory flasher, release verification, and canary tooling |
 | `esp32/scanner/` | ESP32-S3 scanner firmware for BLE/Wi-Fi detection |
 | `esp32/uplink/` | ESP32-S3 uplink firmware, display, USB-C control, read-only local status, UART OTA relay |
 | `esp32/shared/` | Shared C detection policy, badge display policy, themes, signatures, protocol types |
+| `hardware/badge/` | Badge BOM, fabrication Gerbers, panel, and battery-cage STL |
 | `docs/badge/` | Badge operator notes and current badge version matrix |
 | `scripts/` | Badge flashing, debug bridge, recovery, and utility scripts |
 
@@ -156,6 +204,20 @@ source .venv/bin/activate
 pip install -r requirements.txt
 pytest tests -v
 ```
+
+New Dash source launch and tests (separate from `backend/`):
+
+```sh
+cd new-dash
+./run.sh
+
+PYTHONPATH=src python3 -m unittest discover -s tests -v
+python3 -m compileall -q src tests
+node --test tests/browser_behavior_test.mjs
+```
+
+See [`new-dash/README.md`](new-dash/README.md) for explicit USB-port selection,
+local data, controls, telemetry limits, and troubleshooting.
 
 ESP32 native policy tests:
 
@@ -245,6 +307,7 @@ run as a fleet.
 
 ## Docs
 
+- Badge hardware and BOM: [hardware/badge/README.md](hardware/badge/README.md)
 - Badge operator guide: [docs/badge/README.md](docs/badge/README.md)
 - Badge recovery: [docs/badge_scanner_recovery.md](docs/badge_scanner_recovery.md)
 - Badge boundary notes: [docs/fof_badge_notes.md](docs/fof_badge_notes.md)

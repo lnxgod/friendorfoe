@@ -44,7 +44,6 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -65,9 +64,9 @@ import com.friendorfoe.presentation.components.FofEmptyState
 import com.friendorfoe.presentation.components.FofErrorState
 import com.friendorfoe.presentation.components.FofLoadingState
 import com.friendorfoe.presentation.components.FofNoMatchesState
-import com.friendorfoe.presentation.permissions.AppFeature
+import com.friendorfoe.presentation.permissions.PermissionSettingsLaunchResult
 import com.friendorfoe.presentation.permissions.PermissionUiState
-import com.friendorfoe.presentation.permissions.isUsable
+import com.friendorfoe.presentation.permissions.isUsableFor
 import com.friendorfoe.presentation.permissions.permissionExplanation
 import com.friendorfoe.presentation.permissions.permissionRecovery
 import com.friendorfoe.presentation.permissions.permissionTitle
@@ -104,27 +103,14 @@ fun PrivacyScreen(
     val directionState by viewModel.directionSweepState.collectAsStateWithLifecycle()
     val directionResult by viewModel.directionResultText.collectAsStateWithLifecycle()
     val permissionBindings = rememberPermissionBindings()
+    val pendingPermissionAction by viewModel.pendingPermissionAction.collectAsStateWithLifecycle()
     var detailKey by remember { mutableStateOf<PrivacyFindingKey?>(null) }
     var trackingKey by remember { mutableStateOf<PrivacyFindingKey?>(null) }
-    var pendingPermissionSource by remember { mutableStateOf<PrivacySourceKind?>(null) }
-    var awaitingSettingsPermissionSource by remember {
-        mutableStateOf<PrivacySourceKind?>(null)
-    }
     val bluetoothSettingsLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult(),
     ) { result ->
         if (shouldRetryAfterBluetoothEnable(result.resultCode)) {
             viewModel.recover(PrivacySourceKind.PHONE_BLE)
-        }
-    }
-
-    val awaitingSource = awaitingSettingsPermissionSource
-    val awaitingFeature = awaitingSource?.let(::permissionFeatureForPrivacySource)
-    val awaitingState = awaitingFeature?.let(permissionBindings::stateFor)
-    LaunchedEffect(awaitingSource, awaitingState) {
-        if (awaitingSource != null && awaitingState?.isUsable() == true) {
-            viewModel.onPrivacyPermissionResolved(awaitingSource)
-            awaitingSettingsPermissionSource = null
         }
     }
 
@@ -137,23 +123,10 @@ fun PrivacyScreen(
         actions = PrivacyActions(
             onRecoverSource = viewModel::recover,
             onEnablePhoneScan = {
-                val permissionState = permissionBindings.stateFor(
-                    AppFeature.PHONE_PRIVACY_SCAN,
-                )
-                if (permissionState.isUsable()) {
-                    viewModel.enablePhonePrivacyScanning()
-                } else {
-                    pendingPermissionSource = PrivacySourceKind.PHONE_BLE
-                }
+                viewModel.beginPermissionRecovery(PrivacySourceKind.PHONE_BLE)
             },
             onResolveSourcePermission = { source ->
-                permissionFeatureForPrivacySource(source)?.let { feature ->
-                    if (permissionBindings.stateFor(feature).isUsable()) {
-                        viewModel.onPrivacyPermissionResolved(source)
-                    } else {
-                        pendingPermissionSource = source
-                    }
-                } ?: viewModel.recover(source)
+                viewModel.beginPermissionRecovery(source)
             },
             onTurnOnBluetooth = {
                 bluetoothSettingsLauncher.launch(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE))
@@ -177,38 +150,44 @@ fun PrivacyScreen(
         ),
     )
 
-    pendingPermissionSource?.let { source ->
+    pendingPermissionAction?.takeIf {
+        !it.requestLaunched || it.settingsLaunchFailed
+    }?.let { pending ->
+        val source = pending.source
         val feature = requireNotNull(permissionFeatureForPrivacySource(source))
         val permissionState = permissionBindings.stateFor(feature)
         val canRequest = permissionState == PermissionUiState.Denied
         AlertDialog(
-            onDismissRequest = { pendingPermissionSource = null },
+            onDismissRequest = viewModel::cancelPendingPermissionAction,
             title = { Text(permissionTitle(feature)) },
             text = {
                 Text(
-                    if (canRequest) permissionExplanation(feature)
-                    else permissionRecovery(feature, permissionState),
+                    if (pending.settingsLaunchFailed) {
+                        "Could not open Android settings. Try again, or change the permission in Settings."
+                    } else if (canRequest) {
+                        permissionExplanation(feature)
+                    } else {
+                        permissionRecovery(feature, permissionState)
+                    },
                 )
             },
             confirmButton = {
                 TextButton(
                     enabled = permissionState != PermissionUiState.Loading,
                     onClick = {
-                        pendingPermissionSource = null
                         when {
-                            permissionState.isUsable() -> {
-                                viewModel.onPrivacyPermissionResolved(source)
-                            }
+                            permissionState.isUsableFor(feature) -> Unit
                             canRequest -> {
-                                permissionBindings.request(feature) { resolved ->
-                                    if (resolved.isUsable()) {
-                                        viewModel.onPrivacyPermissionResolved(source)
-                                    }
-                                }
+                                viewModel.markPermissionRequestLaunched()
+                                permissionBindings.request(feature)
                             }
                             else -> {
-                                awaitingSettingsPermissionSource = source
-                                permissionBindings.openSettings(feature)
+                                when (permissionBindings.openSettings(feature)) {
+                                    PermissionSettingsLaunchResult.Opened ->
+                                        viewModel.markPermissionSettingsOpened()
+                                    PermissionSettingsLaunchResult.Failed ->
+                                        viewModel.markPermissionSettingsLaunchFailed()
+                                }
                             }
                         }
                     },
@@ -217,7 +196,7 @@ fun PrivacyScreen(
                 }
             },
             dismissButton = {
-                TextButton(onClick = { pendingPermissionSource = null }) { Text("Cancel") }
+                TextButton(onClick = viewModel::cancelPendingPermissionAction) { Text("Cancel") }
             },
         )
     }
@@ -479,15 +458,6 @@ private fun PrivacySourceStatusRow(
             }
         }
     }
-}
-
-private fun permissionFeatureForPrivacySource(source: PrivacySourceKind): AppFeature? = when (source) {
-    PrivacySourceKind.PHONE_BLE,
-    PrivacySourceKind.WIFI_ANALYSIS,
-    -> AppFeature.PHONE_PRIVACY_SCAN
-
-    PrivacySourceKind.PHONE_ULTRASONIC -> AppFeature.ULTRASONIC
-    else -> null
 }
 
 internal fun shouldRetryAfterBluetoothEnable(resultCode: Int): Boolean =

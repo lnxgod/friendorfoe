@@ -33,11 +33,20 @@ object OpenDroneIdParser {
     const val MSG_TYPE_OPERATOR_ID = 5
     const val MSG_TYPE_MESSAGE_PACK = 0xF
 
+    private const val ODID_MESSAGE_SIZE = 25
+    private const val MESSAGE_PACK_HEADER_SIZE = 3
+
     // Location message field constants
     private const val LAT_LON_SCALE = 1e-7
     private const val ALT_SCALE = 0.5
     private const val ALT_OFFSET = -1000.0
-    private const val SPEED_SCALE = 0.25f
+    private const val SPEED_LOW_SCALE = 0.25f
+    private const val SPEED_HIGH_SCALE = 0.75f
+    private const val SPEED_LOW_RANGE_MAX = 255 * SPEED_LOW_SCALE
+    private const val LOCATION_SPEED_MULT_MASK = 0x01
+    private const val LOCATION_EW_DIRECTION_MASK = 0x02
+    private const val MAX_VALID_DIRECTION_DEGREES = 359f
+    private const val INVALID_HORIZONTAL_SPEED_MPS = 255f
 
     /**
      * Parse an OpenDroneID message and update the given partial state.
@@ -90,8 +99,8 @@ object OpenDroneIdParser {
      * Format (25 bytes):
      *   Byte 0: [msg type (4 bits)] [protocol version (4 bits)]
      *   Byte 1: Status flags
-     *   Byte 2: Direction (heading / 2, so 0-179 maps to 0-358 degrees)
-     *   Byte 3: Speed (horizontal, in 0.25 m/s increments)
+     *   Byte 2: Direction (0-179 degrees; byte 1 selects the east/west half-circle)
+     *   Byte 3: Horizontal speed (byte 1 selects the low or high speed scale)
      *   Byte 4: Vertical speed (int8, in 0.5 m/s increments)
      *   Bytes 5-8: Latitude (int32, x 1e-7 degrees)
      *   Bytes 9-12: Longitude (int32, x 1e-7 degrees)
@@ -109,11 +118,17 @@ object OpenDroneIdParser {
 
         val buffer = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN)
 
+        val locationFlags = data[1].toInt() and 0xFF
         val directionRaw = data[2].toInt() and 0xFF
-        val heading = directionRaw * 2.0f
+        val heading = directionRaw.toFloat() +
+            if ((locationFlags and LOCATION_EW_DIRECTION_MASK) != 0) 180f else 0f
 
         val speedRaw = data[3].toInt() and 0xFF
-        val speedMps = speedRaw * SPEED_SCALE
+        val speedMps = if ((locationFlags and LOCATION_SPEED_MULT_MASK) != 0) {
+            speedRaw * SPEED_HIGH_SCALE + SPEED_LOW_RANGE_MAX
+        } else {
+            speedRaw * SPEED_LOW_SCALE
+        }
 
         val latRaw = buffer.getInt(5)
         val latitude = latRaw * LAT_LON_SCALE
@@ -131,8 +146,8 @@ object OpenDroneIdParser {
         state.latitude = latitude
         state.longitude = longitude
         state.altitudeMeters = altitudeMeters
-        state.heading = if (heading <= 360f) heading else null
-        state.speedMps = speedMps
+        state.heading = if (heading <= MAX_VALID_DIRECTION_DEGREES) heading else null
+        state.speedMps = if (speedMps == INVALID_HORIZONTAL_SPEED_MPS) null else speedMps
 
         // Vertical speed (byte 4): int8, 0.5 m/s increments, 63 = unknown
         if (data.size >= 5) {
@@ -158,11 +173,11 @@ object OpenDroneIdParser {
             }
         }
 
-        // Accuracy (byte 19): high nibble = horizontal, low nibble = vertical
+        // Accuracy (byte 19): high nibble = vertical, low nibble = horizontal
         if (data.size >= 20) {
             val accByte = data[19].toInt() and 0xFF
-            val hCode = (accByte ushr 4) and 0x0F
-            val vCode = accByte and 0x0F
+            val hCode = accByte and 0x0F
+            val vCode = (accByte ushr 4) and 0x0F
             state.horizontalAccuracyCode = hCode
             state.verticalAccuracyCode = vCode
         }
@@ -206,21 +221,24 @@ object OpenDroneIdParser {
         if (data.size >= 12) {
             state.areaCount = buffer.getShort(10).toInt() and 0xFFFF
         }
-        // Area radius (bytes 12-13): x 10m
-        if (data.size >= 14) {
-            state.areaRadius = buffer.getShort(12).toInt() and 0xFFFF
+        // Area radius (byte 12): 10 m units.
+        if (data.size >= 13) {
+            state.areaRadius = (data[12].toInt() and 0xFF) * 10
         }
-        // Area ceiling (bytes 14-15): x 0.5 - 1000
-        if (data.size >= 16) {
-            state.areaCeiling = (buffer.getShort(14).toInt() and 0xFFFF) * ALT_SCALE + ALT_OFFSET
+        // Area ceiling (bytes 13-14): x 0.5 - 1000; encoded zero is unknown.
+        if (data.size >= 15) {
+            val raw = buffer.getShort(13).toInt() and 0xFFFF
+            state.areaCeiling = if (raw == 0) null else raw * ALT_SCALE + ALT_OFFSET
         }
-        // Area floor (bytes 16-17): x 0.5 - 1000
-        if (data.size >= 18) {
-            state.areaFloor = (buffer.getShort(16).toInt() and 0xFFFF) * ALT_SCALE + ALT_OFFSET
+        // Area floor (bytes 15-16): x 0.5 - 1000; encoded zero is unknown.
+        if (data.size >= 17) {
+            val raw = buffer.getShort(15).toInt() and 0xFFFF
+            state.areaFloor = if (raw == 0) null else raw * ALT_SCALE + ALT_OFFSET
         }
-        // Classification type (byte 18)
-        if (data.size >= 19) {
-            state.classificationTypeCode = data[18].toInt() and 0xFF
+        // Classification type is bits 2-4 of byte 1. Byte 17 carries EU
+        // category/class values only when this type is EU.
+        if (data.size >= 2) {
+            state.classificationTypeCode = (data[1].toInt() ushr 2) and 0x07
         }
     }
 
@@ -261,29 +279,43 @@ object OpenDroneIdParser {
      *
      * Format:
      *   Byte 0: [msg type (4 bits)] [protocol version (4 bits)]
-     *   Byte 1: Message count
-     *   Bytes 2+: N x 25-byte messages
+     *   Byte 1: Size of each nested message (25 bytes)
+     *   Byte 2: Message count
+     *   Bytes 3+: N x 25-byte messages
      */
     private fun parseMessagePack(data: ByteArray, state: DronePartialState, depth: Int) {
         if (depth >= 2) {
             Log.w(TAG, "Message Pack recursion depth exceeded, skipping")
             return
         }
-        if (data.size < 2) return
-        val messageCount = data[1].toInt() and 0xFF
-        val messagesStart = 2
+        val messageCount = messagePackCountOrNull(data) ?: return
 
         for (i in 0 until messageCount) {
-            val offset = messagesStart + i * 25
-            if (offset + 25 > data.size) break
-            val msgData = data.copyOfRange(offset, offset + 25)
+            val offset = MESSAGE_PACK_HEADER_SIZE + i * ODID_MESSAGE_SIZE
+            val msgData = data.copyOfRange(offset, offset + ODID_MESSAGE_SIZE)
             parseMessage(msgData, state, depth + 1)
         }
     }
 
+    /** Returns true only for a complete standard OpenDroneID Message Pack. */
+    internal fun isValidMessagePack(data: ByteArray): Boolean =
+        messagePackCountOrNull(data) != null
+
+    private fun messagePackCountOrNull(data: ByteArray): Int? {
+        if (data.size < MESSAGE_PACK_HEADER_SIZE) return null
+        val messageType = (data[0].toInt() and 0xF0) ushr 4
+        if (messageType != MSG_TYPE_MESSAGE_PACK) return null
+
+        val singleMessageSize = data[1].toInt() and 0xFF
+        val messageCount = data[2].toInt() and 0xFF
+        if (singleMessageSize != ODID_MESSAGE_SIZE || messageCount == 0) return null
+
+        val expectedSize = MESSAGE_PACK_HEADER_SIZE + singleMessageSize * messageCount
+        return messageCount.takeIf { data.size == expectedSize }
+    }
+
     /**
-     * Convert ASTM F3411-22a accuracy code to meters.
-     * Table 4: Horizontal/Vertical position accuracy.
+     * Convert ASTM F3411-22a horizontal accuracy code to meters.
      */
     fun accuracyCodeToMeters(code: Int): Float? = when (code) {
         0 -> null        // Unknown
@@ -299,6 +331,20 @@ object OpenDroneIdParser {
         10 -> 10f        // < 10 m
         11 -> 3f         // < 3 m
         12 -> 1f         // < 1 m
+        else -> null
+    }
+
+    /**
+     * Convert ASTM F3411-22a vertical accuracy code to meters.
+     */
+    fun verticalAccuracyCodeToMeters(code: Int): Float? = when (code) {
+        0 -> null        // Unknown
+        1 -> 150f        // < 150 m
+        2 -> 45f         // < 45 m
+        3 -> 25f         // < 25 m
+        4 -> 10f         // < 10 m
+        5 -> 3f          // < 3 m
+        6 -> 1f          // < 1 m
         else -> null
     }
 
@@ -381,7 +427,7 @@ object OpenDroneIdParser {
                 heightAglMeters = heightAglMeters,
                 geodeticAltitudeMeters = geodeticAltitudeMeters,
                 horizontalAccuracyMeters = horizontalAccuracyCode?.let { accuracyCodeToMeters(it) },
-                verticalAccuracyMeters = verticalAccuracyCode?.let { accuracyCodeToMeters(it) },
+                verticalAccuracyMeters = verticalAccuracyCode?.let { verticalAccuracyCodeToMeters(it) },
                 idType = idType
             )
         }

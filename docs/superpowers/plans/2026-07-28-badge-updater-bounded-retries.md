@@ -29,8 +29,8 @@ source-contract hardening verifier.
   `esp32/shared/`, or `android/`.
 - Do not build, flash, reboot, reset, or otherwise mutate connected hardware
   during implementation and automated verification.
-- Do not change the CON CRUD game, badge UI, detectors, themes, Easter eggs,
-  factory firmware bundle, Android app, or release metadata.
+- Do not change the badge UI, detectors, themes, factory firmware bundle,
+  Android app, or release metadata.
 - Keep `0.64.92-badge-defcon34` as the private canary identity.
 - Reserve `0.67.0-badge-defcon34` until separate attended physical, game, and
   Android acceptance.

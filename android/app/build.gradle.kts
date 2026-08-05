@@ -23,8 +23,8 @@ android {
         applicationId = "com.friendorfoe"
         minSdk = 26
         targetSdk = 34
-        versionCode = 114
-        versionName = "0.67.5-android-privacy-repair"
+        versionCode = 124
+        versionName = "0.67.15-android-rid-ingest-performance"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

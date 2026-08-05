@@ -41,35 +41,38 @@ class SkyAlertNotifier @Inject constructor(
         notifyCandidate(candidate)
     }
 
+    @Suppress("MissingPermission")
     private fun notifyCandidate(candidate: SkyAlertCandidate) {
         if (!policy.shouldNotify(candidate)) return
         if (!hasNotificationPermission()) return
 
-        ensureChannel()
-        val intent = Intent(context, MainActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
-        }
-        val pendingIntent = PendingIntent.getActivity(
-            context,
-            0,
-            intent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-        val notification = NotificationCompat.Builder(context, CHANNEL_ID)
-            .setSmallIcon(R.drawable.ic_launcher_foreground)
-            .setContentTitle(candidate.title)
-            .setContentText(candidate.body)
-            .setStyle(NotificationCompat.BigTextStyle().bigText(candidate.body))
-            .setContentIntent(pendingIntent)
-            .setAutoCancel(true)
-            .setPriority(NotificationCompat.PRIORITY_HIGH)
-            .setCategory(NotificationCompat.CATEGORY_ALARM)
-            .build()
+        runCatching {
+            ensureChannel()
+            val intent = Intent(context, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            }
+            val pendingIntent = PendingIntent.getActivity(
+                context,
+                0,
+                intent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            val notification = NotificationCompat.Builder(context, CHANNEL_ID)
+                .setSmallIcon(R.drawable.ic_launcher_foreground)
+                .setContentTitle(candidate.title)
+                .setContentText(candidate.body)
+                .setStyle(NotificationCompat.BigTextStyle().bigText(candidate.body))
+                .setContentIntent(pendingIntent)
+                .setAutoCancel(true)
+                .setPriority(NotificationCompat.PRIORITY_HIGH)
+                .setCategory(NotificationCompat.CATEGORY_ALARM)
+                .build()
 
-        NotificationManagerCompat.from(context).notify(
-            candidate.key.hashCode() and Int.MAX_VALUE,
-            notification
-        )
+            NotificationManagerCompat.from(context).notify(
+                candidate.key.hashCode() and Int.MAX_VALUE,
+                notification
+            )
+        }
     }
 
     private fun hasNotificationPermission(): Boolean {

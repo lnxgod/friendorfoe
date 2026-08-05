@@ -69,6 +69,11 @@ internal data class AircraftMarkerPresentation(
     val visuallyConfirmed: Boolean,
 )
 
+internal fun formationPointsChanged(
+    previous: List<FormationMapPoint>?,
+    next: List<FormationMapPoint>,
+): Boolean = previous !== next && previous != next
+
 internal fun MapTrack.toAircraftMarkerPresentation(
     visuallyConfirmed: Boolean,
 ): AircraftMarkerPresentation = AircraftMarkerPresentation(
@@ -193,6 +198,9 @@ internal class MapOverlayController(
     )
 
     private val aircraftMarkers = RetainedOverlayStore<AircraftOverlay>()
+    private val formationOverlay = FormationOverlay(context)
+    private var formationOverlayAttached = false
+    private var renderedFormationPoints: List<FormationMapPoint>? = null
     private val remoteMarkers = RetainedOverlayStore<RemoteOverlay>()
     private val sensorMarkers = RetainedOverlayStore<Marker>()
     private val sensorDroneMarkers = RetainedOverlayStore<SensorDroneOverlay>()
@@ -206,9 +214,11 @@ internal class MapOverlayController(
     private var remoteSearchRing: Polygon? = null
     private var distanceRingKey: DistanceRingKey? = null
     private val distanceRings = mutableListOf<Polygon>()
+    private var cameraInitialized = false
 
     fun render(
         mapTracks: List<MapTrack>,
+        formationPoints: List<FormationMapPoint>,
         userPosition: Position,
         followCompass: Boolean,
         stabilizedMapHeading: Float,
@@ -217,21 +227,30 @@ internal class MapOverlayController(
         sensorDrones: List<LocatedDroneDto>,
         remoteSearchResults: List<SkyObject>,
         remoteSearchCenter: Position?,
-        isUserPanning: Boolean,
+        userControlsCamera: Boolean,
         overlayPlan: MapOverlayPlan,
     ) {
         map.mapOrientation = if (followCompass) -stabilizedMapHeading else 0f
+        applyCameraAction(
+            userPosition = userPosition,
+            followPhone = followCompass,
+            userControlsCamera = userControlsCamera,
+            locationPermissionUsable = overlayPlan.locationPermissionUsable,
+        )
 
         if (overlayPlan.renderTargets) {
+            updateFormationOverlay(formationPoints)
             updateAircraftMarkers(mapTracks, activeVisualFocusIds)
             updateSensorMarkers(remoteSensors)
             updateSensorDroneOverlays(sensorDrones)
-            updateRemoteMarkers(remoteSearchResults, mapTracks.mapTo(mutableSetOf()) { it.skyObject.id })
+            val localObjectIds = mapTracks.mapTo(mutableSetOf()) { it.skyObject.id }
+            formationPoints.mapTo(localObjectIds, FormationMapPoint::objectId)
+            updateRemoteMarkers(remoteSearchResults, localObjectIds)
             updateRemoteSearchMarker(remoteSearchCenter, remoteSearchResults.size)
             updateRemoteSearchRing(remoteSearchCenter)
         }
 
-        if (overlayPlan.renderUserMarker && userPosition.hasMapCoordinates()) {
+        if (overlayPlan.renderUserMarker && userPosition.hasValidMapCoordinates()) {
             val userGeoPoint = userPosition.toGeoPoint()
             if (overlayPlan.renderPreciseUserOverlays) {
                 updateDistanceRings(userPosition, remoteSearchCenter)
@@ -245,9 +264,6 @@ internal class MapOverlayController(
                 headingDegrees = stabilizedMapHeading,
                 precise = overlayPlan.renderPreciseUserOverlays,
             )
-            if (overlayPlan.autoCenterOnUser) {
-                updateCenter(userGeoPoint, followCompass, isUserPanning)
-            }
         } else {
             clearUserOverlays()
         }
@@ -260,7 +276,7 @@ internal class MapOverlayController(
         activeVisualFocusIds: Set<String>,
     ) {
         val presentations = tracks
-            .filter { it.position.hasMapCoordinates() }
+            .filter { it.position.hasValidMapCoordinates() }
             .map { track ->
                 track.toAircraftMarkerPresentation(track.skyObject.id in activeVisualFocusIds)
             }
@@ -304,12 +320,38 @@ internal class MapOverlayController(
         )
     }
 
+    private fun updateFormationOverlay(points: List<FormationMapPoint>) {
+        if (!formationPointsChanged(renderedFormationPoints, points)) return
+        renderedFormationPoints = points
+
+        val geoPoints = points.mapNotNull { point ->
+            if (point.latitude.isFinite() && point.longitude.isFinite() &&
+                (point.latitude != 0.0 || point.longitude != 0.0)
+            ) {
+                GeoPoint(point.latitude, point.longitude)
+            } else {
+                null
+            }
+        }
+        formationOverlay.replacePoints(geoPoints)
+
+        if (geoPoints.isEmpty()) {
+            if (formationOverlayAttached) {
+                map.overlays.remove(formationOverlay)
+                formationOverlayAttached = false
+            }
+        } else if (!formationOverlayAttached) {
+            map.overlays.add(formationOverlay)
+            formationOverlayAttached = true
+        }
+    }
+
     private fun updateRemoteMarkers(
         remoteSearchResults: List<SkyObject>,
         localObjectIds: Set<String>,
     ) {
         val desired = remoteSearchResults.filter {
-            it.position.hasMapCoordinates() && it.id !in localObjectIds
+            it.position.hasValidMapCoordinates() && it.id !in localObjectIds
         }
         remoteMarkers.render(
             desired = desired,
@@ -565,18 +607,30 @@ internal class MapOverlayController(
         clearPreciseUserOverlays()
     }
 
-    private fun updateCenter(userGeoPoint: GeoPoint, following: Boolean, isUserPanning: Boolean) {
-        if (isUserPanning) return
-        if (following) {
-            map.controller.animateTo(userGeoPoint)
-            return
+    private fun applyCameraAction(
+        userPosition: Position,
+        followPhone: Boolean,
+        userControlsCamera: Boolean,
+        locationPermissionUsable: Boolean,
+    ) {
+        when (
+            mapCameraAction(
+                locationPermissionUsable = locationPermissionUsable,
+                userPosition = userPosition,
+                cameraInitialized = cameraInitialized,
+                followPhone = followPhone,
+                userControlsCamera = userControlsCamera,
+            )
+        ) {
+            MapCameraAction.InitializeAtPhone -> {
+                map.controller.setZoom(INITIAL_MAP_ZOOM)
+                map.controller.setCenter(userPosition.toGeoPoint())
+                cameraInitialized = true
+            }
+            MapCameraAction.FollowPhone -> map.controller.setCenter(userPosition.toGeoPoint())
+            MapCameraAction.WaitForLocation,
+            MapCameraAction.KeepUserCamera -> Unit
         }
-
-        val currentCenter = map.mapCenter
-        val distanceMeters = userGeoPoint.distanceToAsDouble(
-            GeoPoint(currentCenter.latitude, currentCenter.longitude)
-        )
-        if (distanceMeters > 500) map.controller.animateTo(userGeoPoint)
     }
 
     private fun createDistanceRing(center: GeoPoint, radiusNm: Double): Polygon = Polygon(map).apply {
@@ -636,8 +690,6 @@ private fun markerSnippet(obj: SkyObject): String = when (obj) {
     }
     is Drone -> obj.manufacturer ?: "Unknown drone"
 }
-
-private fun Position.hasMapCoordinates(): Boolean = latitude != 0.0 || longitude != 0.0
 
 private fun Position.toGeoPoint(): GeoPoint = GeoPoint(latitude, longitude)
 

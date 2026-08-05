@@ -882,22 +882,6 @@ class CalibrationViewModel @Inject constructor(
         }
     }
 
-    /** Returns the list of permissions still needing runtime grant.
-     *  Empty list → the screen can call startWalk(). */
-    fun missingPermissions(granted: Set<String>): List<String> {
-        val needed = mutableListOf(
-            android.Manifest.permission.ACCESS_FINE_LOCATION,
-        )
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
-            needed += listOf(
-                android.Manifest.permission.BLUETOOTH_ADVERTISE,
-                android.Manifest.permission.BLUETOOTH_SCAN,
-                android.Manifest.permission.BLUETOOTH_CONNECT,
-            )
-        }
-        return needed.filter { it !in granted }
-    }
-
     fun onRuntimePermissionsChanged() {
         permissionChangeNotifier.onRuntimePermissionsChanged()
     }

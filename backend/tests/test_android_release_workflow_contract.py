@@ -7,8 +7,8 @@ ANDROID_GRADLE = REPO_ROOT / "android" / "app" / "build.gradle.kts"
 ANDROID_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "android-build.yml"
 ESP32_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "esp32-web-flasher.yml"
 
-VERSION_NAME = "0.67.5-android-privacy-repair"
-VERSION_CODE = 114
+VERSION_NAME = "0.67.15-android-rid-ingest-performance"
+VERSION_CODE = 124
 SIGNER_SHA256 = (
     "3a1581ba5d10df59fdb28e09987851d6c7d79ce26df4eb69b9f6d262b9b68e95"
 )
@@ -34,8 +34,14 @@ MAKE_LATEST_EXPRESSION = (
 )
 ESP32_BUILD_GUARD = (
     "if: ${{ !((github.event_name == 'release' && "
-    "contains(github.event.release.tag_name, '-android-')) || "
-    "(github.event_name != 'release' && contains(github.ref_name, '-android-'))) }}"
+    "(contains(github.event.release.tag_name, '-android-') || "
+    "contains(github.event.release.tag_name, '-new-dash-'))) || "
+    "(github.event_name != 'release' && "
+    "(contains(github.ref_name, '-android-') || "
+    "contains(github.ref_name, '-new-dash-')))) }}"
+)
+ANDROID_NEW_DASH_BUILD_GUARD = (
+    "if: ${{ !contains(github.ref_name, '-new-dash-') }}"
 )
 
 
@@ -81,7 +87,7 @@ def test_release_signing_is_test_gated_verified_and_secret_scoped():
     signing = _job(workflow, "sign-release", "publish-release")
 
     assert "contents: read" in build
-    assert "./gradlew clean testDebugUnitTest assembleDebug" in build
+    assert "./gradlew clean testDebugUnitTest lintDebug assembleDebug" in build
     assert "needs: build" in signing
     assert "contents: read" in signing
     assert "contents: write" not in signing
@@ -145,13 +151,20 @@ def test_release_publisher_has_write_access_without_signing_secrets():
         assert f"secrets.{secret}" not in publish
 
 
-def test_android_only_tag_skips_all_firmware_work():
-    workflow = ESP32_WORKFLOW.read_text()
-    build = _job(workflow, "build", "deploy")
-    deploy = _job(workflow, "deploy")
+def test_source_only_tags_skip_unrelated_release_work():
+    android_workflow = ANDROID_WORKFLOW.read_text()
+    android_build = _job(android_workflow, "build", "sign-release")
+    android_signing = _job(android_workflow, "sign-release", "publish-release")
+    android_publish = _job(android_workflow, "publish-release")
+    esp32_workflow = ESP32_WORKFLOW.read_text()
+    esp32_build = _job(esp32_workflow, "build", "deploy")
+    esp32_deploy = _job(esp32_workflow, "deploy")
 
-    assert ESP32_BUILD_GUARD in build
-    assert "contains(github.event.release.tag_name, 'android')" not in build
-    assert "contains(github.ref_name, 'android')" not in build
-    assert "Attach firmware to release" in build
-    assert "needs.build.result == 'success'" in deploy
+    assert ANDROID_NEW_DASH_BUILD_GUARD in android_build
+    assert "!contains(github.ref_name, '-new-dash-')" in android_signing
+    assert "!contains(github.ref_name, '-new-dash-')" in android_publish
+    assert ESP32_BUILD_GUARD in esp32_build
+    assert "contains(github.event.release.tag_name, 'android')" not in esp32_build
+    assert "contains(github.ref_name, 'android')" not in esp32_build
+    assert "Attach firmware to release" in esp32_build
+    assert "needs.build.result == 'success'" in esp32_deploy

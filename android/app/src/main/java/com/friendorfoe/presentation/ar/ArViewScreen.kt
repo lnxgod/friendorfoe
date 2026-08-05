@@ -63,6 +63,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -111,9 +112,15 @@ import com.friendorfoe.presentation.detail.DetailViewModel
 import com.friendorfoe.presentation.detail.DroneDetailContent
 import com.friendorfoe.presentation.list.listBadgeVisual
 import com.friendorfoe.presentation.list.listPrimaryText
+import com.friendorfoe.presentation.permissions.PermissionUiState
+import com.friendorfoe.presentation.permissions.AppFeature
+import com.friendorfoe.presentation.permissions.isUsableFor
+import com.friendorfoe.presentation.permissions.PermissionSettingsLaunchResult
+import com.friendorfoe.presentation.permissions.openApplicationDetailsSettings
 import com.friendorfoe.presentation.util.categoryBadge
 import com.friendorfoe.presentation.util.categoryColor
 import com.friendorfoe.domain.model.ObjectCategory
+import com.friendorfoe.sensor.ArVisualRangePolicy
 import com.friendorfoe.sensor.ScreenPosition
 import kotlin.math.atan2
 import kotlin.math.cos
@@ -141,19 +148,28 @@ fun ArViewScreen(
     viewModel: ArViewModel = hiltViewModel(),
     detailViewModel: DetailViewModel = hiltViewModel(),
     captureReviewViewModel: CaptureReviewViewModel = hiltViewModel(),
-    isPreciseLocation: Boolean = true,
+    locationPermissionState: PermissionUiState,
 ) {
+    val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
-    val activity = LocalContext.current as? Activity
+    val activity = context as? Activity
 
     // Collect state from ViewModel
     val screenPositions by viewModel.screenPositions.collectAsStateWithLifecycle()
-    val displayedScreenPositions = if (isPreciseLocation) screenPositions else emptyList()
+    val gpsStatus by viewModel.gpsStatus.collectAsStateWithLifecycle()
+    val radioPositioningAvailable = isRadioPositioningAvailable(
+        locationPermissionState,
+        gpsStatus,
+    )
+    val displayedScreenPositions = displayedRadioPositions(
+        screenPositions,
+        locationPermissionState,
+        gpsStatus,
+    )
     val aircraftCount by viewModel.aircraftCount.collectAsStateWithLifecycle()
     val droneCount by viewModel.droneCount.collectAsStateWithLifecycle()
     val militaryCount by viewModel.militaryCount.collectAsStateWithLifecycle()
     val emergencyCount by viewModel.emergencyCount.collectAsStateWithLifecycle()
-    val gpsStatus by viewModel.gpsStatus.collectAsStateWithLifecycle()
     val arCoreStatus by viewModel.arCoreStatus.collectAsStateWithLifecycle()
     val selectedObjectId by viewModel.selectedObjectId.collectAsStateWithLifecycle()
     val detailState by detailViewModel.detailState.collectAsStateWithLifecycle()
@@ -188,6 +204,27 @@ fun ArViewScreen(
     val snapTarget by viewModel.snapTarget.collectAsStateWithLifecycle()
     val proximityDrones by viewModel.proximityDrones.collectAsStateWithLifecycle()
     val objectPeek by viewModel.objectPeek.collectAsStateWithLifecycle()
+    val visibleRadioInteractions = displayedRadioInteractions(
+        RadioInteractionState(
+            selectedObjectId = selectedObjectId,
+            lockedObjectId = lockedObjectId,
+            objectPeek = objectPeek,
+            snapTarget = snapTarget,
+            showUnidentifiedSheet = showUnidentifiedSheet,
+        ),
+        locationPermissionState,
+        gpsStatus,
+    )
+    val displayedSelectedObjectId = visibleRadioInteractions.selectedObjectId
+    val displayedLockedObjectId = visibleRadioInteractions.lockedObjectId
+    val displayedObjectPeek = visibleRadioInteractions.objectPeek
+    val displayedSnapTarget = visibleRadioInteractions.snapTarget
+    val displayedUnidentifiedSheet = visibleRadioInteractions.showUnidentifiedSheet
+    val displayedLockedScreenPosition = displayedRadioPositions(
+        listOfNotNull(lockedScreenPosition),
+        locationPermissionState,
+        gpsStatus,
+    ).firstOrNull()
     val captureReviewState by captureReviewViewModel.state.collectAsStateWithLifecycle()
 
     var captureInProgress by remember { mutableStateOf(false) }
@@ -196,7 +233,17 @@ fun ArViewScreen(
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
-                Lifecycle.Event.ON_RESUME -> viewModel.startSensors(activity)
+                Lifecycle.Event.ON_RESUME -> {
+                    viewModel.startSensors(activity)
+                    if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.P) {
+                        captureReviewViewModel.resumeLegacySaveIfGranted(
+                            ContextCompat.checkSelfPermission(
+                                context,
+                                Manifest.permission.WRITE_EXTERNAL_STORAGE,
+                            ) == PackageManager.PERMISSION_GRANTED,
+                        )
+                    }
+                }
                 Lifecycle.Event.ON_PAUSE -> viewModel.stopSensors()
                 else -> {}
             }
@@ -209,7 +256,6 @@ fun ArViewScreen(
         }
     }
 
-    val context = LocalContext.current
     val hapticFeedback = LocalHapticFeedback.current
     val captureInteractions = remember(viewModel, captureReviewViewModel, onObjectTapped) {
         ArCaptureInteractions(
@@ -242,22 +288,28 @@ fun ArViewScreen(
                 ) == PackageManager.PERMISSION_GRANTED
             },
             requestLegacyWritePermission = {
-                legacyWritePermissionLauncher.launch(
+                if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.P) {
+                    legacyWritePermissionLauncher.launch(
+                        Manifest.permission.WRITE_EXTERNAL_STORAGE,
+                    )
+                }
+            },
+            shouldShowLegacyWriteRationale = {
+                activity?.shouldShowRequestPermissionRationale(
                     Manifest.permission.WRITE_EXTERNAL_STORAGE,
-                )
+                ) ?: false
             },
         )
     }
 
     // Load detail when an object is selected
-    LaunchedEffect(selectedObjectId) {
-        selectedObjectId?.let { detailViewModel.loadDetail(it) }
+    LaunchedEffect(displayedSelectedObjectId) {
+        displayedSelectedObjectId?.let { detailViewModel.loadDetail(it) }
     }
 
-    LaunchedEffect(isPreciseLocation) {
-        if (!isPreciseLocation) {
-            viewModel.selectObject(null)
-            viewModel.unlockObject()
+    LaunchedEffect(radioPositioningAvailable) {
+        if (!radioPositioningAvailable) {
+            viewModel.clearPositionalArInteractions()
         }
     }
 
@@ -287,19 +339,25 @@ fun ArViewScreen(
             unmatchedVisuals = unmatchedVisuals,
             classifiedUnknowns = classifiedUnknowns,
             darkTargetScores = darkTargetScores,
-            lockedObjectId = lockedObjectId,
-            lockedScreenPosition = lockedScreenPosition,
+            lockedObjectId = displayedLockedObjectId,
+            lockedScreenPosition = displayedLockedScreenPosition,
             orientation = orientation,
             onLabelTapped = { objectId ->
-                hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
-                captureInteractions.onLabelTapped(objectId)
+                if (radioPositioningAvailable) {
+                    hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
+                    captureInteractions.onLabelTapped(objectId)
+                }
             },
             onLabelLongPressed = { objectId ->
-                hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
-                viewModel.snapToObject(objectId)
+                if (radioPositioningAvailable) {
+                    hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
+                    viewModel.snapToObject(objectId)
+                }
             },
             onVisualTapped = { detection -> viewModel.showZoom(detection) },
-            onEmptySpaceTapped = { viewModel.showUnidentifiedSheet() },
+            onEmptySpaceTapped = {
+                if (radioPositioningAvailable) viewModel.showUnidentifiedSheet()
+            },
             onReticleTapped = { viewModel.unlockObject() },
             modifier = Modifier.fillMaxSize()
         )
@@ -315,9 +373,9 @@ fun ArViewScreen(
         )
 
         // Lock-on HUD badge: shown when an object is locked
-        if (lockedObjectId != null) {
+        if (displayedLockedObjectId != null) {
             val lockedLabel = displayedScreenPositions
-                .firstOrNull { it.skyObject.id == lockedObjectId }
+                .firstOrNull { it.skyObject.id == displayedLockedObjectId }
                 ?.let { sp ->
                     when (val obj = sp.skyObject) {
                         is Aircraft -> obj.callsign ?: obj.icaoHex
@@ -453,7 +511,13 @@ fun ArViewScreen(
                             color = bannerColor.copy(alpha = pulseAlpha * 0.85f),
                             shape = RoundedCornerShape(24.dp)
                         )
-                        .clickable { viewModel.selectObject(topDrone.id) }
+                        .clickable {
+                            usableRadioInteractionObjectId(
+                                topDrone.id,
+                                locationPermissionState,
+                                gpsStatus,
+                            )?.let(viewModel::selectObject)
+                        }
                         .padding(horizontal = 16.dp, vertical = 10.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -516,9 +580,11 @@ fun ArViewScreen(
     }
 
     // Auto-zoom when detail bottom sheet opens
-    LaunchedEffect(selectedObjectId) {
-        if (selectedObjectId != null) {
-            val sp = displayedScreenPositions.firstOrNull { it.skyObject.id == selectedObjectId }
+    LaunchedEffect(displayedSelectedObjectId) {
+        if (displayedSelectedObjectId != null) {
+            val sp = displayedScreenPositions.firstOrNull {
+                it.skyObject.id == displayedSelectedObjectId
+            }
             if (sp != null) {
                 viewModel.zoomToObject(sp.distanceMeters)
             }
@@ -528,7 +594,7 @@ fun ArViewScreen(
     }
 
     // Bottom sheet for detail card
-    if (selectedObjectId != null) {
+    if (displayedSelectedObjectId != null) {
         val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = false)
 
         ModalBottomSheet(
@@ -572,8 +638,14 @@ fun ArViewScreen(
                             }
                         },
                         onLockOn = {
-                            viewModel.selectObject(null)
-                            viewModel.lockOnObject(state.aircraft.id)
+                            usableRadioInteractionObjectId(
+                                state.aircraft.id,
+                                locationPermissionState,
+                                gpsStatus,
+                            )?.let { objectId ->
+                                viewModel.selectObject(null)
+                                viewModel.lockOnObject(objectId)
+                            }
                         }
                     )
                 }
@@ -601,8 +673,14 @@ fun ArViewScreen(
                             }
                         },
                         onLockOn = {
-                            viewModel.selectObject(null)
-                            viewModel.lockOnObject(state.drone.id)
+                            usableRadioInteractionObjectId(
+                                state.drone.id,
+                                locationPermissionState,
+                                gpsStatus,
+                            )?.let { objectId ->
+                                viewModel.selectObject(null)
+                                viewModel.lockOnObject(objectId)
+                            }
                         }
                     )
                 }
@@ -644,7 +722,7 @@ fun ArViewScreen(
         )
     }
 
-    objectPeek?.let { peek ->
+    displayedObjectPeek?.let { peek ->
         ObjectPeek(
             state = peek,
             onInspect = { captureInteractions.inspectObjectPeek(peek) },
@@ -655,7 +733,7 @@ fun ArViewScreen(
     }
 
     // Bottom sheet for snap-to photo capture (tapped AR label)
-    snapTarget?.let { target ->
+    displayedSnapTarget?.let { target ->
         SnapPhotoSheet(
             target = target,
             getFrame = { viewModel.captureZoomFrame() },
@@ -684,11 +762,16 @@ fun ArViewScreen(
             onShare = { captureReviewViewModel.share() },
             onDiscard = captureReviewViewModel::discard,
             onRetrySave = captureSaveInteractions::save,
+            onOpenAppSettings = {
+                if (openApplicationDetailsSettings(context) == PermissionSettingsLaunchResult.Failed) {
+                    captureReviewViewModel.markSaveSettingsLaunchFailed()
+                }
+            },
         )
     }
 
     // Bottom sheet for unidentified tap (empty space)
-    if (showUnidentifiedSheet) {
+    if (displayedUnidentifiedSheet) {
         val unidentifiedSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = false)
 
         ModalBottomSheet(
@@ -699,7 +782,11 @@ fun ArViewScreen(
                 drones = detectedDrones,
                 onDroneSelected = { droneId ->
                     viewModel.dismissUnidentifiedSheet()
-                    viewModel.selectObject(droneId)
+                    usableRadioInteractionObjectId(
+                        droneId,
+                        locationPermissionState,
+                        gpsStatus,
+                    )?.let(viewModel::selectObject)
                 }
             )
         }
@@ -806,6 +893,54 @@ private fun CameraPreview(
 
 // ---- AR Overlay ----
 
+internal fun selectOffScreenRadioPositions(screenPositions: List<ScreenPosition>): List<ScreenPosition> =
+    screenPositions.filter {
+        !it.isInView && it.distanceMeters > 0 &&
+            ArVisualRangePolicy.includes(it.skyObject, it.distanceMeters)
+    }.sortedBy { it.distanceMeters }.take(8)
+
+internal fun isRadioPositioningAvailable(
+    locationState: PermissionUiState,
+    gpsStatus: GpsStatus,
+): Boolean = locationState.isUsableFor(AppFeature.AR_MAP_LOCATION) && gpsStatus == GpsStatus.LOCKED
+
+internal fun displayedRadioPositions(
+    screenPositions: List<ScreenPosition>,
+    locationState: PermissionUiState,
+    gpsStatus: GpsStatus,
+): List<ScreenPosition> =
+    if (isRadioPositioningAvailable(locationState, gpsStatus)) screenPositions else emptyList()
+
+internal fun usableRadioInteractionObjectId(
+    objectId: String?,
+    locationState: PermissionUiState,
+    gpsStatus: GpsStatus,
+): String? =
+    objectId?.takeIf { isRadioPositioningAvailable(locationState, gpsStatus) }
+
+internal data class RadioInteractionState(
+    val selectedObjectId: String? = null,
+    val lockedObjectId: String? = null,
+    val objectPeek: ObjectPeekState? = null,
+    val snapTarget: SnapTarget? = null,
+    val showUnidentifiedSheet: Boolean = false,
+) {
+    companion object {
+        val Empty = RadioInteractionState()
+    }
+}
+
+internal fun displayedRadioInteractions(
+    interactions: RadioInteractionState,
+    locationState: PermissionUiState,
+    gpsStatus: GpsStatus,
+): RadioInteractionState =
+    if (isRadioPositioningAvailable(locationState, gpsStatus)) {
+        interactions
+    } else {
+        RadioInteractionState.Empty
+    }
+
 /**
  * Transparent Canvas overlay that draws floating labels at screen positions.
  *
@@ -889,6 +1024,13 @@ internal fun ArOverlay(
     var labelRects by remember { mutableStateOf<List<LabelHitTarget>>(emptyList()) }
     // Keep detection references for visual tap targets
     var visualHitDetections by remember { mutableStateOf<Map<String, VisualDetection>>(emptyMap()) }
+    val currentLockedObjectId by rememberUpdatedState(lockedObjectId)
+    val currentLockedScreenPosition by rememberUpdatedState(lockedScreenPosition)
+    val currentOnLabelTapped by rememberUpdatedState(onLabelTapped)
+    val currentOnLabelLongPressed by rememberUpdatedState(onLabelLongPressed)
+    val currentOnVisualTapped by rememberUpdatedState(onVisualTapped)
+    val currentOnEmptySpaceTapped by rememberUpdatedState(onEmptySpaceTapped)
+    val currentOnReticleTapped by rememberUpdatedState(onReticleTapped)
 
     Canvas(
         modifier = modifier
@@ -896,14 +1038,15 @@ internal fun ArOverlay(
                 detectTapGestures(
                     onTap = { offset ->
                         // Check if tap hit the reticle (locked object in view) → unlock
-                        if (lockedObjectId != null && lockedScreenPosition?.isInView == true) {
-                            val reticleX = lockedScreenPosition.screenX * size.width
-                            val reticleY = lockedScreenPosition.screenY * size.height
+                        val activeLockedPosition = currentLockedScreenPosition
+                        if (currentLockedObjectId != null && activeLockedPosition?.isInView == true) {
+                            val reticleX = activeLockedPosition.screenX * size.width
+                            val reticleY = activeLockedPosition.screenY * size.height
                             val reticleRadius = 60f
                             val dx = offset.x - reticleX
                             val dy = offset.y - reticleY
                             if (dx * dx + dy * dy <= reticleRadius * reticleRadius) {
-                                onReticleTapped()
+                                currentOnReticleTapped()
                                 return@detectTapGestures
                             }
                         }
@@ -914,12 +1057,12 @@ internal fun ArOverlay(
                                 if (target.objectId.startsWith("visual_")) {
                                     val detection = visualHitDetections[target.objectId]
                                     if (detection != null) {
-                                        onVisualTapped(detection)
+                                        currentOnVisualTapped(detection)
                                     } else {
-                                        onEmptySpaceTapped()
+                                        currentOnEmptySpaceTapped()
                                     }
                                 } else {
-                                    onLabelTapped(target.objectId)
+                                    currentOnLabelTapped(target.objectId)
                                 }
                                 handled = true
                                 return@detectTapGestures
@@ -943,23 +1086,23 @@ internal fun ArOverlay(
                                 if (dist < 120f) {
                                     if (nearest.objectId.startsWith("visual_")) {
                                         val detection = visualHitDetections[nearest.objectId]
-                                        if (detection != null) onVisualTapped(detection)
-                                        else onEmptySpaceTapped()
+                                        if (detection != null) currentOnVisualTapped(detection)
+                                        else currentOnEmptySpaceTapped()
                                     } else {
-                                        onLabelTapped(nearest.objectId)
+                                        currentOnLabelTapped(nearest.objectId)
                                     }
                                     return@detectTapGestures
                                 }
                             }
                         }
                         // Nothing nearby — user tapped empty space
-                        onEmptySpaceTapped()
+                        currentOnEmptySpaceTapped()
                     },
                     onLongPress = { offset ->
                         // Long-press on a label → lock-on
                         labelRects.forEach { target ->
                             if (target.rect.contains(offset) && !target.objectId.startsWith("visual_")) {
-                                onLabelLongPressed(target.objectId)
+                                currentOnLabelLongPressed(target.objectId)
                                 return@detectTapGestures
                             }
                         }
@@ -1043,9 +1186,7 @@ internal fun ArOverlay(
         }
 
         // Layer 4: Off-screen directional arrows for nearby objects outside FOV
-        val offScreenObjects = screenPositions.filter {
-            !it.isInView && it.distanceMeters > 0 && it.distanceMeters <= 13_000.0
-        }.sortedBy { it.distanceMeters }.take(8)
+        val offScreenObjects = selectOffScreenRadioPositions(screenPositions)
 
         offScreenObjects.forEach { sp ->
             val arrowRect = drawEdgeArrow(

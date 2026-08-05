@@ -29,7 +29,7 @@ class BackendPrivacySourceAdapterTest {
     fun enabledStartupDoesNotRestampItsLoadingDeadline() = runTest {
         val clock = FakeClock(elapsed = 10_000L)
         val adapter = BackendPrivacySourceAdapter(
-            settings = MutableStateFlow(DetectionSettings.defaults()),
+            settings = MutableStateFlow(enabledBackendSettings()),
             fetch = { awaitCancellation() },
             clock = clock,
             scope = backgroundScope,
@@ -45,7 +45,7 @@ class BackendPrivacySourceAdapterTest {
     @Test
     fun endpointReplacementCancelsLateFetchAndPublishesOnlyTheNewNamespace() = runTest {
         val settings = MutableStateFlow(
-            DetectionSettings.defaults().copy(backendUrl = "https://old.example/"),
+            enabledBackendSettings(backendUrl = "https://old.example/"),
         )
         val oldStarted = CompletableDeferred<Unit>()
         val oldCancelled = CompletableDeferred<Unit>()
@@ -82,7 +82,7 @@ class BackendPrivacySourceAdapterTest {
     @Test
     fun nonCooperativeLateResponseCannotPublishIntoTheReplacementEndpoint() = runTest {
         val settings = MutableStateFlow(
-            DetectionSettings.defaults().copy(backendUrl = "https://old.example/"),
+            enabledBackendSettings(backendUrl = "https://old.example/"),
         )
         val oldStarted = CompletableDeferred<Unit>()
         lateinit var oldContinuation: Continuation<LivePrivacyDevicesDto>
@@ -122,7 +122,7 @@ class BackendPrivacySourceAdapterTest {
 
     @Test
     fun successfulEmptyResponseIsLiveAndAuthoritativelyClearsBackendRows() = runTest {
-        val settings = MutableStateFlow(DetectionSettings.defaults())
+        val settings = MutableStateFlow(enabledBackendSettings())
         var call = 0
         val adapter = BackendPrivacySourceAdapter(
             settings = settings,
@@ -149,8 +149,47 @@ class BackendPrivacySourceAdapterTest {
     }
 
     @Test
+    fun explicitLegacySkimmerRowsAreSuppressed() = runTest {
+        val adapter = BackendPrivacySourceAdapter(
+            settings = MutableStateFlow(enabledBackendSettings()),
+            fetch = {
+                LivePrivacyDevicesDto(
+                    devices = listOf(
+                        device(fingerprint = "legacy-skimmer", privacyKind = "SKIMMER"),
+                        device(fingerprint = "mixed-case-skimmer", privacyKind = "sKiMmEr"),
+                    ),
+                )
+            },
+            clock = FakeClock(),
+            scope = backgroundScope,
+        )
+
+        runCurrent()
+
+        assertTrue(adapter.snapshot().findings.isEmpty())
+    }
+
+    @Test
+    fun supportedBackendPrivacyKindStillMaps() = runTest {
+        val adapter = BackendPrivacySourceAdapter(
+            settings = MutableStateFlow(enabledBackendSettings()),
+            fetch = {
+                LivePrivacyDevicesDto(
+                    devices = listOf(device(fingerprint = "supported", privacyKind = "TRACKER_NEAR")),
+                )
+            },
+            clock = FakeClock(),
+            scope = backgroundScope,
+        )
+
+        runCurrent()
+
+        assertEquals(PrivacyCategory.BLE_TRACKER, adapter.snapshot().findings.single().category)
+    }
+
+    @Test
     fun failureRetainsCachedRowsAndTheirSourceTimestamps() = runTest {
-        val settings = MutableStateFlow(DetectionSettings.defaults())
+        val settings = MutableStateFlow(enabledBackendSettings())
         var call = 0
         val clock = FakeClock(elapsed = 10_000L, wall = 100_000L)
         val adapter = BackendPrivacySourceAdapter(
@@ -185,7 +224,7 @@ class BackendPrivacySourceAdapterTest {
 
     @Test
     fun pauseAndResumeRetainObservationAndSourceSuccessTimestampsUntilARealResponse() = runTest {
-        val settings = MutableStateFlow(DetectionSettings.defaults())
+        val settings = MutableStateFlow(enabledBackendSettings())
         val clock = FakeClock(elapsed = 10_000L, wall = 100_000L)
         val resumedFetchStarted = CompletableDeferred<Unit>()
         var call = 0
@@ -318,7 +357,7 @@ class BackendPrivacySourceAdapterTest {
     @Test
     fun endpointNamespaceUsesCanonicalOriginAndEquivalentPathsDoNotRestartFetch() = runTest {
         val settings = MutableStateFlow(
-            DetectionSettings.defaults().copy(
+            enabledBackendSettings(
                 backendUrl = " https://same.example:8443/api?q=1#status ",
             ),
         )
@@ -352,7 +391,7 @@ class BackendPrivacySourceAdapterTest {
     @Test
     fun invalidReplacementClearsPriorRowsFailsWithoutFetchingAndRecoversOnValidUrl() = runTest {
         val settings = MutableStateFlow(
-            DetectionSettings.defaults().copy(backendUrl = "https://valid.example/"),
+            enabledBackendSettings(backendUrl = "https://valid.example/"),
         )
         var fetches = 0
         val adapter = BackendPrivacySourceAdapter(
@@ -382,6 +421,32 @@ class BackendPrivacySourceAdapterTest {
         assertTrue(adapter.snapshot().findings.single().stableSourceId.orEmpty()
             .startsWith("https://replacement.example/|"))
     }
+
+    @Test
+    fun initiallyDisabledBackendIsPausedWithoutFetching() = runTest {
+        var fetches = 0
+        val adapter = BackendPrivacySourceAdapter(
+            settings = MutableStateFlow(DetectionSettings.defaults()),
+            fetch = {
+                fetches++
+                LivePrivacyDevicesDto(devices = emptyList())
+            },
+            clock = FakeClock(),
+            scope = backgroundScope,
+        )
+
+        runCurrent()
+
+        assertEquals(0, fetches)
+        assertEquals(SourceHealthState.PAUSED, adapter.snapshot().health.state)
+    }
+
+    private fun enabledBackendSettings(
+        backendUrl: String = DetectionSettings.defaults().backendUrl,
+    ) = DetectionSettings.defaults().copy(
+        sensorBackendEnabled = true,
+        backendUrl = backendUrl,
+    )
 
     private fun BackendPrivacySourceAdapter.snapshot(): PrivacySourceSnapshot = snapshots.value.single()
 

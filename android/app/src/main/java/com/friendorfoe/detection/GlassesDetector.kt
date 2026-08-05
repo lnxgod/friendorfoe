@@ -6,6 +6,7 @@ import android.bluetooth.le.BluetoothLeScanner
 import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
+import android.os.ParcelUuid
 import android.util.Log
 import com.friendorfoe.data.DetectionPrefs
 import kotlinx.coroutines.channels.awaitClose
@@ -190,20 +191,17 @@ class GlassesDetector @Inject constructor(
     companion object {
         private const val TAG = "GlassesDetector"
         private const val MIN_STATIC_DETECTION_CONFIDENCE = 0.60f
-        private val SERIAL_IDENTITY_REASONS = setOf(
-            "UUID16:0XFFE0",
-            "UUID16:0XFFF0",
-            "SVC_DATA:0XFFE0",
-            "SVC_DATA:0XFFF0",
-        )
-        private val GENERIC_SERIAL_PRODUCT_NAMES = setOf(
-            "BT",
-            "BLE",
-            "UART",
-            "SERIAL",
-            "HC-05",
-            "HC-06",
-        )
+        private val OPEN_DRONE_ID_SERVICE_UUID by lazy(LazyThreadSafetyMode.PUBLICATION) {
+            ParcelUuid(OpenDroneIdParser.OPEN_DRONE_ID_UUID)
+        }
+
+        /**
+         * Remote ID advertisements are handled by [RemoteIdScanner], not the
+         * privacy classifier. Reuse its framing policy so malformed FFFA data
+         * cannot bypass privacy inspection.
+         */
+        internal fun shouldIgnoreOpenDroneIdPrivacyFrame(serviceData: ByteArray?): Boolean =
+            serviceData?.let(BleRemoteIdPayloadSelector::inspect) != null
 
         internal data class ManufacturerClassification(
             val manufacturer: String,
@@ -276,40 +274,6 @@ class GlassesDetector @Inject constructor(
             return "fp:$m|$t|$ja3Part|$uuidPart|$namePart"
         }
 
-        internal fun isTrustedSerialProductIdentity(
-            isBonded: Boolean,
-            confidence: Float,
-            manufacturer: String,
-            deviceType: String,
-            matchReason: String,
-        ): Boolean {
-            if (isBonded) return true
-            if (confidence < MIN_STATIC_DETECTION_CONFIDENCE) return false
-
-            val normalizedManufacturer = manufacturer.trim()
-            val normalizedType = deviceType.trim()
-            val normalizedReason = matchReason.trim().uppercase()
-            if (normalizedManufacturer.isBlank() || normalizedType.isBlank() || normalizedReason.isBlank()) {
-                return false
-            }
-            if (normalizedManufacturer.equals("unknown", ignoreCase = true) ||
-                normalizedType.contains("unknown", ignoreCase = true) ||
-                normalizedReason == "ADDRESS_TYPE:PUBLIC"
-            ) {
-                return false
-            }
-            if (normalizedReason in SERIAL_IDENTITY_REASONS ||
-                normalizedType.contains("serial", ignoreCase = true) ||
-                normalizedType.contains("uart", ignoreCase = true) ||
-                normalizedType.contains("skimmer", ignoreCase = true)
-            ) {
-                return false
-            }
-
-            val nameIdentity = normalizedReason.substringAfter("NAME:", missingDelimiterValue = "")
-            return nameIdentity !in GENERIC_SERIAL_PRODUCT_NAMES
-        }
-
         internal fun behavioralDetectionIsIgnored(
             detection: GlassesDetection,
             ignoredKeys: Set<String>,
@@ -347,33 +311,6 @@ class GlassesDetector @Inject constructor(
                 investigationTarget = BleInvestigationTarget(
                     mode = BleInvestigationMode.PASSIVE_CAPTURE,
                     mac = null,
-                    entityKey = signal.entityKey,
-                    observedAtElapsedMs = observedAtElapsedMs,
-                    origin = PrivacyDetectionOrigin.ANDROID,
-                ),
-            )
-
-            is BleThreatSignal.SerialSkimmer -> GlassesDetection(
-                mac = signal.targetMac,
-                deviceName = null,
-                deviceType = "Possible Serial Skimmer",
-                manufacturer = "BLE Behavioral Analysis",
-                hasCamera = false,
-                rssi = signal.strongestRssi,
-                confidence = signal.confidence,
-                matchReason = "ble_behavioral:serial_skimmer",
-                firstSeen = now,
-                lastSeen = now,
-                details = mapOf(
-                    "serial_service_uuid" to "0x%04X".format(signal.serialServiceUuid),
-                    "evidence" to signal.evidence.joinToString(",") { it.name },
-                ),
-                category = PrivacyCategory.ATTACK_TOOL,
-                fingerprintKey = signal.entityKey,
-                seenMacs = setOf(signal.targetMac),
-                investigationTarget = BleInvestigationTarget(
-                    mode = BleInvestigationMode.GATT,
-                    mac = signal.targetMac,
                     entityKey = signal.entityKey,
                     observedAtElapsedMs = observedAtElapsedMs,
                     origin = PrivacyDetectionOrigin.ANDROID,
@@ -1292,18 +1229,30 @@ class GlassesDetector @Inject constructor(
 
         fun buildScanCallback(): ScanCallback = object : ScanCallback() {
             override fun onScanResult(callbackType: Int, result: ScanResult) {
-                val detection = checkScanResult(result)
-                if (detection != null) {
-                    trySend(GlassesScanEvent.Observation(detection))
-                }
-            }
-
-            override fun onBatchScanResults(results: List<ScanResult>) {
-                for (result in results) {
+                try {
                     val detection = checkScanResult(result)
                     if (detection != null) {
                         trySend(GlassesScanEvent.Observation(detection))
                     }
+                } catch (security: SecurityException) {
+                    reportPermissionBlocked(security)
+                    callbackRegistry.closeAndStopAll()
+                    close()
+                }
+            }
+
+            override fun onBatchScanResults(results: List<ScanResult>) {
+                try {
+                    for (result in results) {
+                        val detection = checkScanResult(result)
+                        if (detection != null) {
+                            trySend(GlassesScanEvent.Observation(detection))
+                        }
+                    }
+                } catch (security: SecurityException) {
+                    reportPermissionBlocked(security)
+                    callbackRegistry.closeAndStopAll()
+                    close()
                 }
             }
 
@@ -1557,18 +1506,12 @@ class GlassesDetector @Inject constructor(
         // Check connected devices immediately
         checkConnectedDevices()
 
-        // Periodic: restart BLE scan + check connected devices + Classic BT discovery
+        // Periodic: restart BLE scan and check connected devices.
         val restartJob = launch {
             while (true) {
                 delay(SCAN_RESTART_INTERVAL_MS)
                 refreshBondedList()
                 checkConnectedDevices()
-                try {
-                    val adapter = bluetoothManager.adapter
-                    if (adapter?.isDiscovering == false) {
-                        adapter.startDiscovery()
-                    }
-                } catch (_: SecurityException) {}
                 Log.d(TAG, "Scan cycle: ${myBondedAddresses.size} bonded, ${detectedDevices.size} detected")
                 rotateScannerOverlap()
             }
@@ -1601,10 +1544,16 @@ class GlassesDetector @Inject constructor(
     }
 
     private fun checkScanResult(result: ScanResult): GlassesDetection? {
-        val mac = result.device.address
-
-        val rssi = result.rssi
         val record = result.scanRecord ?: return null
+        if (shouldIgnoreOpenDroneIdPrivacyFrame(
+                record.getServiceData(OPEN_DRONE_ID_SERVICE_UUID),
+            )
+        ) {
+            return null
+        }
+
+        val mac = result.device.address
+        val rssi = result.rssi
 
         var bestConf = 0f
         var bestMfr = ""
@@ -1755,13 +1704,6 @@ class GlassesDetector @Inject constructor(
         // service UUIDs, advertising flags, appearance, local name.
         val adv = BlePacketParser.parseAdvertisement(result)
 
-        val trustedIdentity = isTrustedSerialProductIdentity(
-            isBonded = mac in myBondedAddresses,
-            confidence = bestConf,
-            manufacturer = bestMfr,
-            deviceType = bestType,
-            matchReason = bestReason,
-        )
         val observedAtElapsedMs = elapsedRealtimeMs()
         val behavioralSignal = bleThreatAnalyzer.observe(
             BleThreatObservation(
@@ -1774,7 +1716,7 @@ class GlassesDetector @Inject constructor(
                 serviceUuids16 = adv.serviceUuids16.toSet(),
                 localName = adv.localName,
                 companyId = adv.companyId,
-                trustedIdentity = trustedIdentity,
+                trustedIdentity = false,
             )
         ).firstOrNull()
         val behavioralDetection = behavioralSignal?.let {
@@ -1785,20 +1727,7 @@ class GlassesDetector @Inject constructor(
             return behavioralDetection?.let(::storeBehavioralDetection)
         }
 
-        val staticCategory = categorize(bestType)
-        val staticSignatureProtectedFromSerialHeuristic = behavioralSignal is BleThreatSignal.SerialSkimmer &&
-            bestConf > behavioralSignal.confidence &&
-            (bestCamera ||
-                bestMfr.contains("Meta", ignoreCase = true) ||
-                staticCategory in setOf(
-                    PrivacyCategory.BLE_TRACKER,
-                    PrivacyCategory.FINDMY,
-                    PrivacyCategory.ATTACK_TOOL,
-                ))
-        if (behavioralDetection != null &&
-            (staticCategory == PrivacyCategory.INFORMATIONAL ||
-                !staticSignatureProtectedFromSerialHeuristic)
-        ) {
+        if (behavioralDetection != null) {
             return storeBehavioralDetection(behavioralDetection)
         }
 
@@ -1844,7 +1773,7 @@ class GlassesDetector @Inject constructor(
         // the same advertisement, so future backend-forwarding can correlate.
         val ja3 = BleFeatureExtractor.computeJa3Hash(
             result,
-            addrType = if (result.device.type == android.bluetooth.BluetoothDevice.DEVICE_TYPE_LE) 1 else 0,
+            addressType = BlePacketParser.getAddressType(result),
             props = 0
         )
 

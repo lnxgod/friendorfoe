@@ -19,8 +19,12 @@ private val TOP_LEVEL_ROUTES = setOf(
     "ar_view", "map_view", "list_view", "privacy", "badge", "history", "info"
 )
 
+internal const val DEFAULT_TOP_LEVEL_ROUTE = "info"
+
+internal fun normalLaunchRoute(): String = DEFAULT_TOP_LEVEL_ROUTE
+
 internal fun sanitizeTopLevelRoute(route: String?): String =
-    route?.takeIf(TOP_LEVEL_ROUTES::contains) ?: "ar_view"
+    route?.takeIf(TOP_LEVEL_ROUTES::contains) ?: DEFAULT_TOP_LEVEL_ROUTE
 
 @Singleton
 class AppPreferencesRepository @Inject constructor(
@@ -33,7 +37,7 @@ class AppPreferencesRepository @Inject constructor(
 
     override val launchState: Flow<AppLaunchState> = context.fofDataStore.data.map { prefs ->
         if (prefs[onboarding] != true) AppLaunchState.NeedsOnboarding
-        else AppLaunchState.Ready(sanitizeTopLevelRoute(prefs[lastRoute]))
+        else AppLaunchState.Ready(normalLaunchRoute())
     }
 
     override val ignoredFindingKeys: Flow<Set<String>> = context.fofDataStore.data
@@ -45,7 +49,7 @@ class AppPreferencesRepository @Inject constructor(
     override suspend fun setOnboardingComplete() {
         context.fofDataStore.edit {
             it[onboarding] = true
-            if (it[lastRoute] == null) it[lastRoute] = "ar_view"
+            it[lastRoute] = normalLaunchRoute()
         }
     }
 

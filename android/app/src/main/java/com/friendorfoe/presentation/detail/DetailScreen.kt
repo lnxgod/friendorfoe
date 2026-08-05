@@ -52,18 +52,11 @@ import com.friendorfoe.presentation.util.DroneDatabase
 import com.friendorfoe.presentation.util.IcaoCountryLookup
 import com.friendorfoe.presentation.util.RiskLevel
 import com.friendorfoe.presentation.util.categoryColor
-import com.friendorfoe.presentation.util.silhouetteForTypeCode
-import com.friendorfoe.presentation.util.silhouetteForCategory
-import com.friendorfoe.presentation.util.silhouetteDrawableRes
 import java.time.Duration
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import kotlin.math.roundToInt
-import androidx.compose.foundation.Image
-import androidx.compose.ui.graphics.ColorFilter
-import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.res.painterResource
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material.icons.Icons
@@ -72,11 +65,6 @@ import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.MyLocation
 import androidx.compose.material.icons.filled.ZoomIn
 import androidx.compose.material3.Icon
-import coil.compose.AsyncImage
-import coil.compose.AsyncImagePainter
-import coil.compose.SubcomposeAsyncImage
-import coil.compose.SubcomposeAsyncImageContent
-import com.friendorfoe.presentation.util.getAircraftPhotoUrl
 import android.content.Intent
 import android.net.Uri
 import androidx.compose.foundation.clickable
@@ -214,11 +202,13 @@ internal fun AircraftDetailContent(
         AircraftHeader(aircraft, detail)
 
         // Aircraft photo (or silhouette fallback)
-        PhotoPlaceholder(
-            aircraftType = detail?.aircraftType ?: aircraft.aircraftType,
-            aircraftDescription = detail?.aircraftDescription ?: aircraft.aircraftModel,
-            category = aircraft.category,
-            photoUrl = aircraft.photoUrl
+        AircraftPhotoCard(
+            AircraftVisual(
+                photoUrl = aircraft.photoUrl,
+                typeCode = detail?.aircraftType ?: aircraft.aircraftType,
+                description = detail?.aircraftDescription ?: aircraft.aircraftModel,
+                category = aircraft.category,
+            ),
         )
 
         // Identity section
@@ -884,89 +874,6 @@ private fun DroneHeader(drone: Drone) {
                 )
             }
         }
-    }
-}
-
-/**
- * Aircraft photo card. Tries to load a real photo from GitHub-hosted images,
- * falls back to tinted vector silhouette when no photo is available or loading fails.
- */
-@Composable
-private fun PhotoPlaceholder(
-    aircraftType: String?,
-    aircraftDescription: String?,
-    category: ObjectCategory,
-    photoUrl: String? = null
-) {
-    val silhouette = silhouetteForTypeCode(aircraftType) ?: silhouetteForCategory(category)
-    val drawableRes = silhouetteDrawableRes(silhouette)
-    val tintColor = categoryColor(category)
-    // Prefer backend-enriched photo URL, then GitHub-hosted type photo
-    val imageUrl = photoUrl ?: getAircraftPhotoUrl(aircraftType)
-
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(180.dp),
-        shape = RoundedCornerShape(12.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant
-        )
-    ) {
-        Box(
-            modifier = Modifier.fillMaxSize(),
-            contentAlignment = Alignment.Center
-        ) {
-            if (imageUrl != null) {
-                SubcomposeAsyncImage(
-                    model = imageUrl,
-                    contentDescription = aircraftDescription ?: aircraftType ?: "Aircraft",
-                    modifier = Modifier.fillMaxSize(),
-                    contentScale = ContentScale.Crop
-                ) {
-                    when (painter.state) {
-                        is AsyncImagePainter.State.Success -> {
-                            SubcomposeAsyncImageContent(
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .clip(RoundedCornerShape(12.dp))
-                            )
-                        }
-                        is AsyncImagePainter.State.Loading -> {
-                            // Show silhouette while loading
-                            SilhouetteFallback(drawableRes, tintColor, aircraftType)
-                        }
-                        else -> {
-                            // Error or empty — show silhouette
-                            SilhouetteFallback(drawableRes, tintColor, aircraftType)
-                        }
-                    }
-                }
-            } else {
-                SilhouetteFallback(drawableRes, tintColor, aircraftType)
-            }
-        }
-    }
-}
-
-@Composable
-private fun SilhouetteFallback(drawableRes: Int, tintColor: Color, aircraftType: String?) {
-    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        Image(
-            painter = painterResource(id = drawableRes),
-            contentDescription = aircraftType ?: "Aircraft",
-            modifier = Modifier
-                .fillMaxWidth(0.7f)
-                .height(120.dp),
-            contentScale = ContentScale.Fit,
-            colorFilter = ColorFilter.tint(tintColor)
-        )
-        Spacer(modifier = Modifier.height(8.dp))
-        Text(
-            text = aircraftType ?: "Unknown",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
-        )
     }
 }
 

@@ -12,6 +12,7 @@ import android.location.LocationListener
 import android.location.LocationManager
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
+import android.os.SystemClock
 import android.util.Log
 import androidx.camera.core.Camera
 import androidx.camera.core.ImageCapture
@@ -74,6 +75,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
@@ -115,6 +117,50 @@ internal suspend fun collectArBackend(
         },
     )
 }
+
+private const val MAX_AR_LAST_KNOWN_LOCATION_AGE_NANOS = 30_000_000_000L
+private val AR_POSITION_UNAVAILABLE = Position(0.0, 0.0, 0.0)
+
+internal data class ArLocationFix(
+    val position: Position,
+    val accuracyMeters: Float,
+    val elapsedRealtimeNanos: Long,
+)
+
+internal fun selectFreshestArLastKnownLocationFix(
+    gps: ArLocationFix?,
+    network: ArLocationFix?,
+    nowElapsedRealtimeNanos: Long,
+): ArLocationFix? = listOfNotNull(gps, network)
+    .filter { candidate ->
+        candidate.isUsableArLastKnownLocation(nowElapsedRealtimeNanos)
+    }
+    .maxByOrNull(ArLocationFix::elapsedRealtimeNanos)
+
+internal fun arPositionForLastKnownLocationSeed(lastKnown: ArLocationFix?): Position =
+    lastKnown?.position ?: AR_POSITION_UNAVAILABLE
+
+private fun ArLocationFix.isUsableArLastKnownLocation(
+    nowElapsedRealtimeNanos: Long,
+): Boolean {
+    val ageNanos = nowElapsedRealtimeNanos - elapsedRealtimeNanos
+    return position.latitude.isFinite() &&
+        position.longitude.isFinite() &&
+        position.latitude in -90.0..90.0 &&
+        position.longitude in -180.0..180.0 &&
+        (position.latitude != 0.0 || position.longitude != 0.0) &&
+        ageNanos in 0..MAX_AR_LAST_KNOWN_LOCATION_AGE_NANOS
+}
+
+private fun Location.toArLocationFix(): ArLocationFix = ArLocationFix(
+    position = Position(
+        latitude = latitude,
+        longitude = longitude,
+        altitudeMeters = altitude,
+    ),
+    accuracyMeters = validatedLocationAccuracyMeters(),
+    elapsedRealtimeNanos = elapsedRealtimeNanos,
+)
 
 /**
  * ViewModel for the AR viewfinder screen.
@@ -332,14 +378,24 @@ class ArViewModel @Inject constructor(
         resetZoom()
     }
 
-    val detectedDrones: StateFlow<List<Drone>> = skyObjectRepository.skyObjects
+    /** Shared map-only exclusion for every high-frequency AR presentation path. */
+    private val arSkyObjects = skyObjectRepository.skyObjects
+        .map { objects -> objects.withoutFormationDrones() }
+        .distinctUntilChanged()
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.Eagerly,
+            initialValue = skyObjectRepository.skyObjects.value.withoutFormationDrones(),
+        )
+
+    val detectedDrones: StateFlow<List<Drone>> = arSkyObjects
         .map { objects -> objects.filterIsInstance<Drone>() }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     // --- Drone proximity alert ---
 
     /** WiFi-only drones with strong RSSI signal (no GPS position but clearly nearby) */
-    val proximityDrones: StateFlow<List<Drone>> = skyObjectRepository.skyObjects
+    val proximityDrones: StateFlow<List<Drone>> = arSkyObjects
         .map { objects ->
             objects.filterIsInstance<Drone>().filter { drone ->
                 drone.source == DetectionSource.WIFI &&
@@ -508,6 +564,15 @@ class ArViewModel @Inject constructor(
         _snapTarget.value = null
         _lockedObjectId.value = null
         resetZoom()
+    }
+
+    /** Clear radio-position-derived UI without disturbing camera-only zoom or capture state. */
+    fun clearPositionalArInteractions() {
+        _selectedObjectId.value = null
+        _lockedObjectId.value = null
+        _objectPeek.value = null
+        _snapTarget.value = null
+        _showUnidentifiedSheet.value = false
     }
 
     /** Capture one in-memory CameraX frame. This method never writes to Photos. */
@@ -688,7 +753,7 @@ class ArViewModel @Inject constructor(
     val screenPositions: StateFlow<List<ScreenPosition>> = combine(
         frameClockFlow,
         orientation,
-        skyObjectRepository.skyObjects,
+        arSkyObjects,
         _userPosition,
         visualDetectionAnalyzer.detections
     ) { nowMs, orient, skyObjects, userPos, visualDetections ->
@@ -813,19 +878,19 @@ class ArViewModel @Inject constructor(
 
     // --- Counts for status bar ---
 
-    val aircraftCount: StateFlow<Int> = skyObjectRepository.skyObjects
+    val aircraftCount: StateFlow<Int> = arSkyObjects
         .map { objects -> objects.count { it is Aircraft } }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0)
 
-    val droneCount: StateFlow<Int> = skyObjectRepository.skyObjects
+    val droneCount: StateFlow<Int> = arSkyObjects
         .map { objects -> objects.count { it is Drone } }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0)
 
-    val militaryCount: StateFlow<Int> = skyObjectRepository.skyObjects
+    val militaryCount: StateFlow<Int> = arSkyObjects
         .map { objects -> objects.count { it.category == ObjectCategory.MILITARY || it.category == ObjectCategory.GOVERNMENT } }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0)
 
-    val emergencyCount: StateFlow<Int> = skyObjectRepository.skyObjects
+    val emergencyCount: StateFlow<Int> = arSkyObjects
         .map { objects -> objects.count { it.category == ObjectCategory.EMERGENCY } }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0)
 
@@ -860,7 +925,7 @@ class ArViewModel @Inject constructor(
     }
 
     val detectionLog: StateFlow<List<DetectionLogEntry>> = combine(
-        skyObjectRepository.skyObjects,
+        arSkyObjects,
         screenPositions,
         skyObjectRepository.dataSourceStatus,
         skyObjectRepository.lastError
@@ -1074,22 +1139,26 @@ class ArViewModel @Inject constructor(
 
                 locationListenerRegistered = true
 
-                // Use last known location as initial position while waiting for GPS fix
-                val lastKnown = locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER)
-                    ?: locationManager.getLastKnownLocation(LocationManager.NETWORK_PROVIDER)
+                // Use the freshest valid last-known location while waiting for a live fix.
+                val gpsLastKnown = locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER)
+                val networkLastKnown = locationManager.getLastKnownLocation(LocationManager.NETWORK_PROVIDER)
+                val lastKnown = selectFreshestArLastKnownLocationFix(
+                    gps = gpsLastKnown?.toArLocationFix(),
+                    network = networkLastKnown?.toArLocationFix(),
+                    nowElapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos(),
+                )
+                _userPosition.value = arPositionForLastKnownLocationSeed(lastKnown)
 
                 if (lastKnown != null) {
-                    _userPosition.value = Position(
-                        latitude = lastKnown.latitude,
-                        longitude = lastKnown.longitude,
-                        altitudeMeters = lastKnown.altitude
-                    )
                     _gpsStatus.value = GpsStatus.LOCKED
-                    Log.d(TAG, "Using last known location: (${lastKnown.latitude}, ${lastKnown.longitude})")
+                    Log.d(
+                        TAG,
+                        "Using last known location: (${lastKnown.position.latitude}, ${lastKnown.position.longitude})",
+                    )
                     skyObjectRepository.ensureStarted(
-                        lastKnown.latitude,
-                        lastKnown.longitude,
-                        lastKnown.validatedLocationAccuracyMeters(),
+                        lastKnown.position.latitude,
+                        lastKnown.position.longitude,
+                        lastKnown.accuracyMeters,
                     )
                 } else {
                     // Start BLE/WiFi scanners only (they don't need GPS)

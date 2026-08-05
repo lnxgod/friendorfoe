@@ -47,10 +47,9 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.friendorfoe.presentation.components.FofActionRow
 import com.friendorfoe.presentation.components.FofScreenHeader
 import com.friendorfoe.presentation.components.FofSection
-import com.friendorfoe.presentation.permissions.PermissionBackedToggle
 import com.friendorfoe.presentation.permissions.PermissionBindings
+import com.friendorfoe.presentation.permissions.PermissionSettingsLaunchResult
 import com.friendorfoe.presentation.permissions.PermissionUiState
-import com.friendorfoe.presentation.permissions.isUsable
 import com.friendorfoe.presentation.permissions.permissionExplanation
 import com.friendorfoe.presentation.permissions.permissionRecovery
 import com.friendorfoe.presentation.permissions.permissionTitle
@@ -82,12 +81,12 @@ data class InfoActions(
     val onOpenMagneticField: () -> Unit = {},
     val onOpenIrLikeLight: () -> Unit = {},
     val onOpenCalibration: () -> Unit = {},
+    val onEnablePhonePrivacyScan: () -> Unit = {},
 )
 
 @Suppress("UNUSED_PARAMETER")
 @Composable
-fun AboutScreen(
-    onBack: () -> Unit,
+fun InfoSettingsScreen(
     viewModel: AboutViewModel? = null,
     onNavigateToCalibrate: (() -> Unit)? = null,
     onNavigateToEmfSweep: (() -> Unit)? = null,
@@ -95,6 +94,7 @@ fun AboutScreen(
     onNavigateToPrivacy: (() -> Unit)? = null,
     onNavigateToReference: (() -> Unit)? = null,
     permissionBindings: PermissionBindings? = null,
+    modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
     val state by if (viewModel != null) {
@@ -105,11 +105,7 @@ fun AboutScreen(
     val activePermissionBindings = if (permissionBindings != null) {
         permissionBindings
     } else {
-        rememberPermissionBindings(
-            onPermissionResolution = { feature, resolved ->
-                viewModel?.resolvePendingPermission(feature, resolved)
-            }
-        )
+        rememberPermissionBindings()
     }
     val pendingPermissionSetting by if (viewModel != null) {
         viewModel.pendingPermissionSetting.collectAsStateWithLifecycle()
@@ -118,13 +114,16 @@ fun AboutScreen(
             androidx.compose.runtime.mutableStateOf<PendingInfoPermissionSetting?>(null)
         }
     }
+    val pendingBackendOnlyConfirmation by if (viewModel != null) {
+        viewModel.pendingBackendOnlyConfirmation.collectAsStateWithLifecycle()
+    } else {
+        remember { androidx.compose.runtime.mutableStateOf(false) }
+    }
     val actions = InfoActions(
         onSetSetting = { key, enabled ->
             val feature = permissionFeatureForSetting(key)
-            val permissionState = feature?.let(activePermissionBindings::stateFor)
             when {
                 feature == null || !enabled -> viewModel?.setSetting(key, enabled)
-                permissionState?.isUsable() == true -> viewModel?.setSetting(key, true)
                 else -> viewModel?.beginPermissionEnable(key)
             }
         },
@@ -157,13 +156,18 @@ fun AboutScreen(
         onOpenMagneticField = { onNavigateToEmfSweep?.invoke() },
         onOpenIrLikeLight = { onNavigateToIrCameraScan?.invoke() },
         onOpenCalibration = { onNavigateToCalibrate?.invoke() },
+        onEnablePhonePrivacyScan = { viewModel?.enablePhonePrivacyScan() },
     )
     InfoContent(
         state = state,
         actions = actions,
+        modifier = modifier,
+        showHeader = false,
     )
 
-    pendingPermissionSetting?.takeIf { !it.requestLaunched }?.let { pending ->
+    pendingPermissionSetting?.takeIf {
+        !it.requestLaunched || it.settingsLaunchFailed
+    }?.let { pending ->
         val key = pending.key
         val feature = requireNotNull(permissionFeatureForSetting(key))
         val permissionState = activePermissionBindings.stateFor(feature)
@@ -173,8 +177,13 @@ fun AboutScreen(
             title = { Text(permissionTitle(feature)) },
             text = {
                 Text(
-                    if (canRequest) permissionExplanation(feature)
-                    else permissionRecovery(feature, permissionState)
+                    if (pending.settingsLaunchFailed) {
+                        "Could not open Android settings. Try again, or change the permission in Settings."
+                    } else if (canRequest) {
+                        permissionExplanation(feature)
+                    } else {
+                        permissionRecovery(feature, permissionState)
+                    }
                 )
             },
             confirmButton = {
@@ -183,12 +192,14 @@ fun AboutScreen(
                     onClick = {
                         if (canRequest) {
                             viewModel?.markPermissionRequestLaunched()
-                            activePermissionBindings.request(feature) { resolved ->
-                                viewModel?.resolvePendingPermission(feature, resolved)
-                            }
+                            activePermissionBindings.request(feature)
                         } else {
-                            viewModel?.markPermissionRequestLaunched()
-                            activePermissionBindings.openSettings(feature)
+                            when (activePermissionBindings.openSettings(feature)) {
+                                PermissionSettingsLaunchResult.Opened ->
+                                    viewModel?.markPermissionSettingsOpened()
+                                PermissionSettingsLaunchResult.Failed ->
+                                    viewModel?.markPermissionSettingsLaunchFailed()
+                            }
                         }
                     },
                 ) {
@@ -200,9 +211,31 @@ fun AboutScreen(
             },
         )
     }
+    if (pendingBackendOnlyConfirmation) {
+        AlertDialog(
+            onDismissRequest = { viewModel?.cancelBackendOnlyConfirmation() },
+            title = { Text("Enable configured backend?") },
+            text = {
+                Text(
+                    "Backend-only mode needs the configured FoF/ESP32 sensor backend. " +
+                        "It will turn on backend polling, then pause phone radio collectors.",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { viewModel?.confirmBackendOnlyEnable() }) {
+                    Text("Enable polling and backend-only mode")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { viewModel?.cancelBackendOnlyConfirmation() }) {
+                    Text("Cancel")
+                }
+            },
+        )
+    }
 }
 
-private fun android.content.Context.openUri(raw: String) {
+internal fun android.content.Context.openUri(raw: String) {
     runCatching {
         startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(raw)))
     }
@@ -213,14 +246,17 @@ fun InfoContent(
     state: InfoUiState,
     actions: InfoActions,
     modifier: Modifier = Modifier,
+    showHeader: Boolean = true,
 ) {
     LazyColumn(
         modifier = modifier.fillMaxSize().testTag("info_list"),
         contentPadding = PaddingValues(start = 16.dp, top = 16.dp, end = 16.dp, bottom = 112.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        item(key = "info_header") {
-            FofScreenHeader("Info")
+        if (showHeader) {
+            item(key = "info_header") {
+                FofScreenHeader("Info")
+            }
         }
         item(key = "info_sources") {
             InfoSection(index = 0) { SourcePermissionRows(state) }
@@ -357,6 +393,15 @@ private fun RuntimeSettingsRows(state: InfoUiState, actions: InfoActions) {
         checked = state.settings.wifiAnomalyEnabled,
         actions = actions,
     )
+    if (!state.settings.phonePrivacyScanEnabled || state.settings.backendOnlyMode) {
+        FofActionRow(
+            title = "Enable phone scan",
+            description = "Start local phone collectors for follower and Wi-Fi anomaly detection.",
+            trailingLabel = "Enable",
+            onClick = actions.onEnablePhonePrivacyScan,
+            modifier = Modifier.testTag("enable_phone_privacy_scan"),
+        )
+    }
     SettingsToggleRow(
         key = InfoSettingKey.ULTRASONIC,
         title = "Ultrasonic sampling",
@@ -369,8 +414,9 @@ private fun RuntimeSettingsRows(state: InfoUiState, actions: InfoActions) {
     SettingsGroupLabel("Sensor network")
     SettingsToggleRow(
         key = InfoSettingKey.SENSOR_BACKEND,
-        title = "Sensor backend connection",
-        description = "Allow AR, Map, and Privacy to poll the configured sensor backend",
+        title = "Poll configured sensor backend",
+        description = "Poll only the configured FoF/ESP32 sensor backend. " +
+            "This does not disable ADS-B, weather, map tiles, or GitHub updates.",
         checked = state.settings.sensorBackendEnabled,
         actions = actions,
     )
@@ -449,32 +495,15 @@ private fun SettingsToggleRow(
     checked: Boolean,
     actions: InfoActions,
 ) {
-    val permissionFeature = permissionFeatureForSetting(key)
-    val permissionState = permissionFeature?.let { actions.permissionStateFor(key) }
     val disabledReason = actions.settingDisabledReason(key)
-    val enabled = disabledReason == null
-    if (permissionFeature != null && permissionState != null) {
-        PermissionBackedToggle(
-            tag = "setting_${key.name.lowercase()}",
-            label = title,
-            description = description,
-            checked = checked,
-            permissionState = permissionState,
-            onOpenExplanation = { actions.onSetSetting(key, true) },
-            onCommitChecked = { actions.onSetSetting(key, it) },
-            enabled = enabled,
-            disabledReason = disabledReason,
-        )
-        return
-    }
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .defaultMinSize(minHeight = 60.dp)
             .testTag("setting_${key.name.lowercase()}")
             .toggleable(
-                value = checked && enabled,
-                enabled = enabled,
+                value = checked,
+                enabled = true,
                 role = Role.Switch,
                 onValueChange = { actions.onSetSetting(key, it) },
             )
@@ -494,7 +523,7 @@ private fun SettingsToggleRow(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-        Switch(checked = checked && enabled, onCheckedChange = null, enabled = enabled)
+        Switch(checked = checked, onCheckedChange = null)
     }
 }
 
@@ -694,49 +723,12 @@ private fun AboutAndUpdateRows(state: InfoUiState, actions: InfoActions) {
             StatusPill("Build $it", InfoTone.Muted)
         }
     }
-    UpdateRow(state.updateState, actions)
-}
-
-@Composable
-private fun UpdateRow(update: UpdateUiState, actions: InfoActions) {
-    when (update) {
-        UpdateUiState.Idle -> FofActionRow(
-            title = "App updates",
-            description = "Check the official release feed",
-            trailingLabel = "Check",
-            onClick = actions.onCheckForUpdates,
-            modifier = Modifier.testTag("info_check_updates"),
-        )
-        UpdateUiState.Checking -> FofActionRow(
-            title = "Checking for updates",
-            description = "Comparing ordered app versions",
-            trailingLabel = "Checking…",
-            enabled = false,
-            onClick = actions.onCheckForUpdates,
-            modifier = Modifier.testTag("info_check_updates"),
-        )
-        is UpdateUiState.UpToDate -> FofActionRow(
-            title = "Up to date",
-            description = "Version ${update.installed.name} is not older than the latest release",
-            trailingLabel = "Check again",
-            onClick = actions.onCheckForUpdates,
-            modifier = Modifier.testTag("info_check_updates"),
-        )
-        is UpdateUiState.Available -> FofActionRow(
-            title = "Update available",
-            description = "Version ${update.remote.version.name}",
-            trailingLabel = "Open",
-            onClick = { actions.onOpenUpdate(update.remote.releaseUrl) },
-            modifier = Modifier.testTag("info_open_update"),
-        )
-        is UpdateUiState.Failed -> FofActionRow(
-            title = update.message,
-            description = "Check your network and try again. Your installed app is unchanged.",
-            trailingLabel = "Retry",
-            onClick = actions.onCheckForUpdates,
-            modifier = Modifier.testTag("info_check_updates"),
-        )
-    }
+    AppUpdateRow(
+        update = state.updateState,
+        onCheck = actions.onCheckForUpdates,
+        onOpen = actions.onOpenUpdate,
+        testTagPrefix = "info",
+    )
 }
 
 @Composable

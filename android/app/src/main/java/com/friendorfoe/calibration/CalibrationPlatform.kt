@@ -57,6 +57,7 @@ class AndroidCalibrationPlatform @Inject constructor(
         )
     }
 
+    @SuppressLint("MissingPermission")
     override fun requestLocationUpdates(listener: LocationListener) {
         locationManager.requestLocationUpdates(
             LocationManager.GPS_PROVIDER, 1000L, 0.5f, listener

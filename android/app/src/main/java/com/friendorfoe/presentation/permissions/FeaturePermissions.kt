@@ -12,6 +12,7 @@ enum class AppFeature {
     PRIVACY_ALERTS,
     SKY_ALERTS,
     ULTRASONIC,
+    CALIBRATION,
 }
 
 sealed interface PermissionUiState {
@@ -54,12 +55,14 @@ fun requiredPermissions(feature: AppFeature, sdk: Int): Set<String> = when (feat
             Manifest.permission.NEARBY_WIFI_DEVICES,
             // WifiManager scan results still require fine location on API 33+.
             Manifest.permission.ACCESS_FINE_LOCATION,
+            Manifest.permission.ACCESS_COARSE_LOCATION,
         )
 
         sdk >= 31 -> setOf(
             Manifest.permission.BLUETOOTH_SCAN,
             Manifest.permission.BLUETOOTH_CONNECT,
             Manifest.permission.ACCESS_FINE_LOCATION,
+            Manifest.permission.ACCESS_COARSE_LOCATION,
         )
 
         else -> setOf(Manifest.permission.ACCESS_FINE_LOCATION)
@@ -74,6 +77,31 @@ fun requiredPermissions(feature: AppFeature, sdk: Int): Set<String> = when (feat
     }
 
     AppFeature.ULTRASONIC -> setOf(Manifest.permission.RECORD_AUDIO)
+
+    AppFeature.CALIBRATION -> buildSet {
+        add(Manifest.permission.ACCESS_FINE_LOCATION)
+        if (sdk >= 31) {
+            add(Manifest.permission.ACCESS_COARSE_LOCATION)
+            add(Manifest.permission.BLUETOOTH_ADVERTISE)
+            add(Manifest.permission.BLUETOOTH_SCAN)
+            add(Manifest.permission.BLUETOOTH_CONNECT)
+        }
+    }
+}
+
+fun permissionRequestPlan(
+    feature: AppFeature,
+    sdk: Int,
+    grantedPermissions: Set<String>,
+): Set<String> {
+    val missing = requiredPermissions(feature, sdk)
+        .filterNotTo(linkedSetOf()) { it in grantedPermissions }
+    // Android 12+ ignores a precise-location request made without approximate
+    // location in the same launch, including a precise upgrade after coarse was granted.
+    if (sdk >= 31 && Manifest.permission.ACCESS_FINE_LOCATION in missing) {
+        missing += Manifest.permission.ACCESS_COARSE_LOCATION
+    }
+    return missing
 }
 
 fun evaluatePermission(
@@ -125,6 +153,12 @@ fun evaluateNotificationPermission(
 fun PermissionUiState.isUsable(): Boolean =
     this == PermissionUiState.Granted || this == PermissionUiState.Approximate
 
+fun PermissionUiState.isUsableFor(feature: AppFeature): Boolean = when {
+    this == PermissionUiState.Granted -> true
+    this == PermissionUiState.Approximate && feature == AppFeature.AR_MAP_LOCATION -> true
+    else -> false
+}
+
 fun notificationChannelId(feature: AppFeature): String? = when (feature) {
     AppFeature.PRIVACY_ALERTS -> PRIVACY_ALERT_CHANNEL_ID
     AppFeature.SKY_ALERTS -> SKY_ALERT_CHANNEL_ID
@@ -143,6 +177,7 @@ fun permissionTitle(feature: AppFeature): String = when (feature) {
     -> "Notifications"
 
     AppFeature.ULTRASONIC -> "Microphone for ultrasonic checks"
+    AppFeature.CALIBRATION -> "Location and nearby devices for Calibration"
 }
 
 fun permissionExplanation(feature: AppFeature): String = when (feature) {
@@ -154,7 +189,7 @@ fun permissionExplanation(feature: AppFeature): String = when (feature) {
         "The IR-like light tool uses the camera to inspect light that may be hard to see."
 
     AppFeature.AR_MAP_LOCATION ->
-        "Location centers nearby results. Approximate access keeps the view usable, but precise distance and bearing stay hidden."
+        "Location centers nearby results. With approximate access, placement, distance, and bearing may be less accurate."
 
     AppFeature.LOCAL_RADIO_DISCOVERY ->
         "Bluetooth and Wi-Fi access lets this phone look for nearby broadcast signals. Android also requires fine location for Wi-Fi scan results because they can reveal nearby location."
@@ -170,6 +205,9 @@ fun permissionExplanation(feature: AppFeature): String = when (feature) {
 
     AppFeature.ULTRASONIC ->
         "Ultrasonic checks sample a narrow high-frequency audio band with the microphone."
+
+    AppFeature.CALIBRATION ->
+        "Calibration uses precise foreground location and nearby Bluetooth access while you run a walk."
 }
 
 fun permissionRecovery(feature: AppFeature, state: PermissionUiState): String = when (state) {

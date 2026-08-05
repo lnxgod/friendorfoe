@@ -15,7 +15,7 @@
 - Firmware mutation uses laptop USB only. Do not add HTTP, Wi-Fi AP, LAN, BLE, or Android firmware paths.
 - Normal uplink updates use application USB OTA. A silent application requires the operator to hold OK+Menu for 10 seconds, release both, and press OK at the flash confirmation; never depend on DTR/RTS or ask for a battery disconnect.
 - Scanner firmware is uploaded once to `fw_scanner_s3`; the uplink's existing automatic coordinator updates both scanners over the fixed UART topology.
-- Preserve scanner firmware format, BLE-primary/Wi-Fi-primary roles, all four display lanes, themes, Easter eggs, privacy detector policy, and radio behavior.
+- Preserve scanner firmware format, BLE-primary/Wi-Fi-primary roles, all four display lanes, themes, privacy detector policy, and radio behavior.
 - A task heartbeat does not prove USB communication. Post-update validation requires a completed command response.
 - Never overwrite the rollback slot while the running application is `ESP_OTA_IMG_PENDING_VERIFY`.
 - No factory-bundle replacement, tag, release, or GitHub push until every automated gate and all six battery-connected physical gates pass. A separately user-authorized local provisional version identity is canary-only and does not change readiness, public manifests, or gate status.

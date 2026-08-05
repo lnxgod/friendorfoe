@@ -14,7 +14,7 @@ class DetectionSettingsTest {
         assertTrue(value.wifiEnabled)
         assertTrue(value.stalkerEnabled)
         assertTrue(value.wifiAnomalyEnabled)
-        assertTrue(value.sensorBackendEnabled)
+        assertFalse(value.sensorBackendEnabled)
         assertTrue(value.phonePrivacyScanEnabled)
         assertFalse(value.privacyNotificationsEnabled)
         assertFalse(value.droneAlertsEnabled)
@@ -22,6 +22,14 @@ class DetectionSettingsTest {
         assertFalse(value.militaryAlertsEnabled)
         assertFalse(value.policeAlertsEnabled)
         assertFalse(value.ultrasonicEnabled)
+        assertFalse(value.backendOnlyMode)
+    }
+
+    @Test
+    fun snapshotDefaultsRequireBackendOptIn() {
+        val value = DetectionSettings.defaults()
+
+        assertFalse(value.sensorBackendEnabled)
         assertFalse(value.backendOnlyMode)
     }
 }

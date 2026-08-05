@@ -7,6 +7,7 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
+import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
@@ -31,11 +32,8 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.rememberUpdatedState
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -46,79 +44,61 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.ViewModelStoreOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.launch
 
 @Stable
 class PermissionBindings internal constructor(
     val states: Map<AppFeature, PermissionUiState>,
-    private val requestFeature: (AppFeature, (PermissionUiState) -> Unit) -> Unit,
-    private val openFeatureSettings: (AppFeature, PermissionUiState) -> Unit,
+    private val requestFeature: (AppFeature) -> Unit,
+    private val openFeatureSettings:
+        (AppFeature, PermissionUiState) -> PermissionSettingsLaunchResult,
 ) {
     fun stateFor(feature: AppFeature): PermissionUiState =
         states[feature] ?: PermissionUiState.Loading
 
-    fun request(
-        feature: AppFeature,
-        onResolved: (PermissionUiState) -> Unit = {},
-    ) = requestFeature(feature, onResolved)
+    fun request(feature: AppFeature) = requestFeature(feature)
 
-    fun openSettings(feature: AppFeature) =
+    fun openSettings(feature: AppFeature): PermissionSettingsLaunchResult =
         openFeatureSettings(feature, stateFor(feature))
 }
 
-private data class PendingPermissionRequest(
-    val feature: AppFeature,
-    val onResolved: (PermissionUiState) -> Unit,
-)
-
 @Composable
 fun rememberPermissionBindings(
-    viewModel: PermissionStateViewModel = hiltViewModel(),
-    onPermissionResolution: (AppFeature, PermissionUiState) -> Unit = { _, _ -> },
+    viewModel: PermissionStateViewModel? = null,
 ): PermissionBindings {
     val context = LocalContext.current
     val activity = context.findActivity()
+        ?: error("Permission bindings require a ComponentActivity")
+    val activityOwner: ViewModelStoreOwner = activity
+    val sharedViewModel = viewModel ?: hiltViewModel(activityOwner)
     val lifecycleOwner = LocalLifecycleOwner.current
     val scope = rememberCoroutineScope()
-    val states by viewModel.states.collectAsStateWithLifecycle()
-    val currentResolutionHandler by rememberUpdatedState(onPermissionResolution)
-    var pending by remember { mutableStateOf<PendingPermissionRequest?>(null) }
+    val states by sharedViewModel.states.collectAsStateWithLifecycle()
 
     fun rationaleSnapshot(): Map<String, Boolean> =
         activity?.let(::capturePermissionRationales).orEmpty()
 
     val launcher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
-    ) {
-        val completed = pending
-        val durableFeature = viewModel.pendingFeature()
-        pending = null
-        viewModel.onRuntimePermissionsChanged()
-        val rationales = rationaleSnapshot()
-        scope.launch {
-            val evaluated = viewModel.refresh(rationales)
-            durableFeature?.let { feature ->
-                val resolved = evaluated[feature] ?: PermissionUiState.Loading
-                currentResolutionHandler(feature, resolved)
-                viewModel.clearPendingFeature()
-            }
-            completed?.onResolved?.invoke(
-                evaluated[completed.feature] ?: PermissionUiState.Loading
-            )
-        }
+    ) { grantResults ->
+        sharedViewModel.onPermissionResult(
+            grantResultByPermission = grantResults,
+            rationaleByPermission = rationaleSnapshot(),
+        )
     }
 
     val initialRationales = remember(activity) { rationaleSnapshot() }
     LaunchedEffect(initialRationales) {
-        viewModel.refresh(initialRationales)
+        sharedViewModel.refresh(initialRationales)
     }
 
     DisposableEffect(lifecycleOwner, activity) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
                 val rationales = rationaleSnapshot()
-                scope.launch { viewModel.refresh(rationales) }
+                scope.launch { sharedViewModel.refresh(rationales) }
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -127,20 +107,12 @@ fun rememberPermissionBindings(
 
     return PermissionBindings(
         states = states,
-        requestFeature = { feature, onResolved ->
+        requestFeature = { feature ->
             scope.launch {
-                val missing = viewModel.missingPermissionsFor(feature)
-                if (missing.isEmpty()) {
-                    val evaluated = viewModel.refresh(rationaleSnapshot())
-                    onResolved(evaluated[feature] ?: PermissionUiState.Loading)
-                } else {
-                    pending = PendingPermissionRequest(feature, onResolved)
-                    viewModel.requestPermissions(
-                        feature = feature,
-                        missing = missing,
-                        launcher = PermissionLauncher(launcher::launch),
-                    )
-                }
+                sharedViewModel.requestPermissions(
+                    feature = feature,
+                    launcher = PermissionLauncher(launcher::launch),
+                )
             }
         },
         openFeatureSettings = { feature, state ->
@@ -176,12 +148,10 @@ fun FeaturePermissionGate(
     onBack: (() -> Unit)? = null,
     grantedContent: @Composable () -> Unit,
 ) {
-    when (state) {
-        PermissionUiState.Granted,
-        PermissionUiState.Approximate,
-        -> grantedContent()
+    when {
+        state.isUsableFor(feature) -> grantedContent()
 
-        PermissionUiState.Loading -> Box(
+        state == PermissionUiState.Loading -> Box(
             modifier = Modifier.fillMaxSize().testTag("permission_loading"),
             contentAlignment = Alignment.Center,
         ) {
@@ -266,53 +236,61 @@ fun PermissionBackedToggle(
     disabledReason: String? = null,
 ) {
     val usable = permissionState.isUsable()
-    val effectiveChecked = checked && usable && enabled
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .defaultMinSize(minHeight = 60.dp)
-            .testTag(tag)
-            .toggleable(
-                value = effectiveChecked,
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .defaultMinSize(minHeight = 60.dp)
+                .testTag(tag)
+                .toggleable(
+                    value = checked,
+                    enabled = enabled,
+                    role = Role.Switch,
+                    onValueChange = { requested ->
+                        when (
+                            val action = permissionToggleAction(
+                                configuredChecked = checked,
+                                requestedChecked = requested,
+                                permissionState = permissionState,
+                            )
+                        ) {
+                            is PermissionToggleAction.Commit -> onCommitChecked(action.checked)
+                            PermissionToggleAction.ShowExplanation -> onOpenExplanation()
+                            PermissionToggleAction.NoChange -> Unit
+                        }
+                    },
+                )
+                .padding(vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(text = label, style = MaterialTheme.typography.bodyMedium)
+                Text(
+                    text = when {
+                        !enabled && disabledReason != null -> "$description · $disabledReason"
+                        !enabled -> description
+                        checked && !usable -> "$description · Permission needed"
+                        else -> description
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Switch(
+                checked = checked,
+                onCheckedChange = null,
                 enabled = enabled,
-                role = Role.Switch,
-                onValueChange = { requested ->
-                    when (
-                        val action = permissionToggleAction(
-                            configuredChecked = checked,
-                            effectiveChecked = effectiveChecked,
-                            requestedChecked = requested,
-                            permissionState = permissionState,
-                        )
-                    ) {
-                        is PermissionToggleAction.Commit -> onCommitChecked(action.checked)
-                        PermissionToggleAction.ShowExplanation -> onOpenExplanation()
-                        PermissionToggleAction.NoChange -> Unit
-                    }
-                },
-            )
-            .padding(vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-        Column(modifier = Modifier.weight(1f)) {
-            Text(text = label, style = MaterialTheme.typography.bodyMedium)
-            Text(
-                text = when {
-                    !enabled && disabledReason != null -> "$description · $disabledReason"
-                    !enabled -> description
-                    checked && !usable -> "$description · Permission needed"
-                    else -> description
-                },
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-        Switch(
-            checked = effectiveChecked,
-            onCheckedChange = null,
-            enabled = enabled,
-        )
+        if (checked && !usable) {
+            TextButton(
+                onClick = onOpenExplanation,
+                modifier = Modifier.testTag("${tag}_recovery"),
+            ) {
+                Text("Grant permission")
+            }
+        }
     }
 }
 
@@ -323,27 +301,49 @@ fun capturePermissionRationales(activity: Activity): Map<String, Boolean> {
         .associateWith(activity::shouldShowRequestPermissionRationale)
 }
 
+enum class PermissionSettingsLaunchResult {
+    Opened,
+    Failed,
+}
+
+fun openApplicationDetailsSettings(context: Context): PermissionSettingsLaunchResult =
+    launchSettingsIntent(
+        context,
+        Intent(
+            Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+            Uri.parse("package:${context.packageName}"),
+        ),
+    )
+
 fun openFeaturePermissionSettings(
     context: Context,
     feature: AppFeature,
     state: PermissionUiState,
-) {
-    val intent = if (state == PermissionUiState.NotificationChannelBlocked) {
-        Intent(Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS).apply {
-            putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
-            putExtra(Settings.EXTRA_CHANNEL_ID, notificationChannelId(feature))
-        }
-    } else {
-        Intent(
-            Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
-            Uri.parse("package:${context.packageName}"),
+): PermissionSettingsLaunchResult {
+    if (state == PermissionUiState.NotificationChannelBlocked) {
+        val channelResult = launchSettingsIntent(
+            context,
+            Intent(Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS).apply {
+                putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+                putExtra(Settings.EXTRA_CHANNEL_ID, notificationChannelId(feature))
+            },
         )
+        if (channelResult == PermissionSettingsLaunchResult.Opened) return channelResult
     }
-    runCatching { context.startActivity(intent) }
+    return openApplicationDetailsSettings(context)
 }
 
-private tailrec fun Context.findActivity(): Activity? = when (this) {
-    is Activity -> this
+private fun launchSettingsIntent(
+    context: Context,
+    intent: Intent,
+): PermissionSettingsLaunchResult = runCatching {
+    if (context !is Activity) intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    context.startActivity(intent)
+    PermissionSettingsLaunchResult.Opened
+}.getOrElse { PermissionSettingsLaunchResult.Failed }
+
+private tailrec fun Context.findActivity(): ComponentActivity? = when (this) {
+    is ComponentActivity -> this
     is ContextWrapper -> baseContext.findActivity()
     else -> null
 }

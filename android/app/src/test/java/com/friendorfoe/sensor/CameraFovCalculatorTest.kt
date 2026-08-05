@@ -100,6 +100,20 @@ class CameraFovCalculatorTest {
         assertEquals(vDeg, Math.toDegrees(vRad), 0.001)
     }
 
+    @Test
+    fun `recalculating then swapping for portrait preserves portrait FOV`() {
+        calculator.calculateFromFocalLengthAndSensorSize(4.25f, 6.17f, 4.55f)
+        calculator.swapForPortrait()
+        val firstPortraitHorizontal = calculator.horizontalFovRadians
+        val firstPortraitVertical = calculator.verticalFovRadians
+
+        calculator.calculateFromFocalLengthAndSensorSize(4.25f, 6.17f, 4.55f)
+        calculator.swapForPortrait()
+
+        assertEquals(firstPortraitHorizontal, calculator.horizontalFovRadians, 0.000001)
+        assertEquals(firstPortraitVertical, calculator.verticalFovRadians, 0.000001)
+    }
+
     // ---- isInFieldOfView tests ----
 
     @Test

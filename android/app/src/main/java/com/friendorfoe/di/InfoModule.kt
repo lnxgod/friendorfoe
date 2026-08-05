@@ -58,7 +58,7 @@ abstract class InfoModule {
         @Provides
         @Singleton
         fun provideBackendHealthClient(
-            okHttpClient: OkHttpClient,
+            @Named("backendClient") okHttpClient: OkHttpClient,
         ): BackendHealthClient = HttpBackendHealthClient(okHttpClient)
 
         @Provides

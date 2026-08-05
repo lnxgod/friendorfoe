@@ -76,13 +76,19 @@ class CaptureSaveInteractions(
     private val apiLevel: () -> Int,
     private val hasLegacyWritePermission: () -> Boolean,
     private val requestLegacyWritePermission: () -> Unit,
+    private val shouldShowLegacyWriteRationale: () -> Boolean = { true },
 ) {
+    private var legacyRequestLaunched = false
+
     fun save() {
         val sdk = apiLevel()
         val permissionGranted = sdk > 28 || hasLegacyWritePermission()
         when (captureSavePermissionDecision(sdk, permissionGranted)) {
             CaptureSavePermissionDecision.SaveNow -> reviewViewModel.save()
-            CaptureSavePermissionDecision.RequestLegacyWrite -> requestLegacyWritePermission()
+            CaptureSavePermissionDecision.RequestLegacyWrite -> {
+                legacyRequestLaunched = true
+                requestLegacyWritePermission()
+            }
         }
     }
 
@@ -90,7 +96,13 @@ class CaptureSaveInteractions(
         if (granted) {
             reviewViewModel.save()
         } else {
-            reviewViewModel.savePermissionDenied()
+            reviewViewModel.savePermissionDenied(
+                recovery = if (legacyRequestLaunched && !shouldShowLegacyWriteRationale()) {
+                    LegacyPhotoPermissionRecovery.OpenAppSettings
+                } else {
+                    LegacyPhotoPermissionRecovery.RetryRequest
+                },
+            )
         }
     }
 }
@@ -108,6 +120,7 @@ fun CaptureReviewModal(
     onShare: () -> Unit,
     onDiscard: () -> Unit,
     onRetrySave: () -> Unit,
+    onOpenAppSettings: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val savingState = rememberUpdatedState(state is CaptureReviewState.Saving)
@@ -133,6 +146,7 @@ fun CaptureReviewModal(
             onShare = onShare,
             onDiscard = onDiscard,
             onRetrySave = onRetrySave,
+            onOpenAppSettings = onOpenAppSettings,
         )
     }
 }
@@ -144,6 +158,7 @@ fun CaptureReviewScreen(
     onShare: () -> Unit,
     onDiscard: () -> Unit,
     onRetrySave: () -> Unit,
+    onOpenAppSettings: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     when (state) {
@@ -162,11 +177,24 @@ fun CaptureReviewScreen(
         is CaptureReviewState.SavePermissionDenied -> ReviewContent(
             draft = state.draft,
             busy = false,
-            error = "Photos access was not granted. Grant access to save this capture.",
+            error = when {
+                state.settingsLaunchFailed ->
+                    "Android settings could not be opened on this device. Open Friend or Foe from the system Settings app."
+                state.recovery == LegacyPhotoPermissionRecovery.OpenAppSettings ->
+                    "Photos access was permanently denied. Open app settings to grant access and save this capture."
+                else -> "Photos access was not granted. Grant access to save this capture."
+            },
             onSave = onSave,
             onShare = onShare,
             onDiscard = onDiscard,
-            onRetrySave = onSave,
+            onRetrySave = when (state.recovery) {
+                LegacyPhotoPermissionRecovery.RetryRequest -> onSave
+                LegacyPhotoPermissionRecovery.OpenAppSettings -> onOpenAppSettings
+            },
+            retrySaveLabel = when (state.recovery) {
+                LegacyPhotoPermissionRecovery.RetryRequest -> "Retry"
+                LegacyPhotoPermissionRecovery.OpenAppSettings -> "Open app settings"
+            },
             modifier = modifier,
         )
         is CaptureReviewState.Reviewing -> ReviewContent(
@@ -177,6 +205,7 @@ fun CaptureReviewScreen(
             onShare = onShare,
             onDiscard = onDiscard,
             onRetrySave = null,
+            retrySaveLabel = "Retry save",
             modifier = modifier,
         )
         is CaptureReviewState.Saving -> ReviewContent(
@@ -187,6 +216,7 @@ fun CaptureReviewScreen(
             onShare = onShare,
             onDiscard = onDiscard,
             onRetrySave = null,
+            retrySaveLabel = "Retry save",
             modifier = modifier,
         )
         is CaptureReviewState.SaveFailed -> ReviewContent(
@@ -197,6 +227,7 @@ fun CaptureReviewScreen(
             onShare = onShare,
             onDiscard = onDiscard,
             onRetrySave = onRetrySave,
+            retrySaveLabel = "Retry save",
             modifier = modifier,
         )
         is CaptureReviewState.ShareFailed -> ReviewContent(
@@ -207,6 +238,7 @@ fun CaptureReviewScreen(
             onShare = onShare,
             onDiscard = onDiscard,
             onRetrySave = null,
+            retrySaveLabel = "Retry save",
             modifier = modifier,
         )
     }
@@ -221,6 +253,7 @@ private fun ReviewContent(
     onShare: () -> Unit,
     onDiscard: () -> Unit,
     onRetrySave: (() -> Unit)?,
+    retrySaveLabel: String,
     modifier: Modifier,
 ) {
     val preview = remember(draft) {
@@ -260,7 +293,7 @@ private fun ReviewContent(
         Spacer(Modifier.height(16.dp))
         if (onRetrySave != null) {
             Button(onClick = onRetrySave, modifier = Modifier.fillMaxWidth()) {
-                Text("Retry save")
+                Text(retrySaveLabel)
             }
         } else {
             Row(

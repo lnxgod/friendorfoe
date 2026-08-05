@@ -4,6 +4,46 @@ import com.friendorfoe.data.remote.LocatedDroneDto
 import com.friendorfoe.domain.model.FilterState
 import com.friendorfoe.domain.model.Position
 import com.friendorfoe.domain.model.SkyObject
+import com.friendorfoe.presentation.permissions.PermissionUiState
+import com.friendorfoe.presentation.permissions.isUsable
+
+internal const val INITIAL_MAP_ZOOM = 13.0
+
+internal enum class MapCameraAction {
+    WaitForLocation,
+    InitializeAtPhone,
+    FollowPhone,
+    KeepUserCamera,
+}
+
+internal fun mapCameraAction(
+    locationPermissionUsable: Boolean,
+    userPosition: Position,
+    cameraInitialized: Boolean,
+    followPhone: Boolean,
+    userControlsCamera: Boolean,
+): MapCameraAction = when {
+    !locationPermissionUsable -> MapCameraAction.KeepUserCamera
+    !userPosition.hasValidMapCoordinates() -> MapCameraAction.WaitForLocation
+    userControlsCamera -> MapCameraAction.KeepUserCamera
+    !cameraInitialized -> MapCameraAction.InitializeAtPhone
+    followPhone -> MapCameraAction.FollowPhone
+    else -> MapCameraAction.KeepUserCamera
+}
+
+internal fun shouldRevealMap(
+    locationPermissionState: PermissionUiState,
+    userPosition: Position,
+): Boolean = when {
+    locationPermissionState == PermissionUiState.Loading -> false
+    locationPermissionState.isUsable() -> userPosition.hasValidMapCoordinates()
+    else -> true
+}
+
+internal fun Position.hasValidMapCoordinates(): Boolean =
+    latitude.isFinite() &&
+        longitude.isFinite() &&
+        (latitude != 0.0 || longitude != 0.0)
 
 data class MapTarget(
     val id: String,
@@ -65,7 +105,8 @@ fun mapSurfaceForLocation(
     locationDenied: Boolean,
 ): MapSurfaceState = when {
     locationDenied -> MapSurfaceState.LocationDenied
-    userPosition == null -> MapSurfaceState.AwaitingLocation
+    userPosition == null || !userPosition.hasValidMapCoordinates() ->
+        MapSurfaceState.AwaitingLocation
     else -> MapSurfaceState.Ready
 }
 

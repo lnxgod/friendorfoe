@@ -102,9 +102,9 @@ class PermissionRequestCoordinatorTest {
     }
 
     @Test
-    fun storedOnButPermissionMissingStartsRecoveryFromTheEffectiveOffRow() {
+    fun storedOnPermissionMissingUsesSeparateRecoveryInsteadOfRetogglingOn() {
         assertEquals(
-            PermissionToggleAction.ShowExplanation,
+            PermissionToggleAction.NoChange,
             permissionToggleAction(
                 configuredChecked = true,
                 effectiveChecked = false,

@@ -29,7 +29,9 @@ import org.junit.Test
 class MapBackendPollingTest {
     @Test
     fun endpointReplacementRejectsLateResultAndDisableClearsOnlyRemoteState() = runTest {
-        val settings = MutableStateFlow(DetectionSettings.defaults())
+        val settings = MutableStateFlow(
+            DetectionSettings.defaults().copy(sensorBackendEnabled = true),
+        )
         val localObject = Drone(
             id = "local-row",
             position = Position(1.0, 2.0, 3.0),
@@ -85,6 +87,32 @@ class MapBackendPollingTest {
         assertEquals(0, state.droneAlertCount.value)
         assertEquals(listOf(localObject), state.localObjects.value)
         assertEquals(localObject.id, state.selectedObjectId.value)
+        job.cancel()
+    }
+
+    @Test
+    fun initiallyDisabledBackendDoesNotFetch() = runTest {
+        val settings = MutableStateFlow(DetectionSettings.defaults())
+        val state = MapBackendIntegrationState(
+            MutableStateFlow<List<SkyObject>>(emptyList()),
+        )
+        var fetches = 0
+        val job = launch {
+            collectMapBackend(
+                settings = settings,
+                intervalMs = 100,
+                state = state,
+                fetchSnapshot = {
+                    fetches++
+                    snapshot("unexpected", 0)
+                },
+            )
+        }
+
+        runCurrent()
+
+        assertEquals(0, fetches)
+        assertFalse(state.sensorMapOnline.value)
         job.cancel()
     }
 

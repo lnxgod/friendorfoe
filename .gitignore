@@ -63,6 +63,7 @@ friendorfoe.db
 friendorfoe.db-*
 *.png
 !docs/examples/screenshots/*.png
+!docs/cfp/supporting-files/screenshots/new-dash/*.png
 !images/**/*.png
 
 # Claude Code / MCP tooling
@@ -81,3 +82,6 @@ map-snapshot.md
 
 # Operator-local config — fleet IP maps, anything keyed to a real deployment
 scripts/fof_flash.local.json
+
+# Private C5 Remote ID formation simulator and local profiles
+esp32/private/rid-formation-c5/

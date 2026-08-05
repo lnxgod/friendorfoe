@@ -40,6 +40,45 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   release as `0.64.64-privacy-oui`; the FoF Badge track remains separate at
   `0.64.64-badge-privacy-oui`.
 
+## [0.67.16-new-dash-usb-parity] - 2026-08-04
+
+### Added
+- **New Dash supports full-size badges and Backend Badge Lite over one USB
+  console.** Lite connections require their exact headless product identity and
+  acknowledged-live capabilities before detections, scanner health, history,
+  maps, or controls are accepted.
+- **Backend Badge Lite configuration has a narrow USB API.** Token-protected,
+  same-origin endpoints read redacted configuration and send one validated,
+  allowlisted atomic update without exposing stored passwords.
+- **The Map can redraw dense Remote ID formations.** Formation persistence is
+  adjustable from 1 to 120 minutes, repeated coordinates collapse to dots, the
+  browser can clear its current drawing and start a timer without deleting
+  SQLite history, and a visible `+` reports when the 8,192-dot drawing budget
+  is reached.
+- **New Dash has a dedicated CI test workflow.** Python, static compilation,
+  and browser-behavior suites now run for New Dash changes and release tags.
+
+### Changed
+- **Map refreshes preserve operator context.** Five-second formation refreshes
+  retain manual zoom, pan, and selection after the initial fit; live drones,
+  retained positions, operator markers, and links use distinct demo-readable
+  styling.
+- **Formation queries use a purpose-built bounded page size.** Ordinary history
+  remains capped at 500 rows per page, while distinct positioned-track queries
+  may return two pages of 4,096 rows for an 8,192-dot formation budget.
+
+### Fixed
+- **Unverified serial data is rejected.** Detection and protocol frames cannot
+  refresh liveness or enter history until the current USB generation has a
+  freshly verified badge status.
+- **Lite configuration validation fails cleanly on unbounded numbers.** Extreme
+  JSON integers now return a structured invalid-request response instead of an
+  internal server error.
+- **Source-only New Dash releases cannot publish unrelated device artifacts.**
+  Android signing and ESP32 firmware packaging explicitly skip
+  `-new-dash-` tags. This release changes no badge, scanner, Android, backend
+  runtime, or firmware implementation.
+
 ## [0.64.39-badge-usb-detail] - 2026-05-18
 
 ### Added
@@ -1330,6 +1369,7 @@ This release unifies the ESP32 firmware (v0.56.0) and backend (v0.56.0) version 
 - List view with sortable columns
 - Bottom navigation (AR, Map, List, History, About)
 
+[0.67.16-new-dash-usb-parity]: https://github.com/lnxgod/friendorfoe/releases/tag/v0.67.16-new-dash-usb-parity
 [0.10.0-beta]: https://github.com/lnxgod/friendorfoe/releases/tag/v0.10.0-beta
 [0.9.0-beta]: https://github.com/lnxgod/friendorfoe/releases/tag/v0.9.0-beta
 [0.8.0-beta]: https://github.com/lnxgod/friendorfoe/releases/tag/v0.8.0-beta

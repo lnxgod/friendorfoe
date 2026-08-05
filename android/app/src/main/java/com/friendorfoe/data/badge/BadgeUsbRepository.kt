@@ -12,6 +12,7 @@ import android.bluetooth.BluetoothGattDescriptor
 import android.bluetooth.BluetoothGattService
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
+import android.bluetooth.BluetoothStatusCodes
 import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanFilter
 import android.bluetooth.le.ScanResult
@@ -4698,12 +4699,12 @@ class BadgeUsbRepository @Inject constructor(
                 addAction(UsbManager.ACTION_USB_DEVICE_DETACHED)
             }
 
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                context.registerReceiver(usbReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
-            } else {
-                @Suppress("DEPRECATION")
-                context.registerReceiver(usbReceiver, filter)
-            }
+            ContextCompat.registerReceiver(
+                context,
+                usbReceiver,
+                filter,
+                ContextCompat.RECEIVER_NOT_EXPORTED,
+            )
         }
     }
 
@@ -6132,7 +6133,6 @@ class BadgeUsbRepository @Inject constructor(
         )
     }
 
-    @SuppressLint("MissingPermission")
     private suspend fun readBleStatus() {
         val investigationRunning = synchronized(investigationLock) {
             activeInvestigation?.transport == BadgeInvestigationTransport.BLE
@@ -6164,6 +6164,7 @@ class BadgeUsbRepository @Inject constructor(
         }
     }
 
+    @SuppressLint("MissingPermission")
     private suspend fun readBleCharacteristic(
         gatt: BluetoothGatt,
         characteristic: BluetoothGattCharacteristic,
@@ -6205,7 +6206,7 @@ class BadgeUsbRepository @Inject constructor(
                 characteristic,
                 value,
                 BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT,
-            ) == BluetoothGatt.GATT_SUCCESS
+            ) == BluetoothStatusCodes.SUCCESS
         } else {
             @Suppress("DEPRECATION")
             characteristic.value = value
@@ -6236,7 +6237,7 @@ class BadgeUsbRepository @Inject constructor(
         )
         pendingBleGattOperation = pending
         val started = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            gatt.writeDescriptor(descriptor, value) == BluetoothGatt.GATT_SUCCESS
+            gatt.writeDescriptor(descriptor, value) == BluetoothStatusCodes.SUCCESS
         } else {
             @Suppress("DEPRECATION")
             descriptor.value = value
