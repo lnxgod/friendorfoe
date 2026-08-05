@@ -52,7 +52,10 @@ Espressif USB device. See
 [`docs/backend-lite-factory-flasher.md`](../docs/backend-lite-factory-flasher.md)
 for the pinned bundle contents, topology and runtime PASS gates, private
 manufacturing records, recovery rules, and the current candidate/release
-boundary.
+boundary. See
+[`tools/lite_factory_flasher/README.md`](tools/lite_factory_flasher/README.md)
+for the operator quick reference, lock behavior, package layout, and focused
+development checks.
 
 ## Build the Lite uplink image
 

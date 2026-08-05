@@ -243,20 +243,17 @@ known-good bundle. Building a ZIP is not permission to flash it; use
 `--bundle PATH --once --accept-candidate-sha256 DIGEST` only in a controlled
 candidate acceptance run.
 
-## Candidate and release boundary
+## Hardware acceptance and release boundary
 
-The checked-in Lite factory tool and embedded mixed-version bundle are a local
-factory candidate. Development of this tool did not flash connected hardware
-and did not modify Lite, scanner, native-badge, Android, or Backend firmware.
-It assembled existing pinned scanner/probe bytes with the verified Backend
-uplink artifact and added host-side factory orchestration and verification.
+The checked-in Lite factory tool and embedded mixed-version bundle completed a
+controlled physical three-board factory run. That run demonstrated the full
+probe, role assignment, erase/write/readback, descriptor-bound runtime gate,
+stable counter sampling, second-reboot verification, and fsync-backed PASS
+record. The validated unit printed receipt `lite_DM27KT7A`; the private ledger
+remains the authoritative evidence.
 
-The combined Lite factory cycle has not, by that fact alone, received physical
-three-board hardware acceptance, and this documentation does not claim that it
-has been publicly released. Do not publish a `lite-factory-flasher-v*.zip`,
-create a public release, or treat a successful host-side test as factory
-acceptance until a controlled hardware run has demonstrated the complete
-probe, write/readback, runtime, and second-reboot PASS sequence and its
-evidence has been reviewed. Keep release/tag automation isolated from unrelated
-Android, native-badge, scanner, and Backend firmware release workflows before
-creating any release tag.
+This hardware acceptance does not itself publish a GitHub release. Do not
+publish a `lite-factory-flasher-v*.zip`, create a release tag, or replace the
+embedded bundle without separately reviewing the exact archive digest and
+release artifacts. Keep release/tag automation isolated from unrelated
+Android, native-badge, scanner, and Backend firmware release workflows.

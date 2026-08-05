@@ -123,6 +123,7 @@ field console.
 |------|---------|
 | `android/` | Kotlin + Jetpack Compose app, badge console, privacy views, AR/list/map screens |
 | `backend/` | FastAPI ingest, enrichment, dashboard, triangulation, calibration, firmware endpoints |
+| `backend-firmware/` | Isolated Backend Badge Lite/Fullsize ESP32 firmware, offline Lite factory flasher, release verification, and canary tooling |
 | `esp32/scanner/` | ESP32-S3 scanner firmware for BLE/Wi-Fi detection |
 | `esp32/uplink/` | ESP32-S3 uplink firmware, display, USB-C control, read-only local status, UART OTA relay |
 | `esp32/shared/` | Shared C detection policy, badge display policy, themes, signatures, protocol types |
