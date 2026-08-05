@@ -31,6 +31,14 @@ class _RetryablePort(VerificationError):
     pass
 
 
+class _UnboundCandidatePort(_RetryablePort):
+    """An enumerated serial path is not the descriptor-bound uplink."""
+
+
+class _BoundCandidateOpenFailed(_RetryablePort):
+    """The descriptor-bound uplink was found but could not be opened."""
+
+
 APPLICATION_ATTEMPT_TIMEOUT_S = 3.0
 FACTORY_BACKEND_URL = "http://192.168.4.2:8000"
 REQUIRED_CAPABILITIES = frozenset({
@@ -317,10 +325,16 @@ def _verify_scanners(
         ):
             raise VerificationError(f"scanner slot {slot} health did not converge")
         errors = summary.get("errors")
-        if not isinstance(errors, dict) or any(
-            errors.get(key) != 0 for key in ("rx", "tx_drops")
-        ):
+        if not isinstance(errors, dict) or errors.get("rx") != 0:
             raise VerificationError(f"scanner slot {slot} transport is not clean")
+        # Production scanner ``uart_tx_dropped`` also counts intentional
+        # RF policy/rate-limit shedding, so it is evidence to retain rather
+        # than a hard UART-failure counter.
+        tx_drops = errors.get("tx_drops")
+        if type(tx_drops) is not int or tx_drops < 0 or tx_drops > 0xFFFFFFFF:
+            raise VerificationError(
+                f"scanner slot {slot} TX drop counter is invalid"
+            )
         _require_uint(
             summary.get("uptime_ms"),
             f"scanner slot {slot} uptime",
@@ -410,9 +424,22 @@ def verify_runtime_snapshot(
         or usb.get("available") is not True
         or usb.get("host_connected") is not True
         or usb.get("output_poisoned") is not False
-        or usb.get("required_failures") != 0
     ):
         raise VerificationError("Lite USB transport is not healthy")
+    _require_uint(
+        usb.get("required_failures"),
+        "Lite USB required-failure counter",
+    )
+    _require_uint(
+        usb.get("bytes_transmitted"),
+        "Lite USB transmitted-byte counter",
+        nonzero=True,
+    )
+    _require_uint(
+        usb.get("bytes_received"),
+        "Lite USB received-byte counter",
+        nonzero=True,
+    )
 
     config_evidence = _verify_blank_config(config, expected_mac)
     scanners = _verify_scanners(status, assignment, bundle.scanner_version)
@@ -502,7 +529,9 @@ def _descriptor_bound_serial_factory(hardware_id: str) -> Callable[[str], Any]:
                 if record.device == port and record.serial_number == trusted_serial
             ]
             if len(matches) != 1:
-                raise _RetryablePort("candidate is not the descriptor-bound Lite uplink")
+                raise _UnboundCandidatePort(
+                    "candidate is not the descriptor-bound Lite uplink"
+                )
             return usb_descriptor_binding.open_bound_application_serial(
                 matches[0],
                 expected_uplink_serial=trusted_serial,
@@ -511,7 +540,9 @@ def _descriptor_bound_serial_factory(hardware_id: str) -> Callable[[str], Any]:
                 write_timeout=1,
             )
         except usb_descriptor_binding.UsbDescriptorBindingError as exc:
-            raise _RetryablePort("descriptor-bound Lite uplink open failed") from exc
+            raise _BoundCandidateOpenFailed(
+                "descriptor-bound Lite uplink open failed"
+            ) from exc
 
     return open_candidate
 
@@ -564,6 +595,22 @@ def _verify_stable_samples(
         raise _RetryablePort("Lite scanner rebooted during stable proof")
     if first.config != second.config or first.boot != second.boot or first.health != second.health:
         raise _RetryablePort("Lite boot/config evidence changed during stable proof")
+    first_usb = first.status["usb"]
+    second_usb = second.status["usb"]
+    # This counter is cumulative from service start and normally records
+    # writes attempted before the host opens the port.  Current health is
+    # proven by an unchanged value across two complete live transactions.
+    if second_usb["required_failures"] != first_usb["required_failures"]:
+        raise _RetryablePort(
+            "Lite USB required failures increased during stable proof"
+        )
+    if (
+        second_usb["bytes_received"] <= first_usb["bytes_received"]
+        or second_usb["bytes_transmitted"] <= first_usb["bytes_transmitted"]
+    ):
+        raise _RetryablePort(
+            "Lite USB transport did not make progress during stable proof"
+        )
     first_scanners = first.status["scanners"]
     second_scanners = second.status["scanners"]
     for slot in range(2):
@@ -586,6 +633,7 @@ def wait_for_stable_runtime(
     opener = serial_factory or _descriptor_bound_serial_factory(uplink.mac)
     deadline = time.monotonic() + timeout_s
     last_error = "no fresh matching Lite runtime received"
+    matching_error: str | None = None
     while time.monotonic() < deadline:
         try:
             candidates = sorted({str(port) for port in ports() if str(port)})
@@ -595,8 +643,10 @@ def wait_for_stable_runtime(
             continue
         for port in candidates:
             handle = None
+            opened_expected = False
             try:
                 handle = opener(port)
+                opened_expected = True
                 first = _query_once(
                     handle,
                     assignment=assignment,
@@ -612,12 +662,26 @@ def wait_for_stable_runtime(
                 )
                 _verify_stable_samples(first, second)
                 return second
-            except (OSError, VerificationError, ValueError) as exc:
+            except _UnboundCandidatePort as exc:
                 last_error = str(exc)
+            except _BoundCandidateOpenFailed as exc:
+                matching_error = str(exc)
+            except _RetryablePort as exc:
+                if opened_expected:
+                    matching_error = str(exc)
+                else:
+                    last_error = str(exc)
+            except (OSError, VerificationError, ValueError) as exc:
+                if opened_expected:
+                    matching_error = str(exc)
+                else:
+                    last_error = str(exc)
             finally:
                 _safe_close(handle)
         time.sleep(0.05)
-    raise VerificationError(f"Lite runtime gate timed out: {last_error}")
+    raise VerificationError(
+        f"Lite runtime gate timed out: {matching_error or last_error}"
+    )
 
 
 def verify_reboot_transition(

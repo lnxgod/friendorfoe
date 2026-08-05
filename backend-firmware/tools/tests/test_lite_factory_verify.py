@@ -10,10 +10,12 @@ from tools.lite_factory_flasher.models import LiteRuntimeSnapshot
 from tools.lite_factory_flasher.verify import (
     REQUIRED_CAPABILITIES,
     VerificationError,
+    _verify_stable_samples,
+    wait_for_stable_runtime,
     verify_reboot_transition,
     verify_runtime_snapshot,
 )
-from tools.badge_flasher.models import TopologyAssignment
+from tools.badge_flasher.models import TopologyAssignment, UsbDevice
 from tools.backend_lite_usb_fixture import RedactedConfig, RedactedNetwork
 
 
@@ -202,9 +204,90 @@ def test_runtime_gate_rejects_swapped_topology_and_unhealthy_scanner() -> None:
         _verify(status=unhealthy)
 
     noisy = _status()
-    noisy["scanner_summaries"][1]["errors"]["tx_drops"] = 1
+    noisy["scanner_summaries"][1]["errors"]["rx"] = 1
     with pytest.raises(VerificationError, match="transport is not clean"):
         _verify(status=noisy)
+
+
+def test_runtime_gate_accepts_historical_backpressure_counters() -> None:
+    status = _status()
+    status["usb"]["required_failures"] = 60
+    status["scanner_summaries"][0]["errors"]["tx_drops"] = 492
+
+    snapshot = _verify(status=status)
+
+    assert snapshot.status["usb"]["required_failures"] == 60
+    assert snapshot.status["scanners"][0]["errors"]["tx_drops"] == 492
+
+
+def test_stable_runtime_requires_clean_live_usb_progress() -> None:
+    first_status = _status()
+    first_status["usb"]["required_failures"] = 60
+    first = _verify(status=first_status)
+
+    stable_status = _status()
+    stable_status["usb"].update({
+        "required_failures": 60,
+        "bytes_transmitted": 500,
+        "bytes_received": 300,
+    })
+    stable = _verify(status=stable_status)
+    _verify_stable_samples(first, stable)
+
+    failing_status = deepcopy(stable_status)
+    failing_status["usb"]["required_failures"] = 61
+    with pytest.raises(VerificationError, match="required failures increased"):
+        _verify_stable_samples(first, _verify(status=failing_status))
+
+    stalled_status = deepcopy(first_status)
+    with pytest.raises(VerificationError, match="did not make progress"):
+        _verify_stable_samples(first, _verify(status=stalled_status))
+
+
+def test_runtime_wait_preserves_the_matching_uplink_error() -> None:
+    class WrongVersionHandle:
+        def __init__(self) -> None:
+            self.reply = b""
+
+        def reset_input_buffer(self) -> None:
+            self.reply = b""
+
+        def write(self, value: bytes) -> int:
+            self.reply = b"FOF_PONG:wrong-version\n"
+            return len(value)
+
+        def read(self, _size: int) -> bytes:
+            reply, self.reply = self.reply, b""
+            return reply
+
+        def close(self) -> None:
+            pass
+
+    def opener(port: str) -> WrongVersionHandle:
+        if port == "/dev/cu.bound-uplink":
+            return WrongVersionHandle()
+        raise OSError("scanner candidate")
+
+    uplink = UsbDevice(
+        mac=ASSIGNMENT.uplink_mac,
+        port="/dev/cu.bound-uplink",
+        chip="ESP32-S3",
+        revision="v0.2",
+        flash_size="8MB",
+        psram_size="8MB",
+    )
+    with pytest.raises(VerificationError, match="PONG version mismatch"):
+        wait_for_stable_runtime(
+            uplink,
+            ASSIGNMENT,
+            BUNDLE,
+            timeout_s=0.1,
+            serial_factory=opener,
+            candidate_ports=lambda: [
+                "/dev/cu.bound-uplink",
+                "/dev/cu.scanner",
+            ],
+        )
 
 
 def test_runtime_gate_rejects_nonblank_config_and_poisoned_usb() -> None:
