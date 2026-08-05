@@ -19,6 +19,40 @@ The native badge USB/factory firmware is a different firmware family.
 flasher to install these Lite images, and never rename a backend image as a
 badge target.
 
+## Factory-flash a complete Lite assembly
+
+The separate Backend Badge Lite factory flasher programs one complete,
+three-board Lite assembly: two boards receive the unchanged production
+`scanner-s3-combo-fof_badge` scanner image and the topology-selected center
+board receives `uplink-s3-backend`. It is not the native/full-badge factory
+flasher, and it is not the single-uplink maintenance web flasher.
+
+From a repository checkout on macOS, double-click
+`flash-lite-badges.command` or run:
+
+```sh
+./flash-lite-badges.command
+```
+
+The launcher uses the embedded offline bundle. Connect exactly three Seeed
+XIAO ESP32-S3 boards, each with 8 MB flash and 8 MB PSRAM, only when prompted.
+The operation erases and rewrites all three boards. The operator must type the
+exact phrase `LITE` before a batch begins; scripted operation additionally
+requires all three explicit arguments:
+
+```sh
+./flash-lite-badges.command \
+  --yes --once --confirm-product badge_lite
+```
+
+This is a blank-board/rework factory operation, not a field update. Do not
+connect a native badge, a configured field Lite unit, or any unrelated
+Espressif USB device. See
+[`docs/backend-lite-factory-flasher.md`](../docs/backend-lite-factory-flasher.md)
+for the pinned bundle contents, topology and runtime PASS gates, private
+manufacturing records, recovery rules, and the current candidate/release
+boundary.
+
 ## Build the Lite uplink image
 
 ```sh

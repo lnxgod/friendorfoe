@@ -41,7 +41,7 @@ LITE_CAPABILITIES = frozenset(
         "config_ap",
         "ap_dashboard",
         "remote_ota",
-        "uart_relay_ota",
+        "production_scanner_uart",
     }
 )
 

@@ -56,7 +56,7 @@ STATUS_FRAME = (
     '"config_generation":9,'
     '"capabilities":["display_none","usb_live","usb_live_ack",'
     '"usb_buffered","usb_config","http_uplink","config_ap",'
-    '"ap_dashboard","remote_ota","uart_relay_ota"],'
+    '"ap_dashboard","remote_ota","production_scanner_uart"],'
     '"wifi":{"configured":false,"connected":false,'
     '"full_pass_failed":false},'
     '"recovery":{"reason":"wifi_unconfigured","ap_running":true},'
