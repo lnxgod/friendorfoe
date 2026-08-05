@@ -11,9 +11,19 @@ const REMOTE_ID_SOURCES = new Set(["ble_rid", "wifi_rid"]);
 const OFFLINE_MESSAGE = "Basemap offline — coordinates and observations remain available";
 const TRAIL_LABEL = "Host-observed trail";
 const WORLD_VIEW = [20, 0];
-const MAX_TRAIL_PAGES = 4;
-const MAX_TRAIL_ROWS = 2000;
+const HISTORY_TRAIL_PAGE_SIZE = 500;
+const DISTINCT_TRAIL_PAGE_SIZE = 4096;
+const MAX_HISTORY_TRAIL_PAGES = 4;
+const MAX_HISTORY_TRAIL_ROWS = 2000;
+const MAX_DISTINCT_TRAIL_PAGES = 2;
+const MAX_DISTINCT_TRAIL_ROWS = 8192;
 const MAX_TRAIL_ATTEMPTS = 2;
+const ALL_POSITIONED_TRAILS = "all-positioned-remote-id";
+const OPERATOR_LINK_COLOR = "#70838c";
+const OPERATOR_LINK_MAX_OPACITY = 0.16;
+export const MIN_TRAIL_RETENTION_MINUTES = 1;
+export const MAX_TRAIL_RETENTION_MINUTES = 120;
+export const DEFAULT_TRAIL_RETENTION_MINUTES = 120;
 
 export function createRequestStatusChannels({ render }) {
   let stateMessage = "";
@@ -50,11 +60,17 @@ let trailLayer = null;
 let offlineNotice = null;
 let semanticList = null;
 let selectedLabel = null;
+let trailDotCount = null;
 let markerByKey = new Map();
 let visualsByKey = new Map();
 let activeByKey = new Map();
 let activeFingerprint = "";
 let selectedKey = null;
+let onSelectionChange = () => {};
+let trailRetentionSeconds = DEFAULT_TRAIL_RETENTION_MINUTES * 60;
+let lastTrailPoints = [];
+let lastTrailTruncated = false;
+let hasFittedActiveBounds = false;
 let tileErrors = 0;
 let tileSucceeded = false;
 
@@ -90,7 +106,13 @@ function handleTileSuccess() {
   showOfflineNotice(false);
 }
 
-export function createMap(element) {
+export function createMap(element, options = {}) {
+  onSelectionChange = typeof options.onSelectionChange === "function"
+    ? options.onSelectionChange
+    : () => {};
+  if (typeof options.selectedKey === "string" && options.selectedKey) {
+    selectedKey = options.selectedKey;
+  }
   if (map) {
     return map;
   }
@@ -100,6 +122,7 @@ export function createMap(element) {
   offlineNotice = document.querySelector("#map-offline");
   semanticList = document.querySelector("#map-entity-list");
   selectedLabel = document.querySelector("#map-selected");
+  trailDotCount = document.querySelector("#map-trail-dot-count");
   map = window.L.map(element, { zoomControl: true, preferCanvas: true });
   tileLayer = window.L.tileLayer(
     "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
@@ -125,6 +148,30 @@ function positionedRemoteId(entities) {
     && entity.stale !== true
     && validCoordinatePair(entity.lat, entity.lon)
   ));
+}
+
+export function defaultSelectedEntityKey(entities) {
+  let bestKey = null;
+  let bestWeight = Number.NEGATIVE_INFINITY;
+  for (const entity of Array.isArray(entities) ? entities : []) {
+    const weight = Math.max(
+      Number.isFinite(Number(entity?.seen_count)) ? Number(entity.seen_count) : 0,
+      Number.isFinite(Number(entity?.events)) ? Number(entity.events) : 0,
+    );
+    if (bestKey === null || weight > bestWeight) {
+      bestKey = stableEntityKey(entity);
+      bestWeight = weight;
+    }
+  }
+  return bestKey;
+}
+
+export function retainedSelectedEntityKey(entities, currentKey) {
+  const positioned = Array.isArray(entities) ? entities : [];
+  if (currentKey && positioned.some((entity) => stableEntityKey(entity) === currentKey)) {
+    return currentKey;
+  }
+  return defaultSelectedEntityKey(positioned);
 }
 
 export function positionOpacity(entity) {
@@ -156,7 +203,7 @@ function updateEntityAppearance(entity, key) {
   visual.button.style.opacity = String(opacity);
   visual.drone.setOpacity(opacity);
   visual.operator?.setOpacity(opacity);
-  visual.link?.setStyle({ opacity: 0.9 * opacity });
+  visual.link?.setStyle({ opacity: OPERATOR_LINK_MAX_OPACITY * opacity });
 }
 
 function updateSelectionAppearance() {
@@ -227,9 +274,9 @@ export function renderActiveEntities(entities) {
         alt: "Remote ID operator marker",
       }).addTo(entityLayer);
       link = window.L.polyline([dronePosition, operatorPosition], {
-        color: "#54d8ec",
-        weight: 2,
-        opacity: 0.9,
+        color: OPERATOR_LINK_COLOR,
+        weight: 1,
+        opacity: OPERATOR_LINK_MAX_OPACITY,
       }).addTo(entityLayer);
       bounds.push(operatorPosition);
     }
@@ -242,50 +289,102 @@ export function renderActiveEntities(entities) {
       listItems.length ? listItems : [element("p", { className: "empty-state", text: "No positioned Remote ID entities." })],
     );
   }
-  if (!activeByKey.has(selectedKey)) {
-    selectedKey = activeByKey.keys().next().value || null;
+  const nextSelectedKey = retainedSelectedEntityKey(positioned, selectedKey);
+  if (nextSelectedKey !== selectedKey) {
+    selectedKey = nextSelectedKey;
   }
   updateSelectionAppearance();
-  if (bounds.length) {
+  if (bounds.length && !hasFittedActiveBounds) {
     map.fitBounds(bounds, { padding: [48, 48], maxZoom: 15 });
-  } else {
-    map.setView(WORLD_VIEW, 2);
+    hasFittedActiveBounds = true;
   }
 }
 
-export function renderTrail(points) {
-  if (!map || !trailLayer) {
-    return;
-  }
-  trailLayer.clearLayers();
-  const grouped = new Map();
+export function uniqueVisibleTrailPoints(points, cutoff) {
+  const visible = [];
+  const coordinates = new Set();
   for (const point of Array.isArray(points) ? points : []) {
     if (!point || !validCoordinatePair(point.latitude, point.longitude)) {
       continue;
     }
-    const key = point.stable_key || "unknown";
-    if (!grouped.has(key)) {
-      grouped.set(key, []);
+    const observedAt = Number(point.observed_at);
+    if (Number.isFinite(observedAt) && observedAt < cutoff) {
+      continue;
     }
-    grouped.get(key).push(point);
+    const coordinateKey = `${Number(point.latitude).toFixed(7)},${Number(point.longitude).toFixed(7)}`;
+    if (coordinates.has(coordinateKey)) {
+      continue;
+    }
+    coordinates.add(coordinateKey);
+    visible.push(point);
   }
-  for (const group of grouped.values()) {
-    group.sort((left, right) => (left.observed_at || 0) - (right.observed_at || 0));
-    const positions = group.map((point) => [point.latitude, point.longitude]);
-    if (positions.length > 1) {
-      window.L.polyline(positions, {
-        color: "#54d8ec",
-        dashArray: "2 7",
-        weight: 3,
-        opacity: 0.9,
-        interactive: false,
-      }).addTo(trailLayer);
-    }
+  return visible;
+}
+
+export function trailDotCountLabel(count, truncated = false) {
+  const numeric = Number(count);
+  const normalized = Number.isFinite(numeric) ? Math.max(Math.trunc(numeric), 0) : 0;
+  const suffix = truncated ? "+" : "";
+  const unit = normalized === 1 && !truncated ? "dot" : "dots";
+  return `${normalized.toLocaleString()}${suffix} ${unit}`;
+}
+
+export function renderTrail(points, { fit = true, truncated = false } = {}) {
+  lastTrailPoints = Array.isArray(points) ? points : [];
+  lastTrailTruncated = truncated === true;
+  if (!map || !trailLayer) {
+    return;
+  }
+  trailLayer.clearLayers();
+  const cutoff = Date.now() / 1000 - trailRetentionSeconds;
+  const visiblePoints = uniqueVisibleTrailPoints(lastTrailPoints, cutoff);
+  const trailPositions = [];
+  for (const point of visiblePoints) {
+    const position = [point.latitude, point.longitude];
+    window.L.circleMarker(position, {
+      radius: 3,
+      color: "#54d8ec",
+      fillColor: "#54d8ec",
+      fillOpacity: 0.82,
+      opacity: 0.95,
+      weight: 1,
+      interactive: false,
+    }).addTo(trailLayer);
+    trailPositions.push(position);
+  }
+  if (trailDotCount) {
+    trailDotCount.textContent = trailDotCountLabel(visiblePoints.length, lastTrailTruncated);
+    trailDotCount.title = lastTrailTruncated
+      ? "More retained positions are available than this map drawing budget can show."
+      : "";
+  }
+  if (fit && trailPositions.length) {
+    map.fitBounds(trailPositions, { padding: [48, 48], maxZoom: 17 });
   }
   void TRAIL_LABEL;
 }
 
-export function createTrailController({ getHistory, render, reportError, clearError = () => {} }) {
+export function setTrailRetentionSeconds(seconds) {
+  const numeric = Number(seconds);
+  const minimum = MIN_TRAIL_RETENTION_MINUTES * 60;
+  const maximum = MAX_TRAIL_RETENTION_MINUTES * 60;
+  trailRetentionSeconds = Number.isFinite(numeric)
+    ? Math.min(Math.max(numeric, minimum), maximum)
+    : DEFAULT_TRAIL_RETENTION_MINUTES * 60;
+  renderTrail(lastTrailPoints, { fit: false, truncated: lastTrailTruncated });
+  return trailRetentionSeconds;
+}
+
+export function createTrailController({
+  getHistory,
+  render,
+  reportError,
+  clearError = () => {},
+  retentionSeconds = () => DEFAULT_TRAIL_RETENTION_MINUTES * 60,
+  minimumSinceSeconds = () => null,
+  nowSeconds = () => Date.now() / 1000,
+  allPositioned = false,
+}) {
   let generation = 0;
   let signature = "";
   let currentKeys = [];
@@ -293,20 +392,47 @@ export function createTrailController({ getHistory, render, reportError, clearEr
   let attempts = 0;
   let activeController = null;
   let activePromise = null;
+  let fitOnLoad = true;
 
-  async function load(loadGeneration, controller) {
-    const acceptedKeys = new Set(currentKeys);
-    const queue = currentKeys.map((key) => ({ key, cursor: null }));
+  async function load(loadGeneration, controller, fit) {
+    const acceptedKeys = allPositioned ? null : new Set(currentKeys);
+    const queue = allPositioned
+      ? [{ key: null, cursor: null }]
+      : currentKeys.map((key) => ({ key, cursor: null }));
     const points = [];
+    const requestedRetention = Number(retentionSeconds());
+    const requestedNow = Number(nowSeconds());
+    const retentionCutoff = Number.isFinite(requestedRetention) && Number.isFinite(requestedNow)
+      ? Math.floor(requestedNow - requestedRetention)
+      : null;
+    const requestedMinimum = minimumSinceSeconds();
+    const minimumCutoff = requestedMinimum === null || requestedMinimum === undefined
+      ? null
+      : Number(requestedMinimum);
+    const cutoff = Number.isFinite(minimumCutoff)
+      ? Math.max(minimumCutoff, retentionCutoff ?? minimumCutoff)
+      : retentionCutoff;
+    const pageSize = allPositioned ? DISTINCT_TRAIL_PAGE_SIZE : HISTORY_TRAIL_PAGE_SIZE;
+    const maximumPages = allPositioned ? MAX_DISTINCT_TRAIL_PAGES : MAX_HISTORY_TRAIL_PAGES;
+    const maximumRows = allPositioned ? MAX_DISTINCT_TRAIL_ROWS : MAX_HISTORY_TRAIL_ROWS;
     let pageCount = 0;
+    let truncated = false;
     try {
-      while (queue.length && pageCount < MAX_TRAIL_PAGES && points.length < MAX_TRAIL_ROWS) {
+      while (queue.length && pageCount < maximumPages && points.length < maximumRows) {
         const job = queue.shift();
         const query = new URLSearchParams();
         query.set("kind", "track");
         query.set("positioned", "true");
-        query.set("text", job.key);
-        query.set("limit", "500");
+        if (allPositioned) {
+          query.set("distinct_coordinates", "true");
+        }
+        if (job.key) {
+          query.set("text", job.key);
+        }
+        query.set("limit", String(pageSize));
+        if (cutoff !== null) {
+          query.set("since", String(cutoff));
+        }
         if (job.cursor) {
           query.set("cursor", job.cursor);
         }
@@ -315,19 +441,35 @@ export function createTrailController({ getHistory, render, reportError, clearEr
           return;
         }
         pageCount += 1;
-        const remaining = MAX_TRAIL_ROWS - points.length;
-        const exactItems = (Array.isArray(page?.items) ? page.items : [])
-          .filter((item) => acceptedKeys.has(item?.stable_key))
-          .slice(0, remaining);
-        points.push(...exactItems);
-        if (page?.next_cursor && pageCount < MAX_TRAIL_PAGES && points.length < MAX_TRAIL_ROWS) {
-          queue.push({ key: job.key, cursor: page.next_cursor });
+        const remaining = maximumRows - points.length;
+        const eligibleItems = (Array.isArray(page?.items) ? page.items : [])
+          .filter((item) => {
+            if (acceptedKeys && !acceptedKeys.has(item?.stable_key)) {
+              return false;
+            }
+            const observedAt = Number(item?.observed_at);
+            return cutoff === null || !Number.isFinite(observedAt) || observedAt >= cutoff;
+          });
+        const exactItems = eligibleItems.slice(0, remaining);
+        if (eligibleItems.length > remaining) {
+          truncated = true;
         }
+        points.push(...exactItems);
+        if (page?.next_cursor) {
+          if (pageCount < maximumPages && points.length < maximumRows) {
+            queue.push({ key: job.key, cursor: page.next_cursor });
+          } else {
+            truncated = true;
+          }
+        }
+      }
+      if (queue.length) {
+        truncated = true;
       }
       if (loadGeneration === generation && !controller.signal.aborted) {
         state = "loaded";
         clearError();
-        render(points);
+        render(points, { fit, truncated });
       }
     } catch (error) {
       if (loadGeneration === generation && !controller.signal.aborted) {
@@ -343,7 +485,7 @@ export function createTrailController({ getHistory, render, reportError, clearEr
     const loadGeneration = generation;
     const controller = new AbortController();
     activeController = controller;
-    const promise = load(loadGeneration, controller).finally(() => {
+    const promise = load(loadGeneration, controller, fitOnLoad).finally(() => {
       if (activePromise === promise) {
         activePromise = null;
         activeController = null;
@@ -353,10 +495,12 @@ export function createTrailController({ getHistory, render, reportError, clearEr
     return promise;
   }
 
-  function updateKeys(keys, forceReset = false) {
-    const nextKeys = [...new Set(
-      (Array.isArray(keys) ? keys : []).filter((key) => typeof key === "string" && key),
-    )].sort();
+  function updateKeys(keys, { forceReset = false, preserve = false, fit = !preserve } = {}) {
+    const nextKeys = allPositioned
+      ? [ALL_POSITIONED_TRAILS]
+      : [...new Set(
+        (Array.isArray(keys) ? keys : []).filter((key) => typeof key === "string" && key),
+      )].sort();
     const nextSignature = JSON.stringify(nextKeys);
     if (forceReset || nextSignature !== signature) {
       generation += 1;
@@ -367,8 +511,13 @@ export function createTrailController({ getHistory, render, reportError, clearEr
       currentKeys = nextKeys;
       attempts = 0;
       state = "idle";
-      clearError();
-      render([]);
+      fitOnLoad = fit;
+      if (!preserve || !currentKeys.length) {
+        clearError();
+      }
+      if (!preserve || !currentKeys.length) {
+        render([]);
+      }
     }
     if (!currentKeys.length || state === "loaded" || attempts >= MAX_TRAIL_ATTEMPTS) {
       return Promise.resolve();
@@ -380,11 +529,11 @@ export function createTrailController({ getHistory, render, reportError, clearEr
   }
 
   return {
-    update(keys) {
-      return updateKeys(keys);
+    update(keys, { preserve = false, fit = !preserve } = {}) {
+      return updateKeys(keys, { preserve, fit });
     },
-    refresh(keys) {
-      return updateKeys(keys, true);
+    refresh(keys, { preserve = false, fit = !preserve } = {}) {
+      return updateKeys(keys, { forceReset: true, preserve, fit });
     },
   };
 }
@@ -393,10 +542,14 @@ export function focusEntity(stableKey) {
   if (!map || !activeByKey.has(stableKey)) {
     return false;
   }
+  const changed = selectedKey !== stableKey;
   selectedKey = stableKey;
   updateSelectionAppearance();
   const entity = activeByKey.get(stableKey);
   map.panTo([entity.lat, entity.lon]);
+  if (changed) {
+    onSelectionChange(selectedKey);
+  }
   return true;
 }
 
@@ -415,10 +568,16 @@ export function destroy() {
   tileLayer = null;
   entityLayer = null;
   trailLayer = null;
+  trailDotCount = null;
   markerByKey = new Map();
   activeByKey = new Map();
   activeFingerprint = "";
   selectedKey = null;
+  onSelectionChange = () => {};
+  lastTrailPoints = [];
+  lastTrailTruncated = false;
+  trailRetentionSeconds = DEFAULT_TRAIL_RETENTION_MINUTES * 60;
+  hasFittedActiveBounds = false;
   tileErrors = 0;
   tileSucceeded = false;
 }

@@ -1,10 +1,10 @@
 # New Dash
 
 New Dash is the compact, source-first browser console for one Friend or Foe
-badge connected to a Mac through the uplink board's USB-C port. It shows live
-detections, makes Remote ID evidence prominent, maps positioned Remote ID,
-keeps bounded local history, and exposes badge diagnostics and a small safe
-display-control allowlist.
+full-size badge or Backend Badge Lite connected to a Mac through the uplink
+board's USB-C port. It shows live detections, makes Remote ID evidence
+prominent, maps positioned Remote ID, keeps bounded local history, and exposes
+badge diagnostics plus a small capability-gated control surface.
 
 New Dash uses the same factory-firmware command signaling as the working
 Android USB path and `scripts/fof_badge_debug_bridge.py`. Existing factory
@@ -21,8 +21,8 @@ Required:
 
 - A Mac running macOS.
 - Python 3.11 or newer, available as `python3`.
-- A compatible Friend or Foe factory badge and a data-capable USB-C cable
-  connected to the badge uplink board.
+- A compatible Friend or Foe full-size factory badge or Backend Badge Lite and
+  a data-capable USB-C cable connected to the badge uplink board.
 - Network access on the first run if the Python packages are not already
   cached.
 
@@ -36,6 +36,23 @@ New Dash handles these automatically:
 You do **not** need to reflash a compatible factory badge or install Android,
 the legacy FastAPI backend, Docker, PostgreSQL, Redis, Node.js, or a separate
 USB driver for the badge's native USB serial connection.
+
+## Badge compatibility
+
+- **Full-size factory badge:** New Dash uses the established `FOF_PING`,
+  `FOF_STATUS`, and `FOF_DET` USB contract, retains full detection and Remote ID
+  behavior, and exposes only the allowlisted display controls described below.
+- **Backend Badge Lite:** New Dash requires the exact trusted headless identity
+  (`badge_lite`, `uplink-s3-backend`, `fof_backend_uplink`,
+  `seeed_xiao_esp32s3`) plus `display_none`, `usb_live`, and `usb_live_ack`
+  capabilities. It starts an acknowledged-live session, ACKs the current
+  session heartbeat, and sends a best-effort stop when the connection closes.
+  Detection, scanner-health, history, map, and export behavior remain available;
+  display controls are hidden because Lite has no screen.
+
+Identity and capabilities are checked fail-closed. A partial Lite identity,
+version mismatch, missing live-session capability, or non-badge serial device
+is rejected instead of silently falling back to the full-size protocol.
 
 ## Plug in and run
 
@@ -118,14 +135,21 @@ the foreground developer launcher.
   separate **Recent USB detections** section, so recovery firmware can still
   show Remote ID and Find My events when its active entity snapshot is
   temporarily unavailable; those events are not presented as map tracks.
-- **Map** shows positioned Remote ID drone/operator markers, their connecting
-  line, and locally retained host-observed trails. The host keeps the newest GPS
+- **Map** shows positioned Remote ID drone/operator markers, a subdued
+  drone-to-operator link, and cyan dots for distinct host-observed coordinates.
+  Formation persistence is adjustable from 1 to 120 minutes and defaults to
+  120 minutes. Dots refresh every five seconds without resetting manual zoom,
+  pan, or entity selection. **Clear & start timer** begins a client-only drawing
+  session: existing dots and live markers disappear immediately and new USB
+  observations redraw the formation while elapsed time is shown. The action
+  never deletes saved history. Formation drawing fetches up to 8,192 distinct
+  coordinates; a `+` after the visible dot count explicitly reports that more
+  saved positions remain beyond the drawing budget. Separately, the host keeps
+  the newest live GPS
   position for up to 512 Remote ID identities, fades each marker as its GPS age
   approaches two minutes, and removes it after 120 seconds without a newer GPS
-  observation. This lets a rotating status feed accumulate a 200-drone sweep
-  without presenting old positions as indefinitely live. Public OpenStreetMap
-  tiles provide the optional basemap; markers and coordinates remain available
-  when tiles are offline.
+  observation. Public OpenStreetMap tiles provide the optional basemap; markers
+  and coordinates remain available when tiles are offline.
 - **History** provides newest-first time, kind, class, source, identity-text,
   and positioned filters, cursor pagination, details, CSV/JSON export, and a
   typed confirmation before local clearing. Clearing history does not stop the
@@ -133,7 +157,7 @@ the foreground developer launcher.
 - **Badge** shows scanner roles and health, firmware/status, safe and recovery
   facts, reporting/counters, memory diagnostics, and the allowlisted controls.
 
-The only USB mutations available in New Dash are:
+For a full-size badge, the only USB mutations available in New Dash are:
 
 - transient display navigation: `next`, `detail`, `page`, and `back`;
 - complete version-1 theme Apply/Reset: palette `field`, `night`, `neon`, or
@@ -150,6 +174,27 @@ change before the corresponding status arrives. There is no firmware upload,
 reboot, bootloader, recovery/safe-mode mutation, arbitrary JSON, or raw serial
 control surface.
 
+For a freshly verified Backend Badge Lite that advertises `usb_config`, New
+Dash also exposes two loopback-only, same-origin, control-token-protected API
+operations:
+
+- `POST /api/config/read` with `{}` returns the exact schema-version-1 Lite
+  configuration with secrets redacted. Network and AP credentials are reported
+  only as `password_set`/`ap_password_set` booleans.
+- `POST /api/config` atomically validates and sends a nonempty subset of
+  `networks`, `backend_url`, `display_name`, `ap_password`,
+  `auto_update_enabled`, `confirm_auto_update`, `has_location`, `latitude`,
+  `longitude`, and `altitude_m`. Up to four unique SSIDs are accepted;
+  auto-update enablement requires explicit confirmation; enabled fixed location
+  requires all three finite coordinates.
+
+The API returns the firmware's committed configuration generation and whether
+the badge must reconnect. It is not available to the full-size badge, never
+returns stored passwords, and does not add firmware upload, reboot, or raw
+serial access. The Badge view reports status-derived configuration generation
+and connectivity diagnostics; redacted full configuration is available through
+`/api/config/read`, and the browser intentionally has no password-entry form.
+
 ## Local data and telemetry limits
 
 The default database is:
@@ -163,11 +208,18 @@ default. Both positive limits can be changed at launch. `--data-dir` selects a
 different directory; New Dash appends `new-dash.sqlite3` within it.
 
 Map position retention is separate from append-only history. By default the
-backend keeps the newest positioned Remote ID observation per identity for 120
-seconds, bounded to 512 identities, and rebuilds that short-lived set from
-SQLite after a restart. `--remote-id-hold-seconds` and
+New Dash host process keeps the newest positioned Remote ID observation per
+identity for 120 seconds, bounded to 512 identities, and rebuilds that
+short-lived set from SQLite after a restart. `--remote-id-hold-seconds` and
 `--max-remote-id-entities` change those positive bounds for either `run.sh` or
 the macOS `start.sh` service.
+
+The Map formation-persistence control is another, client-selected view over
+saved positioned track history. It requests distinct coordinates within the
+selected 1–120 minute window and never changes retention, deletes rows, or
+claims that every over-the-air packet was captured. **Clear & start timer**
+adds an exact in-memory session cutoff; refreshing the page restores the saved
+trail view.
 
 New Dash displays the badge firmware's capped, processed status and event
 summaries. Firmware classification remains authoritative. Map trails are
@@ -186,6 +238,10 @@ exact source timestamps, heading, velocity, or precision flight telemetry.
 - **Wrong device or ROM bootloader:** an Espressif serial port is not enough;
   New Dash requires a valid `FOF_PING`/`FOF_PONG` badge response. Boot the badge
   application firmware and select its uplink port.
+- **Lite identity or capability rejected:** New Dash accepts Lite only when the
+  complete trusted identity and acknowledged-live capabilities are present.
+  Use a compatible Lite build; do not weaken identity checks or flash a scanner
+  to work around a rejected uplink.
 - **Safe USB:** USB status may be healthy while sensing is intentionally
   disabled. The Badge view reports the safe-mode reason; do not interpret a
   live USB link as healthy scanners.

@@ -93,7 +93,33 @@
             <p class="rail-label">Selected Remote ID</p>
             <p id="map-selected" class="map-selected">None</p>
           </div>
-          <div class="rail-section">
+          <div class="rail-section map-trail-control">
+            <label for="map-trail-minutes">
+              <span>Formation persistence</span>
+              <output id="map-trail-minutes-output" for="map-trail-minutes">120 min</output>
+            </label>
+            <input
+              id="map-trail-minutes"
+              type="range"
+              min="1"
+              max="120"
+              step="1"
+              value="120"
+              aria-describedby="map-trail-help map-trail-dot-count"
+            >
+            <p class="map-trail-meta">
+              <span id="map-trail-help">Distinct Remote ID positions</span>
+              <span id="map-trail-dot-count" aria-live="polite">0 dots</span>
+            </p>
+            <div class="map-drawing-actions">
+              <button id="map-drawing-reset" class="secondary-button" type="button">
+                Clear &amp; start timer
+              </button>
+              <output id="map-drawing-elapsed">Saved trail shown</output>
+            </div>
+            <p class="map-drawing-help">Dots and live drones restart; saved history stays intact.</p>
+          </div>
+          <div class="rail-section map-entities-section">
             <h3>Positioned entities</h3>
             <div id="map-entity-list" class="map-entity-list"></div>
           </div>
@@ -102,7 +128,7 @@
             <p><span class="legend-symbol marker-drone" aria-hidden="true"></span>Remote ID drone</p>
             <p><span class="legend-symbol marker-operator" aria-hidden="true"></span>Operator</p>
             <p><span class="legend-line link-line" aria-hidden="true"></span>Drone to operator link</p>
-            <p><span class="legend-line trail-line" aria-hidden="true"></span>Host-observed trail</p>
+            <p><span class="legend-trail-dot" aria-hidden="true"></span>Retained Remote ID positions</p>
           </div>
           <div id="map-offline" class="map-offline" role="status" hidden></div>
         </aside>

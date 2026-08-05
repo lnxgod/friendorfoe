@@ -9,6 +9,7 @@ on:
 
 jobs:
   build:
+    if: ${{ !contains(github.ref_name, '-new-dash-') }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -46,7 +47,7 @@ jobs:
           retention-days: 30
 
   sign-release:
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-new-dash-')
     needs: build
     runs-on: ubuntu-latest
     permissions:
@@ -130,7 +131,7 @@ jobs:
           retention-days: 7
 
   publish-release:
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-new-dash-')
     needs: sign-release
     runs-on: ubuntu-latest
     permissions:

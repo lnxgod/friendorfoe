@@ -18,17 +18,12 @@ sensor node. Same radios, same policy engine, same Android control surface,
 same backend ingest path. Walk around with it during the day; mount it later as
 part of a multi-node sensor platform.
 
-> Current published tracks: Android/backend/production S3 firmware are on
-> `0.64.68-live-follow`; the published badge/factory release is
-> `0.64.76-badge-defcon34`. A local provisional canary source identity,
-> `0.64.87-badge-defcon34`, is limited to the connected three-board canary;
-> it is not a production-readiness or public-release version. The published
-> release adds the themed four-lane instrument UI, custom USB palettes,
-> quiet/off mode, and automatic integrity-checked scanner
-> updates from the USB-connected uplink. The local canary replaces that
-> physical quiet/off shortcut with a ten-second dual-button software reset.
-> The badge and production sensor fleet intentionally move on separate
-> firmware tracks.
+> Current published tracks: Android is
+> `0.67.15-android-rid-ingest-performance`; backend and production S3 firmware
+> remain on `0.64.68-live-follow`; published badge/factory firmware is
+> `0.67.2-badge-defcon34`. New Dash is released independently as source at
+> `0.67.16-new-dash-usb-parity`; it does not change any Android, backend, badge,
+> scanner, or production firmware version.
 
 ## What The Badge Does
 
@@ -132,11 +127,14 @@ Relevant Android code lives under:
 
 ## New Dash: One Badge, One USB Cable
 
-New Dash brings the factory badge's native Android-compatible USB feed to a
-compact browser dashboard on macOS. It runs directly from source, discovers
-one badge uplink, shows live detections and Remote ID, and keeps local history
-without using the legacy multi-node backend or reflashing a compatible factory
-badge.
+New Dash brings the full-size factory badge and Backend Badge Lite native USB
+feeds to a compact browser dashboard on macOS. It runs directly from source,
+strictly verifies one badge uplink, shows live detections and Remote ID, keeps
+local history, and supports Lite acknowledged-live/configuration capabilities
+without using the legacy multi-node backend or reflashing compatible firmware.
+Its Map view can retain formation dots for 1–120 minutes, refresh without
+resetting zoom, and clear/restart a timed drawing session without deleting
+saved history.
 
 ```sh
 cd new-dash
@@ -168,7 +166,7 @@ field console.
 | Path | Purpose |
 |------|---------|
 | `android/` | Kotlin + Jetpack Compose app, badge console, privacy views, AR/list/map screens |
-| `new-dash/` | Compact macOS USB browser console for one badge; independent local SQLite history and safe display controls |
+| `new-dash/` | Compact macOS USB browser console for full-size or Lite badge; local SQLite history, formation map, and capability-gated controls |
 | `backend/` | FastAPI ingest, enrichment, dashboard, triangulation, calibration, firmware endpoints |
 | `esp32/scanner/` | ESP32-S3 scanner firmware for BLE/Wi-Fi detection |
 | `esp32/uplink/` | ESP32-S3 uplink firmware, display, USB-C control, read-only local status, UART OTA relay |

@@ -114,11 +114,19 @@ export function visibleEntities(state, filters) {
   return entities.filter((entity) => matchesFilters(entity, state, filters));
 }
 
-export function visiblePositionedRemoteIds(state, filters) {
+export function visiblePositionedRemoteIds(state, filters, minimumObservedAt = null) {
   const retained = Array.isArray(state?.positioned_remote_id_entities)
     ? state.positioned_remote_id_entities
     : visibleEntities(state, filters);
-  return retained.filter((entity) => isRemoteId(entity) && matchesFilters(entity, state, filters));
+  const hasMinimum = hasNumber(minimumObservedAt);
+  return retained.filter((entity) => (
+    isRemoteId(entity)
+    && matchesFilters(entity, state, filters)
+    && (!hasMinimum || (
+      hasNumber(entity.host_observed_at)
+      && entity.host_observed_at >= minimumObservedAt
+    ))
+  ));
 }
 
 export function groupVisibleEntities(state, filters) {

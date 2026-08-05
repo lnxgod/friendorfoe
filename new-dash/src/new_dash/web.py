@@ -25,13 +25,18 @@ from .serial_transport import (
     TransportUnavailable,
     UnsupportedCapability,
 )
-from .storage import HistoryPage, HistoryQuery
+from .storage import (
+    MAX_DISTINCT_COORDINATE_PAGE_SIZE,
+    MAX_HISTORY_PAGE_SIZE,
+    HistoryPage,
+    HistoryQuery,
+)
 
 
 _DEFAULT_PORT = 8765
 _REQUEST_TIMEOUT_SECONDS = 10.0
 _MAX_REQUEST_BODY = 65_536
-_MAX_QUERY_FIELDS = 9
+_MAX_QUERY_FIELDS = 10
 _MAX_QUERY_STRING_BYTES = 8_192
 _MAX_FILTER_TEXT = 256
 _MAX_FILTER_SCALAR = 64
@@ -90,7 +95,10 @@ _STATIC_FILES = {
 }
 _STATIC_ROOT = Path(__file__).with_name("static").resolve()
 _HISTORY_PARAMETERS = frozenset(
-    {"since", "until", "kind", "source", "class", "text", "positioned", "cursor", "limit"}
+    {
+        "since", "until", "kind", "source", "class", "text", "positioned",
+        "distinct_coordinates", "cursor", "limit",
+    }
 )
 _EXPORT_PARAMETERS = frozenset(
     {"since", "until", "kind", "source", "class", "text", "positioned"}
@@ -675,6 +683,18 @@ def _build_history_query(query_string: str, *, export: bool) -> HistoryQuery:
     else:
         raise ValueError("positioned must be true or false")
 
+    distinct_value = value("distinct_coordinates")
+    if distinct_value is None or distinct_value == "false":
+        distinct_coordinates = False
+    elif distinct_value == "true":
+        distinct_coordinates = True
+    else:
+        raise ValueError("distinct_coordinates must be true or false")
+    if distinct_coordinates and (kind != "track" or positioned is not True):
+        raise ValueError(
+            "distinct_coordinates requires kind=track and positioned=true"
+        )
+
     cursor = value("cursor")
     if cursor is not None:
         if not cursor or len(cursor) > _MAX_CURSOR or not cursor.isascii():
@@ -687,7 +707,12 @@ def _build_history_query(query_string: str, *, export: bool) -> HistoryQuery:
     elif not limit_value.isascii() or not limit_value.isdecimal():
         raise ValueError("history limit must be a decimal integer")
     else:
-        limit = min(max(int(limit_value), 1), 500)
+        maximum_page_size = (
+            MAX_DISTINCT_COORDINATE_PAGE_SIZE
+            if distinct_coordinates
+            else MAX_HISTORY_PAGE_SIZE
+        )
+        limit = min(max(int(limit_value), 1), maximum_page_size)
 
     return HistoryQuery(
         since=since,
@@ -697,6 +722,7 @@ def _build_history_query(query_string: str, *, export: bool) -> HistoryQuery:
         threat_class=threat_class,
         text=text,
         positioned=positioned,
+        distinct_coordinates=distinct_coordinates,
         cursor=cursor,
         limit=limit,
     )

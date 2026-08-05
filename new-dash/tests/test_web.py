@@ -21,9 +21,15 @@ from new_dash.controls import (
     ControlValidationError,
     build_display_nav,
     build_display_policy,
+    build_lite_config_set,
     build_theme,
 )
-from new_dash.models import ControlReply, Observation
+from new_dash.models import (
+    ControlReply,
+    LiteConfiguration,
+    LiteConfigWriteReply,
+    Observation,
+)
 from new_dash.serial_transport import ControlTimeout, TransportUnavailable
 from new_dash.storage import HistoryPage, HistoryQuery
 from new_dash.web import create_http_server
@@ -162,6 +168,25 @@ class FakeApplication:
         self.control_calls: list[tuple[str, object | None]] = []
         self.control_failure: Exception | None = None
         self.control_reply = ControlReply.from_payload({"message": "accepted"}, ok=True)
+        self.lite_configuration = LiteConfiguration.from_payload(
+            {
+                "schema_version": 1,
+                "generation": 9,
+                "networks": [{"ssid": "Demo", "password_set": True}],
+                "backend_url": "http://127.0.0.1:8000",
+                "device_id": "uplink_CB77A4",
+                "display_name": "Lite Lab",
+                "ap_password_set": True,
+                "auto_update_enabled": False,
+                "has_location": False,
+                "latitude": None,
+                "longitude": None,
+                "altitude_m": None,
+            }
+        )
+        self.lite_config_reply = LiteConfigWriteReply.from_payload(
+            {"generation": 10, "reconnect": True}, ok=True
+        )
 
     def snapshot(self) -> dict[str, object]:
         return SNAPSHOT
@@ -201,6 +226,19 @@ class FakeApplication:
 
     def reset_display_policy(self) -> ControlReply:
         return self._before_control("reset_display_policy", None)
+
+    def get_lite_config(self) -> LiteConfiguration:
+        self.control_calls.append(("get_lite_config", None))
+        if self.control_failure is not None:
+            raise self.control_failure
+        return self.lite_configuration
+
+    def set_lite_config(self, payload: object) -> LiteConfigWriteReply:
+        build_lite_config_set(payload)
+        self.control_calls.append(("set_lite_config", payload))
+        if self.control_failure is not None:
+            raise self.control_failure
+        return self.lite_config_reply
 
     def _before_control(self, name: str, payload: object | None) -> ControlReply:
         self.control_calls.append((name, payload))
@@ -570,6 +608,8 @@ class StaticAndStateRouteTest(WebServerTestCase):
         self.assertTrue(map_path.is_file())
         live_source = live_path.read_text(encoding="utf-8")
         map_source = map_path.read_text(encoding="utf-8")
+        app_source = (STATIC_ROOT / "app.js").read_text(encoding="utf-8")
+        html = (STATIC_ROOT / "index.html").read_text(encoding="utf-8")
 
         self.assertIn('"ble_rid"', live_source)
         self.assertIn('"wifi_rid"', live_source)
@@ -580,9 +620,30 @@ class StaticAndStateRouteTest(WebServerTestCase):
         self.assertIn("https://www.openstreetmap.org/copyright", map_source)
         self.assertIn("Basemap offline — coordinates and observations remain available", map_source)
         self.assertIn("Host-observed trail", map_source)
-        self.assertIn("MAX_TRAIL_PAGES = 4", map_source)
-        self.assertIn("MAX_TRAIL_ROWS = 2000", map_source)
-        for query_contract in ('"kind", "track"', '"positioned", "true"', '"limit", "500"'):
+        self.assertIn("HISTORY_TRAIL_PAGE_SIZE = 500", map_source)
+        self.assertIn("DISTINCT_TRAIL_PAGE_SIZE = 4096", map_source)
+        self.assertIn("MAX_HISTORY_TRAIL_PAGES = 4", map_source)
+        self.assertIn("MAX_HISTORY_TRAIL_ROWS = 2000", map_source)
+        self.assertIn("MAX_DISTINCT_TRAIL_PAGES = 2", map_source)
+        self.assertIn("MAX_DISTINCT_TRAIL_ROWS = 8192", map_source)
+        self.assertIn("trailDotCountLabel", map_source)
+        self.assertIn("window.L.circleMarker", map_source)
+        self.assertIn("allPositioned: true", app_source)
+        self.assertIn("minimumSinceSeconds: () => drawingStartedAt", app_source)
+        self.assertIn("let initialTrailFitPending = true", app_source)
+        self.assertIn("fit: initialTrailFitPending", app_source)
+        self.assertIn("if (options.fit && points.length)", app_source)
+        self.assertIn("TRAIL_REFRESH_INTERVAL_MS = 5000", app_source)
+        self.assertIn('id="map-trail-minutes"', html)
+        self.assertIn('id="map-drawing-reset"', html)
+        self.assertIn('id="map-drawing-elapsed"', html)
+        self.assertIn("Dots and live drones restart; saved history stays intact", html)
+        self.assertIn('max="120"', html)
+        self.assertIn('value="120"', html)
+        for query_contract in (
+            '"kind", "track"', '"positioned", "true"',
+            '"distinct_coordinates", "true"', '"limit", String(pageSize)', '"since"',
+        ):
             self.assertIn(query_contract, map_source)
 
     def test_responsive_shell_keeps_desktop_compact_and_mobile_filters_reachable(self) -> None:
@@ -792,6 +853,25 @@ class HistoryRouteTest(WebServerTestCase):
         self.assertEqual(response.status, 200)
         self.assertEqual(self.application.history_query, HistoryQuery(limit=1))
 
+    def test_history_accepts_distinct_positioned_track_coordinates(self) -> None:
+        response, _ = self.request(
+            "GET",
+            "/api/history?kind=track&positioned=true"
+            "&distinct_coordinates=true&since=1&limit=9999",
+        )
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(
+            self.application.history_query,
+            HistoryQuery(
+                since=1.0,
+                kind="track",
+                positioned=True,
+                distinct_coordinates=True,
+                limit=4096,
+            ),
+        )
+
     def test_history_rejects_invalid_or_unbounded_queries(self) -> None:
         overflowing_cursor = urlsafe_b64encode(
             json.dumps({"received_at": 10**1000, "id": 1}).encode("utf-8")
@@ -803,6 +883,11 @@ class HistoryRouteTest(WebServerTestCase):
             "until=Infinity",
             "positioned=1",
             "positioned=True",
+            "distinct_coordinates=1",
+            "distinct_coordinates=True",
+            "distinct_coordinates=true&kind=track",
+            "distinct_coordinates=true&kind=event&positioned=true",
+            "distinct_coordinates=true&kind=track&positioned=false",
             "limit=1.5",
             "limit=%2B2",
             "kind=" + "k" * 65,
@@ -861,6 +946,12 @@ class HistoryRouteTest(WebServerTestCase):
 
 APPROVED_POSTS = (
     ("/api/history/clear", {"confirm": "clear-history"}, "clear_history"),
+    ("/api/config/read", {}, "get_lite_config"),
+    (
+        "/api/config",
+        {"networks": [{"ssid": "Demo", "password": "secret"}]},
+        "set_lite_config",
+    ),
     ("/api/control/display-nav", {"action": "next"}, "display_nav"),
     ("/api/control/theme", THEME, "set_theme"),
     ("/api/control/theme/reset", {}, "reset_theme"),
@@ -920,6 +1011,13 @@ class MutationRouteTest(WebServerTestCase):
                 data = json.loads(body)["data"]
                 if path == "/api/history/clear":
                     self.assertEqual(data, {"deleted": 3})
+                elif path == "/api/config/read":
+                    self.assertEqual(data["schema_version"], 1)
+                    self.assertEqual(
+                        data["networks"],
+                        [{"ssid": "Demo", "password_set": True}],
+                    )
+                    self.assertNotIn("secret", body.decode("utf-8"))
                 else:
                     self.assertTrue(data["ok"])
 
@@ -946,6 +1044,8 @@ class MutationRouteTest(WebServerTestCase):
     def test_every_approved_route_rejects_unknown_top_level_fields(self) -> None:
         invalid_payloads = {
             "/api/history/clear": {"confirm": "clear-history", "extra": True},
+            "/api/config/read": {"extra": True},
+            "/api/config": {"extra": True},
             "/api/control/display-nav": {"action": "next", "extra": True},
             "/api/control/theme": {**THEME, "extra": True},
             "/api/control/theme/reset": {"extra": True},
@@ -957,6 +1057,36 @@ class MutationRouteTest(WebServerTestCase):
                 response, body = self.post(path, payload)
                 self.assertEqual(response.status, 400)
                 self.assertEqual(json.loads(body)["error"]["code"], "invalid_request")
+
+    def test_config_rejects_huge_location_numbers_as_invalid_requests(self) -> None:
+        response, body = self.post(
+            "/api/config",
+            {
+                "has_location": True,
+                "latitude": 37.0,
+                "longitude": -122.0,
+                "altitude_m": 10**1000,
+            },
+        )
+
+        self.assertEqual(response.status, 400)
+        self.assertEqual(json.loads(body)["error"]["code"], "invalid_request")
+        self.assertEqual(self.application.control_calls, [])
+
+    def test_config_firmware_rejection_is_bounded_and_structured(self) -> None:
+        self.application.lite_config_reply = LiteConfigWriteReply.from_payload(
+            {"reason": "invalid_config"}, ok=False
+        )
+
+        response, body = self.post(
+            "/api/config",
+            {"networks": [{"ssid": "Demo", "password": "secret"}]},
+        )
+
+        self.assertEqual(response.status, 502)
+        decoded = json.loads(body)
+        self.assertEqual(decoded["error"]["code"], "firmware_rejected")
+        self.assertEqual(decoded["error"]["message"], "invalid_config")
 
     def test_json_duplicate_fields_are_rejected(self) -> None:
         response, body = self.post(
@@ -1110,7 +1240,12 @@ class HistoryExportRouteTest(WebServerTestCase):
         self.assertEqual(json.loads(body), [observation().to_dict(), observation().to_dict()])
 
     def test_export_rejects_pagination_and_unknown_parameters(self) -> None:
-        for suffix in ("?cursor=bad", "?limit=10", "?extra=value"):
+        for suffix in (
+            "?cursor=bad",
+            "?limit=10",
+            "?distinct_coordinates=true",
+            "?extra=value",
+        ):
             with self.subTest(suffix=suffix):
                 response, body = self.request("GET", "/api/history/export.json" + suffix)
                 self.assertEqual(response.status, 400)

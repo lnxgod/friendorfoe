@@ -660,14 +660,15 @@ class PollingTest(unittest.TestCase):
         fake.feed(
             b"I (42) ordinary firmware log\n",
             b"FOF_DET:{bad-json}\n",
-            b'FOF_DET:{"id":"det-1","source":3}\n',
+            b'FOF_DET:{"id":"pre-auth","source":3}\n',
             b"x" * 65_537
             + b'\nFOF_STATUS:{"version":"v-live","uptime_s":7}\n',
+            b'FOF_DET:{"id":"det-1","source":3}\n',
         )
         self.assertTrue(frame_received.wait(1.0), (frames, updates))
         transport.stop()
 
-        self.assertEqual([frame.kind for frame, _ in frames], ["detection", "status"])
+        self.assertEqual([frame.kind for frame, _ in frames], ["status", "detection"])
         self.assertEqual([received_at for _, received_at in frames], [wall.value] * 2)
         self.assertTrue(any(update.malformed_frames == 1 for update in updates))
         self.assertTrue(any(update.overlong_lines == 1 for update in updates))
@@ -683,7 +684,8 @@ class PollingTest(unittest.TestCase):
 
         def on_frame(frame: object, _received_at: float) -> None:
             frames.append(frame)
-            valid_frame.set()
+            if len(frames) == 2:
+                valid_frame.set()
 
         transport = BadgeSerialTransport(
             enumerate_ports=lambda: [espressif("101", serial_number="ABC")],
@@ -695,6 +697,7 @@ class PollingTest(unittest.TestCase):
         transport.start()
         self._wait_for_write_count(fake, 2)
         fake.feed(
+            b'FOF_STATUS:{"version":"v-live","uptime_s":1,"entities":[]}\n',
             b'FOF_STATUS:{"version":"v1","uptime_s":'
             + huge_integer
             + b',"entities":[]}\n',
@@ -708,7 +711,7 @@ class PollingTest(unittest.TestCase):
         self.assertTrue(valid_frame.wait(1.0), (frames, updates))
         transport.stop()
 
-        self.assertEqual([frame.kind for frame in frames], ["detection"])
+        self.assertEqual([frame.kind for frame in frames], ["status", "detection"])
         self.assertFalse(any(update.detail == "serial_error" for update in updates))
         self.assertTrue(any(update.malformed_frames == 3 for update in updates))
 
@@ -892,6 +895,130 @@ class ControlTest(unittest.TestCase):
 
         self.assertFalse(caller.is_alive())
         self.assertTrue(replies[0].ok)  # type: ignore[union-attr]
+
+    def test_lite_config_read_uses_exact_wire_and_returns_redacted_snapshot(self) -> None:
+        fake = FakeSerial([b"FOF_PONG:0.2.0-backend\n"])
+        transport = BadgeSerialTransport(
+            enumerate_ports=lambda: [espressif("101", serial_number="LITE")],
+            serial_factory=lambda: fake,
+        )
+        self.addCleanup(transport.stop)
+        transport.start()
+        self._wait_for_write(fake, b"FOF_STATUS\n")
+        self._authorize_lite(transport, fake)
+        replies: list[object] = []
+        errors: list[BaseException] = []
+
+        def read_config() -> None:
+            try:
+                replies.append(transport.get_lite_config())
+            except BaseException as error:
+                errors.append(error)
+
+        caller = threading.Thread(target=read_config)
+        caller.start()
+        self._wait_for_write(fake, b"FOF_CONFIG_GET\n")
+        fake.feed(
+            b'FOF_CONFIG:{"schema_version":1,"generation":9,'
+            b'"networks":[{"ssid":"Demo","password_set":true}],'
+            b'"backend_url":"http://127.0.0.1:8000",'
+            b'"device_id":"uplink_CB77A4","display_name":"Lite Lab",'
+            b'"ap_password_set":true,"auto_update_enabled":false,'
+            b'"has_location":false,"latitude":null,"longitude":null,'
+            b'"altitude_m":null}\n'
+        )
+        caller.join(1.0)
+
+        self.assertFalse(caller.is_alive())
+        self.assertEqual(errors, [])
+        self.assertEqual(fake.writes.count(b"FOF_CONFIG_GET\n"), 1)
+        snapshot = replies[0].to_dict()  # type: ignore[union-attr]
+        self.assertEqual(snapshot["generation"], 9)
+        self.assertEqual(
+            snapshot["networks"],
+            [{"ssid": "Demo", "password_set": True}],
+        )
+        self.assertNotIn("password", snapshot["networks"][0])  # type: ignore[index]
+
+    def test_lite_config_write_uses_exact_wire_and_returns_success(self) -> None:
+        fake = FakeSerial([b"FOF_PONG:0.2.0-backend\n"])
+        transport = BadgeSerialTransport(
+            enumerate_ports=lambda: [espressif("101", serial_number="LITE")],
+            serial_factory=lambda: fake,
+        )
+        self.addCleanup(transport.stop)
+        transport.start()
+        self._wait_for_write(fake, b"FOF_STATUS\n")
+        self._authorize_lite(transport, fake)
+        expected_wire = (
+            b'FOF_CONFIG_SET:{"networks":[{"ssid":"Demo","password":"secret"}],'
+            b'"display_name":"Lite Lab"}\n'
+        )
+        replies: list[object] = []
+        errors: list[BaseException] = []
+
+        def write_config() -> None:
+            try:
+                replies.append(
+                    transport.set_lite_config(
+                        {
+                            "networks": [{"ssid": "Demo", "password": "secret"}],
+                            "display_name": "Lite Lab",
+                        }
+                    )
+                )
+            except BaseException as error:
+                errors.append(error)
+
+        caller = threading.Thread(target=write_config)
+        caller.start()
+        self._wait_for_write(fake, expected_wire)
+        fake.feed(b'FOF_CONFIG_OK:{"generation":10,"reconnect":true}\n')
+        caller.join(1.0)
+
+        self.assertFalse(caller.is_alive())
+        self.assertEqual(errors, [])
+        self.assertEqual(fake.writes.count(expected_wire), 1)
+        self.assertTrue(replies[0].ok)  # type: ignore[union-attr]
+        self.assertEqual(replies[0].generation, 10)  # type: ignore[union-attr]
+        self.assertTrue(replies[0].reconnect)  # type: ignore[union-attr]
+        self.assertIsNone(replies[0].reason)  # type: ignore[union-attr]
+
+    def test_lite_config_write_returns_device_rejection(self) -> None:
+        fake = FakeSerial([b"FOF_PONG:0.2.0-backend\n"])
+        transport = BadgeSerialTransport(
+            enumerate_ports=lambda: [espressif("101", serial_number="LITE")],
+            serial_factory=lambda: fake,
+        )
+        self.addCleanup(transport.stop)
+        transport.start()
+        self._wait_for_write(fake, b"FOF_STATUS\n")
+        self._authorize_lite(transport, fake)
+        expected_wire = b'FOF_CONFIG_SET:{"display_name":"Lite Lab"}\n'
+        replies: list[object] = []
+        errors: list[BaseException] = []
+
+        def write_config() -> None:
+            try:
+                replies.append(
+                    transport.set_lite_config({"display_name": "Lite Lab"})
+                )
+            except BaseException as error:
+                errors.append(error)
+
+        caller = threading.Thread(target=write_config)
+        caller.start()
+        self._wait_for_write(fake, expected_wire)
+        fake.feed(b'FOF_CONFIG_ERROR:{"reason":"invalid_config"}\n')
+        caller.join(1.0)
+
+        self.assertFalse(caller.is_alive())
+        self.assertEqual(errors, [])
+        self.assertEqual(fake.writes.count(expected_wire), 1)
+        self.assertFalse(replies[0].ok)  # type: ignore[union-attr]
+        self.assertIsNone(replies[0].generation)  # type: ignore[union-attr]
+        self.assertIsNone(replies[0].reconnect)  # type: ignore[union-attr]
+        self.assertEqual(replies[0].reason, "invalid_config")  # type: ignore[union-attr]
 
     def test_serializes_callers_and_correlates_exact_success_message(self) -> None:
         clock = ManualClock()
@@ -1236,6 +1363,21 @@ class ControlTest(unittest.TestCase):
             time.sleep(0.001)
         self.assertEqual(transport._verified_family, "regular_badge")
 
+    def _authorize_lite(
+        self,
+        transport: BadgeSerialTransport,
+        fake: FakeSerial,
+    ) -> None:
+        fake.feed(lite_status())
+        deadline = time.monotonic() + 1.0
+        while (
+            transport._verified_family != "badge_lite"
+            and time.monotonic() < deadline
+        ):
+            time.sleep(0.001)
+        self.assertEqual(transport._verified_family, "badge_lite")
+        self.assertIn("usb_config", transport._verified_capabilities)
+
 
 class ReconnectTest(unittest.TestCase):
     class RecordingRetryTransport(BadgeSerialTransport):
@@ -1306,6 +1448,8 @@ class ReconnectTest(unittest.TestCase):
         self.addCleanup(transport.stop)
         transport.start()
         self._wait_for(lambda: any(update.state == "live" for update in updates))
+        fake.feed(native_status())
+        self._wait_for(lambda: transport._verified_family == "regular_badge")
         clock.advance(11.0)
         fake.feed(b'FOF_DET:{"id":"still-live","source":3}\n')
         self.assertTrue(detection_seen.wait(1.0))
@@ -1501,7 +1645,7 @@ class ReconnectTest(unittest.TestCase):
         )
         self.assertEqual(second_connecting.port, moved.device)
 
-    def test_reconnect_retains_status_time_and_cumulative_parser_counters(self) -> None:
+    def test_reconnect_retains_status_diagnostics_but_marks_snapshot_stale(self) -> None:
         wall = ManualClock(start=1_700_000_000.0)
         identity = espressif("101", serial_number="ABC")
         first_fake = FakeSerial(
@@ -1529,14 +1673,20 @@ class ReconnectTest(unittest.TestCase):
         )
         transport.stop()
 
-        second_live = next(
+        second_stale = next(
             update
             for update in updates
-            if update.state == "live" and update.firmware_version == "second"
+            if update.state == "stale" and update.firmware_version == "second"
         )
-        self.assertEqual(second_live.last_valid_status_at, wall.value)
-        self.assertEqual(second_live.malformed_frames, 1)
-        self.assertEqual(second_live.overlong_lines, 1)
+        self.assertEqual(second_stale.last_valid_status_at, wall.value)
+        self.assertEqual(second_stale.malformed_frames, 1)
+        self.assertEqual(second_stale.overlong_lines, 1)
+        self.assertFalse(
+            any(
+                update.state == "live" and update.firmware_version == "second"
+                for update in updates
+            )
+        )
 
     def test_old_status_remains_stale_after_reconnect_until_new_status(self) -> None:
         clock = ManualClock()
@@ -1589,6 +1739,56 @@ class ReconnectTest(unittest.TestCase):
         second_fake.feed(b'FOF_STATUS:{"version":"second","uptime_s":2}\n')
         self.assertTrue(recovered.wait(1.0), updates)
         transport.stop()
+
+    def test_explicit_path_replacement_cannot_inherit_fresh_status(self) -> None:
+        first_identity = espressif("101", serial_number="FIRST")
+        replacement_identity = espressif("101", serial_number="REPLACEMENT")
+        enumerations = iter(([first_identity], [replacement_identity]))
+        first_fake = FakeSerial(
+            [
+                b"FOF_PONG:first\n",
+                b'FOF_STATUS:{"version":"first","uptime_s":1}\n',
+            ],
+            read_exception=OSError("detached"),
+        )
+        replacement_fake = FakeSerial([b"FOF_PONG:replacement\n"])
+        fakes = iter((first_fake, replacement_fake))
+        updates: list[ConnectionUpdate] = []
+
+        transport = self.RecordingRetryTransport(
+            explicit_port=first_identity.device,
+            enumerate_ports=lambda: next(enumerations, [replacement_identity]),
+            serial_factory=lambda: next(fakes),
+            on_connection=updates.append,
+        )
+        self.addCleanup(transport.stop)
+        transport.start()
+        self._wait_for(
+            lambda: any(
+                update.state == "stale"
+                and update.firmware_version == "replacement"
+                for update in updates
+            )
+        )
+
+        self.assertFalse(
+            any(
+                update.state == "live"
+                and update.firmware_version == "replacement"
+                for update in updates
+            )
+        )
+        replacement_fake.feed(
+            b'FOF_STATUS:{"version":"replacement","uptime_s":1}\n'
+        )
+        self._wait_for(
+            lambda: any(
+                update.state == "live"
+                and update.detail == "status_recovered"
+                and update.firmware_version == "replacement"
+                for update in updates
+            )
+        )
 
     def test_close_failure_cannot_terminate_reconnect_owner(self) -> None:
         identity = espressif("101", serial_number="ABC")
@@ -1826,6 +2026,18 @@ class RememberedIdentityTest(unittest.TestCase):
         )
 
         self.assertEqual(selected, moved.device)
+
+    def test_explicit_path_accepts_a_replacement_badge_after_swap(self) -> None:
+        first = espressif("101", serial_number="LITE")
+        replacement = espressif("101", serial_number="FULL")
+
+        selected = self._run_two_starts(
+            [first],
+            [replacement],
+            explicit_port=first.device,
+        )
+
+        self.assertEqual(selected, replacement.device)
 
     def test_explicit_mode_without_stable_identity_waits_for_original_path(self) -> None:
         first = espressif("101")

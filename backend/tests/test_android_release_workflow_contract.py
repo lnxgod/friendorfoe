@@ -34,8 +34,14 @@ MAKE_LATEST_EXPRESSION = (
 )
 ESP32_BUILD_GUARD = (
     "if: ${{ !((github.event_name == 'release' && "
-    "contains(github.event.release.tag_name, '-android-')) || "
-    "(github.event_name != 'release' && contains(github.ref_name, '-android-'))) }}"
+    "(contains(github.event.release.tag_name, '-android-') || "
+    "contains(github.event.release.tag_name, '-new-dash-'))) || "
+    "(github.event_name != 'release' && "
+    "(contains(github.ref_name, '-android-') || "
+    "contains(github.ref_name, '-new-dash-')))) }}"
+)
+ANDROID_NEW_DASH_BUILD_GUARD = (
+    "if: ${{ !contains(github.ref_name, '-new-dash-') }}"
 )
 
 
@@ -145,13 +151,20 @@ def test_release_publisher_has_write_access_without_signing_secrets():
         assert f"secrets.{secret}" not in publish
 
 
-def test_android_only_tag_skips_all_firmware_work():
-    workflow = ESP32_WORKFLOW.read_text()
-    build = _job(workflow, "build", "deploy")
-    deploy = _job(workflow, "deploy")
+def test_source_only_tags_skip_unrelated_release_work():
+    android_workflow = ANDROID_WORKFLOW.read_text()
+    android_build = _job(android_workflow, "build", "sign-release")
+    android_signing = _job(android_workflow, "sign-release", "publish-release")
+    android_publish = _job(android_workflow, "publish-release")
+    esp32_workflow = ESP32_WORKFLOW.read_text()
+    esp32_build = _job(esp32_workflow, "build", "deploy")
+    esp32_deploy = _job(esp32_workflow, "deploy")
 
-    assert ESP32_BUILD_GUARD in build
-    assert "contains(github.event.release.tag_name, 'android')" not in build
-    assert "contains(github.ref_name, 'android')" not in build
-    assert "Attach firmware to release" in build
-    assert "needs.build.result == 'success'" in deploy
+    assert ANDROID_NEW_DASH_BUILD_GUARD in android_build
+    assert "!contains(github.ref_name, '-new-dash-')" in android_signing
+    assert "!contains(github.ref_name, '-new-dash-')" in android_publish
+    assert ESP32_BUILD_GUARD in esp32_build
+    assert "contains(github.event.release.tag_name, 'android')" not in esp32_build
+    assert "contains(github.ref_name, 'android')" not in esp32_build
+    assert "Attach firmware to release" in esp32_build
+    assert "needs.build.result == 'success'" in esp32_deploy

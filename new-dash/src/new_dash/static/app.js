@@ -1,7 +1,6 @@
 import { createCompletionPoller, getHistory, getState, post } from "./api.js";
 import { nextTabIndex, scannerSummary, writePreference, readPreference } from "./ui.js";
 import {
-  filteredRemoteIdKeys,
   renderLive,
   visiblePositionedRemoteIds,
 } from "./views/live.js";
@@ -9,16 +8,23 @@ import {
   createMap,
   createRequestStatusChannels,
   createTrailController,
+  DEFAULT_TRAIL_RETENTION_MINUTES,
   invalidateSize,
+  MAX_TRAIL_RETENTION_MINUTES,
+  MIN_TRAIL_RETENTION_MINUTES,
   renderActiveEntities,
   renderTrail,
+  setTrailRetentionSeconds,
 } from "./views/map.js";
 import { createHistoryView } from "./views/history.js";
 import { createBadgeView } from "./views/badge.js";
 
 const POLL_INTERVAL_MS = 1000;
+const TRAIL_REFRESH_INTERVAL_MS = 5000;
 const VIEW_KEY = "newDash.v1.selectedView";
 const FILTER_KEY = "newDash.v1.presentationFilters";
+const TRAIL_RETENTION_KEY = "newDash.v2.mapFormationMinutes";
+const TRAIL_SELECTION_KEY = "newDash.v1.mapSelectedRemoteId";
 const VIEWS = ["live", "map", "history", "badge"];
 const FILTER_VALUES = {
   class: new Set(["all", "drone", "meta", "tracker", "wifi_attack", "other"]),
@@ -53,6 +59,10 @@ const desktopFilterMedia = window.matchMedia("(min-width: 760px)");
 const requestStatus = document.querySelector("#request-status");
 const liveRoot = document.querySelector("#live-root");
 const mapCanvas = document.querySelector("#map-canvas");
+const trailMinutesControl = document.querySelector("#map-trail-minutes");
+const trailMinutesOutput = document.querySelector("#map-trail-minutes-output");
+const drawingResetControl = document.querySelector("#map-drawing-reset");
+const drawingElapsedOutput = document.querySelector("#map-drawing-elapsed");
 const filterControls = {
   class: document.querySelector("#filter-class"),
   source: document.querySelector("#filter-source"),
@@ -62,9 +72,23 @@ const filterControls = {
 
 let selectedView = readPreference(VIEW_KEY, (value) => VIEWS.includes(value), "live");
 let filters = readPreference(FILTER_KEY, validFilters, DEFAULT_FILTERS);
+let trailRetentionMinutes = readPreference(
+  TRAIL_RETENTION_KEY,
+  validTrailRetentionMinutes,
+  DEFAULT_TRAIL_RETENTION_MINUTES,
+);
+let trailSelectedKey = readPreference(
+  TRAIL_SELECTION_KEY,
+  (value) => typeof value === "string" && Boolean(value),
+  null,
+);
 let latestState = null;
 let mapCreated = false;
 let activeView = null;
+let trailRefreshTimer = null;
+let trailRefreshInFlight = false;
+let drawingStartedAt = null;
+let initialTrailFitPending = true;
 
 const historyView = createHistoryView({ getHistory, post });
 const badgeView = createBadgeView({ post });
@@ -76,6 +100,39 @@ function validFilters(value) {
     && FILTER_VALUES.source.has(value.source)
     && FILTER_VALUES.minConfidence.has(value.minConfidence)
     && FILTER_VALUES.freshness.has(value.freshness);
+}
+
+function validTrailRetentionMinutes(value) {
+  return Number.isInteger(value)
+    && value >= MIN_TRAIL_RETENTION_MINUTES
+    && value <= MAX_TRAIL_RETENTION_MINUTES;
+}
+
+function syncTrailControl() {
+  trailMinutesControl.value = String(trailRetentionMinutes);
+  trailMinutesOutput.value = `${trailRetentionMinutes} min`;
+  trailMinutesOutput.textContent = `${trailRetentionMinutes} min`;
+  setTrailRetentionSeconds(trailRetentionMinutes * 60);
+}
+
+function formatElapsed(seconds) {
+  const totalSeconds = Math.max(0, Math.floor(Number(seconds) || 0));
+  const minutes = Math.floor(totalSeconds / 60);
+  const remainder = String(totalSeconds % 60).padStart(2, "0");
+  return `${minutes}:${remainder}`;
+}
+
+function syncDrawingSession() {
+  if (drawingStartedAt === null) {
+    drawingElapsedOutput.value = "Saved trail shown";
+    drawingElapsedOutput.textContent = "Saved trail shown";
+    drawingResetControl.textContent = "Clear & start timer";
+    return;
+  }
+  const elapsed = `${formatElapsed(Date.now() / 1000 - drawingStartedAt)} elapsed`;
+  drawingElapsedOutput.value = elapsed;
+  drawingElapsedOutput.textContent = elapsed;
+  drawingResetControl.textContent = "Clear & restart timer";
 }
 
 function syncFilterControls() {
@@ -138,11 +195,12 @@ function renderHeader(state) {
 }
 
 function mapEntities(state) {
-  return visiblePositionedRemoteIds(state, filters);
+  return visiblePositionedRemoteIds(state, filters, drawingStartedAt);
 }
 
 function renderState(state) {
   renderHeader(state);
+  syncDrawingSession();
   renderLive(liveRoot, state, filters);
   historyView.observeState(state);
   badgeView.render(state);
@@ -156,22 +214,64 @@ function renderState(state) {
 
 function ensureMap(refreshTrails = false) {
   if (!mapCreated) {
-    createMap(mapCanvas);
+    createMap(mapCanvas, {
+      selectedKey: trailSelectedKey,
+      onSelectionChange: (key) => {
+        trailSelectedKey = key;
+        writePreference(TRAIL_SELECTION_KEY, trailSelectedKey);
+      },
+    });
     mapCreated = true;
   }
   window.requestAnimationFrame(() => invalidateSize());
   if (latestState) {
     renderActiveEntities(mapEntities(latestState));
-    ensureMapTrails(refreshTrails);
+    ensureMapTrails(refreshTrails, {
+      preserve: refreshTrails,
+      fit: initialTrailFitPending,
+    });
   }
 }
 
-async function ensureMapTrails(refresh = false) {
+async function ensureMapTrails(
+  refresh = false,
+  { preserve = false, fit = initialTrailFitPending } = {},
+) {
   if (!latestState || selectedView !== "map") {
     return;
   }
-  const keys = filteredRemoteIdKeys(latestState, filters);
-  await (refresh ? trailController.refresh(keys) : trailController.update(keys));
+  await (refresh
+    ? trailController.refresh([], { preserve, fit })
+    : trailController.update([], { preserve, fit }));
+}
+
+async function refreshFormationTrail() {
+  if (trailRefreshInFlight || selectedView !== "map") {
+    return;
+  }
+  trailRefreshInFlight = true;
+  try {
+    await ensureMapTrails(true, { preserve: true, fit: initialTrailFitPending });
+  } finally {
+    trailRefreshInFlight = false;
+  }
+}
+
+function syncTrailRefreshTimer() {
+  if (selectedView !== "map") {
+    if (trailRefreshTimer !== null) {
+      window.clearTimeout(trailRefreshTimer);
+      trailRefreshTimer = null;
+    }
+    return;
+  }
+  if (trailRefreshTimer === null) {
+    trailRefreshTimer = window.setTimeout(async () => {
+      trailRefreshTimer = null;
+      await refreshFormationTrail();
+      syncTrailRefreshTimer();
+    }, TRAIL_REFRESH_INTERVAL_MS);
+  }
 }
 
 function activateView(view, { focus = true, replaceHash = false, keyboard = false } = {}) {
@@ -202,6 +302,7 @@ function activateView(view, { focus = true, replaceHash = false, keyboard = fals
   if (selectedView === "map") {
     ensureMap(previousView !== "map");
   }
+  syncTrailRefreshTimer();
   if (previousView === "history" && selectedView !== "history") {
     historyView.deactivate();
   }
@@ -268,13 +369,43 @@ window.addEventListener("hashchange", () => routeFromHash({ focus: true }));
 window.addEventListener("popstate", () => routeFromHash({ focus: true }));
 desktopFilterMedia.addEventListener("change", syncFilterDisclosure);
 
+trailMinutesControl.addEventListener("input", () => {
+  const next = Number.parseInt(trailMinutesControl.value, 10);
+  trailRetentionMinutes = validTrailRetentionMinutes(next)
+    ? next
+    : DEFAULT_TRAIL_RETENTION_MINUTES;
+  syncTrailControl();
+  writePreference(TRAIL_RETENTION_KEY, trailRetentionMinutes);
+});
+
+trailMinutesControl.addEventListener("change", () => {
+  void ensureMapTrails(true, { preserve: true, fit: false });
+});
+
+drawingResetControl.addEventListener("click", () => {
+  drawingStartedAt = Date.now() / 1000;
+  syncDrawingSession();
+  if (latestState) {
+    renderActiveEntities(mapEntities(latestState));
+  }
+  void trailController.refresh([], { preserve: false, fit: false });
+});
+
 const trailController = createTrailController({
   getHistory,
-  render: renderTrail,
+  render: (points, options = {}) => {
+    renderTrail(points, options);
+    if (options.fit && points.length) {
+      initialTrailFitPending = false;
+    }
+  },
   reportError: (error) => requestStatuses.setTrail(
     `Host-observed trail unavailable: ${error.message}`,
   ),
   clearError: () => requestStatuses.clearTrail(),
+  retentionSeconds: () => trailRetentionMinutes * 60,
+  minimumSinceSeconds: () => drawingStartedAt,
+  allPositioned: true,
 });
 
 const statePoller = createCompletionPoller({
@@ -290,10 +421,21 @@ const statePoller = createCompletionPoller({
   intervalMs: POLL_INTERVAL_MS,
 });
 
-window.addEventListener("pagehide", () => statePoller.stop());
-window.addEventListener("pageshow", () => statePoller.start());
+window.addEventListener("pagehide", () => {
+  statePoller.stop();
+  if (trailRefreshTimer !== null) {
+    window.clearTimeout(trailRefreshTimer);
+    trailRefreshTimer = null;
+  }
+});
+window.addEventListener("pageshow", () => {
+  statePoller.start();
+  syncTrailRefreshTimer();
+});
 
 syncFilterControls();
+syncTrailControl();
+syncDrawingSession();
 syncFilterDisclosure({ matches: desktopFilterMedia.matches, initial: desktopFilterMedia.matches });
 routeFromHash({ focus: false });
 statePoller.start();

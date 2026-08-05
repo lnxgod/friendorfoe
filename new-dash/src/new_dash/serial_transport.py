@@ -621,10 +621,12 @@ class BadgeSerialTransport:
             publication_now = self._monotonic_clock()
             if publication_now >= handshake_deadline or stop_event.is_set():
                 return _SessionOutcome(False, "wrong_device", identity)
+            # A status snapshot belongs to the serial generation that produced
+            # it. Preserve it for diagnostics across reconnects, but never
+            # publish it as fresh for a newly verified PONG-only generation.
             initial_state = (
                 "stale"
                 if self._last_valid_status_monotonic is not None
-                and publication_now - self._last_valid_status_monotonic >= 6.0
                 else "live"
             )
             if not self._emit_session_update(
@@ -783,7 +785,6 @@ class BadgeSerialTransport:
                         continue
                     received_at = self._wall_clock()
                     frame_monotonic = self._monotonic_clock()
-                    last_valid_frame = frame_monotonic
                     classified_family: str | None = None
                     if frame.kind == "status":
                         status = frame.value
@@ -811,6 +812,15 @@ class BadgeSerialTransport:
                                 detail="status_recovered",
                                 stop_event=stop_event,
                             )
+                    else:
+                        with self._control_lock:
+                            status_authorized = (
+                                self._live_generation == generation
+                                and self._verified_family is not None
+                            )
+                        if not status_authorized:
+                            continue
+                    last_valid_frame = frame_monotonic
                     if frame.kind in {"detection", "status"}:
                         if not self._emit_frame_if_running(
                             frame,
@@ -1166,6 +1176,17 @@ class BadgeSerialTransport:
                     candidate_paths,
                 )
             if not matches:
+                if self._explicit_port is not None:
+                    replacement = next(
+                        (
+                            port
+                            for port in ports
+                            if port.device == self._explicit_port
+                        ),
+                        None,
+                    )
+                    if replacement is not None:
+                        return replacement
                 raise DiscoveryError(
                     "no_badge",
                     "The previously verified badge is not currently present.",

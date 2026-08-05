@@ -7,6 +7,8 @@
   --muted: #aeb9bf;
   --divider: #334149;
   --rid: #54d8ec;
+  --map-drone: #c99cff;
+  --map-link: #70838c;
   --healthy: #64d45d;
   --warning: #ffb20c;
   --danger: #ef5c56;
@@ -485,6 +487,7 @@ h3 {
 .map-layout {
   display: grid;
   grid-template-columns: minmax(240px, 300px) minmax(0, 1fr);
+  height: 640px;
   min-height: 640px;
   overflow: hidden;
   border: 1px solid var(--divider);
@@ -496,7 +499,9 @@ h3 {
   display: flex;
   flex-direction: column;
   gap: 20px;
+  min-height: 0;
   padding: 20px;
+  overflow: hidden;
   border-right: 1px solid var(--divider);
   background: var(--page);
 }
@@ -517,6 +522,81 @@ h3 {
   overflow-wrap: anywhere;
 }
 
+.map-trail-control label,
+.map-trail-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.map-trail-control label {
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 650;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.map-trail-control output {
+  color: var(--rid);
+  font-variant-numeric: tabular-nums;
+}
+
+.map-trail-control input[type="range"] {
+  width: 100%;
+  height: 44px;
+  margin: 4px 0 0;
+  accent-color: var(--rid);
+  cursor: pointer;
+}
+
+.map-trail-control input[type="range"]:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.map-trail-meta {
+  color: var(--muted);
+  font-size: 0.76rem;
+}
+
+#map-trail-dot-count {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.map-drawing-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.map-drawing-actions .secondary-button {
+  width: 100%;
+  padding-inline: 10px;
+  border-color: color-mix(in srgb, var(--rid) 45%, var(--divider));
+  color: var(--rid);
+  font-size: 0.78rem;
+  font-weight: 650;
+}
+
+#map-drawing-elapsed {
+  color: var(--text);
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.map-drawing-help {
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+
 .rail-section {
   padding-top: 16px;
   border-top: 1px solid var(--divider);
@@ -533,14 +613,27 @@ h3 {
 .map-entity-list {
   display: grid;
   gap: 4px;
+  min-height: 0;
+  padding-right: 4px;
+  overflow-y: auto;
+}
+
+.map-entities-section {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 100px;
+  flex-direction: column;
 }
 
 .map-entity-list button {
   width: 100%;
-  padding: 0 10px;
+  height: auto;
+  min-height: 64px;
+  padding: 8px 10px;
   border-color: transparent;
   background: transparent;
   color: var(--text);
+  line-height: 1.35;
   text-align: left;
   overflow-wrap: anywhere;
 }
@@ -577,7 +670,7 @@ h3 {
 }
 
 .legend-symbol.marker-drone {
-  color: var(--rid);
+  color: var(--map-drone);
   transform: rotate(45deg);
 }
 
@@ -592,8 +685,20 @@ h3 {
   border-top: 2px solid var(--rid);
 }
 
-.legend-line.trail-line {
-  border-top-style: dotted;
+.legend-line.link-line {
+  border-top-color: var(--map-link);
+  opacity: 0.3;
+}
+
+.legend-trail-dot {
+  display: inline-block;
+  flex: 0 0 8px;
+  width: 8px;
+  height: 8px;
+  margin: 0 3px;
+  border-radius: 50%;
+  background: var(--rid);
+  box-shadow: 10px 0 0 rgba(84, 216, 236, 0.75);
 }
 
 .map-offline {
@@ -606,6 +711,7 @@ h3 {
 
 .map-canvas {
   min-width: 0;
+  height: 640px;
   min-height: 640px;
   background: #0d171c;
 }
@@ -648,11 +754,19 @@ h3 {
 .leaflet-marker-icon.instrument-marker {
   display: grid !important;
   place-items: center;
-  border: 2px solid currentColor;
-  background: var(--page);
-  color: var(--rid);
-  font-size: 10px;
-  font-weight: 800;
+  border: 0;
+  background: transparent;
+  color: var(--map-drone);
+}
+
+/* Keep Leaflet's 26px click target while reducing the visible map glyph. */
+.leaflet-marker-icon.instrument-marker::before {
+  width: 7px;
+  height: 7px;
+  border: 1px solid var(--page);
+  background: currentColor;
+  content: "";
+  transform: rotate(45deg);
 }
 
 .leaflet-marker-icon.drone-marker {
@@ -660,14 +774,18 @@ h3 {
 }
 
 .leaflet-marker-icon.operator-marker {
-  border-radius: 50%;
   color: var(--warning);
 }
 
-.leaflet-marker-icon.selected-marker {
-  border-width: 3px;
-  background: var(--rid);
-  color: var(--page);
+.leaflet-marker-icon.operator-marker::before {
+  border-radius: 50%;
+  transform: none;
+}
+
+.leaflet-marker-icon.selected-marker::before {
+  width: 11px;
+  height: 11px;
+  box-shadow: 0 0 0 2px var(--page);
 }
 
 .instrument-tooltip {
@@ -1439,6 +1557,7 @@ input[type="checkbox"] {
 
   .map-layout {
     grid-template-columns: 1fr;
+    height: auto;
     min-height: 0;
     border-inline: 0;
   }
@@ -1447,14 +1566,22 @@ input[type="checkbox"] {
     display: grid;
     grid-template-columns: 1fr 1fr;
     gap: 12px 16px;
+    min-height: auto;
     padding: 16px;
+    overflow: visible;
     border-right: 0;
     border-bottom: 1px solid var(--divider);
   }
 
   .map-context > div:first-child,
+  .map-trail-control,
+  .map-entities-section,
   .map-offline {
     grid-column: 1 / -1;
+  }
+
+  .map-entities-section {
+    max-height: 260px;
   }
 
   .rail-section {
@@ -1466,6 +1593,7 @@ input[type="checkbox"] {
   }
 
   .map-canvas {
+    height: 55vh;
     min-height: 55vh;
   }
 

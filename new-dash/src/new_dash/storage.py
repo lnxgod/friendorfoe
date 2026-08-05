@@ -28,6 +28,7 @@ class HistoryQuery:
     threat_class: str | None = None
     text: str | None = None
     positioned: bool | None = None
+    distinct_coordinates: bool = False
     cursor: str | None = None
     limit: int = 100
 
@@ -76,6 +77,8 @@ CREATE INDEX IF NOT EXISTS observations_source_idx ON observations (source);
 CREATE INDEX IF NOT EXISTS observations_threat_class_idx ON observations (threat_class);
 """
 _EXPORT_BATCH_SIZE = 500
+MAX_HISTORY_PAGE_SIZE = 500
+MAX_DISTINCT_COORDINATE_PAGE_SIZE = 4_096
 _MAX_SQLITE_ROW_ID = 9_223_372_036_854_775_807
 _PROGRESS_INSTRUCTIONS = 1_000
 _WRITE_LOCK_POLL_SECONDS = 0.05
@@ -305,7 +308,18 @@ class ObservationStore:
                 return self._insert_observation(connection, values)
 
     def query(self, query: HistoryQuery) -> HistoryPage:
-        limit = min(max(query.limit, 1), 500)
+        maximum_page_size = (
+            MAX_DISTINCT_COORDINATE_PAGE_SIZE
+            if query.distinct_coordinates
+            else MAX_HISTORY_PAGE_SIZE
+        )
+        limit = min(max(query.limit, 1), maximum_page_size)
+        if query.distinct_coordinates:
+            if query.kind != "track" or query.positioned is not True:
+                raise ValueError(
+                    "distinct_coordinates requires positioned track history"
+                )
+            return self._query_distinct_coordinates(query, limit=limit)
         where, parameters = _where_clause(query, include_cursor=True)
         with self._connection() as connection:
             rows = self._run_sqlite_operation(
@@ -313,6 +327,46 @@ class ObservationStore:
                     f"SELECT * FROM observations{where} "
                     "ORDER BY received_at DESC, id DESC LIMIT ?",
                     (*parameters, limit + 1),
+                ).fetchall()
+            )
+        items = tuple(_observation_from_row(row) for row in rows[:limit])
+        next_cursor = _encode_cursor(items[-1]) if len(rows) > limit else None
+        return HistoryPage(items=items, next_cursor=next_cursor)
+
+    def _query_distinct_coordinates(
+        self,
+        query: HistoryQuery,
+        *,
+        limit: int,
+    ) -> HistoryPage:
+        """Page newest representatives after globally collapsing coordinates."""
+
+        where, parameters = _where_clause(query, include_cursor=False)
+        cursor_where = ""
+        cursor_parameters: tuple[Any, ...] = ()
+        if query.cursor is not None:
+            received_at, row_id = _decode_cursor(query.cursor)
+            cursor_where = (
+                " WHERE received_at < ? OR (received_at = ? AND id < ?)"
+            )
+            cursor_parameters = (received_at, received_at, row_id)
+        with self._connection() as connection:
+            rows = self._run_sqlite_operation(
+                lambda: connection.execute(
+                    f"""SELECT * FROM (
+                        SELECT ranked.* FROM (
+                            SELECT observation.*,
+                                   ROW_NUMBER() OVER (
+                                       PARTITION BY ROUND(latitude, 7), ROUND(longitude, 7)
+                                       ORDER BY observed_at DESC, id DESC
+                                   ) AS coordinate_rank
+                            FROM observations AS observation{where}
+                        ) AS ranked
+                        WHERE coordinate_rank = 1
+                    ) AS distinct_positions{cursor_where}
+                    ORDER BY received_at DESC, id DESC
+                    LIMIT ?""",
+                    (*parameters, *cursor_parameters, limit + 1),
                 ).fetchall()
             )
         items = tuple(_observation_from_row(row) for row in rows[:limit])

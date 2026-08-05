@@ -206,7 +206,7 @@ def build_lite_config_set(payload: object) -> bytes:
             if any(key not in payload for key in location_keys):
                 raise ControlValidationError("enabled Lite location requires all coordinates")
             latitude, longitude, altitude = (payload[key] for key in location_keys)
-            if any(type(value) not in {int, float} or not isfinite(value)
+            if any(not _is_finite_number(value)
                    for value in (latitude, longitude, altitude)):
                 raise ControlValidationError("Lite location values must be finite")
             if not -90 <= latitude <= 90 or not -180 <= longitude <= 180:
@@ -237,6 +237,15 @@ def build_lite_config_set(payload: object) -> bytes:
 
 def _has_physical_control(value: str) -> bool:
     return any(ord(character) < 0x20 or ord(character) == 0x7F for character in value)
+
+
+def _is_finite_number(value: object) -> bool:
+    if type(value) not in {int, float}:
+        return False
+    try:
+        return isfinite(value)
+    except OverflowError:
+        return False
 
 
 def _validate_control_command(payload: object, expected_message: object) -> dict[str, object]:

@@ -111,6 +111,45 @@ test("Map can retain 200 GPS identities while Live stays current and markers fad
   assert.equal(mapView.positionOpacity({ host_age_s: 120, position_retention_s: 120 }), 0.2);
 });
 
+test("Map drawing reset excludes live markers observed before the exact session cutoff", () => {
+  const retained = [
+    entity("ble_rid", "OLD", { lat: 1, lon: 2, host_observed_at: 999.99 }),
+    entity("ble_rid", "BOUNDARY", { lat: 1, lon: 3, host_observed_at: 1000.125 }),
+    entity("ble_rid", "NEW", { lat: 1, lon: 4, host_observed_at: 1000.25 }),
+    entity("ble_rid", "MISSING-TIME", { lat: 1, lon: 5 }),
+  ];
+  const snapshot = state(retained, { positioned_remote_id_entities: retained });
+
+  assert.equal(live.visiblePositionedRemoteIds(snapshot, ALL_FILTERS).length, 4);
+  assert.deepEqual(
+    live.visiblePositionedRemoteIds(snapshot, ALL_FILTERS, 1000.125)
+      .map((item) => item.display_id),
+    ["BOUNDARY", "NEW"],
+  );
+});
+
+test("Map defaults to the most established Remote ID for a useful trail", () => {
+  const rotating = entity("ble_rid", "ROTATING", { seen_count: 2 });
+  const established = entity("ble_rid", "ESTABLISHED", { seen_count: 8200 });
+
+  assert.equal(
+    mapView.defaultSelectedEntityKey([rotating, established]),
+    "ble_rid:ESTABLISHED",
+  );
+  assert.equal(mapView.defaultSelectedEntityKey([]), null);
+  assert.equal(
+    mapView.retainedSelectedEntityKey([
+      { ...rotating, seen_count: 9000 },
+      established,
+    ], "ble_rid:ESTABLISHED"),
+    "ble_rid:ESTABLISHED",
+  );
+  assert.equal(
+    mapView.retainedSelectedEntityKey([rotating], "ble_rid:ESTABLISHED"),
+    "ble_rid:ROTATING",
+  );
+});
+
 test("Live presents deduplicated native USB detections separately when active entities are unavailable", () => {
   const snapshot = {
     freshness: { state: "fresh" },
@@ -592,6 +631,198 @@ test("Map reactivation refetches unchanged trails once without poll refetches", 
   assert.equal(calls, 2);
 });
 
+test("trail retention becomes a since query and old observations are excluded exactly", async () => {
+  const calls = [];
+  const renders = [];
+  const controller = mapView.createTrailController({
+    getHistory: async (query) => {
+      calls.push(query.toString());
+      return {
+        items: [
+          { stable_key: "ble_rid:A", latitude: 1, longitude: 2, observed_at: 699 },
+          { stable_key: "ble_rid:A", latitude: 1, longitude: 3, observed_at: 700 },
+          { stable_key: "ble_rid:B", latitude: 1, longitude: 4, observed_at: 900 },
+        ],
+        next_cursor: null,
+      };
+    },
+    render: (rows) => renders.push(rows),
+    reportError: assert.fail,
+    retentionSeconds: () => 300,
+    nowSeconds: () => 1000,
+  });
+
+  await controller.update(["ble_rid:A"]);
+
+  assert.equal(new URLSearchParams(calls[0]).get("since"), "700");
+  assert.deepEqual(renders.at(-1).map((row) => row.longitude), [3]);
+});
+
+test("a drawing session cutoff clears older positions without deleting history", async () => {
+  const calls = [];
+  const renders = [];
+  const controller = mapView.createTrailController({
+    getHistory: async (query) => {
+      calls.push(query.toString());
+      return {
+        items: [
+          { stable_key: "ble_rid:OLD", latitude: 1, longitude: 2, observed_at: 999.9 },
+          { stable_key: "ble_rid:NEW", latitude: 1, longitude: 3, observed_at: 1000.25 },
+        ],
+        next_cursor: null,
+      };
+    },
+    render: (rows) => renders.push(rows),
+    reportError: assert.fail,
+    retentionSeconds: () => 7200,
+    minimumSinceSeconds: () => 1000.125,
+    nowSeconds: () => 1100,
+    allPositioned: true,
+  });
+
+  await controller.refresh([]);
+
+  const query = new URLSearchParams(calls[0]);
+  assert.equal(query.get("since"), "1000.125");
+  assert.deepEqual(renders.at(-1).map((row) => row.stable_key), ["ble_rid:NEW"]);
+});
+
+test("formation dots collapse repeated coordinates while retaining distinct positions", () => {
+  const visible = mapView.uniqueVisibleTrailPoints([
+    { stable_key: "ble_rid:A", latitude: 37.1, longitude: -120.1, observed_at: 900 },
+    { stable_key: "ble_rid:B", latitude: 37.1, longitude: -120.1, observed_at: 899 },
+    { stable_key: "ble_rid:C", latitude: 37.2, longitude: -120.2, observed_at: 901 },
+    { stable_key: "ble_rid:OLD", latitude: 37.3, longitude: -120.3, observed_at: 699 },
+  ], 700);
+
+  assert.deepEqual(visible.map((row) => row.stable_key), ["ble_rid:A", "ble_rid:C"]);
+  assert.equal(mapView.trailDotCountLabel(1), "1 dot");
+  assert.equal(mapView.trailDotCountLabel(8192, true), "8,192+ dots");
+});
+
+test("formation persistence loads every positioned Remote ID without an identity filter", async () => {
+  const calls = [];
+  const renders = [];
+  const renderOptions = [];
+  const controller = mapView.createTrailController({
+    getHistory: async (query) => {
+      calls.push(query.toString());
+      return {
+        items: [
+          { stable_key: "ble_rid:A", latitude: 1, longitude: 2, observed_at: 900 },
+          { stable_key: "ble_rid:B", latitude: 1, longitude: 3, observed_at: 901 },
+        ],
+        next_cursor: null,
+      };
+    },
+    render: (rows, options = {}) => {
+      renders.push(rows);
+      renderOptions.push(options);
+    },
+    reportError: assert.fail,
+    retentionSeconds: () => 1800,
+    nowSeconds: () => 1000,
+    allPositioned: true,
+  });
+
+  await controller.update([]);
+
+  const query = new URLSearchParams(calls[0]);
+  assert.equal(query.get("kind"), "track");
+  assert.equal(query.get("positioned"), "true");
+  assert.equal(query.get("distinct_coordinates"), "true");
+  assert.equal(query.get("limit"), "4096");
+  assert.equal(query.get("since"), "-800");
+  assert.equal(query.has("text"), false);
+  assert.deepEqual(renders.at(-1).map((row) => row.stable_key), ["ble_rid:A", "ble_rid:B"]);
+  assert.equal(renderOptions.at(-1).fit, true);
+});
+
+test("periodic trail refresh can preserve visible dots until replacement arrives", async () => {
+  const pending = [];
+  const renders = [];
+  const fits = [];
+  const controller = mapView.createTrailController({
+    getHistory: () => {
+      const request = deferred();
+      pending.push(request);
+      return request.promise;
+    },
+    render: (rows, options = {}) => {
+      renders.push(rows.map((row) => row.longitude));
+      if (rows.length) fits.push(options.fit);
+    },
+    reportError: assert.fail,
+  });
+
+  const initial = controller.update(["ble_rid:A"]);
+  pending[0].resolve({
+    items: [{ stable_key: "ble_rid:A", latitude: 1, longitude: 2 }],
+    next_cursor: null,
+  });
+  await initial;
+
+  const refresh = controller.refresh(["ble_rid:A"], { preserve: true });
+  assert.deepEqual(renders, [[], [2]]);
+  pending[1].resolve({
+    items: [{ stable_key: "ble_rid:A", latitude: 1, longitude: 3 }],
+    next_cursor: null,
+  });
+  await refresh;
+  assert.deepEqual(renders, [[], [2], [3]]);
+  assert.deepEqual(fits, [true, false]);
+});
+
+test("passive trail selection updates can replace dots without fitting the viewport", async () => {
+  const fits = [];
+  const controller = mapView.createTrailController({
+    getHistory: async (query) => ({
+      items: [{
+        stable_key: new URLSearchParams(query).get("text"),
+        latitude: 1,
+        longitude: 2,
+      }],
+      next_cursor: null,
+    }),
+    render: (rows, options = {}) => {
+      if (rows.length) fits.push(options.fit);
+    },
+    reportError: assert.fail,
+  });
+
+  await controller.update(["ble_rid:A"], { fit: false });
+  await controller.update(["ble_rid:B"], { fit: false });
+
+  assert.deepEqual(fits, [false, false]);
+});
+
+test("preserved trail retries retain warnings until a replacement succeeds", async () => {
+  const retry = deferred();
+  let calls = 0;
+  let clears = 0;
+  const errors = [];
+  const controller = mapView.createTrailController({
+    getHistory: () => {
+      calls += 1;
+      if (calls === 1) throw new Error("history unavailable");
+      return retry.promise;
+    },
+    render: () => {},
+    reportError: (error) => errors.push(error.message),
+    clearError: () => { clears += 1; },
+  });
+
+  await controller.update(["ble_rid:A"]);
+  assert.deepEqual(errors, ["history unavailable"]);
+  assert.equal(clears, 1);
+
+  const refresh = controller.refresh(["ble_rid:A"], { preserve: true });
+  assert.equal(clears, 1);
+  retry.resolve({ items: [], next_cursor: null });
+  await refresh;
+  assert.equal(clears, 2);
+});
+
 test("trail warning survives state success and retry exhaustion until a trail reset", async () => {
   let calls = 0;
   const recovery = deferred();
@@ -640,7 +871,7 @@ test("trail warning survives state success and retry exhaustion until a trail re
   assert.equal(renderedStatuses.at(-1), "");
 });
 
-test("one trail generation shares a four-page and 2000-row global budget", async () => {
+test("ordinary trail history retains its four-page and 2000-row global budget", async () => {
   const calls = [];
   const rendered = [];
   const controller = mapView.createTrailController({
@@ -668,6 +899,41 @@ test("one trail generation shares a four-page and 2000-row global budget", async
   assert.ok(calls.every((query) => query.includes("kind=track")));
   assert.ok(calls.every((query) => query.includes("positioned=true")));
   assert.ok(calls.every((query) => query.includes("limit=500")));
+  assert.ok(calls.every((query) => query.includes("since=")));
+});
+
+test("formation history loads 8192 distinct coordinates and reports truncation", async () => {
+  const calls = [];
+  const rendered = [];
+  const renderOptions = [];
+  const controller = mapView.createTrailController({
+    getHistory: async (query) => {
+      const pageNumber = calls.length;
+      calls.push(query.toString());
+      return {
+        items: Array.from({ length: 4096 }, (_, index) => ({
+          stable_key: `ble_rid:SIM-${pageNumber}-${index}`,
+          latitude: 1 + pageNumber,
+          longitude: index / 10_000,
+        })),
+        next_cursor: `formation-page-${pageNumber + 1}`,
+      };
+    },
+    render: (rows, options = {}) => {
+      rendered.push(rows);
+      renderOptions.push(options);
+    },
+    reportError: assert.fail,
+    allPositioned: true,
+  });
+
+  await controller.update([]);
+
+  assert.equal(calls.length, 2);
+  assert.equal(rendered.at(-1).length, 8192);
+  assert.equal(renderOptions.at(-1).truncated, true);
+  assert.ok(calls.every((query) => query.includes("distinct_coordinates=true")));
+  assert.ok(calls.every((query) => query.includes("limit=4096")));
 });
 
 test("History fetches on activation and actions, not status polling", async () => {

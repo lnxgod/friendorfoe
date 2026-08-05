@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "friendorfoe-new-dash"
-version = "0.1.0"
-description = "Local USB browser dashboard for one Friend or Foe badge"
+version = "0.67.16"
+description = "Local USB browser dashboard for a full-size or Backend Badge Lite"
 requires-python = ">=3.11"
 dependencies = ["pyserial>=3.5,<4"]
 

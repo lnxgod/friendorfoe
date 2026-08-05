@@ -6,6 +6,7 @@ from new_dash.controls import (
     build_display_nav,
     build_display_policy,
     build_display_policy_reset,
+    build_lite_config_set,
     build_theme,
     build_theme_reset,
 )
@@ -198,3 +199,33 @@ class ControlWireTest(unittest.TestCase):
                 self.assertEqual(command.to_wire(), wire)
                 self.assertEqual(command.expected_message, expected_message)
                 self.assertLessEqual(len(command.to_wire()) - 1, 2047)
+
+
+class LiteConfigurationWireTest(unittest.TestCase):
+    def test_lite_configuration_is_canonical_and_bounded(self) -> None:
+        wire = build_lite_config_set({
+            "networks": [{"ssid": "Demo", "password": "secret"}],
+            "backend_url": "http://127.0.0.1:8000/api/ingest",
+            "has_location": True,
+            "latitude": 36.1,
+            "longitude": -115.2,
+            "altitude_m": 610,
+        })
+
+        self.assertEqual(
+            wire,
+            b'FOF_CONFIG_SET:{"networks":[{"ssid":"Demo","password":"secret"}],'
+            b'"backend_url":"http://127.0.0.1:8000/api/ingest",'
+            b'"has_location":true,"latitude":36.1,"longitude":-115.2,'
+            b'"altitude_m":610}\n',
+        )
+        self.assertLessEqual(len(wire) - 1, 2047)
+
+    def test_lite_configuration_rejects_unbounded_numeric_values(self) -> None:
+        with self.assertRaises(ControlValidationError):
+            build_lite_config_set({
+                "has_location": True,
+                "latitude": 0,
+                "longitude": 0,
+                "altitude_m": 10 ** 1000,
+            })

@@ -7,9 +7,11 @@ import unittest
 from base64 import urlsafe_b64encode
 from dataclasses import replace
 from pathlib import Path
+from unittest.mock import patch
 
 from new_dash.models import BadgeEntity, DetectionEvent
 from new_dash.storage import (
+    MAX_DISTINCT_COORDINATE_PAGE_SIZE,
     HistoryQuery,
     ObservationStore,
     ObservationStoreSchemaError,
@@ -112,6 +114,93 @@ class ObservationStoreTest(unittest.TestCase):
             ["RID-A"],
         )
         reopened.close()
+
+    def test_distinct_coordinate_history_collapses_before_cursor_pagination(self) -> None:
+        base = replace(self._positioned_entity(), last_seen_seconds=0)
+        store = ObservationStore(self.path)
+        store.add_track(
+            replace(base, display_id="RID-C", latitude=37.3),
+            received_at=10.0,
+        )
+        store.add_track(
+            replace(base, display_id="RID-B", latitude=37.2),
+            received_at=20.0,
+        )
+        store.add_track(
+            replace(base, display_id="RID-A", latitude=37.1),
+            received_at=30.0,
+        )
+        store.add_track(
+            replace(base, display_id="RID-A", latitude=37.1, events=99),
+            received_at=40.0,
+        )
+        store.add_track(
+            replace(
+                base,
+                display_id="RID-D",
+                latitude=37.10000004,
+                last_seen_seconds=15,
+            ),
+            received_at=50.0,
+        )
+
+        raw = store.query(HistoryQuery(kind="track", positioned=True, limit=2))
+        first = store.query(
+            HistoryQuery(
+                kind="track",
+                positioned=True,
+                distinct_coordinates=True,
+                limit=2,
+            )
+        )
+        second = store.query(
+            HistoryQuery(
+                kind="track",
+                positioned=True,
+                distinct_coordinates=True,
+                cursor=first.next_cursor,
+                limit=2,
+            )
+        )
+
+        self.assertEqual([item.display_id for item in raw.items], ["RID-D", "RID-A"])
+        self.assertEqual([item.display_id for item in first.items], ["RID-A", "RID-B"])
+        self.assertEqual([item.display_id for item in second.items], ["RID-C"])
+        self.assertIsNone(second.next_cursor)
+
+    def test_distinct_coordinate_history_requires_positioned_tracks(self) -> None:
+        store = ObservationStore(self.path)
+
+        for query in (
+            HistoryQuery(distinct_coordinates=True),
+            HistoryQuery(kind="event", positioned=True, distinct_coordinates=True),
+            HistoryQuery(kind="track", positioned=False, distinct_coordinates=True),
+        ):
+            with self.subTest(query=query):
+                with self.assertRaises(ValueError):
+                    store.query(query)
+
+    def test_distinct_coordinate_history_has_a_larger_bounded_page(self) -> None:
+        store = ObservationStore(self.path)
+        query = HistoryQuery(
+            kind="track",
+            positioned=True,
+            distinct_coordinates=True,
+            limit=10_000,
+        )
+
+        with patch.object(
+            store,
+            "_query_distinct_coordinates",
+            wraps=store._query_distinct_coordinates,
+        ) as distinct_query:
+            page = store.query(query)
+
+        self.assertEqual(page.items, ())
+        self.assertEqual(
+            distinct_query.call_args.kwargs["limit"],
+            MAX_DISTINCT_COORDINATE_PAGE_SIZE,
+        )
 
     def test_track_counter_change_persists_without_coordinate_change(self) -> None:
         entity = self._positioned_entity()

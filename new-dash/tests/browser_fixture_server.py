@@ -333,7 +333,8 @@ def filtered_history(params: dict[str, list[str]]) -> list[dict[str, object]]:
 
 def history_page(params: dict[str, list[str]]) -> tuple[list[dict[str, object]], str | None]:
     rows = filtered_history(params)
-    limit = max(1, min(int(params.get("limit", ["25"])[0]), 500))
+    maximum = 4096 if params.get("distinct_coordinates") == ["true"] else 500
+    limit = max(1, min(int(params.get("limit", ["25"])[0]), maximum))
     cursor = params.get("cursor", [None])[0]
     start = int(cursor.removeprefix("fixture-history:")) if cursor else 0
     stop = min(start + limit, len(rows))
