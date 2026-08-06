@@ -5,6 +5,12 @@ import com.friendorfoe.data.badge.BadgeScannerStatus
 import com.friendorfoe.data.badge.BadgeThreatEntity
 import com.friendorfoe.data.badge.BadgeUsbState
 import com.friendorfoe.data.badge.BadgeUsbStatus
+import com.friendorfoe.data.badge.BADGE_LITE_HARDWARE
+import com.friendorfoe.data.badge.BADGE_LITE_MODE
+import com.friendorfoe.data.badge.BADGE_LITE_PRODUCT_ID
+import com.friendorfoe.data.badge.BADGE_LITE_PROJECT
+import com.friendorfoe.data.badge.BADGE_LITE_REQUIRED_CAPABILITIES
+import com.friendorfoe.data.badge.BADGE_LITE_TARGET
 import com.friendorfoe.detection.BleInvestigationMode
 import com.friendorfoe.detection.BleInvestigationResult
 import com.friendorfoe.detection.BleInvestigationRoute
@@ -87,6 +93,25 @@ class BadgeControlInvestigationTest {
         }
         assertFalse(badgeState(BadgeUsbStatus.CONNECTED, 0, false).badgeInvestigationAvailable())
         assertFalse(badgeState(BadgeUsbStatus.CONNECTED, 1, true).badgeInvestigationAvailable())
+    }
+
+    @Test
+    fun `Backend Badge Lite does not expose unsupported BLE investigation`() {
+        val lite = BadgeUsbState(
+            status = BadgeUsbStatus.CONNECTED,
+            controlStatus = BadgeControlStatus(
+                version = "0.2.0-backend",
+                productFamily = BADGE_LITE_PRODUCT_ID,
+                firmwareTarget = BADGE_LITE_TARGET,
+                protocolProject = BADGE_LITE_PROJECT,
+                protocolHardware = BADGE_LITE_HARDWARE,
+                mode = BADGE_LITE_MODE,
+                capabilities = BADGE_LITE_REQUIRED_CAPABILITIES,
+                scanners = listOf(BadgeScannerStatus(slot = 0, connected = true)),
+            ),
+        )
+
+        assertFalse(lite.badgeInvestigationAvailable())
     }
 
     @Test

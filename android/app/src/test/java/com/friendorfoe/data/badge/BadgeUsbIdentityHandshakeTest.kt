@@ -723,6 +723,54 @@ class BadgeUsbIdentityHandshakeTest {
     }
 
     @Test
+    fun `exact Backend Badge Lite identity requires a matching USB pong version`() {
+        val lite = BadgeControlStatus(
+            version = "0.2.0-backend",
+            productFamily = BADGE_LITE_PRODUCT_ID,
+            firmwareTarget = BADGE_LITE_TARGET,
+            protocolProject = BADGE_LITE_PROJECT,
+            protocolHardware = BADGE_LITE_HARDWARE,
+            mode = BADGE_LITE_MODE,
+            capabilities = BADGE_LITE_REQUIRED_CAPABILITIES + "usb_config",
+        )
+
+        assertNull(badgeUsbIdentityError(lite))
+        assertEquals(BadgeUsbStatus.ERROR, badgeUsbHandshakeStatus(lite))
+        assertEquals(
+            BadgeUsbStatus.CONNECTED,
+            badgeUsbHandshakeStatus(lite, pongVersion = "0.2.0-backend"),
+        )
+        assertEquals(
+            BadgeUsbStatus.ERROR,
+            badgeUsbHandshakeStatus(lite, pongVersion = "other"),
+        )
+        assertTrue(
+            badgeUsbIdentityError(lite.copy(protocolHardware = "other_s3"))
+                .orEmpty()
+                .contains("hardware"),
+        )
+        assertTrue(
+            badgeUsbIdentityError(lite.copy(capabilities = setOf("display_none")))
+                .orEmpty()
+                .contains("capabilities"),
+        )
+
+        val owner = badgeUsbOwnerKeyFromHandshake(
+            status = lite,
+            attachmentToken = BadgeUsbAttachmentToken(
+                generation = 12L,
+                identity = BadgeUsbDeviceIdentity(102, "/dev/lite"),
+            ),
+            lifecycleSession = 8L,
+            connectionIdentity = Any(),
+            endpointIdentity = Any(),
+            pongVersion = "0.2.0-backend",
+        )
+        assertEquals(BadgeUsbProductFamily.BACKEND_LITE, owner?.productFamily)
+        assertEquals(BADGE_LITE_OWNER_ID, owner?.hardwareId)
+    }
+
+    @Test
     fun `direct scanner identity is rejected`() {
         val scanner = parseBadgeControlStatus(
             """{

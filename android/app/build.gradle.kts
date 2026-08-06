@@ -23,8 +23,8 @@ android {
         applicationId = "com.friendorfoe"
         minSdk = 26
         targetSdk = 34
-        versionCode = 124
-        versionName = "0.67.15-android-rid-ingest-performance"
+        versionCode = 125
+        versionName = "0.67.17-android-badge-lite"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

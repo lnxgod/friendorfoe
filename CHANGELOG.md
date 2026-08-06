@@ -41,6 +41,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   release as `0.64.64-privacy-oui`; the FoF Badge track remains separate at
   `0.64.64-badge-privacy-oui`.
 
+## [0.67.17-android-badge-lite] - 2026-08-05
+
+### Added
+- **Android supports Backend Badge Lite over USB-C.** Lite connections require
+  the exact trusted headless identity, matching `FOF_PONG`/status version, and
+  acknowledged-live capabilities before they are accepted.
+- **Acknowledged Lite live sessions.** Android starts the live lease, ACKs
+  current-session heartbeats, retries a stalled session, and tears the USB
+  session down without allowing stale I/O to reach the next connection.
+
+### Changed
+- **The Android Badge screen adapts to Lite hardware.** It retains live
+  detections and scanner status while clearly identifying the headless uplink
+  and hiding LCD, display, and BLE-control surfaces that Lite does not have.
+
 ## [0.67.16-new-dash-usb-parity] - 2026-08-04
 
 ### Added
@@ -1371,6 +1386,7 @@ This release unifies the ESP32 firmware (v0.56.0) and backend (v0.56.0) version 
 - Bottom navigation (AR, Map, List, History, About)
 
 [0.67.16-new-dash-usb-parity]: https://github.com/lnxgod/friendorfoe/releases/tag/v0.67.16-new-dash-usb-parity
+[0.67.17-android-badge-lite]: https://github.com/lnxgod/friendorfoe/releases/tag/v0.67.17-android-badge-lite
 [0.10.0-beta]: https://github.com/lnxgod/friendorfoe/releases/tag/v0.10.0-beta
 [0.9.0-beta]: https://github.com/lnxgod/friendorfoe/releases/tag/v0.9.0-beta
 [0.8.0-beta]: https://github.com/lnxgod/friendorfoe/releases/tag/v0.8.0-beta

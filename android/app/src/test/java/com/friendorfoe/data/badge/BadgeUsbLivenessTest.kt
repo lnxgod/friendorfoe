@@ -346,6 +346,30 @@ class BadgeUsbLivenessTest {
     }
 
     @Test
+    fun `Lite reconnect ticket preserves its exact trusted product family`() {
+        val oldOwner = owner(
+            hardwareId = BADGE_LITE_OWNER_ID,
+        ).copy(productFamily = BadgeUsbProductFamily.BACKEND_LITE)
+        val gate = BadgeUsbReconnectGate()
+        val ticket = gate.bind(oldOwner)
+
+        assertNotNull(ticket)
+        ticket!!
+        assertEquals(BADGE_LITE_OWNER_ID, ticket.hardwareId)
+        assertEquals(BadgeUsbProductFamily.BACKEND_LITE, ticket.productFamily)
+        assertEquals(
+            BadgeUsbProductFamily.BACKEND_LITE,
+            gate.expectedProductFamily(ticket, oldOwner.lifecycleSession),
+        )
+        assertFalse(
+            gate.isCurrent(
+                ticket.copy(productFamily = BadgeUsbProductFamily.FULL_SIZE),
+                oldOwner.lifecycleSession,
+            ),
+        )
+    }
+
+    @Test
     fun `wrong reconnect lifecycle and forged owner ticket are stale without consuming attempt`() {
         val oldOwner = owner()
         val gate = BadgeUsbReconnectGate()

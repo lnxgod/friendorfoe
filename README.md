@@ -19,7 +19,7 @@ same backend ingest path. Walk around with it during the day; mount it later as
 part of a multi-node sensor platform.
 
 > Current published tracks: Android is
-> `0.67.15-android-rid-ingest-performance`; backend and production S3 firmware
+> `0.67.17-android-badge-lite`; backend and production S3 firmware
 > remain on `0.64.68-live-follow`; published badge/factory firmware is
 > `0.67.2-badge-defcon34`. New Dash is released independently as source at
 > `0.67.16-new-dash-usb-parity`; it does not change any Android, backend, badge,

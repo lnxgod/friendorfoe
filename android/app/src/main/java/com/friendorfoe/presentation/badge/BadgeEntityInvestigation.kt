@@ -3,6 +3,7 @@ package com.friendorfoe.presentation.badge
 import com.friendorfoe.data.badge.BadgeThreatEntity
 import com.friendorfoe.data.badge.BadgeUsbState
 import com.friendorfoe.data.badge.BadgeUsbStatus
+import com.friendorfoe.data.badge.isBackendLite
 import com.friendorfoe.detection.BleInvestigationMode
 import com.friendorfoe.detection.BleInvestigationRequest
 import com.friendorfoe.detection.BleInvestigationResult
@@ -33,6 +34,7 @@ internal val BADGE_INVESTIGATION_ACTIVE_STATES = setOf(
 
 internal fun BadgeUsbState.badgeInvestigationAvailable(): Boolean =
     status == BadgeUsbStatus.CONNECTED &&
+        controlStatus?.isBackendLite() != true &&
         controlStatus?.scanners?.any { it.slot == 0 && it.connected } == true
 
 internal fun BadgeThreatEntity.badgeInvestigationTarget(

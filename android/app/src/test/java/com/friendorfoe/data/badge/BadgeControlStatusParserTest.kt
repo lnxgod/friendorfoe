@@ -617,6 +617,43 @@ class BadgeControlStatusParserTest {
         assertEquals(4, status.filteredCounts.getValue("drone"))
     }
 
+    @Test
+    fun `parses Lite protocol identity capabilities and scanner summaries`() {
+        val status = parseBadgeControlStatus(
+            """
+            {
+              "version":"0.2.0-backend",
+              "product_family":"badge_lite",
+              "target":"uplink-s3-backend",
+              "project":"fof_backend_uplink",
+              "hardware":"seeed_xiao_esp32s3",
+              "mode":"headless",
+              "capabilities":["display_none","usb_live","usb_live_ack","usb_config"],
+              "scanner_summaries":[{"slot":0,"connected":true,"health":"ready"}]
+            }
+            """.trimIndent(),
+        )
+
+        assertNotNull(status)
+        status!!
+        assertEquals(BADGE_LITE_PRODUCT_ID, status.productFamily)
+        assertEquals(BADGE_LITE_PROJECT, status.protocolProject)
+        assertEquals(BADGE_LITE_HARDWARE, status.protocolHardware)
+        assertEquals(
+            setOf("display_none", "usb_live", "usb_live_ack", "usb_config"),
+            status.capabilities,
+        )
+        assertTrue(status.capabilitiesWellFormed)
+        assertEquals(1, status.scanners.size)
+        assertTrue(status.scanners.single().connected)
+
+        val malformedCapabilities = parseBadgeControlStatus(
+            """{"capabilities":["usb_live","usb_live"]}""",
+        )
+        assertNotNull(malformedCapabilities)
+        assertFalse(malformedCapabilities!!.capabilitiesWellFormed)
+    }
+
     private data class ThemeReadbackFixture(
         val palette: String,
         val background: String,

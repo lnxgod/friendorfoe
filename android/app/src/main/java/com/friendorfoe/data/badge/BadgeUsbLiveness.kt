@@ -564,6 +564,7 @@ internal data class BadgeUsbReconnectTicket(
     val lifecycleSession: Long,
     val hardwareId: String,
     val generation: Long,
+    val productFamily: BadgeUsbProductFamily = BadgeUsbProductFamily.FULL_SIZE,
 )
 
 internal class BadgeUsbReconnectGate {
@@ -573,13 +574,19 @@ internal class BadgeUsbReconnectGate {
 
     @Synchronized
     fun bind(oldOwner: BadgeUsbOwnerKey): BadgeUsbReconnectTicket? {
-        val hardwareId = canonicalBadgeHardwareId(oldOwner.hardwareId)
-            ?.takeIf { it == oldOwner.hardwareId }
-            ?: return null
+        val hardwareId = when (oldOwner.productFamily) {
+            BadgeUsbProductFamily.FULL_SIZE -> canonicalBadgeHardwareId(oldOwner.hardwareId)
+                ?.takeIf { it == oldOwner.hardwareId }
+                ?: return null
+            BadgeUsbProductFamily.BACKEND_LITE -> oldOwner.hardwareId
+                .takeIf { it == BADGE_LITE_OWNER_ID }
+                ?: return null
+        }
         return BadgeUsbReconnectTicket(
             oldOwner = oldOwner,
             lifecycleSession = oldOwner.lifecycleSession,
             hardwareId = hardwareId,
+            productFamily = oldOwner.productFamily,
             generation = nextGeneration++,
         ).also {
             currentTicket = it
@@ -619,6 +626,14 @@ internal class BadgeUsbReconnectGate {
         ?.hardwareId
 
     @Synchronized
+    fun expectedProductFamily(
+        ticket: BadgeUsbReconnectTicket,
+        lifecycleSession: Long,
+    ): BadgeUsbProductFamily? = currentTicket
+        ?.takeIf { ticketsMatch(it, ticket) && lifecycleSession == it.lifecycleSession }
+        ?.productFamily
+
+    @Synchronized
     fun clear(ticket: BadgeUsbReconnectTicket): Boolean {
         if (!ticketsMatch(currentTicket, ticket)) return false
         currentTicket = null
@@ -633,6 +648,7 @@ internal class BadgeUsbReconnectGate {
         expected.generation == actual.generation &&
         expected.lifecycleSession == actual.lifecycleSession &&
         expected.hardwareId == actual.hardwareId &&
+        expected.productFamily == actual.productFamily &&
         badgeUsbOwnerKeysMatch(expected.oldOwner, actual.oldOwner)
 }
 
