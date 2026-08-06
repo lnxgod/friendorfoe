@@ -54,18 +54,22 @@ Identity and capabilities are checked fail-closed. A partial Lite identity,
 version mismatch, missing live-session capability, or non-badge serial device
 is rejected instead of silently falling back to the full-size protocol.
 
-## Plug in and run
+## Quick start
 
-From a clone or downloaded copy of this repository:
+1. On a Mac with Python 3.11 or newer, connect the badge **uplink** USB-C port
+   with a data-capable cable. It is fine to connect it before or after launch.
+2. From a clone or downloaded copy of this repository, run:
 
-```sh
-cd new-dash
-./run.sh
-```
+   ```sh
+   cd new-dash
+   ./run.sh
+   ```
 
-Connect the badge uplink USB-C port before or after launch. New Dash opens the
-selected local URL automatically, verifies the badge using the same
-factory-firmware USB signaling as Android, and begins showing live detections.
+3. New Dash creates its local environment on the first run, opens the
+   loopback-only dashboard automatically, verifies the badge, and begins
+   showing live detections. If the browser does not open, use the local URL
+   printed in the terminal (normally `http://127.0.0.1:8765`).
+
 No firmware or badge configuration change is required. If port 8765 is
 occupied, New Dash selects another available loopback port.
 
