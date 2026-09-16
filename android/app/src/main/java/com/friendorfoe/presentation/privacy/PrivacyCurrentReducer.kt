@@ -75,7 +75,8 @@ class PrivacyCurrentReducer {
             }
             .sortedWith(
                 compareByDescending<PrivacyFinding> { it.severity.rank }
-                    .thenByDescending { it.lastObservedElapsedMs }
+                    // Packet arrival and RSSI change continuously. Keep each severity group
+                    // in identity order so live updates cannot move the row being read.
                     .thenBy { it.source.preferenceId }
                     .thenBy { it.observationKey.encoded },
             )

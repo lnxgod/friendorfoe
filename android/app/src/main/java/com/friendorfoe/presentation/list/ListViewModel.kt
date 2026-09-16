@@ -4,6 +4,7 @@ import android.annotation.SuppressLint
 import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
+import android.os.SystemClock
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -74,7 +75,7 @@ class ListViewModel @Inject constructor(
         initialValue = emptySet()
     )
 
-    /** All detected sky objects filtered and sorted by visible focus, confidence, then distance. */
+    /** All detected sky objects filtered and sorted nearest first; unknown distances come last. */
     val skyObjects: StateFlow<List<SkyObject>> = combine(
         skyObjectRepository.skyObjects,
         _filterState,
@@ -94,9 +95,17 @@ class ListViewModel @Inject constructor(
 
     private val locationStarted = AtomicBoolean(false)
     private var scanningStarted = false
+    private var acceptedLocationFix: ListLocationFix? = null
 
     private val locationListener = object : LocationListener {
         override fun onLocationChanged(location: Location) {
+            val candidate = location.toListLocationFix()
+            val selected = selectListLocationFix(
+                listOfNotNull(acceptedLocationFix, candidate),
+                SystemClock.elapsedRealtimeNanos(),
+            )
+            if (selected != candidate) return
+            acceptedLocationFix = candidate
             _userPosition.value = Position(
                 latitude = location.latitude,
                 longitude = location.longitude,
@@ -148,16 +157,19 @@ class ListViewModel @Inject constructor(
                 )
             }
 
-            val lastKnown = locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER)
-                ?: locationManager.getLastKnownLocation(LocationManager.NETWORK_PROVIDER)
-            if (lastKnown != null) {
-                _userPosition.value = Position(
-                    latitude = lastKnown.latitude,
-                    longitude = lastKnown.longitude,
-                    altitudeMeters = lastKnown.altitude
-                )
+            val lastKnown = listOfNotNull(
+                locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER),
+                locationManager.getLastKnownLocation(LocationManager.NETWORK_PROVIDER),
+            )
+            val seed = selectListLocationFix(
+                lastKnown.map { it.toListLocationFix() },
+                SystemClock.elapsedRealtimeNanos(),
+            )
+            lastKnown.firstOrNull { it.toListLocationFix() == seed }?.let {
+                locationListener.onLocationChanged(it)
             }
         } catch (e: SecurityException) {
+            locationStarted.set(false)
             Log.e(TAG, "Location permission not granted", e)
         }
     }
@@ -182,9 +194,19 @@ internal fun sortSkyObjectsForList(
     activeVisualFocusIds: Set<String>
 ): List<SkyObject> {
     return objects.sortedWith(
-        compareByDescending<SkyObject> { it.id in activeVisualFocusIds }
+        compareBy<SkyObject> {
+            it.distanceMeters?.takeIf { distance -> distance.isFinite() && distance >= 0.0 }
+                ?: Double.POSITIVE_INFINITY
+        }
+            .thenByDescending { it.id in activeVisualFocusIds }
             .thenByDescending { listSurfacePriority(it) }
             .thenByDescending { it.confidence }
-            .thenBy { it.distanceMeters ?: Double.MAX_VALUE }
+            .thenBy { it.id }
     )
 }
+
+private fun Location.toListLocationFix() = ListLocationFix(
+    position = Position(latitude, longitude, altitude),
+    elapsedRealtimeNanos = elapsedRealtimeNanos,
+    accuracyMeters = validatedLocationAccuracyMeters(),
+)

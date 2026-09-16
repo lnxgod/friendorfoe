@@ -1,6 +1,5 @@
 package com.friendorfoe.data.repository
 
-import android.location.Location
 import android.util.Log
 import com.friendorfoe.data.local.HistoryDao
 import com.friendorfoe.data.local.toHistoryEntity
@@ -368,6 +367,7 @@ class SkyObjectRepository @Inject constructor(
                     locationAccuracyMeters = fix.accuracyMeters,
                 )
                 adsbPoller.updatePosition(latitude, longitude)
+                rebuildMergedList()
             }
         }
     }
@@ -381,6 +381,7 @@ class SkyObjectRepository @Inject constructor(
         )
         if (updatePoller) {
             adsbPoller.updatePosition(fix.latitude, fix.longitude)
+            rebuildMergedList()
         }
     }
 
@@ -718,27 +719,9 @@ class SkyObjectRepository @Inject constructor(
         pruneStaleEntries(now)
         fusionEngine.pruneStale(now)
 
-        // Enrich objects missing distanceMeters using user position
-        val location = userLocationFix
-        val enriched = if (location.latitude != 0.0 || location.longitude != 0.0) {
-            fused.map { obj ->
-                if (obj.distanceMeters == null &&
-                    (obj.position.latitude != 0.0 || obj.position.longitude != 0.0)
-                ) {
-                    val results = FloatArray(1)
-                    Location.distanceBetween(
-                        location.latitude, location.longitude,
-                        obj.position.latitude, obj.position.longitude,
-                        results
-                    )
-                    obj.copyWithDistance(results[0].toDouble())
-                } else {
-                    obj
-                }
-            }
-        } else {
-            fused
-        }
+        // Provider distances may use an older polling origin. Recompute positioned
+        // objects against the current phone fix, preserving radio-only estimates.
+        val enriched = refreshObjectDistances(fused, userLocationFix)
 
         _skyObjects.value = enriched
 

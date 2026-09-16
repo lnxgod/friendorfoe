@@ -1,5 +1,13 @@
 package com.friendorfoe.presentation
 
+import android.graphics.Bitmap
+import androidx.compose.ui.test.captureToImage
+import androidx.compose.ui.test.onRoot
+import androidx.compose.ui.graphics.asAndroidBitmap
+import androidx.test.platform.app.InstrumentationRegistry
+import java.io.File
+import com.friendorfoe.presentation.list.sortSkyObjectsForList
+import com.friendorfoe.presentation.permissions.PermissionUiState
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.width
@@ -43,6 +51,40 @@ import org.junit.Test
 class CoreDestinationCleanupTest {
     @get:Rule
     val compose = createComposeRule()
+
+    @Test
+    fun nearbyAircraftIsRenderedAboveFiftyMileHelicopter() {
+        val nearby = Aircraft(
+            id = "NEAR", icaoHex = "abc123", callsign = "NEARBY",
+            position = Position(32.7, -117.1, 100.0), category = ObjectCategory.COMMERCIAL,
+            confidence = 0.6f, firstSeen = Instant.EPOCH, lastUpdated = Instant.EPOCH,
+            distanceMeters = 300.0,
+        )
+        val helicopter = nearby.copy(
+            id = "HELI", callsign = "DISTANT", category = ObjectCategory.HELICOPTER,
+            distanceMeters = 50 * 1609.344, confidence = 1f,
+        )
+        compose.setContent {
+            FriendOrFoeTheme {
+                ListContent(
+                    state = ListUiState(
+                        body = ListBodyState.Results(sortSkyObjectsForList(listOf(helicopter, nearby), emptySet())),
+                        locationPermissionState = PermissionUiState.Granted,
+                    ),
+                    actions = ListActions(),
+                )
+            }
+        }
+        compose.onNodeWithTag("list_row_NEAR").assertIsDisplayed()
+        compose.onNodeWithTag("list_row_HELI").assertIsDisplayed()
+        assertTrue(
+            compose.onNodeWithTag("list_row_NEAR").fetchSemanticsNode().boundsInRoot.top <
+                compose.onNodeWithTag("list_row_HELI").fetchSemanticsNode().boundsInRoot.top,
+        )
+        val image = compose.onRoot().captureToImage().asAndroidBitmap()
+        File(InstrumentationRegistry.getInstrumentation().targetContext.filesDir, "aircraft-nearby.png")
+            .outputStream().use { image.compress(Bitmap.CompressFormat.PNG, 100, it) }
+    }
 
     @Test
     fun historyEmptyUsesTruthfulRetentionCopyWithoutExportOrOverflow() {

@@ -41,6 +41,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   release as `0.64.64-privacy-oui`; the FoF Badge track remains separate at
   `0.64.64-badge-privacy-oui`.
 
+## [0.67.18-android-nearby] - 2026-09-15
+
+### Fixed
+- **Aircraft list is nearest-first.** Category, confidence, and camera focus no
+  longer place distant helicopters ahead of closer objects. Unknown or invalid
+  distances sort last, with stable identity ordering for ties.
+- **Nearby aircraft alerts require a valid range within 15 miles.** Helicopters
+  and ADS-B UAVs now use the same range limit as military and public-safety
+  aircraft. Remote ID drones with a known distant range also stop alerting as
+  nearby; local radio detections without a range remain eligible.
+- **Distances follow the phone's current location.** Geographic ranges refresh
+  when the phone moves, including distances previously supplied by providers.
+  The List tab starts from a recent GPS or network fix and rejects stale,
+  invalid, future, and out-of-order location callbacks.
+- **Bluetooth rows stay in place during live updates.** Privacy findings retain
+  stable identity order inside each severity group instead of jumping on every
+  received packet. Escalated threats still move into the appropriate group.
+- **Distance filters reject invalid ranges** in both live results and history.
+
+### Changed
+- Android version code is `126`; cloud release verification expects the matching
+  version and continues to verify the existing signing certificate.
+
 ## [0.67.17-android-badge-lite] - 2026-08-05
 
 ### Added

@@ -1,5 +1,12 @@
 package com.friendorfoe.presentation.privacy
 
+import android.graphics.Bitmap
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.ui.test.captureToImage
+import androidx.compose.ui.test.onRoot
+import androidx.compose.ui.graphics.asAndroidBitmap
+import androidx.test.platform.app.InstrumentationRegistry
+import java.io.File
 import androidx.compose.ui.test.assertHasClickAction
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
@@ -17,6 +24,43 @@ import org.junit.Test
 class PrivacyScreenTest {
     @get:Rule
     val compose = createComposeRule()
+
+    @Test
+    fun liveBluetoothUpdatesKeepRowPositionsAndTapTargetsStable() {
+        val first = finding(FindingSeverity.NEARBY, "a")
+        val second = finding(FindingSeverity.NEARBY, "b")
+        fun project(rows: List<PrivacyFinding>) = projectPrivacyUiState(
+            PrivacyCurrentReducer().reduce(
+                listOf(PrivacySourceSnapshot(
+                    health = health(PrivacySourceKind.PHONE_BLE, SourceHealthState.LIVE),
+                    findings = rows,
+                    emittedAtElapsedMs = 2_000L,
+                )), emptySet(), 2_000L,
+            ),
+        )
+        val state = mutableStateOf(project(listOf(first, second)))
+        compose.setContent {
+            FriendOrFoeTheme { PrivacyContent(state.value, PrivacyActions()) }
+        }
+        val firstBounds = compose.onNodeWithTag("finding_a").fetchSemanticsNode().boundsInRoot
+        val secondBounds = compose.onNodeWithTag("finding_b").fetchSemanticsNode().boundsInRoot
+        repeat(10) { index ->
+            compose.runOnIdle {
+                state.value = project(if (index % 2 == 0) {
+                    listOf(second.copy(lastObservedElapsedMs = 2_000, signalDbm = -35), first)
+                } else {
+                    listOf(first.copy(lastObservedElapsedMs = 2_000, signalDbm = -35), second)
+                })
+            }
+            compose.onNodeWithTag("finding_a").assertIsDisplayed()
+            compose.onNodeWithTag("finding_b").assertIsDisplayed()
+            assertEquals(firstBounds, compose.onNodeWithTag("finding_a").fetchSemanticsNode().boundsInRoot)
+            assertEquals(secondBounds, compose.onNodeWithTag("finding_b").fetchSemanticsNode().boundsInRoot)
+        }
+        val image = compose.onRoot().captureToImage().asAndroidBitmap()
+        File(InstrumentationRegistry.getInstrumentation().targetContext.filesDir, "privacy-stable.png")
+            .outputStream().use { image.compress(Bitmap.CompressFormat.PNG, 100, it) }
+    }
 
     @Test
     fun currentFindingsKeepFourClearGroupsAndCapabilityBackedActions() {

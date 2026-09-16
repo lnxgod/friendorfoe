@@ -47,6 +47,15 @@ class FilterEngineTest {
         assertEquals(listOf(unknown), FilterEngine.applyFilters(listOf(unknown), FilterState()))
     }
 
+    @Test
+    fun invalidRangesCannotPassActiveLiveOrHistoryDistanceFilters() {
+        listOf(-1.0, Double.NaN, Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY).forEach { range ->
+            val filter = FilterState(maxDistanceNm = 1f)
+            assertEquals(emptyList<Drone>(), FilterEngine.applyFilters(listOf(drone("bad", range)), filter))
+            assertEquals(emptyList<HistoryEntity>(), FilterEngine.applyFilters(listOf(history("bad", range)), filter))
+        }
+    }
+
     private fun drone(id: String, distanceMeters: Double?) = Drone(
         id = id,
         position = Position(latitude = 32.7, longitude = -117.1, altitudeMeters = 100.0),

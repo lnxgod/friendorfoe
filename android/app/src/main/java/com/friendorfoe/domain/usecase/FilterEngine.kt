@@ -130,7 +130,7 @@ object FilterEngine {
 
     private fun distanceMatches(distanceMeters: Double?, maxDistanceNm: Float?): Boolean = when {
         maxDistanceNm == null -> true
-        distanceMeters == null -> false
+        distanceMeters == null || !distanceMeters.isFinite() || distanceMeters < 0.0 -> false
         else -> distanceMeters / METERS_PER_NAUTICAL_MILE <= maxDistanceNm
     }
 

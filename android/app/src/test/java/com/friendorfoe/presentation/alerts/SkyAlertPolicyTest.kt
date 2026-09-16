@@ -41,27 +41,23 @@ class SkyAlertPolicyTest {
     }
 
     @Test
-    fun helicopterAlertsDoNotRequireDistance() {
+    fun helicopterAlertsRequireKnownNearbyDistance() {
         val candidate = SkyAlertPolicy.candidateFor(
             aircraft(category = ObjectCategory.HELICOPTER, distanceMeters = null),
             settings
         )
 
-        assertNotNull(candidate)
-        requireNotNull(candidate)
-        assertEquals("Helicopter nearby", candidate.title)
+        assertNull(candidate)
     }
 
     @Test
-    fun adsbUavAlertsUseDroneSettingAndDoNotRequireDistance() {
+    fun adsbUavAlertsRequireKnownNearbyDistance() {
         val candidate = SkyAlertPolicy.candidateFor(
             aircraft(category = ObjectCategory.DRONE, distanceMeters = null),
             settings
         )
 
-        assertNotNull(candidate)
-        requireNotNull(candidate)
-        assertEquals("Drone nearby", candidate.title)
+        assertNull(candidate)
     }
 
     @Test
@@ -154,6 +150,26 @@ class SkyAlertPolicyTest {
         assertTrue(policy.shouldNotify(candidate, nowMs = 1_000L))
         assertTrue(!policy.shouldNotify(candidate, nowMs = 30_000L))
         assertTrue(policy.shouldNotify(candidate, nowMs = 61_001L))
+    }
+
+    @Test
+    fun helicoptersAndAdsbDronesRespectTheNearbyBoundary() {
+        listOf(ObjectCategory.HELICOPTER, ObjectCategory.DRONE).forEach { category ->
+            assertNotNull(SkyAlertPolicy.candidateFor(aircraft(category, 15 * METERS_PER_MILE), settings))
+            listOf(15 * METERS_PER_MILE + 1, 50 * METERS_PER_MILE, -1.0,
+                Double.NaN, Double.POSITIVE_INFINITY).forEach { distance ->
+                assertNull(SkyAlertPolicy.candidateFor(aircraft(category, distance), settings))
+            }
+        }
+    }
+
+    @Test
+    fun distantRemoteIdDroneDoesNotGenerateNearbyAlert() {
+        assertNull(SkyAlertPolicy.candidateFor(drone(50 * METERS_PER_MILE), settings))
+        assertNotNull(SkyAlertPolicy.candidateFor(drone(100.0), settings))
+        assertNotNull(SkyAlertPolicy.candidateFor(
+            drone(100.0).copy(estimatedDistanceMeters = 50 * METERS_PER_MILE), settings,
+        ))
     }
 
     private fun drone(

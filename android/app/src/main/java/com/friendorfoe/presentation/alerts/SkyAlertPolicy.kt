@@ -81,8 +81,10 @@ class SkyAlertPolicy(
                 drone.model,
                 drone.droneId.takeIf { it.isNotBlank() }
             ).firstOrNull() ?: "Drone"
-            val rangeText = drone.estimatedDistanceMeters
-                ?: drone.distanceMeters
+            val rangeText = drone.distanceMeters ?: drone.estimatedDistanceMeters
+            if (rangeText != null &&
+                (!rangeText.isFinite() || rangeText !in 0.0..TACTICAL_ALERT_RADIUS_METERS)
+            ) return null
             return SkyAlertCandidate(
                 key = "sky:drone:${drone.id}",
                 title = "Drone nearby",
@@ -96,12 +98,14 @@ class SkyAlertPolicy(
             aircraft: Aircraft,
             settings: SkyAlertSettings
         ): SkyAlertCandidate? {
+            // ADS-B can cover hundreds of miles; classification alone is not proximity.
+            if (!aircraft.isWithinTacticalRange()) return null
             if (settings.droneAlertsEnabled && aircraft.category == ObjectCategory.DRONE) {
                 return aircraftCandidate(
                     keyPrefix = "uav",
                     title = "Drone nearby",
                     aircraft = aircraft,
-                    rangeRequired = false,
+                    rangeRequired = true,
                     priority = 0
                 )
             }
@@ -110,7 +114,7 @@ class SkyAlertPolicy(
                     keyPrefix = "helicopter",
                     title = "Helicopter nearby",
                     aircraft = aircraft,
-                    rangeRequired = false,
+                    rangeRequired = true,
                     priority = 1
                 )
             }
@@ -177,7 +181,7 @@ class SkyAlertPolicy(
         }
 
         private fun Aircraft.isWithinTacticalRange(): Boolean =
-            distanceMeters?.let { it <= TACTICAL_ALERT_RADIUS_METERS } == true
+            distanceMeters?.let { it.isFinite() && it in 0.0..TACTICAL_ALERT_RADIUS_METERS } == true
 
         private fun formatDistance(meters: Double): String =
             if (meters >= METERS_PER_MILE) {

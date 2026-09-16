@@ -508,6 +508,31 @@ class PrivacyCurrentReducerTest {
         findings = listOf(finding),
     )
 
+    @Test
+    fun packetArrivalAndSignalChangesDoNotReorderBluetoothRows() {
+        val a = finding(PrivacySourceKind.PHONE_BLE, "a", severity = FindingSeverity.NEARBY)
+        val b = finding(PrivacySourceKind.PHONE_BLE, "b", severity = FindingSeverity.NEARBY)
+        val initial = reduce(liveSnapshot(a), liveSnapshot(b)).findings.map { it.observationKey }
+        repeat(20) { i ->
+            val updated = if (i % 2 == 0) {
+                listOf(b.copy(lastObservedElapsedMs = now, signalDbm = -30), a.copy(signalDbm = -90))
+            } else {
+                listOf(a.copy(lastObservedElapsedMs = now, signalDbm = -30), b.copy(signalDbm = -90))
+            }
+            val state = reduce(snapshot(PrivacySourceKind.PHONE_BLE, SourceHealthState.LIVE, updated))
+            assertEquals(initial, state.findings.map { it.observationKey })
+            assertEquals(-30, state.findings.single { it.lastObservedElapsedMs == now }.signalDbm)
+        }
+    }
+
+    @Test
+    fun newlyEscalatedThreatStillMovesAboveNearbyBluetoothRows() {
+        val near = finding(PrivacySourceKind.PHONE_BLE, "a", severity = FindingSeverity.NEARBY)
+        val threat = finding(PrivacySourceKind.PHONE_BLE, "z", severity = FindingSeverity.CRITICAL)
+        val state = reduce(liveSnapshot(near), liveSnapshot(threat))
+        assertEquals(listOf(threat.observationKey, near.observationKey), state.findings.map { it.observationKey })
+    }
+
     private fun pausedSnapshot(finding: PrivacyFinding) = snapshot(
         source = finding.source,
         state = SourceHealthState.PAUSED,

@@ -13,7 +13,7 @@ import java.time.Instant
 class ListVisiblePriorityTest {
 
     @Test
-    fun `active visible objects sort before confidence and distance`() {
+    fun `nearby objects sort before visual focus and confidence`() {
         val highConfidence = aircraft("HIGH", confidence = 0.99f, distanceMeters = 500.0)
         val visibleLowerConfidence = aircraft("VISIBLE", confidence = 0.50f, distanceMeters = 2000.0)
         val mediumConfidence = aircraft("MED", confidence = 0.80f, distanceMeters = 100.0)
@@ -23,11 +23,11 @@ class ListVisiblePriorityTest {
             activeVisualFocusIds = setOf("VISIBLE")
         )
 
-        assertEquals(listOf("VISIBLE", "HIGH", "MED"), sorted.map { it.id })
+        assertEquals(listOf("MED", "HIGH", "VISIBLE"), sorted.map { it.id })
     }
 
     @Test
-    fun `objects within the same visible group keep confidence then distance ordering`() {
+    fun `distance takes priority across visible groups`() {
         val visibleFarHighConfidence = aircraft("VISIBLE_HIGH", confidence = 0.90f, distanceMeters = 2000.0)
         val visibleNearLowConfidence = aircraft("VISIBLE_LOW", confidence = 0.70f, distanceMeters = 100.0)
         val hiddenHighConfidence = aircraft("HIDDEN_HIGH", confidence = 0.95f, distanceMeters = 50.0)
@@ -39,13 +39,13 @@ class ListVisiblePriorityTest {
         )
 
         assertEquals(
-            listOf("VISIBLE_HIGH", "VISIBLE_LOW", "HIDDEN_HIGH", "HIDDEN_LOW"),
+            listOf("HIDDEN_LOW", "HIDDEN_HIGH", "VISIBLE_LOW", "VISIBLE_HIGH"),
             sorted.map { it.id }
         )
     }
 
     @Test
-    fun `public safety aircraft sort before ordinary aircraft in the list`() {
+    fun `nearby ordinary aircraft sort before farther public safety aircraft`() {
         val ordinaryNearby = aircraft(
             id = "NORM",
             confidence = 0.99f,
@@ -68,7 +68,7 @@ class ListVisiblePriorityTest {
             activeVisualFocusIds = emptySet()
         )
 
-        assertEquals(listOf("SHERIFF", "NORM"), sorted.map { it.id })
+        assertEquals(listOf("NORM", "SHERIFF"), sorted.map { it.id })
     }
 
     @Test
@@ -173,6 +173,30 @@ class ListVisiblePriorityTest {
         assertEquals("General aviation", listCategoryLabel(ObjectCategory.GENERAL_AVIATION))
         assertEquals("Law enforcement", listAttentionLabel(sheriff))
         assertEquals("Military", listAttentionLabel(military))
+    }
+
+    @Test
+    fun `fifty mile helicopter cannot outrank nearby aircraft even in visual focus`() {
+        val helicopter = aircraft("HELI", 1f, 50 * 1609.344, ObjectCategory.HELICOPTER)
+        val nearby = aircraft("NEAR", 0.5f, 300.0)
+        assertEquals(
+            listOf("NEAR", "HELI"),
+            sortSkyObjectsForList(listOf(helicopter, nearby), setOf("HELI")).map { it.id },
+        )
+    }
+
+    @Test
+    fun `invalid and unknown distances follow known distances with stable ties`() {
+        val near = aircraft("NEAR", 0.5f, 100.0)
+        val a = aircraft("A", 0.9f, 200.0)
+        val b = aircraft("B", 0.9f, 200.0)
+        val invalid = listOf(null, Double.NaN, Double.POSITIVE_INFINITY, -1.0).mapIndexed { i, d ->
+            aircraft("UNKNOWN$i", 1f, 0.0).copy(distanceMeters = d)
+        }
+        assertEquals(
+            listOf("NEAR", "A", "B") + invalid.map { it.id },
+            sortSkyObjectsForList(invalid.reversed() + listOf(b, a, near), emptySet()).map { it.id },
+        )
     }
 
     private fun aircraft(
