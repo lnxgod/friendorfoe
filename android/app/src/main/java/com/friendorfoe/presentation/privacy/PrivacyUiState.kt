@@ -20,11 +20,14 @@ data class PrivacyFilterState(
     val query: String = "",
     val categories: Set<PrivacyCategory> = emptySet(),
     val sources: Set<PrivacySourceKind> = emptySet(),
+    val attentionOnly: Boolean = false,
+    val liveOnly: Boolean = false,
 ) {
     val activeFilterCount: Int
         get() = (if (query.isBlank()) 0 else 1) +
             (if (categories.isEmpty()) 0 else 1) +
-            (if (sources.isEmpty()) 0 else 1)
+            (if (sources.isEmpty()) 0 else 1) +
+            (if (attentionOnly) 1 else 0) + (if (liveOnly) 1 else 0)
 }
 
 sealed interface PrivacyBodyState {
@@ -178,6 +181,8 @@ fun summarizePrivacySources(
 }
 
 private fun PrivacyFinding.matches(filters: PrivacyFilterState): Boolean {
+    if (filters.attentionOnly && (severity.rank < FindingSeverity.AWARENESS.rank || ownership == Ownership.OWNED)) return false
+    if (filters.liveOnly && freshness != FindingFreshness.LIVE) return false
     if (filters.categories.isNotEmpty() && category !in filters.categories) return false
     if (filters.sources.isNotEmpty() && source !in filters.sources) return false
     val query = filters.query.trim()

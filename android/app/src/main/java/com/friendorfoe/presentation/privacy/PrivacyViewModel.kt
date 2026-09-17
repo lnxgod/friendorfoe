@@ -95,6 +95,14 @@ class PrivacyViewModel @Inject constructor(
         )
     }
 
+    fun toggleAttentionOnly() {
+        filters.value = filters.value.copy(attentionOnly = !filters.value.attentionOnly)
+    }
+
+    fun toggleLiveOnly() {
+        filters.value = filters.value.copy(liveOnly = !filters.value.liveOnly)
+    }
+
     fun clearFilters() {
         filters.value = PrivacyFilterState()
     }

@@ -32,6 +32,9 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import com.friendorfoe.data.repository.AircraftTrackRepository
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -197,9 +200,11 @@ private val MAP_DRONE_CLASSIFICATIONS = setOf(
     "confirmed_drone", "likely_drone", "test_drone", "wifi_device",
 )
 
+@OptIn(ExperimentalCoroutinesApi::class)
 @HiltViewModel
 class MapViewModel @Inject constructor(
     private val skyObjectRepository: SkyObjectRepository,
+    private val aircraftTracks: AircraftTrackRepository,
     private val aircraftRepository: AircraftRepository,
     private val locationManager: LocationManager,
     private val sensorFusionEngine: SensorFusionEngine,
@@ -339,6 +344,13 @@ class MapViewModel @Inject constructor(
 
     private val _selectedObjectId = backendIntegrationState.selectedObjectId
     val selectedObjectId: StateFlow<String?> = _selectedObjectId.asStateFlow()
+    val selectedTrail = selectedObjectId.flatMapLatest { objectId ->
+        if (objectId == null) flowOf(emptyList()) else aircraftTracks.observeTrail(objectId)
+            .catch { error ->
+                if (error is kotlinx.coroutines.CancellationException) throw error
+                emit(emptyList())
+            }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     private val _followCompass = MutableStateFlow(false)
     val followCompass: StateFlow<Boolean> = _followCompass.asStateFlow()

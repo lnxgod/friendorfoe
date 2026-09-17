@@ -79,6 +79,7 @@ class SkyObjectRepository @Inject constructor(
     private val fusionEngine: BayesianFusionEngine,
     private val historyDao: HistoryDao,
     private val trackingDao: TrackingDao,
+    private val aircraftTracks: AircraftTrackRepository,
     private val localDetectionPermissionProvider: LocalDetectionPermissionProvider,
     private val localDetectionPermissionUpdates: LocalDetectionPermissionUpdates,
 ) : RuntimePermissionChangeNotifier {
@@ -393,7 +394,7 @@ class SkyObjectRepository @Inject constructor(
      */
     private suspend fun collectAdsb(generation: Long) {
         adsbPoller.aircraft.collect { aircraftList ->
-            sessionGate.runIfActive(generation) {
+            val accepted = sessionGate.runIfActive(generation) {
                 synchronized(mergeLock) {
                     synchronized(adsbObjects) {
                         aircraftList.forEach { aircraft ->
@@ -402,6 +403,15 @@ class SkyObjectRepository @Inject constructor(
                     }
                     Log.d(TAG, "ADS-B updated: ${aircraftList.size} aircraft")
                     rebuildMergedList()
+                }
+            }
+            if (accepted) {
+                try {
+                    aircraftTracks.record(aircraftList)
+                } catch (error: CancellationException) {
+                    throw error
+                } catch (error: Exception) {
+                    Log.w(TAG, "Could not save aircraft trail", error)
                 }
             }
         }

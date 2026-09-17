@@ -46,6 +46,7 @@ fun DetailOverviewContent(
     onRetryDetails: (() -> Unit)? = null,
     referenceLabel: String? = null,
     onOpenReference: (() -> Unit)? = null,
+    onOpenFlightPath: (() -> Unit)? = null,
 ) {
     val itemSaveKey = model.identifiers.firstOrNull()?.value ?: model.title
     Column(
@@ -56,14 +57,16 @@ fun DetailOverviewContent(
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         FofStatusStrip(
-            label = if (model.isLive) "LIVE" else "SAVED",
+            label = if (model.observationStale) "STALE" else if (model.isLive) "LIVE" else "SAVED",
             title = model.statusLabel,
-            detail = if (model.isLive) {
+            detail = if (model.observationStale) {
+                "Last received observation; this aircraft is no longer in the current feed."
+            } else if (model.isLive) {
                 "Current local observation"
             } else {
                 "Immutable snapshot from History"
             },
-            tone = if (model.isLive) FofTone.Success else FofTone.Primary,
+            tone = if (model.isLive && !model.observationStale) FofTone.Success else FofTone.Primary,
         )
 
         Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -87,6 +90,15 @@ fun DetailOverviewContent(
                     }
                 }
             }
+        }
+
+        if (onOpenFlightPath != null) {
+            FofActionRow(
+                title = "Recorded flight path",
+                description = "Review where this aircraft was observed during the last 24 hours.",
+                trailingLabel = "Open",
+                onClick = onOpenFlightPath,
+            )
         }
 
         model.aircraftVisual?.let { visual ->

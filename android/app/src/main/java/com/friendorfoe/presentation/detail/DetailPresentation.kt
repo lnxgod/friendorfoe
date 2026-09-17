@@ -43,6 +43,7 @@ data class DetailPresentation(
     val supportingMessage: String? = null,
     val rawExpandedByDefault: Boolean = false,
     val aircraftVisual: AircraftVisual? = null,
+    val observationStale: Boolean = false,
 )
 
 fun presentHistoricalDetail(row: HistoryEntity): DetailPresentation {
@@ -96,6 +97,7 @@ fun presentLiveDetail(
     aircraft: Aircraft,
     remoteDetail: AircraftDetailDto?,
     remoteFailure: String?,
+    observationCurrent: Boolean = true,
 ): DetailPresentation {
     val callsign = firstNonBlank(remoteDetail?.callsign, aircraft.callsign)
     val registration = firstNonBlank(remoteDetail?.registration, aircraft.registration)
@@ -107,8 +109,9 @@ fun presentLiveDetail(
 
     return DetailPresentation(
         title = firstNonBlank(callsign, registration, aircraft.icaoHex, "Aircraft")!!,
-        statusLabel = "Live detection",
+        statusLabel = if (observationCurrent) "Live detection" else "Last known detection",
         isLive = true,
+        observationStale = !observationCurrent,
         summary = buildList {
             add(DetailField("Source", aircraft.source.humanLabel()))
             add(DetailField("Category", aircraft.category.humanLabel()))

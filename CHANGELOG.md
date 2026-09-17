@@ -41,6 +41,37 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   release as `0.64.64-privacy-oui`; the FoF Badge track remains separate at
   `0.64.64-badge-privacy-oui`.
 
+## [0.67.19-android-flight-paths] - 2026-09-16
+
+### Added
+- **Recorded aircraft flight paths across Android.** Open an aircraft from List,
+  AR, Map, or History, then choose Recorded flight path. Review received
+  positions for 15 minutes, 1 hour, or up to 24 hours; scrub the timeline for
+  time, altitude, and speed. The main map also shows the selected aircraft's
+  recorded trail. Missing coverage and impossible jumps stay disconnected.
+- **Recent privacy encounters.** Review up to 30 minutes of session-local
+  evidence after a finding expires, including signal samples and a copyable
+  evidence summary. The list keeps stable ordering, excludes ignored findings,
+  and supports clearing without restoring old cached observations.
+- **Privacy quick filters.** Needs attention hides informational and owned
+  findings; Live only hides stale observations.
+
+### Fixed
+- **Aircraft details follow live updates.** Position and flight information
+  refresh while details are open; departed detections are marked last known.
+- **History deletion includes stored positions.** Clearing history removes
+  trails, and deleting an aircraft's last saved sighting removes its trail.
+
+### Changed
+- Aircraft positions are sampled locally while detection runs, bounded to
+  100,000 stored points overall and 3,600 displayed points per aircraft, with
+  up to 24 hours of retention. Previously unrecorded flights cannot be recovered.
+- Database migration preserves existing sightings and positions. Android
+  version code is `127`; cloud verification checks the matching version and
+  existing signing certificate.
+- Verified with 1,096 JVM tests, Android lint, and 35 emulator tests covering
+  migration, storage, flight paths, privacy evidence, and existing destinations.
+
 ## [0.67.18-android-nearby] - 2026-09-15
 
 ### Fixed

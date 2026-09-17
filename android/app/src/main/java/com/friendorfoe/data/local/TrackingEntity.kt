@@ -9,7 +9,8 @@ import androidx.room.PrimaryKey
     tableName = "position_tracking",
     indices = [
         Index(value = ["object_id"]),
-        Index(value = ["timestamp"])
+        Index(value = ["timestamp"]),
+        Index(value = ["object_id", "timestamp"])
     ]
 )
 data class TrackingEntity(

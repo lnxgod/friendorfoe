@@ -19,6 +19,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ExperimentalMaterial3Api
+import com.friendorfoe.presentation.trails.AircraftTrailOverlay
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.ModalBottomSheet
@@ -195,6 +196,7 @@ internal fun rememberAcceptedMapPosition(
 @Composable
 fun MapViewScreen(
     onObjectTapped: (String) -> Unit,
+    onOpenFlightPath: ((String) -> Unit)? = null,
     viewModel: MapViewModel = hiltViewModel(),
     detailViewModel: DetailViewModel = hiltViewModel(),
     locationPermissionState: PermissionUiState = PermissionUiState.Granted,
@@ -205,6 +207,7 @@ fun MapViewScreen(
     val lifecycleOwner = LocalLifecycleOwner.current
 
     val mapTracks by viewModel.mapTracks.collectAsStateWithLifecycle()
+    val selectedTrail by viewModel.selectedTrail.collectAsStateWithLifecycle()
     val formationPoints by viewModel.formationPoints.collectAsStateWithLifecycle()
     val filterState by viewModel.filterState.collectAsStateWithLifecycle()
     val userLocationFix by viewModel.userLocationFix.collectAsStateWithLifecycle()
@@ -272,6 +275,8 @@ fun MapViewScreen(
             }))
         }
     }
+    val trailOverlay = remember(mapView) { AircraftTrailOverlay(mapView) }
+    LaunchedEffect(selectedTrail) { trailOverlay.render(selectedTrail) }
     val cameraOwnership = rememberMapCameraOwnership(mapView)
     var userControlsCamera by cameraOwnership
     val overlayController = remember(mapView) {
@@ -474,6 +479,12 @@ fun MapViewScreen(
                     }
                 }
                 is DetailState.AircraftLoaded -> {
+                    onOpenFlightPath?.let { open ->
+                        Button(
+                            onClick = { viewModel.selectObject(null); open(state.aircraft.id) },
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+                        ) { Text("Recorded flight path") }
+                    }
                     AircraftDetailContent(
                         aircraft = state.aircraft,
                         detail = state.detail

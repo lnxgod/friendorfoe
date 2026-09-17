@@ -88,6 +88,7 @@ fun DetailScreen(
     onBack: () -> Unit,
     onNavigateToDroneGuide: ((String?) -> Unit)? = null,
     onNavigateToAircraftGuide: ((String?) -> Unit)? = null,
+    onOpenFlightPath: ((String) -> Unit)? = null,
     viewModel: DetailViewModel = hiltViewModel()
 ) {
     val detailState by viewModel.detailState.collectAsStateWithLifecycle()
@@ -147,9 +148,11 @@ fun DetailScreen(
                             aircraft = state.aircraft,
                             remoteDetail = state.detail,
                             remoteFailure = state.remoteFailure,
+                            observationCurrent = state.observationCurrent,
                         ),
                         onRetryDetails = state.remoteFailure?.let { viewModel::retryRemoteDetail },
                         referenceLabel = "Aircraft reference",
+                        onOpenFlightPath = onOpenFlightPath?.let { { it(state.aircraft.id) } },
                         onOpenReference = onNavigateToAircraftGuide?.let { navigate ->
                             { navigate(state.detail?.aircraftType ?: state.aircraft.aircraftType) }
                         },
@@ -167,7 +170,11 @@ fun DetailScreen(
                 }
 
                 is DetailState.HistoricalLoaded -> {
-                    DetailOverviewContent(model = presentHistoricalDetail(state.snapshot))
+                    DetailOverviewContent(
+                        model = presentHistoricalDetail(state.snapshot),
+                        onOpenFlightPath = onOpenFlightPath?.takeIf { state.snapshot.objectType == "aircraft" }
+                            ?.let { { it(state.snapshot.objectId) } },
+                    )
                 }
 
                 is DetailState.Error -> {

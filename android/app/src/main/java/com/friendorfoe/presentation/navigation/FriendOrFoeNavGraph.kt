@@ -25,6 +25,7 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.navigation
 import androidx.navigation.navArgument
+import com.friendorfoe.presentation.trails.FlightPathScreen
 import com.friendorfoe.BuildConfig
 import com.friendorfoe.data.preferences.sanitizeTopLevelRoute
 import com.friendorfoe.presentation.about.AboutLandingActions
@@ -49,6 +50,7 @@ import com.friendorfoe.presentation.map.MapViewScreen
 import com.friendorfoe.presentation.privacy.EmfSweepScreen
 import com.friendorfoe.presentation.privacy.IrCameraScanScreen
 import com.friendorfoe.presentation.privacy.IgnoredDevicesScreen
+import com.friendorfoe.presentation.privacy.PrivacyEncountersScreen
 import com.friendorfoe.presentation.privacy.PrivacyScreen
 import com.friendorfoe.presentation.privacy.PrivacyFindingDetailsRoute
 import com.friendorfoe.presentation.reference.ReferenceGuideScreen
@@ -153,6 +155,7 @@ private fun NavGraphBuilder.registerSevenTopLevelDestinations(
             val permissions = rememberPermissionBindings()
             val locationState = permissions.stateFor(AppFeature.AR_MAP_LOCATION)
             MapViewScreen(
+                onOpenFlightPath = { navController.navigate(Screen.FlightPath.createRoute(it)) },
                 onObjectTapped = { objectId ->
                     navController.navigate(Screen.Detail.createRoute(objectId))
                 },
@@ -186,6 +189,7 @@ private fun NavGraphBuilder.registerSevenTopLevelDestinations(
     composable(Screen.Privacy.route) {
         TopLevelRouteRoot(TopLevelDestination.PRIVACY) {
             PrivacyScreen(
+                onOpenEncounters = { navController.navigate(Screen.PrivacyEncounters.route) },
                 onOpenIgnoredDevices = {
                     navController.navigate(Screen.IgnoredDevices.route) { launchSingleTop = true }
                 },
@@ -331,6 +335,7 @@ private fun NavGraphBuilder.registerSecondaryDestinations(
         val objectId = backStackEntry.arguments?.getString("objectId") ?: return@composable
         DetailScreen(
             objectId = objectId,
+            onOpenFlightPath = { navController.navigate(Screen.FlightPath.createRoute(it)) },
             onBack = { navController.popBackStack() },
             onNavigateToDroneGuide = { manufacturer ->
                 navController.navigate(Screen.DroneGuide.createRoute(manufacturer))
@@ -341,11 +346,26 @@ private fun NavGraphBuilder.registerSecondaryDestinations(
         )
     }
 
+    composable(Screen.PrivacyEncounters.route) {
+        PrivacyEncountersScreen(
+            onBack = { navController.popBackStack() },
+            onOpenFinding = { navController.navigate(Screen.PrivacyFinding.createRoute(it)) },
+        )
+    }
+
+    composable(
+        route = Screen.FlightPath.route,
+        arguments = listOf(navArgument("objectId") { type = NavType.StringType }),
+    ) {
+        FlightPathScreen(onBack = { navController.popBackStack() })
+    }
+
     composable(
         route = Screen.HistoricalDetail.route,
         arguments = listOf(navArgument("historyId") { type = NavType.LongType }),
     ) { backStackEntry ->
         HistoricalDetailScreen(
+            onOpenFlightPath = { navController.navigate(Screen.FlightPath.createRoute(it)) },
             historyId = requireNotNull(backStackEntry.arguments).getLong("historyId"),
             onBack = navController::popBackStack,
             onReturnToHistory = {

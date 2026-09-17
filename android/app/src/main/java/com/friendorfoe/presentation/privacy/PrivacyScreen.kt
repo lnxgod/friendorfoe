@@ -84,6 +84,9 @@ data class PrivacyActions(
     val onToggleCategory: (PrivacyCategory) -> Unit = {},
     val onToggleSource: (PrivacySourceKind) -> Unit = {},
     val onClearFilters: () -> Unit = {},
+    val onToggleAttentionOnly: () -> Unit = {},
+    val onToggleLiveOnly: () -> Unit = {},
+    val onOpenEncounters: (() -> Unit)? = null,
     val onRetryAllSources: () -> Unit = {},
     val onOpenBackendSettings: (() -> Unit)? = null,
     val onOpenIgnoredDevices: (() -> Unit)? = null,
@@ -97,6 +100,7 @@ fun PrivacyScreen(
     onOpenIgnoredDevices: (() -> Unit)? = null,
     onOpenInfo: (() -> Unit)? = null,
     onOpenFinding: ((PrivacyFindingKey) -> Unit)? = null,
+    onOpenEncounters: (() -> Unit)? = null,
     viewModel: PrivacyViewModel = hiltViewModel(),
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
@@ -135,6 +139,9 @@ fun PrivacyScreen(
             onToggleCategory = viewModel::toggleCategory,
             onToggleSource = viewModel::toggleSource,
             onClearFilters = viewModel::clearFilters,
+            onToggleAttentionOnly = viewModel::toggleAttentionOnly,
+            onToggleLiveOnly = viewModel::toggleLiveOnly,
+            onOpenEncounters = onOpenEncounters,
             onRetryAllSources = viewModel::retryAllFailed,
             onOpenBackendSettings = onOpenInfo,
             onOpenIgnoredDevices = onOpenIgnoredDevices,
@@ -474,6 +481,23 @@ private fun PrivacySearchAndFilters(
         modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FilterChip(
+                selected = state.filters.attentionOnly,
+                onClick = actions.onToggleAttentionOnly,
+                label = { Text("Needs attention") },
+            )
+            FilterChip(
+                selected = state.filters.liveOnly,
+                onClick = actions.onToggleLiveOnly,
+                label = { Text("Live only") },
+            )
+        }
+        actions.onOpenEncounters?.let { open ->
+            TextButton(onClick = open, modifier = Modifier.testTag("privacy_recent")) {
+                Text("Recent encounters")
+            }
+        }
         OutlinedTextField(
             value = state.filters.query,
             onValueChange = actions.onQueryChanged,

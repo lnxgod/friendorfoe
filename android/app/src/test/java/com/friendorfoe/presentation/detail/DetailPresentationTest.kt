@@ -144,6 +144,15 @@ class DetailPresentationTest {
         assertNull(presentLiveDroneDetail(drone()).aircraftVisual)
     }
 
+    @Test
+    fun departedAircraftKeepsLastKnownEvidenceWithStalePresentation() {
+        val model = presentLiveDetail(aircraft(), null, null, observationCurrent = false)
+        assertTrue(model.observationStale)
+        assertEquals("Last known detection", model.statusLabel)
+        assertTrue(model.summary.any { it.label == "Last observed" })
+        assertFalse(presentLiveDetail(aircraft(), null, null).observationStale)
+    }
+
     private fun aircraft() = Aircraft(
         id = "abc123",
         position = Position(

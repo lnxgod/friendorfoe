@@ -82,6 +82,24 @@ class FriendOrFoeDatabaseMigrationTest {
         migrated.close()
     }
 
+    @Test
+    fun migration_5_to_6_keeps_existing_trail_and_adds_object_time_index() {
+        helper.createDatabase(TEST_DATABASE, 5).apply {
+            execSQL("INSERT INTO position_tracking (object_id, latitude, longitude, altitude_meters, heading, speed_mps, timestamp) VALUES ('abc123', 32.7, -117.1, 1200, 90, 100, 1000)")
+            close()
+        }
+        val migrated = helper.runMigrationsAndValidate(TEST_DATABASE, 6, true, FriendOrFoeDatabase.MIGRATION_5_6)
+        migrated.query("SELECT object_id, altitude_meters FROM position_tracking").use {
+            assertTrue(it.moveToFirst())
+            assertEquals("abc123", it.getString(0))
+            assertEquals(1200.0, it.getDouble(1), 0.0)
+        }
+        migrated.query("SELECT name FROM sqlite_master WHERE type='index' AND name='index_position_tracking_object_id_timestamp'").use {
+            assertTrue(it.moveToFirst())
+        }
+        migrated.close()
+    }
+
     private fun assertNullColumn(databaseCursor: android.database.Cursor, columnName: String) {
         assertTrue(databaseCursor.isNull(databaseCursor.getColumnIndexOrThrow(columnName)))
     }

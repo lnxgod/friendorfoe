@@ -13,6 +13,9 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.hasTestTag
+import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performClick
 import com.friendorfoe.detection.PrivacyCategory
@@ -75,17 +78,15 @@ class PrivacyScreenTest {
         }
 
         listOf("THREATS", "AWARENESS", "NEARBY", "INFO").forEach {
-            compose.onNodeWithText(it).performScrollTo().assertIsDisplayed()
+            compose.onNodeWithTag("privacy_content").performScrollToNode(hasText(it))
+            compose.onNodeWithText(it).assertIsDisplayed()
         }
-        compose.onNodeWithTag("finding_critical_ignore")
-            .performScrollTo()
-            .assertHasClickAction()
-        compose.onNodeWithTag("finding_critical_track")
-            .performScrollTo()
-            .assertHasClickAction()
-        compose.onNodeWithTag("finding_critical_details")
-            .performScrollTo()
-            .assertHasClickAction()
+        compose.onNodeWithTag("privacy_content").performScrollToNode(hasTestTag("finding_critical_ignore"))
+        compose.onNodeWithTag("finding_critical_ignore").assertHasClickAction()
+        compose.onNodeWithTag("privacy_content").performScrollToNode(hasTestTag("finding_critical_track"))
+        compose.onNodeWithTag("finding_critical_track").assertHasClickAction()
+        compose.onNodeWithTag("privacy_content").performScrollToNode(hasTestTag("finding_critical_details"))
+        compose.onNodeWithTag("finding_critical_details").assertHasClickAction()
         compose.onAllNodesWithText("Track", substring = true).fetchSemanticsNodes()
 
         listOf(

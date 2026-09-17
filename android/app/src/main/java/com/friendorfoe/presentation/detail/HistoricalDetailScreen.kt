@@ -39,6 +39,7 @@ fun HistoricalDetailScreen(
     historyId: Long,
     onBack: () -> Unit,
     onReturnToHistory: () -> Unit,
+    onOpenFlightPath: ((String) -> Unit)? = null,
     viewModel: DetailViewModel = hiltViewModel(),
 ) {
     val detailState by viewModel.detailState.collectAsStateWithLifecycle()
@@ -55,6 +56,8 @@ fun HistoricalDetailScreen(
                 DetailState.Idle, DetailState.Loading -> CircularProgressIndicator()
                 is DetailState.HistoricalLoaded -> DetailOverviewContent(
                     model = presentHistoricalDetail(state.snapshot),
+                    onOpenFlightPath = onOpenFlightPath?.takeIf { state.snapshot.objectType == "aircraft" }
+                        ?.let { { it(state.snapshot.objectId) } },
                 )
                 is DetailState.Error -> HistoricalErrorContent(
                     message = state.message,

@@ -32,6 +32,10 @@ class PrivacyFindingRepository @Inject constructor(
     private val adapters = sourceAdapters.sortedBy(PrivacySourceAdapter::adapterId)
     private val ownerBySource: Map<PrivacySourceKind, PrivacySourceAdapter>
     private val reducer = PrivacyCurrentReducer()
+    private val encounterLog = PrivacyEncounterLog()
+    val encounters = encounterLog.entries
+
+    fun clearEncounters() { encounterLog.clear(clock.nowElapsedMs()) }
 
     init {
         require(adapters.all { it.adapterId.isNotBlank() }) {
@@ -77,7 +81,9 @@ class PrivacyFindingRepository @Inject constructor(
         appPreferences.ignoredFindingKeys,
         clock.ticks(),
     ) { snapshots, ignoredKeys, nowElapsedMs ->
-        reducer.reduce(snapshots, ignoredKeys, nowElapsedMs)
+        reducer.reduce(snapshots, ignoredKeys, nowElapsedMs).also { current ->
+            encounterLog.update(current, ignoredKeys, nowElapsedMs, clock.nowWallClock().toEpochMilli())
+        }
     }.stateIn(
         scope = scope,
         started = SharingStarted.Eagerly,

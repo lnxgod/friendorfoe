@@ -227,6 +227,20 @@ class PrivacyUiProjectionTest {
         assertNull(projectPrivacyUiState(current(), focusedKey = target).focusedFinding)
     }
 
+    @Test
+    fun quickFiltersKeepOnlyLiveAttentionAndExcludeOwnedDevices() {
+        val live = finding(id = "live", severity = FindingSeverity.CRITICAL)
+        val stale = finding(id = "stale", severity = FindingSeverity.AWARENESS).copy(freshness = FindingFreshness.STALE)
+        val owned = live.copy(displayId = "owned", ownership = Ownership.OWNED)
+        val info = finding(id = "info", severity = FindingSeverity.INFO)
+        val filtered = projectPrivacyUiState(
+            current(findings = listOf(stale, info, live, owned)),
+            PrivacyFilterState(attentionOnly = true, liveOnly = true),
+        )
+        assertEquals(listOf(live), filtered.visibleFindings)
+        assertEquals(2, filtered.filters.activeFilterCount)
+    }
+
     private fun current(
         findings: List<PrivacyFinding> = emptyList(),
         sources: List<PrivacySourceHealth> = listOf(

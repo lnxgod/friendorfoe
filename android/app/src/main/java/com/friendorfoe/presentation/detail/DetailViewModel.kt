@@ -13,6 +13,7 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -49,6 +50,7 @@ class DetailViewModel @Inject constructor(
     val positionTrail: StateFlow<List<SkyObjectRepository.TrailPoint>> = _positionTrail.asStateFlow()
     private var enrichmentGeneration = 0L
     private var enrichmentJob: Job? = null
+    private var liveObservationJob: Job? = null
 
     /**
      * Load detail for the given object ID.
@@ -85,6 +87,17 @@ class DetailViewModel @Inject constructor(
                     remoteLoading = true,
                 )
                 fetchRemoteDetail(skyObject)
+                liveObservationJob = viewModelScope.launch {
+                    skyObjectRepository.skyObjects.collect { objects ->
+                        val current = _detailState.value as? DetailState.AircraftLoaded ?: return@collect
+                        if (current.aircraft.id != skyObject.id) return@collect
+                        val latest = objects.filterIsInstance<Aircraft>().firstOrNull { it.id == skyObject.id }
+                        _detailState.value = current.copy(
+                            aircraft = latest ?: current.aircraft,
+                            observationCurrent = latest != null,
+                        )
+                    }
+                }
             }
             is Drone -> {
                 _detailState.value = DetailState.DroneLoaded(drone = skyObject)
@@ -144,6 +157,7 @@ class DetailViewModel @Inject constructor(
                 ?.takeIf { it.aircraft.id == aircraft.id }
                 ?.detail,
             remoteLoading = true,
+            observationCurrent = (_detailState.value as? DetailState.AircraftLoaded)?.observationCurrent ?: true,
         )
         enrichmentJob = viewModelScope.launch {
             val result = aircraftRepository.getAircraftDetail(
@@ -173,6 +187,8 @@ class DetailViewModel @Inject constructor(
     }
 
     private fun cancelEnrichment() {
+        liveObservationJob?.cancel()
+        liveObservationJob = null
         enrichmentGeneration += 1
         enrichmentJob?.cancel()
         enrichmentJob = null
@@ -226,6 +242,7 @@ sealed class DetailState {
         val detail: AircraftDetailDto?,
         val remoteLoading: Boolean = false,
         val remoteFailure: String? = null,
+        val observationCurrent: Boolean = true,
     ) : DetailState()
 
     /** Drone detail loaded from local detection data */

@@ -28,6 +28,10 @@ sealed class Screen(val route: String) {
     data object Detail : Screen("detail/{objectId}") {
         fun createRoute(objectId: String) = "detail/${encodeRouteSegment(objectId)}"
     }
+    data object FlightPath : Screen("flight_path/{objectId}") {
+        fun createRoute(objectId: String) = "flight_path/${encodeRouteSegment(objectId)}"
+    }
+    data object PrivacyEncounters : Screen("privacy/encounters")
     data object HistoricalDetail : Screen("history_detail/{historyId}") {
         fun createRoute(historyId: Long) = "history_detail/$historyId"
     }
