@@ -41,7 +41,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   release as `0.64.64-privacy-oui`; the FoF Badge track remains separate at
   `0.64.64-badge-privacy-oui`.
 
-## [0.67.21-android-map-trails] - 2026-09-18
+## [0.67.22-android-map-trails] - 2026-09-18
+
+### Fixed
+- Native map resources now survive temporary navigation detachment. Final disposal
+  cancels historical overlay updates and releases the map only when its owning
+  composition is removed. The initial 0.67.21 build was withdrawn during QA.
 
 ### Added
 - Main-map flight trails for the last 15 minutes, one hour, or 24 hours, with

@@ -1,6 +1,6 @@
 # Map trails and privacy review — September 18, 2026
 
-Release: 0.67.21-android-map-trails (Android version code 129).
+Release: 0.67.22-android-map-trails (Android version code 130).
 
 ## Aircraft map
 
@@ -40,9 +40,13 @@ No new permissions, location collection, background service, or upload is added.
 
 - Full 1,110 JVM tests pass, including new projection/filter, gap threshold,
   duplicate report, ownership, search, and period-expiry regressions.
-- 17 API 35 emulator tests pass, covering the SQLite history query, independent
+- 18 API 35 emulator tests pass, covering the SQLite history query, independent
   map layer ownership, gap segmentation, endpoint routing, window/retry controls,
   privacy filter reset, flight-path review, and stable native map hosting.
+- A delayed navigation crash in the initial build was traced to native map
+  detachment destroying resources before the Compose-owned view was finished.
+  Temporary detach now preserves resources, while final disposal explicitly
+  releases them and rejects late trail updates.
 - Android lint passes; debug and instrumented APKs build successfully.
 - Emulator visual review uses synthetic DEMO aircraft paths and privacy records.
   Physical radio detection and real-world flight reception require field testing.

@@ -23,8 +23,8 @@ android {
         applicationId = "com.friendorfoe"
         minSdk = 26
         targetSdk = 34
-        versionCode = 129
-        versionName = "0.67.21-android-map-trails"
+        versionCode = 130
+        versionName = "0.67.22-android-map-trails"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

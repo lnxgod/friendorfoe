@@ -260,6 +260,8 @@ fun MapViewScreen(
 
     val mapView = remember {
         MapView(context).apply {
+            // Compose navigation can temporarily detach and reattach the same native view.
+            setDestroyMode(false)
             setTileSource(TileSourceFactory.MAPNIK)
             setMultiTouchControls(true)
             controller.setZoom(10.0)
@@ -331,6 +333,11 @@ fun MapViewScreen(
         onDispose {
             lifecycleOwner.lifecycle.removeObserver(observer)
             mapView.onPause()
+        }
+    }
+    DisposableEffect(mapView) {
+        onDispose {
+            trailOverlay.dispose()
             mapView.onDetach()
         }
     }

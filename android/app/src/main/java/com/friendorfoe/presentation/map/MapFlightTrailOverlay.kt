@@ -16,11 +16,13 @@ internal class MapFlightTrailOverlay(
     private val map: MapView,
     private val onOpenPath: (String) -> Unit,
 ) {
+    private var disposed = false
     private val owned = mutableListOf<Overlay>()
     private var rendered: Pair<List<MapFlightTrail>, String?>? = null
     private val colors = intArrayOf(0xFF0089C2.toInt(), 0xFF8B50C7.toInt(), 0xFF008577.toInt(), 0xFFC05A00.toInt())
 
     fun render(trails: List<MapFlightTrail>, selectedId: String?) {
+        if (disposed) return
         val next = trails to selectedId
         if (rendered == next) return
         rendered = next
@@ -60,10 +62,19 @@ internal class MapFlightTrailOverlay(
         map.invalidate()
     }
 
+    fun dispose() {
+        disposed = true
+        map.overlays.removeAll(owned.toSet())
+        owned.clear()
+        rendered = null
+    }
+
     fun fit(trails: List<MapFlightTrail>) {
+        if (disposed) return
         val locations = trails.flatMap { it.points }.map { GeoPoint(it.latitude, it.longitude) }
         if (locations.isEmpty()) return
         map.post {
+            if (disposed) return@post
             if (locations.distinct().size == 1) {
                 map.controller.setCenter(locations.first())
                 map.controller.setZoom(12.0)

@@ -70,4 +70,24 @@ class MapFlightTrailTest {
         compose.onNodeWithTag("flight_trails_OFF").performClick()
         compose.runOnIdle { assertEquals(FlightTrailWindow.OFF, chosen) }
     }
+    @Test fun temporaryNativeDetachKeepsMapUsableAndDisposedLayerIgnoresLateUpdates() {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        instrumentation.runOnMainSync {
+            val map = object : MapView(instrumentation.targetContext) {
+                fun temporarilyDetach() = onDetachedFromWindow()
+            }.apply { setDestroyMode(false); layout(0, 0, 480, 800) }
+            val layer = MapFlightTrailOverlay(map) {}
+            val trail = MapFlightTrail("demo", "DEMO", listOf(point(1000, 32.7), point(11_000, 32.701)), false)
+            layer.render(listOf(trail), null)
+            map.temporarilyDetach()
+            layer.render(listOf(trail), "demo")
+            assertEquals(1, map.overlays.filterIsInstance<Polyline>().size)
+            layer.dispose()
+            map.onDetach()
+            layer.render(listOf(trail), null)
+            layer.fit(listOf(trail))
+            assertTrue(map.overlays.isEmpty())
+        }
+    }
+
 }

@@ -157,6 +157,7 @@ private fun FlightPathMap(
     val map = remember {
         Configuration.getInstance().userAgentValue = context.packageName
         MapView(context).apply {
+            setDestroyMode(false)
             setTileSource(TileSourceFactory.MAPNIK)
             setMultiTouchControls(true)
             controller.setZoom(11.0)
@@ -190,11 +191,13 @@ private fun FlightPathMap(
         onDispose {
             lifecycleOwner.lifecycle.removeObserver(observer)
             map.onPause()
-            map.onDetach()
         }
     }
-    LaunchedEffect(map, fitKey) {
-        map.post {
+    DisposableEffect(map) {
+        onDispose { map.onDetach() }
+    }
+    DisposableEffect(map, fitKey) {
+        val fit = Runnable {
             val locations = points.map { GeoPoint(it.latitude, it.longitude) }
             if (locations.size < 2 || locations.distinct().size < 2) {
                 locations.firstOrNull()?.let { map.controller.setCenter(it) }
@@ -202,6 +205,8 @@ private fun FlightPathMap(
                 map.zoomToBoundingBox(BoundingBox.fromGeoPointsSafe(locations), false, 64)
             }
         }
+        map.post(fit)
+        onDispose { map.removeCallbacks(fit) }
     }
     AndroidView(
         factory = { map }, modifier = modifier.clipToBounds().testTag("flight_path_map"),
