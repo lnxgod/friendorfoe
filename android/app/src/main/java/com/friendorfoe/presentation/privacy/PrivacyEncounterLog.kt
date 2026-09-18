@@ -17,6 +17,7 @@ data class PrivacyEncounter(
     val lastObservedElapsedMs: Long,
     val observationCount: Int,
     val signalSamples: List<PrivacySignalSample>,
+    val firstObservedElapsedMs: Long = lastObservedElapsedMs,
 )
 
 /** Session-local evidence: bounded, exact-source identities, no location or disk storage. */
@@ -46,16 +47,18 @@ internal class PrivacyEncounterLog {
                 retained[key] = previous.copy(finding = finding)
                 return@forEach
             }
+            val observedWallMs = nowWallMs - (nowElapsedMs - finding.lastObservedElapsedMs)
             val sample = finding.signalDbm?.takeIf { it in -127..-1 }?.let {
-                PrivacySignalSample(finding.lastObservedElapsedMs, nowWallMs, it)
+                PrivacySignalSample(finding.lastObservedElapsedMs, observedWallMs, it)
             }
             retained[key] = PrivacyEncounter(
                 key = key,
                 finding = finding,
-                firstObservedWallMs = previous?.firstObservedWallMs ?: nowWallMs,
-                lastObservedWallMs = nowWallMs,
+                firstObservedWallMs = previous?.firstObservedWallMs ?: observedWallMs,
+                lastObservedWallMs = observedWallMs,
                 lastObservedElapsedMs = finding.lastObservedElapsedMs,
                 observationCount = (previous?.observationCount ?: 0) + 1,
+                firstObservedElapsedMs = previous?.firstObservedElapsedMs ?: finding.lastObservedElapsedMs,
                 signalSamples = (previous?.signalSamples.orEmpty() + listOfNotNull(sample)).takeLast(MAX_SIGNAL_SAMPLES),
             )
         }
@@ -65,7 +68,7 @@ internal class PrivacyEncounterLog {
         retained.keys.retainAll(sorted.map { it.key }.toSet())
         // Reviewing an encounter must not become another packet-driven jumping list.
         _entries.value = sorted.sortedWith(
-            compareByDescending<PrivacyEncounter> { it.firstObservedWallMs }.thenBy { it.key.encoded },
+            compareByDescending<PrivacyEncounter> { it.firstObservedElapsedMs }.thenBy { it.key.encoded },
         )
     }
 

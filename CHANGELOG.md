@@ -41,6 +41,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   release as `0.64.64-privacy-oui`; the FoF Badge track remains separate at
   `0.64.64-badge-privacy-oui`.
 
+## [0.67.20-android-review] - 2026-09-18
+
+### Fixed
+- **Android updates select a downloadable app release.** The checker searches
+  published releases for a completed, version-matched APK, skipping dashboard,
+  firmware-only, draft, and prerelease entries. It compares eligible versions
+  numerically and checks additional pages when firmware fills the first page.
+  Download links must point to the matching asset in the official repository.
+- **Privacy encounter timestamps account for packet age.** Delayed observations
+  retain their observed time instead of the time the UI processed them.
+  Encounter ordering uses elapsed time so phone clock changes do not shuffle rows.
+
+### Added
+- **Direct APK download and separate release notes** in the About/settings
+  update controls, reducing the steps required to install an update.
+- **Previous, Next, and Latest position flight-path controls.** Reviewing a
+  saved point stays on that point as new data arrives. Latest position resumes
+  following incoming positions; the timeline exposes its timestamp to accessibility.
+
+### Changed
+- Android version code is `128`; cloud release verification checks the matching
+  version and the existing signing certificate.
+
 ## [0.67.19-android-flight-paths] - 2026-09-16
 
 ### Added

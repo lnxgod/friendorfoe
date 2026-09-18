@@ -1,6 +1,7 @@
 package com.friendorfoe.data.repository
 
 import com.friendorfoe.data.AppVersion
+import com.friendorfoe.data.isUpdateAvailable
 import com.friendorfoe.data.isWellFormedAppVersionName
 import com.friendorfoe.data.remote.AppUpdateApi
 import com.friendorfoe.data.remote.ReleaseMetadataDto
@@ -11,6 +12,7 @@ import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 data class AppUpdateMetadata(
     val version: AppVersion,
     val releaseUrl: String,
+    val apkUrl: String? = null,
 )
 
 interface AppUpdateRepository {
@@ -21,28 +23,50 @@ class HttpAppUpdateRepository @Inject constructor(
     private val api: AppUpdateApi,
 ) : AppUpdateRepository {
     override suspend fun latest(): Result<AppUpdateMetadata> = try {
-        Result.success(api.latestRelease().toMetadata())
+        var selected: AppUpdateMetadata? = null
+        // Firmware and dashboard releases share this repository. Only offer a ready APK.
+        // Bound requests while allowing a page of firmware releases ahead of Android.
+        for (page in 1..3) {
+            val releases = api.releases(page)
+            releases.mapNotNull { it.toAndroidMetadata() }.forEach { candidate ->
+                val current = selected
+                if (current == null || isUpdateAvailable(current.version, candidate.version)) selected = candidate
+            }
+            if (selected != null || releases.size < 100) break
+        }
+        Result.success(requireNotNull(selected) { "No published Android APK is available" })
     } catch (cancelled: CancellationException) {
         throw cancelled
     } catch (failure: Exception) {
         Result.failure(failure)
     }
 
-    private fun ReleaseMetadataDto.toMetadata(): AppUpdateMetadata {
+    private fun ReleaseMetadataDto.toAndroidMetadata(): AppUpdateMetadata? {
+        if (draft || prerelease) return null
         val tag = tagName?.trim().orEmpty()
-        require(isWellFormedAppVersionName(tag)) { "Release version is invalid" }
-        require(versionCode == null || versionCode >= 0L) { "Release code is invalid" }
-
-        val url = htmlUrl?.trim()?.toHttpUrlOrNull()
-            ?: throw IllegalArgumentException("Release URL is missing")
-        require(url.scheme == "https") { "Release URL must use HTTPS" }
-        require(url.username.isBlank() && url.password.isBlank()) {
-            "Release URL must not contain credentials"
-        }
-
+        if (!isWellFormedAppVersionName(tag) || (versionCode != null && versionCode < 0)) return null
+        val expectedRelease = "$RELEASE_BASE/tag/$tag"
+        val releaseUrl = htmlUrl?.takeIf { it.isOfficialUrl(expectedRelease) } ?: return null
+        val filename = "friendorfoe-$tag.apk"
+        val expectedDownload = "$RELEASE_BASE/download/$tag/$filename"
+        val apk = assets.orEmpty().singleOrNull {
+            it.name == filename && it.state == "uploaded" && (it.size ?: 0) > 0 &&
+                it.downloadUrl?.isOfficialUrl(expectedDownload) == true
+        } ?: return null
         return AppUpdateMetadata(
             version = AppVersion(code = versionCode, name = tag),
-            releaseUrl = url.toString(),
+            releaseUrl = releaseUrl,
+            apkUrl = apk.downloadUrl,
         )
+    }
+
+    private fun String.isOfficialUrl(expected: String): Boolean {
+        val url = toHttpUrlOrNull() ?: return false
+        val expectedUrl = expected.toHttpUrlOrNull() ?: return false
+        return url == expectedUrl && url.username.isEmpty() && url.password.isEmpty()
+    }
+
+    private companion object {
+        const val RELEASE_BASE = "https://github.com/lnxgod/friendorfoe/releases"
     }
 }

@@ -23,8 +23,8 @@ android {
         applicationId = "com.friendorfoe"
         minSdk = 26
         targetSdk = 34
-        versionCode = 127
-        versionName = "0.67.19-android-flight-paths"
+        versionCode = 128
+        versionName = "0.67.20-android-review"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

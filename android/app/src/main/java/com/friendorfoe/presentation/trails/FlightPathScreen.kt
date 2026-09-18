@@ -12,6 +12,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.Lifecycle
@@ -104,9 +106,33 @@ fun FlightPathContent(state: FlightPathState, onBack: () -> Unit, onRetry: () ->
                             value = selectedIndex.toFloat(),
                             onValueChange = { selectedTimestamp = points[it.roundToInt().coerceIn(points.indices)].timestamp },
                             valueRange = 0f..points.lastIndex.toFloat(),
-                            modifier = Modifier.testTag("flight_path_scrubber"),
+                            modifier = Modifier.testTag("flight_path_scrubber").semantics {
+                                stateDescription = selected?.let { formatTrackTime(it.timestamp) }.orEmpty()
+                            },
                         )
                     }
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        TextButton(
+                            enabled = selectedIndex > 0,
+                            onClick = { selectedTimestamp = points[selectedIndex - 1].timestamp },
+                            modifier = Modifier.testTag("flight_path_previous"),
+                        ) { Text("Previous") }
+                        TextButton(
+                            enabled = selectedTimestamp != null,
+                            onClick = { selectedTimestamp = null; fitRequest++ },
+                            modifier = Modifier.testTag("flight_path_latest"),
+                        ) { Text("Latest position") }
+                        TextButton(
+                            enabled = selectedIndex < points.lastIndex,
+                            onClick = { selectedTimestamp = points[selectedIndex + 1].timestamp },
+                            modifier = Modifier.testTag("flight_path_next"),
+                        ) { Text("Next") }
+                    }
+                    Text(
+                        if (selectedTimestamp == null) "Following latest received position"
+                        else "Reviewing position ${selectedIndex + 1} of ${points.size}",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
                     selected?.let { point ->
                         Text(formatTrackTime(point.timestamp), style = MaterialTheme.typography.titleMedium)
                         Text("${(point.altitudeMeters * 3.28084).roundToInt()} ft" +

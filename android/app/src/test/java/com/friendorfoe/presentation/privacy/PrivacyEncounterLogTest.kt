@@ -72,6 +72,26 @@ class PrivacyEncounterLogTest {
         assertTrue(log.entries.value.isEmpty())
     }
 
+    @Test fun delayedPacketsUseObservationTimeRatherThanProcessingTime() {
+        val log = PrivacyEncounterLog()
+        log.update(state(finding(seen = 1_000)), emptySet(), 6_000, 100_000)
+        val saved = log.entries.value.single()
+        assertEquals(95_000, saved.firstObservedWallMs)
+        assertEquals(95_000, saved.lastObservedWallMs)
+        assertEquals(95_000, saved.signalSamples.single().wallMs)
+        log.update(state(finding(seen = 7_000)), emptySet(), 9_000, 103_000)
+        assertEquals(101_000, log.entries.value.single().lastObservedWallMs)
+    }
+
+    @Test fun phoneClockChangesDoNotReorderEncounterRows() {
+        val log = PrivacyEncounterLog()
+        log.update(state(finding("first", seen = 1_000)), emptySet(), 1_000, 100_000)
+        log.update(state(finding("second", seen = 2_000)), emptySet(), 2_000, 50_000)
+        assertEquals(listOf("second", "first"), log.entries.value.map { it.key.sourceRecordId })
+        log.update(state(finding("first", seen = 3_000)), emptySet(), 3_000, 200_000)
+        assertEquals(listOf("second", "first"), log.entries.value.map { it.key.sourceRecordId })
+    }
+
     @Test fun signalTrendRequiresMultipleSamplesAndDoesNotClaimDistance() {
         fun samples(vararg dbm: Int) = dbm.mapIndexed { i, signal -> PrivacySignalSample(i.toLong(), i.toLong(), signal) }
         assertEquals("Collecting signal samples", signalTrend(samples(-60)))

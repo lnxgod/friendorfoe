@@ -76,6 +76,36 @@ class AboutLandingScreenTest {
     }
 
     @Test
+    fun readyApkDownloadsDirectlyWithSeparateReleaseNotes() {
+        var opened: String? = null
+        val remote = AppUpdateMetadata(
+            AppVersion(null, "0.67.20"),
+            "https://github.com/lnxgod/friendorfoe/releases/tag/v0.67.20-android-review",
+            "https://github.com/lnxgod/friendorfoe/releases/download/v0.67.20-android-review/friendorfoe-v0.67.20-android-review.apk",
+        )
+        compose.setContent {
+            FriendOrFoeTheme {
+                AboutLandingScreen(
+                    updateState = UpdateUiState.Available(remote),
+                    actions = AboutLandingActions(onOpenUpdate = { opened = it }),
+                )
+            }
+        }
+        compose.onNodeWithTag("about_open_update").performScrollTo().performClick()
+        compose.onNodeWithText("Download APK").assertIsDisplayed()
+        compose.runOnIdle { assertEquals(remote.apkUrl, opened) }
+        compose.onNodeWithTag("about_release_notes").performScrollTo().performClick()
+        compose.runOnIdle { assertEquals(remote.releaseUrl, opened) }
+        compose.mainClock.advanceTimeBy(600)
+        compose.waitForIdle()
+        val screenshot = androidx.test.platform.app.InstrumentationRegistry.getInstrumentation().uiAutomation.takeScreenshot()
+        val context = androidx.test.platform.app.InstrumentationRegistry.getInstrumentation().targetContext
+        java.io.File(context.filesDir, "direct-update.png").outputStream().use {
+            screenshot.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it)
+        }
+    }
+
+    @Test
     fun landingShowsCheckingWithoutASecondAction() {
         compose.setContent {
             FriendOrFoeTheme {

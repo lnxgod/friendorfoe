@@ -1,6 +1,7 @@
 package com.friendorfoe.presentation.trails
 
 import android.graphics.Bitmap
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
@@ -44,6 +45,33 @@ class FlightPathScreenTest {
         compose.onNodeWithText("15 min").performClick()
         compose.onNodeWithText("No recorded positions in this period").assertIsDisplayed()
         compose.onNodeWithTag("flight_path_map").assertDoesNotExist()
+    }
+
+    @Test fun reviewStaysOnSelectedPointUntilLatestIsRequested() {
+        val state = mutableStateOf(FlightPathState("DEMO123", points(), now, false))
+        compose.setContent { FriendOrFoeTheme { FlightPathContent(state.value, {}) } }
+        compose.onNodeWithTag("flight_path_previous").performScrollTo().performClick()
+        compose.onNodeWithText("Reviewing position 12 of 13").performScrollTo().assertIsDisplayed()
+        compose.runOnIdle {
+            val next = state.value.points.last().copy(timestamp = now + 30_000, longitude = -117.1)
+            state.value = state.value.copy(points = state.value.points + next, nowMs = now + 30_000)
+        }
+        compose.onNodeWithText("Reviewing position 12 of 14").assertIsDisplayed()
+        compose.onNodeWithTag("flight_path_next").performScrollTo().performClick()
+        compose.onNodeWithText("Reviewing position 13 of 14").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithTag("flight_path_latest").performScrollTo().performClick()
+        compose.onNodeWithText("Following latest received position").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithTag("flight_path_latest").assertIsNotEnabled()
+        compose.onNodeWithTag("flight_path_next").assertIsNotEnabled()
+        compose.runOnIdle {
+            val next = state.value.points.last().copy(timestamp = now + 60_000)
+            state.value = state.value.copy(points = state.value.points + next, nowMs = now + 60_000)
+        }
+        compose.onNodeWithTag("flight_path_next").assertIsNotEnabled()
+        compose.onNodeWithTag("flight_path_latest").assertIsNotEnabled()
+        compose.mainClock.advanceTimeBy(600)
+        compose.waitForIdle()
+        saveScreenshot("flight-path-controls.png")
     }
 
     private fun saveScreenshot(name: String) {
