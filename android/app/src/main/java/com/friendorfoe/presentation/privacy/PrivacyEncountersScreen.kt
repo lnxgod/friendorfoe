@@ -7,6 +7,9 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.platform.testTag
@@ -47,11 +50,29 @@ fun PrivacyEncountersContent(
     onClear: () -> Unit,
 ) {
     var confirmClear by remember { mutableStateOf(false) }
+    var query by rememberSaveable { mutableStateOf("") }
+    var repeatedOnly by rememberSaveable { mutableStateOf(false) }
+    var hideOwned by rememberSaveable { mutableStateOf(true) }
+    val visible = remember(entries, query, repeatedOnly, hideOwned) {
+        filterPrivacyEncounters(entries, query, repeatedOnly, hideOwned)
+    }
     Column(Modifier.fillMaxSize()) {
         FofSecondaryScreenHeader("Recent encounters", onBack)
         Text(
             "Last 30 minutes in this app session. Saved observations are not proof a device is still nearby.",
             Modifier.padding(16.dp), style = MaterialTheme.typography.bodyMedium,
+        )
+        Row(Modifier.padding(horizontal = 16.dp).horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FilterChip(selected = repeatedOnly, onClick = { repeatedOnly = !repeatedOnly }, label = { Text("Repeated") })
+            FilterChip(selected = hideOwned, onClick = { hideOwned = !hideOwned }, label = { Text("Hide owned") })
+        }
+        OutlinedTextField(value = query, onValueChange = { query = it }, singleLine = true,
+            label = { Text("Search encounters") }, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp)
+                .testTag("encounter_search"))
+        if (repeatedOnly) Text(
+            "Multiple updates in separate periods, with at least 2 minutes without reports between them. Scanning gaps can cause this; it is not proof of following.",
+            Modifier.padding(horizontal = 16.dp, vertical = 8.dp), style = MaterialTheme.typography.bodySmall,
         )
         if (entries.isNotEmpty()) {
             TextButton(onClick = { confirmClear = true }, modifier = Modifier.padding(horizontal = 8.dp)) {
@@ -59,10 +80,14 @@ fun PrivacyEncountersContent(
             }
         }
         LazyColumn(Modifier.fillMaxSize().testTag("privacy_encounters")) {
-            if (entries.isEmpty()) item {
-                Text("No recent encounters", Modifier.padding(24.dp), style = MaterialTheme.typography.titleMedium)
+            if (visible.isEmpty()) item {
+                Text(if (entries.isEmpty()) "No recent encounters" else "No encounters match these filters",
+                    Modifier.padding(24.dp), style = MaterialTheme.typography.titleMedium)
+                if (entries.isNotEmpty()) TextButton(onClick = { query = ""; repeatedOnly = false; hideOwned = false }) {
+                    Text("Show all encounters")
+                }
             }
-            items(entries, key = { it.key.encoded }) { encounter ->
+            items(visible, key = { it.key.encoded }) { encounter ->
                 Column(
                     Modifier.fillMaxWidth().clickable { onOpenFinding(encounter.key) }.padding(16.dp),
                     verticalArrangement = Arrangement.spacedBy(4.dp),
@@ -70,6 +95,10 @@ fun PrivacyEncountersContent(
                     Text(encounter.finding.title, style = MaterialTheme.typography.titleMedium)
                     Text(encounter.finding.source.userLabel(), style = MaterialTheme.typography.labelMedium)
                     Text("Last observed ${formatEncounterTime(encounter.lastObservedWallMs)} · ${encounter.observationCount} updates")
+                    if (encounter.repeatedObservationPeriods >= 2) Text(
+                        "${encounter.repeatedObservationPeriods} observation periods with multiple updates",
+                        style = MaterialTheme.typography.labelMedium,
+                    )
                     Text("Review evidence", color = MaterialTheme.colorScheme.primary)
                 }
                 HorizontalDivider()
@@ -98,6 +127,14 @@ internal fun EncounterEvidence(encounter: PrivacyEncounter) {
         Text("First observed: ${formatEncounterTime(encounter.firstObservedWallMs)}")
         Text("Last observed: ${formatEncounterTime(encounter.lastObservedWallMs)}")
         Text("${encounter.observationCount} updates observed this session")
+        if (encounter.periods.isNotEmpty()) {
+            Text("Recent observation periods", style = MaterialTheme.typography.titleMedium)
+            encounter.periods.takeLast(3).forEach { period ->
+                Text("${formatEncounterTime(period.firstWallMs)} – ${formatEncounterTime(period.lastWallMs)} · ${period.updates} updates")
+            }
+            Text("A new period starts after 2 minutes without reports. Scanning interruptions can create gaps; these records do not establish movement or intent.",
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
         if (encounter.signalSamples.isNotEmpty()) {
             Text(signalTrend(encounter.signalSamples), style = MaterialTheme.typography.titleMedium)
             val strongest = encounter.signalSamples.maxOf { it.dbm }
@@ -141,6 +178,11 @@ internal fun encounterEvidenceText(encounter: PrivacyEncounter): String = buildS
     appendLine("First observed: ${Instant.ofEpochMilli(encounter.firstObservedWallMs)}")
     appendLine("Last observed: ${Instant.ofEpochMilli(encounter.lastObservedWallMs)}")
     appendLine("Updates observed: ${encounter.observationCount}")
+    appendLine("Recent observation periods with multiple updates: ${encounter.repeatedObservationPeriods}")
+    encounter.periods.forEach { period ->
+        appendLine("Period: ${Instant.ofEpochMilli(period.firstWallMs)} to ${Instant.ofEpochMilli(period.lastWallMs)}; ${period.updates} updates")
+    }
+    appendLine("Periods are separated by at least 2 minutes without reports; scanning interruptions can create gaps.")
     encounter.finding.evidence?.let { appendLine("Evidence: $it") }
     encounter.finding.limitation?.let { appendLine("Limitations: $it") }
     append("Saved observation; does not establish current presence, identity, or intent.")

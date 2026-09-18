@@ -1,5 +1,6 @@
 package com.friendorfoe.data.repository
 
+import com.friendorfoe.data.local.AircraftMapPoint
 import com.friendorfoe.data.local.TrackingDao
 import com.friendorfoe.data.local.TrackingEntity
 import com.friendorfoe.data.time.MonotonicClock
@@ -26,6 +27,14 @@ class AircraftTrackRepository @Inject constructor(
     ) { points, _ ->
         val now = clock.nowWallClock().toEpochMilli()
         points.filter { validTrackPoint(it) && it.timestamp in (now - AIRCRAFT_TRACK_RETENTION_MS)..now }
+    }.distinctUntilChanged()
+
+    fun observeMapPoints(durationMs: Long): Flow<List<AircraftMapPoint>> = combine(
+        dao.observeAircraftMapPoints(clock.nowWallClock().toEpochMilli() - durationMs, 12_000),
+        clock.ticks(30_000L),
+    ) { points, _ ->
+        val now = clock.nowWallClock().toEpochMilli()
+        points.filter { validTrackPoint(it.point) && it.point.timestamp in (now - durationMs)..now }
     }.distinctUntilChanged()
 
     suspend fun record(aircraft: List<Aircraft>) = recordingMutex.withLock {

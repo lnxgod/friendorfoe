@@ -19,12 +19,12 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ExperimentalMaterial3Api
-import com.friendorfoe.presentation.trails.AircraftTrailOverlay
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -36,6 +36,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
@@ -207,7 +208,8 @@ fun MapViewScreen(
     val lifecycleOwner = LocalLifecycleOwner.current
 
     val mapTracks by viewModel.mapTracks.collectAsStateWithLifecycle()
-    val selectedTrail by viewModel.selectedTrail.collectAsStateWithLifecycle()
+    val flightTrails by viewModel.flightTrails.collectAsStateWithLifecycle()
+    val trailWindow by viewModel.trailWindow.collectAsStateWithLifecycle()
     val formationPoints by viewModel.formationPoints.collectAsStateWithLifecycle()
     val filterState by viewModel.filterState.collectAsStateWithLifecycle()
     val userLocationFix by viewModel.userLocationFix.collectAsStateWithLifecycle()
@@ -275,8 +277,9 @@ fun MapViewScreen(
             }))
         }
     }
-    val trailOverlay = remember(mapView) { AircraftTrailOverlay(mapView) }
-    LaunchedEffect(selectedTrail) { trailOverlay.render(selectedTrail) }
+    val openRecordedPath by androidx.compose.runtime.rememberUpdatedState(onOpenFlightPath)
+    val trailOverlay = remember(mapView) { MapFlightTrailOverlay(mapView) { openRecordedPath?.invoke(it) } }
+    LaunchedEffect(flightTrails.trails, selectedObjectId) { trailOverlay.render(flightTrails.trails, selectedObjectId) }
     val cameraOwnership = rememberMapCameraOwnership(mapView)
     var userControlsCamera by cameraOwnership
     val overlayController = remember(mapView) {
@@ -303,7 +306,7 @@ fun MapViewScreen(
     val revealMap = shouldRevealMap(
         locationPermissionState = locationPermissionState,
         userPosition = userPosition,
-    )
+    ) || flightTrails.trails.isNotEmpty()
     DisposableEffect(mapView, viewModel, cameraOwnership, revealMap) {
         mapView.installMapCameraTouchListener(
             isMapRevealed = { revealMap },
@@ -313,6 +316,29 @@ fun MapViewScreen(
             },
         )
         onDispose { mapView.setOnTouchListener(null) }
+    }
+
+    DisposableEffect(mapView, lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_RESUME -> mapView.onResume()
+                Lifecycle.Event.ON_PAUSE -> mapView.onPause()
+                else -> Unit
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        if (lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) mapView.onResume()
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            mapView.onPause()
+            mapView.onDetach()
+        }
+    }
+    LaunchedEffect(flightTrails.trails, userPosition) {
+        if (!userControlsCamera && !userPosition.hasValidMapCoordinates() && flightTrails.trails.isNotEmpty()) {
+            userControlsCamera = true
+            trailOverlay.fit(flightTrails.trails)
+        }
     }
 
     // Apply dark mode color filter to map tiles
@@ -333,130 +359,128 @@ fun MapViewScreen(
         }
     }
 
-    Box(modifier = Modifier.fillMaxSize()) {
-        StableAndroidViewHost(
-            revealed = revealMap,
-            factory = { mapView },
-            modifier = Modifier.fillMaxSize(),
-            update = {
-                overlayController.render(
-                    mapTracks = mapTracks,
-                    formationPoints = formationPoints,
-                    userPosition = userPosition,
-                    followCompass = followCompass,
-                    stabilizedMapHeading = stabilizedMapHeading,
-                    activeVisualFocusIds = activeVisualFocusIds,
-                    remoteSensors = remoteSensors,
-                    sensorDrones = sensorDrones,
-                    remoteSearchResults = remoteSearchResults,
-                    remoteSearchCenter = remoteSearchCenter,
-                    userControlsCamera = userControlsCamera,
-                    overlayPlan = overlayPlan,
-                )
-            },
-        )
-        if (!revealMap) {
-            MapLocatingOverlay()
+    androidx.compose.foundation.layout.Column(Modifier.fillMaxSize()) {
+        // Live filters and recorded paths share the same controls and filter policy.
+        androidx.compose.foundation.layout.Column(
+            Modifier.fillMaxWidth()
+                .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.94f)),
+        ) {
+            FilterBar(
+                filterState = filterState,
+                onFilterStateChange = { viewModel.updateFilter(it) },
+                resultCount = mapTracks.size + formationPoints.size,
+            )
+            MapFlightTrailControls(trailWindow, flightTrails, viewModel::setTrailWindow, onFit = {
+                userControlsCamera = true
+                viewModel.stopFollowingCompass()
+                trailOverlay.fit(flightTrails.trails)
+            }, onRetry = viewModel::retryTrails)
         }
 
-        if (!locationPermissionState.isUsable()) {
-            Surface(
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .padding(start = 16.dp, end = 16.dp, bottom = 88.dp),
-                shape = RoundedCornerShape(16.dp),
-                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f),
-                tonalElevation = 4.dp,
-            ) {
-                androidx.compose.foundation.layout.Column(
-                    modifier = Modifier.padding(16.dp),
-                    verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(8.dp),
-                ) {
-                    Text("Map works without your location", style = MaterialTheme.typography.titleSmall)
-                    Text(
-                        "Browse and search the map now. Allow location only when you want nearby centering.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+
+        Box(modifier = Modifier.fillMaxWidth().weight(1f)) {
+            StableAndroidViewHost(
+                revealed = revealMap,
+                factory = { mapView },
+                modifier = Modifier.fillMaxSize().clipToBounds(),
+                update = {
+                    overlayController.render(
+                        mapTracks = mapTracks,
+                        formationPoints = formationPoints,
+                        userPosition = userPosition,
+                        followCompass = followCompass,
+                        stabilizedMapHeading = stabilizedMapHeading,
+                        activeVisualFocusIds = activeVisualFocusIds,
+                        remoteSensors = remoteSensors,
+                        sensorDrones = sensorDrones,
+                        remoteSearchResults = remoteSearchResults,
+                        remoteSearchCenter = remoteSearchCenter,
+                        userControlsCamera = userControlsCamera,
+                        overlayPlan = overlayPlan,
                     )
-                    if (locationPermissionState != PermissionUiState.Loading) {
-                        Button(
-                            onClick = if (locationPermissionState == PermissionUiState.Denied) {
+                },
+            )
+            if (!revealMap) {
+                MapLocatingOverlay()
+            }
+
+            if (!locationPermissionState.isUsable()) {
+                Surface(
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(start = 16.dp, end = 16.dp, bottom = 88.dp),
+                    shape = RoundedCornerShape(16.dp),
+                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f),
+                    tonalElevation = 4.dp,
+                ) {
+                    androidx.compose.foundation.layout.Row(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text("Browsing without your location", style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.weight(1f))
+                        if (locationPermissionState != PermissionUiState.Loading) {
+                            TextButton(onClick = if (locationPermissionState == PermissionUiState.Denied) {
                                 onRequestLocation
                             } else {
                                 onOpenLocationSettings
-                            },
-                            modifier = Modifier.fillMaxWidth(),
-                        ) {
-                            Text(
-                                if (locationPermissionState == PermissionUiState.Denied) {
-                                    "Use my location"
-                                } else {
-                                    "Open app settings"
-                                }
-                            )
+                            }) {
+                                Text(if (locationPermissionState == PermissionUiState.Denied) "Use location" else "App settings")
+                            }
                         }
                     }
                 }
+            } else if (locationPermissionState == PermissionUiState.Approximate) {
+                Surface(
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(start = 16.dp, end = 16.dp, bottom = 88.dp),
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.94f),
+                ) {
+                    Text(
+                        "Approximate location · precise distance and bearing are hidden",
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
             }
-        } else if (locationPermissionState == PermissionUiState.Approximate) {
-            Surface(
+
+            // Remote search indicator
+            if (remoteSearching) {
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = androidx.compose.ui.Alignment.Center
+                ) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(48.dp),
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
+            }
+
+            // Compass follow toggle FAB
+            FloatingActionButton(
+                onClick = {
+                    if (!followCompass) userControlsCamera = false
+                    viewModel.toggleFollowCompass()
+                },
                 modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .padding(start = 16.dp, end = 16.dp, bottom = 88.dp),
-                shape = RoundedCornerShape(12.dp),
-                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.94f),
+                    .align(Alignment.BottomEnd)
+                    .padding(16.dp)
+                    .size(48.dp),
+                shape = CircleShape,
+                containerColor = if (followCompass) Color(0xFF2196F3) else Color(0xFF424242)
             ) {
-                Text(
-                    "Approximate location · precise distance and bearing are hidden",
-                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
-                    style = MaterialTheme.typography.bodySmall,
+                Icon(
+                    imageVector = if (followCompass) Icons.Filled.Navigation else Icons.Filled.Explore,
+                    contentDescription = if (followCompass) "Disable compass follow" else "Follow compass",
+                    tint = Color.White,
+                    modifier = if (followCompass) Modifier.rotate(-stabilizedMapHeading) else Modifier
                 )
             }
         }
 
-        // Remote search indicator
-        if (remoteSearching) {
-            Box(
-                modifier = Modifier.fillMaxSize(),
-                contentAlignment = androidx.compose.ui.Alignment.Center
-            ) {
-                CircularProgressIndicator(
-                    modifier = Modifier.size(48.dp),
-                    color = MaterialTheme.colorScheme.primary
-                )
-            }
-        }
-
-        // Filter bar overlay
-        FilterBar(
-            filterState = filterState,
-            onFilterStateChange = { viewModel.updateFilter(it) },
-            resultCount = mapTracks.size + formationPoints.size,
-            modifier = Modifier
-                .align(Alignment.TopCenter)
-                .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.85f))
-        )
-
-        // Compass follow toggle FAB
-        FloatingActionButton(
-            onClick = {
-                if (!followCompass) userControlsCamera = false
-                viewModel.toggleFollowCompass()
-            },
-            modifier = Modifier
-                .align(Alignment.BottomEnd)
-                .padding(16.dp)
-                .size(48.dp),
-            shape = CircleShape,
-            containerColor = if (followCompass) Color(0xFF2196F3) else Color(0xFF424242)
-        ) {
-            Icon(
-                imageVector = if (followCompass) Icons.Filled.Navigation else Icons.Filled.Explore,
-                contentDescription = if (followCompass) "Disable compass follow" else "Follow compass",
-                tint = Color.White,
-                modifier = if (followCompass) Modifier.rotate(-stabilizedMapHeading) else Modifier
-            )
-        }
     }
 
     // Bottom sheet for detail

@@ -6,8 +6,17 @@ import kotlinx.coroutines.flow.asStateFlow
 private const val ENCOUNTER_RETENTION_MS = 30 * 60_000L
 private const val MAX_ENCOUNTERS = 200
 private const val MAX_SIGNAL_SAMPLES = 60
+internal const val PRIVACY_PERIOD_GAP_MS = 2 * 60_000L
 
 data class PrivacySignalSample(val elapsedMs: Long, val wallMs: Long, val dbm: Int)
+
+data class PrivacyObservationPeriod(
+    val firstElapsedMs: Long,
+    val lastElapsedMs: Long,
+    val firstWallMs: Long,
+    val lastWallMs: Long,
+    val updates: Int,
+)
 
 data class PrivacyEncounter(
     val key: PrivacyFindingKey,
@@ -18,6 +27,7 @@ data class PrivacyEncounter(
     val observationCount: Int,
     val signalSamples: List<PrivacySignalSample>,
     val firstObservedElapsedMs: Long = lastObservedElapsedMs,
+    val periods: List<PrivacyObservationPeriod> = emptyList(),
 )
 
 /** Session-local evidence: bounded, exact-source identities, no location or disk storage. */
@@ -32,6 +42,11 @@ internal class PrivacyEncounterLog {
         retained.entries.removeAll { (_, encounter) ->
             nowElapsedMs - encounter.lastObservedElapsedMs >= ENCOUNTER_RETENTION_MS ||
                 encounter.finding.ignoreKey?.encoded in ignoredKeys
+        }
+        retained.entries.forEach { entry ->
+            entry.setValue(entry.value.copy(periods = entry.value.periods.filter {
+                nowElapsedMs - it.lastElapsedMs < ENCOUNTER_RETENTION_MS
+            }))
         }
         state.findings.forEach { finding ->
             val key = finding.routableKey ?: return@forEach
@@ -60,6 +75,7 @@ internal class PrivacyEncounterLog {
                 observationCount = (previous?.observationCount ?: 0) + 1,
                 firstObservedElapsedMs = previous?.firstObservedElapsedMs ?: finding.lastObservedElapsedMs,
                 signalSamples = (previous?.signalSamples.orEmpty() + listOfNotNull(sample)).takeLast(MAX_SIGNAL_SAMPLES),
+                periods = appendObservationPeriod(previous?.periods.orEmpty(), finding.lastObservedElapsedMs, observedWallMs),
             )
         }
         val sorted = retained.values.sortedWith(
@@ -89,4 +105,25 @@ internal fun signalTrend(samples: List<PrivacySignalSample>): String {
         change <= -6 -> "Signal weakening"
         else -> "Signal broadly steady"
     }
+}
+
+private fun appendObservationPeriod(
+    periods: List<PrivacyObservationPeriod>, elapsedMs: Long, wallMs: Long,
+): List<PrivacyObservationPeriod> {
+    val last = periods.lastOrNull()
+    return if (last == null || elapsedMs - last.lastElapsedMs >= PRIVACY_PERIOD_GAP_MS) {
+        (periods + PrivacyObservationPeriod(elapsedMs, elapsedMs, wallMs, wallMs, 1)).takeLast(15)
+    } else periods.dropLast(1) + last.copy(lastElapsedMs = elapsedMs, lastWallMs = wallMs, updates = last.updates + 1)
+}
+
+internal val PrivacyEncounter.repeatedObservationPeriods: Int
+    get() = periods.count { it.updates >= 2 }
+
+internal fun filterPrivacyEncounters(
+    entries: List<PrivacyEncounter>, query: String, repeatedOnly: Boolean, hideOwned: Boolean,
+): List<PrivacyEncounter> = entries.filter { encounter ->
+    (!repeatedOnly || encounter.repeatedObservationPeriods >= 2) &&
+        (!hideOwned || encounter.finding.ownership != Ownership.OWNED) &&
+        (query.isBlank() || listOf(encounter.finding.title, encounter.finding.source.userLabel(), encounter.key.sourceRecordId)
+            .any { it.contains(query.trim(), ignoreCase = true) })
 }

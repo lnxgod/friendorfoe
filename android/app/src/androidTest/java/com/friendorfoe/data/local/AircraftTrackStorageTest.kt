@@ -56,4 +56,22 @@ class AircraftTrackStorageTest {
         assertEquals(0, database.historyDao().getCount())
         assertTrue(dao.getTrailForObject("abc123").isEmpty())
     }
+    @Test fun mapQueryUsesLatestAircraftMetadataWithoutDuplicatingPaths() = runBlocking {
+        val repository = HistoryRepository(database.historyDao(), database)
+        repository.save(history())
+        repository.save(history().copy(displayName = "LATEST", lastSeen = now + 1))
+        repository.save(history().copy(objectId = "drone", objectType = "drone"))
+        dao.insert(point(now - 1000))
+        dao.insert(point(now))
+        dao.insert(point(now).copy(objectId = "drone"))
+        dao.insert(point(now).copy(objectId = "unknown"))
+        val records = dao.observeAircraftMapPoints(now - 1000, 100).first()
+        assertEquals(2, records.size)
+        assertTrue(records.all { it.label == "LATEST" && it.point.objectId == "abc123" })
+        assertEquals(listOf(now), dao.observeAircraftMapPoints(now, 100).first().map { it.point.timestamp })
+        assertEquals(1, dao.observeAircraftMapPoints(0, 1).first().size)
+        repository.clearAll()
+        assertTrue(dao.observeAircraftMapPoints(0, 100).first().isEmpty())
+    }
+
 }

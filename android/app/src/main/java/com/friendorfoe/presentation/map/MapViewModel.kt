@@ -35,6 +35,8 @@ import kotlinx.coroutines.delay
 import com.friendorfoe.data.repository.AircraftTrackRepository
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.onStart
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -344,13 +346,29 @@ class MapViewModel @Inject constructor(
 
     private val _selectedObjectId = backendIntegrationState.selectedObjectId
     val selectedObjectId: StateFlow<String?> = _selectedObjectId.asStateFlow()
-    val selectedTrail = selectedObjectId.flatMapLatest { objectId ->
-        if (objectId == null) flowOf(emptyList()) else aircraftTracks.observeTrail(objectId)
-            .catch { error ->
-                if (error is kotlinx.coroutines.CancellationException) throw error
-                emit(emptyList())
-            }
-    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+    private val _trailWindow = MutableStateFlow(FlightTrailWindow.FIFTEEN_MINUTES)
+    val trailWindow = _trailWindow.asStateFlow()
+    private val trailReload = MutableStateFlow(0)
+    private val trailLiveAircraft = backendIntegrationState.localObjects
+        .map { objects -> objects.filterIsInstance<Aircraft>() }.distinctUntilChanged()
+    val flightTrails = combine(_trailWindow, trailReload) { window, _ -> window }
+        .flatMapLatest { window ->
+            if (window == FlightTrailWindow.OFF) flowOf(MapFlightTrailsState())
+            else combine(
+                aircraftTracks.observeMapPoints(window.durationMs),
+                trailLiveAircraft, _filterState, _userLocationFix,
+            ) { records, live, filter, location ->
+                MapFlightTrailsState(trails = projectMapFlightTrails(records, live, filter, location?.position))
+            }.onStart { emit(MapFlightTrailsState(loading = true)) }
+                .catch { error ->
+                    if (error is CancellationException) throw error
+                    emit(MapFlightTrailsState(error = true))
+                }
+        }.flowOn(Dispatchers.Default)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), MapFlightTrailsState(loading = true))
+
+    fun setTrailWindow(window: FlightTrailWindow) { _trailWindow.value = window }
+    fun retryTrails() { trailReload.value += 1 }
 
     private val _followCompass = MutableStateFlow(false)
     val followCompass: StateFlow<Boolean> = _followCompass.asStateFlow()

@@ -60,4 +60,25 @@ class PrivacyEncounterScreenTest {
         compose.onNodeWithText("Clear", useUnmergedTree = true).performClick()
         compose.runOnIdle { assertTrue(cleared) }
     }
+    @Test fun repeatedAndOwnedFiltersAndSearchCanBeResetWithoutDeletingEvidence() {
+        val now = System.currentTimeMillis()
+        val repeated = encounter().copy(periods = listOf(
+            PrivacyObservationPeriod(1000, 2000, now - 180_000, now - 179_000, 2),
+            PrivacyObservationPeriod(122_000, 123_000, now - 59_000, now - 58_000, 2)))
+        val owned = encounter().copy(key = PrivacyFindingKey(PrivacySourceKind.PHONE_BLE, "owned"),
+            finding = finding.copy(title = "My device", ownership = Ownership.OWNED))
+        compose.setContent { FriendOrFoeTheme { PrivacyEncountersContent(listOf(repeated, owned), {}, {}, {}) } }
+        compose.onNodeWithText("My device").assertDoesNotExist()
+        compose.onNodeWithText("Repeated").performClick()
+        compose.onNodeWithText("2 observation periods with multiple updates").assertIsDisplayed()
+        val bitmap = compose.onRoot().captureToImage().asAndroidBitmap()
+        File(InstrumentationRegistry.getInstrumentation().targetContext.filesDir, "privacy-repeated.png").outputStream().use {
+            bitmap.compress(Bitmap.CompressFormat.PNG, 100, it)
+        }
+        compose.onNodeWithTag("encounter_search").performTextInput("missing")
+        compose.onNodeWithText("No encounters match these filters").assertIsDisplayed()
+        compose.onNodeWithText("Show all encounters").performClick()
+        compose.onNodeWithText("My device").performScrollTo().assertIsDisplayed()
+    }
+
 }

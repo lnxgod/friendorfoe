@@ -16,6 +16,19 @@ interface TrackingDao {
     @Query("SELECT * FROM (SELECT * FROM position_tracking WHERE object_id = :objectId ORDER BY timestamp DESC, id DESC LIMIT :limit) ORDER BY timestamp ASC, id ASC")
     fun observeTrailForObject(objectId: String, limit: Int): Flow<List<TrackingEntity>>
 
+    @Query("""
+        SELECT p.*, h.display_name AS label, h.category AS category
+        FROM position_tracking p
+        JOIN detection_history h ON h.id = (
+            SELECT id FROM detection_history
+            WHERE object_id = p.object_id AND object_type = 'aircraft'
+            ORDER BY last_seen DESC, id DESC LIMIT 1
+        )
+        WHERE p.timestamp >= :since
+        ORDER BY p.timestamp DESC, p.id DESC LIMIT :limit
+    """)
+    fun observeAircraftMapPoints(since: Long, limit: Int): Flow<List<AircraftMapPoint>>
+
     @Query("SELECT * FROM position_tracking WHERE object_id = :objectId ORDER BY timestamp DESC, id DESC LIMIT 1")
     suspend fun latestForObject(objectId: String): TrackingEntity?
 

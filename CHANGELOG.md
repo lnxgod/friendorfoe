@@ -41,6 +41,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   release as `0.64.64-privacy-oui`; the FoF Badge track remains separate at
   `0.64.64-badge-privacy-oui`.
 
+## [0.67.21-android-map-trails] - 2026-09-18
+
+### Added
+- Main-map flight trails for the last 15 minutes, one hour, or 24 hours, with
+  an Off control and Fit trails. Recorded paths remain when aircraft leave
+  the live feed or their details are dismissed. Tap a recorded endpoint to
+  review its flight path. Existing map filters also apply to saved paths.
+- Recent privacy encounters can be searched and filtered to hide owned devices
+  or show repeated observation periods. Repeated requires multiple updates in
+  at least two periods separated by two minutes without reports. Period times
+  appear in evidence and copied reports, with scanning-gap and intent caveats.
+
+### Changed
+- Map controls sit above the map so fitted trails stay visible. Historical
+  trails are bounded to 12,000 recent points and 40 aircraft, with gaps preserved;
+  they represent positions received by this app, not provider history backfill.
+- Privacy period review remains session-local, expires with the 30-minute
+  encounter window, and adds no location collection or automatic threat label.
+
 ## [0.67.20-android-review] - 2026-09-18
 
 ### Fixed

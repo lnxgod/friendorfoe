@@ -99,4 +99,33 @@ class PrivacyEncounterLogTest {
         assertEquals("Signal broadly steady", signalTrend(samples(-60, -61, -59, -60, -62, -61)))
         assertEquals("Signal weakening", signalTrend(samples(-60, -61, -59, -80, -82, -81)))
     }
+    @Test fun repeatedReviewRequiresMultipleUpdatesInTwoSeparatePeriods() {
+        val log = PrivacyEncounterLog()
+        fun observe(time: Long) = log.update(state(finding(seen = time)), emptySet(), time, time)
+        observe(1_000); observe(2_000); observe(122_000)
+        assertTrue(filterPrivacyEncounters(log.entries.value, "", true, false).isEmpty())
+        repeat(5) { observe(122_000) }
+        assertEquals(1, log.entries.value.single().periods.last().updates)
+        observe(123_000)
+        assertEquals(2, log.entries.value.single().repeatedObservationPeriods)
+        assertEquals(1, filterPrivacyEncounters(log.entries.value, "", true, false).size)
+        log.update(state(), emptySet(), 1_802_000, 1_802_000)
+        assertEquals(1, log.entries.value.single().periods.size)
+        assertTrue(filterPrivacyEncounters(log.entries.value, "", true, false).isEmpty())
+    }
+
+    @Test fun gapThresholdAndOwnedSearchFiltersPreserveEvidenceAndOrder() {
+        val log = PrivacyEncounterLog()
+        listOf(1_000L, 120_999L, 240_999L).forEach {
+            log.update(state(finding(seen = it)), emptySet(), it, it)
+        }
+        val entry = log.entries.value.single()
+        assertEquals(listOf(2, 1), entry.periods.map { it.updates })
+        assertEquals(listOf(entry), filterPrivacyEncounters(listOf(entry), " TRACKER ", false, true))
+        assertTrue(filterPrivacyEncounters(listOf(entry), "missing", false, false).isEmpty())
+        val owned = entry.copy(finding = entry.finding.copy(ownership = Ownership.OWNED))
+        assertTrue(filterPrivacyEncounters(listOf(owned), "", false, true).isEmpty())
+        assertEquals(listOf(owned), filterPrivacyEncounters(listOf(owned), "one", false, false))
+    }
+
 }
