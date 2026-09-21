@@ -26,24 +26,30 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.friendorfoe.domain.model.AircraftRange
 import com.friendorfoe.presentation.components.FofActionRow
 import com.friendorfoe.presentation.components.FofScreenHeader
 import com.friendorfoe.presentation.components.FofSection
@@ -54,6 +60,7 @@ import com.friendorfoe.presentation.permissions.permissionExplanation
 import com.friendorfoe.presentation.permissions.permissionRecovery
 import com.friendorfoe.presentation.permissions.permissionTitle
 import com.friendorfoe.presentation.permissions.rememberPermissionBindings
+import kotlin.math.roundToInt
 
 val INFO_SECTION_TITLES = listOf(
     "Source & permission status",
@@ -66,6 +73,7 @@ val INFO_SECTION_TITLES = listOf(
 
 data class InfoActions(
     val onSetSetting: (InfoSettingKey, Boolean) -> Unit = { _, _ -> },
+    val onSetAircraftRangeMiles: (Int) -> Unit = {},
     val permissionStateFor: (InfoSettingKey) -> PermissionUiState = {
         PermissionUiState.Granted
     },
@@ -120,6 +128,7 @@ fun InfoSettingsScreen(
         remember { androidx.compose.runtime.mutableStateOf(false) }
     }
     val actions = InfoActions(
+        onSetAircraftRangeMiles = { viewModel?.setAircraftRangeMiles(it) },
         onSetSetting = { key, enabled ->
             val feature = permissionFeatureForSetting(key)
             when {
@@ -431,6 +440,10 @@ private fun RuntimeSettingsRows(state: InfoUiState, actions: InfoActions) {
 
     SettingsGroupDivider()
     SettingsGroupLabel("Alerts")
+    AircraftRangeControl(
+        miles = state.settings.aircraftRangeMiles,
+        onSetMiles = actions.onSetAircraftRangeMiles,
+    )
     SettingsToggleRow(
         key = InfoSettingKey.PRIVACY_ALERTS,
         title = "Privacy finding notifications",
@@ -448,24 +461,85 @@ private fun RuntimeSettingsRows(state: InfoUiState, actions: InfoActions) {
     SettingsToggleRow(
         key = InfoSettingKey.HELICOPTER_ALERTS,
         title = "Helicopter alerts",
-        description = "Notify when a helicopter is detected",
+        description = "Notify for helicopters within ${state.settings.aircraftRangeMiles} miles",
         checked = state.settings.helicopterAlertsEnabled,
         actions = actions,
     )
     SettingsToggleRow(
         key = InfoSettingKey.MILITARY_ALERTS,
         title = "Military alerts",
-        description = "Notify for classified military aircraft within the configured range",
+        description = "Notify for classified military aircraft within ${state.settings.aircraftRangeMiles} miles",
         checked = state.settings.militaryAlertsEnabled,
         actions = actions,
     )
     SettingsToggleRow(
         key = InfoSettingKey.POLICE_ALERTS,
         title = "Public-safety alerts",
-        description = "Notify for government, emergency, or public-safety aircraft",
+        description = "Notify for government, emergency, or public-safety aircraft within ${state.settings.aircraftRangeMiles} miles",
         checked = state.settings.policeAlertsEnabled,
         actions = actions,
     )
+}
+
+@Composable
+private fun AircraftRangeControl(miles: Int, onSetMiles: (Int) -> Unit) {
+    var draftMiles by remember(miles) { mutableIntStateOf(AircraftRange.normalizeMiles(miles)) }
+    Column(Modifier.fillMaxWidth().padding(vertical = 12.dp)) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Text(
+                "Aircraft alert & priority range",
+                style = MaterialTheme.typography.bodyLarge,
+                fontWeight = FontWeight.Medium,
+                modifier = Modifier.weight(1f),
+            )
+            Text(
+                "$draftMiles mi",
+                style = MaterialTheme.typography.titleMedium,
+                modifier = Modifier.testTag("aircraft_range_value"),
+            )
+        }
+        Text(
+            "Aircraft alerts and extra list priority apply within this distance. " +
+                "Farther aircraft stay listed in distance order.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Slider(
+            value = draftMiles.toFloat(),
+            onValueChange = { draftMiles = AircraftRange.normalizeMiles(it.roundToInt()) },
+            onValueChangeFinished = { onSetMiles(draftMiles) },
+            valueRange = AircraftRange.MIN_MILES.toFloat()..AircraftRange.MAX_MILES.toFloat(),
+            steps = AircraftRange.MAX_MILES - AircraftRange.MIN_MILES - 1,
+            modifier = Modifier.testTag("aircraft_range_slider").semantics {
+                contentDescription = "Aircraft alert and priority range"
+                stateDescription = "$draftMiles miles"
+            },
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                "${AircraftRange.MIN_MILES}–${AircraftRange.MAX_MILES} miles",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            TextButton(
+                onClick = {
+                    draftMiles = AircraftRange.DEFAULT_MILES
+                    onSetMiles(AircraftRange.DEFAULT_MILES)
+                },
+                enabled = draftMiles != AircraftRange.DEFAULT_MILES,
+                modifier = Modifier.testTag("aircraft_range_reset"),
+            ) {
+                Text("Reset to ${AircraftRange.DEFAULT_MILES} mi")
+            }
+        }
+    }
 }
 
 @Composable

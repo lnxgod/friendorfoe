@@ -13,6 +13,7 @@ import com.friendorfoe.data.repository.AppUpdateRepository
 import com.friendorfoe.data.repository.BackendSessionHealthRepository
 import com.friendorfoe.data.repository.SessionHealth
 import com.friendorfoe.data.repository.SkyObjectRepository
+import com.friendorfoe.domain.model.AircraftRange
 import com.friendorfoe.presentation.permissions.AppFeature
 import com.friendorfoe.presentation.permissions.PermissionStateSource
 import com.friendorfoe.presentation.permissions.PermissionUiState
@@ -131,6 +132,7 @@ interface InfoSettingsStore {
     val settings: StateFlow<DetectionSettings>
     fun set(key: InfoSettingKey, enabled: Boolean)
     fun saveBackendEndpoint(endpoint: BackendEndpoint)
+    fun setAircraftRangeMiles(miles: Int)
 }
 
 @Singleton
@@ -167,6 +169,10 @@ class AndroidInfoSettingsStore @Inject constructor(
 
     override fun saveBackendEndpoint(endpoint: BackendEndpoint) {
         detectionPrefs.backendUrl = endpoint.baseUrl
+    }
+
+    override fun setAircraftRangeMiles(miles: Int) {
+        detectionPrefs.aircraftRangeMiles = miles
     }
 }
 
@@ -312,6 +318,10 @@ class AboutViewModel @Inject constructor(
             update = updateState.value,
         ),
     )
+
+    fun setAircraftRangeMiles(miles: Int) {
+        settingsStore.setAircraftRangeMiles(AircraftRange.normalizeMiles(miles))
+    }
 
     fun setSetting(key: InfoSettingKey, enabled: Boolean) {
         if (key == InfoSettingKey.BACKEND_ONLY && enabled &&

@@ -1,6 +1,7 @@
 package com.friendorfoe.data
 
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -23,6 +24,7 @@ class DetectionSettingsTest {
         assertFalse(value.policeAlertsEnabled)
         assertFalse(value.ultrasonicEnabled)
         assertFalse(value.backendOnlyMode)
+        assertEquals(10, value.aircraftRangeMiles)
     }
 
     @Test

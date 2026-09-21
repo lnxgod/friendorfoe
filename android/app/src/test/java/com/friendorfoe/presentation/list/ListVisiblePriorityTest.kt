@@ -1,10 +1,19 @@
 package com.friendorfoe.presentation.list
 
 import androidx.compose.ui.graphics.Color
+import com.friendorfoe.data.DetectionSettings
 import com.friendorfoe.domain.model.Aircraft
 import com.friendorfoe.domain.model.DetectionSource
+import com.friendorfoe.domain.model.Drone
+import com.friendorfoe.domain.model.FilterState
 import com.friendorfoe.domain.model.ObjectCategory
 import com.friendorfoe.domain.model.Position
+import com.friendorfoe.domain.model.SkyObject
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.runCurrent
+import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Test
@@ -13,7 +22,7 @@ import java.time.Instant
 class ListVisiblePriorityTest {
 
     @Test
-    fun `nearby objects sort before visual focus and confidence`() {
+    fun `active visible objects sort before distance and confidence`() {
         val highConfidence = aircraft("HIGH", confidence = 0.99f, distanceMeters = 500.0)
         val visibleLowerConfidence = aircraft("VISIBLE", confidence = 0.50f, distanceMeters = 2000.0)
         val mediumConfidence = aircraft("MED", confidence = 0.80f, distanceMeters = 100.0)
@@ -23,11 +32,11 @@ class ListVisiblePriorityTest {
             activeVisualFocusIds = setOf("VISIBLE")
         )
 
-        assertEquals(listOf("MED", "HIGH", "VISIBLE"), sorted.map { it.id })
+        assertEquals(listOf("VISIBLE", "MED", "HIGH"), sorted.map { it.id })
     }
 
     @Test
-    fun `distance takes priority across visible groups`() {
+    fun `objects within the same visible group sort by distance before confidence`() {
         val visibleFarHighConfidence = aircraft("VISIBLE_HIGH", confidence = 0.90f, distanceMeters = 2000.0)
         val visibleNearLowConfidence = aircraft("VISIBLE_LOW", confidence = 0.70f, distanceMeters = 100.0)
         val hiddenHighConfidence = aircraft("HIDDEN_HIGH", confidence = 0.95f, distanceMeters = 50.0)
@@ -39,13 +48,13 @@ class ListVisiblePriorityTest {
         )
 
         assertEquals(
-            listOf("HIDDEN_LOW", "HIDDEN_HIGH", "VISIBLE_LOW", "VISIBLE_HIGH"),
+            listOf("VISIBLE_LOW", "VISIBLE_HIGH", "HIDDEN_LOW", "HIDDEN_HIGH"),
             sorted.map { it.id }
         )
     }
 
     @Test
-    fun `nearby ordinary aircraft sort before farther public safety aircraft`() {
+    fun `nearby public safety aircraft sort before ordinary aircraft in the list`() {
         val ordinaryNearby = aircraft(
             id = "NORM",
             confidence = 0.99f,
@@ -68,7 +77,188 @@ class ListVisiblePriorityTest {
             activeVisualFocusIds = emptySet()
         )
 
-        assertEquals(listOf("NORM", "SHERIFF"), sorted.map { it.id })
+        assertEquals(listOf("SHERIFF", "NORM"), sorted.map { it.id })
+    }
+
+    @Test
+    fun `helicopters fifty miles away do not outrank nearer traffic`() {
+        val nearby = aircraft("NEAR", confidence = 0.60f, distanceMeters = METERS_PER_MILE)
+        val middle = aircraft("MIDDLE", confidence = 0.70f, distanceMeters = 20.0 * METERS_PER_MILE)
+        val helicopter = aircraft(
+            "HELI", confidence = 0.99f, distanceMeters = 50.0 * METERS_PER_MILE,
+            category = ObjectCategory.HELICOPTER,
+        )
+        val sheriff = helicopter.copy(
+            id = "SHERIFF",
+            category = ObjectCategory.GOVERNMENT,
+            aircraftType = "AS50",
+            operatorName = "COUNTY SHERIFF",
+            classificationSignals = listOf("OWNER:PUBLIC_SAFETY"),
+            distanceMeters = 51.0 * METERS_PER_MILE,
+        )
+
+        val sorted = sortSkyObjectsForList(listOf(sheriff, helicopter, middle, nearby), emptySet())
+
+        assertEquals(listOf("NEAR", "MIDDLE", "HELI", "SHERIFF"), sorted.map { it.id })
+    }
+
+    @Test
+    fun `aircraft category priority stops just beyond ten statute miles by default`() {
+        val nearby = aircraft("NEAR", confidence = 0.99f, distanceMeters = METERS_PER_MILE)
+        val boundary = aircraft("BOUNDARY", confidence = 0.60f, distanceMeters = 10.0 * METERS_PER_MILE)
+        val priorityAircraft = listOf(
+            boundary.copy(category = ObjectCategory.HELICOPTER),
+            boundary.copy(category = ObjectCategory.MILITARY),
+            boundary.copy(category = ObjectCategory.GOVERNMENT),
+            boundary.copy(category = ObjectCategory.EMERGENCY),
+            boundary.copy(
+                category = ObjectCategory.GOVERNMENT,
+                aircraftType = "AS50",
+                operatorName = "COUNTY SHERIFF",
+            ),
+            boundary.copy(classificationSignals = listOf("OWNER:PUBLIC_SAFETY")),
+        )
+
+        for (atBoundary in priorityAircraft) {
+            val justOutside = atBoundary.copy(
+                id = "OUTSIDE",
+                confidence = 1.0f,
+                distanceMeters = 10.0 * METERS_PER_MILE + 0.01,
+            )
+            val sorted = sortSkyObjectsForList(listOf(justOutside, nearby, atBoundary), emptySet())
+
+            assertEquals(
+                "Category ${atBoundary.category}, type ${atBoundary.aircraftType}",
+                listOf("BOUNDARY", "NEAR", "OUTSIDE"),
+                sorted.map { it.id },
+            )
+        }
+    }
+
+    @Test
+    fun `nearby helicopters with equal priority sort nearest first despite confidence`() {
+        val nearer = aircraft(
+            "NEAR_HELI", confidence = 0.60f, distanceMeters = METERS_PER_MILE,
+            category = ObjectCategory.HELICOPTER,
+        )
+        val farther = nearer.copy(id = "FAR_HELI", confidence = 0.99f, distanceMeters = 10.0 * METERS_PER_MILE)
+        val ordinary = aircraft("ORDINARY", confidence = 1.0f, distanceMeters = 100.0)
+
+        val sorted = sortSkyObjectsForList(listOf(farther, ordinary, nearer), emptySet())
+
+        assertEquals(listOf("NEAR_HELI", "FAR_HELI", "ORDINARY"), sorted.map { it.id })
+    }
+
+    @Test
+    fun `visual focus cannot boost a helicopter outside the selected range`() {
+        val nearby = aircraft("NEAR", confidence = 0.60f, distanceMeters = METERS_PER_MILE)
+        val helicopter = aircraft(
+            "HELI", confidence = 0.99f, distanceMeters = 50.0 * METERS_PER_MILE,
+            category = ObjectCategory.HELICOPTER,
+        )
+        val objects = listOf(helicopter, nearby)
+
+        assertEquals(
+            listOf("NEAR", "HELI"),
+            sortSkyObjectsForList(objects, setOf("HELI")).map { it.id },
+        )
+        assertEquals(
+            listOf("NEAR", "HELI"),
+            sortSkyObjectsForList(objects, emptySet()).map { it.id },
+        )
+    }
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    @Test
+    fun `changing saved range reorders existing rows without a new detection`() = runTest {
+        val nearby = aircraft("NEAR", confidence = 0.60f, distanceMeters = METERS_PER_MILE)
+        val helicopter = aircraft(
+            "HELI", confidence = 0.99f, distanceMeters = 12.0 * METERS_PER_MILE,
+            category = ObjectCategory.HELICOPTER,
+        )
+        val settings = MutableStateFlow(DetectionSettings.defaults())
+        var sortedIds = emptyList<String>()
+        backgroundScope.launch {
+            observeSortedSkyObjectsForList(
+                objects = MutableStateFlow<List<SkyObject>>(listOf(helicopter, nearby)),
+                filter = MutableStateFlow(FilterState()),
+                activeVisualFocusIds = MutableStateFlow(setOf("HELI")),
+                settings = settings,
+            ).collect { sortedIds = it.map(SkyObject::id) }
+        }
+        runCurrent()
+        assertEquals(listOf("NEAR", "HELI"), sortedIds)
+
+        settings.value = settings.value.copy(aircraftRangeMiles = 15)
+        runCurrent()
+        assertEquals(listOf("HELI", "NEAR"), sortedIds)
+
+        settings.value = settings.value.copy(aircraftRangeMiles = 5)
+        runCurrent()
+        assertEquals(listOf("NEAR", "HELI"), sortedIds)
+    }
+
+    @Test
+    fun `unknown and invalid distances cannot give aircraft category priority`() {
+        val known = aircraft("KNOWN", confidence = 0.50f, distanceMeters = 50.0 * METERS_PER_MILE)
+        val unknown = aircraft(
+            "UNKNOWN", confidence = 1.0f, distanceMeters = null,
+            category = ObjectCategory.GOVERNMENT,
+            aircraftType = "AS50",
+            classificationSignals = listOf("OWNER:PUBLIC_SAFETY"),
+        )
+
+        for (distance in listOf(null, -1.0, Double.NaN, Double.NEGATIVE_INFINITY, Double.POSITIVE_INFINITY)) {
+            val sorted = sortSkyObjectsForList(listOf(unknown.copy(distanceMeters = distance), known), emptySet())
+
+            assertEquals("Distance $distance", listOf("KNOWN", "UNKNOWN"), sorted.map { it.id })
+        }
+    }
+
+    @Test
+    fun `zero distance is a valid nearby distance`() {
+        val helicopter = aircraft(
+            "HERE", confidence = 0.60f, distanceMeters = 0.0,
+            category = ObjectCategory.HELICOPTER,
+        )
+        val ordinary = aircraft("NEAR", confidence = 0.99f, distanceMeters = 1.0)
+
+        assertEquals(
+            listOf("HERE", "NEAR"),
+            sortSkyObjectsForList(listOf(ordinary, helicopter), emptySet()).map { it.id },
+        )
+    }
+
+    @Test
+    fun `drones keep priority with a known distance and go last without one`() {
+        val ordinary = aircraft("AIRCRAFT", confidence = 0.99f, distanceMeters = 100.0)
+        val drone = Drone(
+            id = "DRONE",
+            droneId = "DRONE",
+            position = ordinary.position,
+            source = DetectionSource.REMOTE_ID,
+            confidence = 0.80f,
+            firstSeen = Instant.EPOCH,
+            lastUpdated = Instant.EPOCH,
+            distanceMeters = 200.0,
+        )
+        val unknown = drone.copy(id = "UNKNOWN", distanceMeters = null, confidence = 1.0f)
+
+        assertEquals(
+            listOf("DRONE", "AIRCRAFT", "UNKNOWN"),
+            sortSkyObjectsForList(listOf(unknown, ordinary, drone), emptySet()).map { it.id },
+        )
+    }
+
+    @Test
+    fun `confidence breaks equal distance ties and ids keep refresh order stable`() {
+        val lowerConfidence = aircraft("LOW", confidence = 0.50f, distanceMeters = 100.0)
+        val first = lowerConfidence.copy(id = "A", confidence = 0.99f)
+        val second = first.copy(id = "B")
+        val objects = listOf(second, lowerConfidence, first)
+
+        assertEquals(listOf("A", "B", "LOW"), sortSkyObjectsForList(objects, emptySet()).map { it.id })
+        assertEquals(listOf("A", "B", "LOW"), sortSkyObjectsForList(objects.reversed(), emptySet()).map { it.id })
     }
 
     @Test
@@ -202,7 +392,7 @@ class ListVisiblePriorityTest {
     private fun aircraft(
         id: String,
         confidence: Float,
-        distanceMeters: Double,
+        distanceMeters: Double?,
         category: ObjectCategory = ObjectCategory.COMMERCIAL,
         aircraftType: String? = null,
         aircraftModel: String? = null,
@@ -226,5 +416,9 @@ class ListVisiblePriorityTest {
             operatorName = operatorName,
             classificationSignals = classificationSignals
         )
+    }
+
+    private companion object {
+        const val METERS_PER_MILE = 1609.344
     }
 }

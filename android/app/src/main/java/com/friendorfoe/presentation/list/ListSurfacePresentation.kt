@@ -2,6 +2,7 @@ package com.friendorfoe.presentation.list
 
 import androidx.compose.ui.graphics.Color
 import com.friendorfoe.domain.model.Aircraft
+import com.friendorfoe.domain.model.AircraftRange
 import com.friendorfoe.domain.model.Drone
 import com.friendorfoe.domain.model.DetectionSource
 import com.friendorfoe.domain.model.FilterState
@@ -152,8 +153,12 @@ internal fun listAttentionLabel(skyObject: SkyObject): String? = when (listBadge
     }
 }
 
-internal fun listSurfacePriority(skyObject: SkyObject): Int = when (skyObject) {
+internal fun listSurfacePriority(
+    skyObject: SkyObject,
+    aircraftRangeMiles: Int = AircraftRange.DEFAULT_MILES,
+): Int = when (skyObject) {
     is Aircraft -> when {
+        !AircraftRange.contains(skyObject.distanceMeters, aircraftRangeMiles) -> 0
         isPublicSafetyAircraft(skyObject) && isRotorcraft(skyObject) -> 50
         isPublicSafetyAircraft(skyObject) -> 45
         skyObject.category == ObjectCategory.EMERGENCY -> 40

@@ -31,11 +31,13 @@ class SkyAlertNotifier @Inject constructor(
     private val policy = SkyAlertPolicy()
 
     fun notifyObject(skyObject: SkyObject) {
+        val preferences = detectionPrefs.settings.value
         val settings = SkyAlertSettings(
-            droneAlertsEnabled = detectionPrefs.droneAlertsEnabled,
-            helicopterAlertsEnabled = detectionPrefs.helicopterAlertsEnabled,
-            militaryAlertsEnabled = detectionPrefs.militaryAlertsEnabled,
-            policeAlertsEnabled = detectionPrefs.policeAlertsEnabled
+            droneAlertsEnabled = preferences.droneAlertsEnabled,
+            helicopterAlertsEnabled = preferences.helicopterAlertsEnabled,
+            militaryAlertsEnabled = preferences.militaryAlertsEnabled,
+            policeAlertsEnabled = preferences.policeAlertsEnabled,
+            aircraftRangeMiles = preferences.aircraftRangeMiles,
         )
         val candidate = SkyAlertPolicy.candidateFor(skyObject, settings) ?: return
         notifyCandidate(candidate)
