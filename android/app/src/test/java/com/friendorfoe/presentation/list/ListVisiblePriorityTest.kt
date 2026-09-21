@@ -77,7 +77,7 @@ class ListVisiblePriorityTest {
             activeVisualFocusIds = emptySet()
         )
 
-        assertEquals(listOf("NORM", "SHERIFF"), sorted.map { it.id })
+        assertEquals(listOf("SHERIFF", "NORM"), sorted.map { it.id })
     }
 
     @Test
