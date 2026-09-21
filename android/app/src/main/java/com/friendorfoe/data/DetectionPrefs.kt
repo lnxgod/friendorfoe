@@ -3,6 +3,7 @@ package com.friendorfoe.data
 import android.content.Context
 import android.content.SharedPreferences
 import com.friendorfoe.calibration.CalibrationSettingsStore
+import com.friendorfoe.domain.model.AircraftRange
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -26,6 +27,7 @@ data class DetectionSettings(
     val sensorBackendEnabled: Boolean,
     val backendOnlyMode: Boolean,
     val backendUrl: String,
+    val aircraftRangeMiles: Int = AircraftRange.DEFAULT_MILES,
 ) {
     companion object {
         fun defaults() = DetectionSettings(
@@ -71,6 +73,7 @@ class DetectionPrefs @Inject constructor(
         private const val KEY_HELICOPTER_ALERTS = "alert_helicopters_enabled"
         private const val KEY_MILITARY_ALERTS = "alert_military_enabled"
         private const val KEY_POLICE_ALERTS = "alert_police_enabled"
+        private const val KEY_AIRCRAFT_RANGE_MILES = "aircraft_range_miles"
         private const val KEY_IGNORED_MACS = "privacy_ignored_macs"
         private const val KEY_IGNORED_IDENTITIES = "privacy_ignored_identities_v2"
         private const val KEY_SENSOR_BACKEND = "sensor_backend_enabled"
@@ -111,6 +114,7 @@ class DetectionPrefs @Inject constructor(
         sensorBackendEnabled = sensorBackendEnabled,
         backendOnlyMode = backendOnlyMode,
         backendUrl = backendUrl,
+        aircraftRangeMiles = aircraftRangeMiles,
     )
 
     private fun updateSettings(action: SharedPreferences.Editor.() -> Unit) {
@@ -182,6 +186,14 @@ class DetectionPrefs @Inject constructor(
     var policeAlertsEnabled: Boolean
         get() = prefs.getBoolean(KEY_POLICE_ALERTS, false)
         set(value) = updateSettings { putBoolean(KEY_POLICE_ALERTS, value) }
+
+    var aircraftRangeMiles: Int
+        get() = AircraftRange.normalizeMiles(
+            prefs.getInt(KEY_AIRCRAFT_RANGE_MILES, AircraftRange.DEFAULT_MILES),
+        )
+        set(value) = updateSettings {
+            putInt(KEY_AIRCRAFT_RANGE_MILES, AircraftRange.normalizeMiles(value))
+        }
 
     /** Sensor backend (ESP32 network) — disabled until explicitly enabled. */
     var sensorBackendEnabled: Boolean

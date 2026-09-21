@@ -1,6 +1,7 @@
 package com.friendorfoe.presentation.alerts
 
 import com.friendorfoe.domain.model.Aircraft
+import com.friendorfoe.domain.model.AircraftRange
 import com.friendorfoe.domain.model.Drone
 import com.friendorfoe.domain.model.ObjectCategory
 import com.friendorfoe.domain.model.SkyObject
@@ -11,7 +12,8 @@ data class SkyAlertSettings(
     val droneAlertsEnabled: Boolean,
     val helicopterAlertsEnabled: Boolean,
     val militaryAlertsEnabled: Boolean,
-    val policeAlertsEnabled: Boolean
+    val policeAlertsEnabled: Boolean,
+    val aircraftRangeMiles: Int = AircraftRange.DEFAULT_MILES,
 )
 
 data class SkyAlertCandidate(
@@ -42,10 +44,8 @@ class SkyAlertPolicy(
     }
 
     companion object {
-        private const val METERS_PER_MILE = 1609.344
-        const val TACTICAL_ALERT_RADIUS_MILES = 15.0
-        private const val TACTICAL_ALERT_RADIUS_METERS =
-            TACTICAL_ALERT_RADIUS_MILES * METERS_PER_MILE
+        // Preserve the local radio alert policy independently of the aircraft setting.
+        private const val LOCAL_DRONE_ALERT_RADIUS_METERS = 15.0 * AircraftRange.METERS_PER_MILE
 
         fun candidateFor(
             skyObject: SkyObject,
@@ -83,7 +83,7 @@ class SkyAlertPolicy(
             ).firstOrNull() ?: "Drone"
             val rangeText = drone.distanceMeters ?: drone.estimatedDistanceMeters
             if (rangeText != null &&
-                (!rangeText.isFinite() || rangeText !in 0.0..TACTICAL_ALERT_RADIUS_METERS)
+                (!rangeText.isFinite() || rangeText !in 0.0..LOCAL_DRONE_ALERT_RADIUS_METERS)
             ) return null
             return SkyAlertCandidate(
                 key = "sky:drone:${drone.id}",
@@ -99,13 +99,12 @@ class SkyAlertPolicy(
             settings: SkyAlertSettings
         ): SkyAlertCandidate? {
             // ADS-B can cover hundreds of miles; classification alone is not proximity.
-            if (!aircraft.isWithinTacticalRange()) return null
+            if (!AircraftRange.contains(aircraft.distanceMeters, settings.aircraftRangeMiles)) return null
             if (settings.droneAlertsEnabled && aircraft.category == ObjectCategory.DRONE) {
                 return aircraftCandidate(
                     keyPrefix = "uav",
                     title = "Drone nearby",
                     aircraft = aircraft,
-                    rangeRequired = true,
                     priority = 0
                 )
             }
@@ -114,31 +113,26 @@ class SkyAlertPolicy(
                     keyPrefix = "helicopter",
                     title = "Helicopter nearby",
                     aircraft = aircraft,
-                    rangeRequired = true,
                     priority = 1
                 )
             }
             if (settings.militaryAlertsEnabled &&
-                aircraft.category == ObjectCategory.MILITARY &&
-                aircraft.isWithinTacticalRange()
+                aircraft.category == ObjectCategory.MILITARY
             ) {
                 return aircraftCandidate(
                     keyPrefix = "military",
                     title = "Military aircraft nearby",
                     aircraft = aircraft,
-                    rangeRequired = true,
                     priority = 3
                 )
             }
             if (settings.policeAlertsEnabled &&
-                aircraft.category in policeAlertCategories &&
-                aircraft.isWithinTacticalRange()
+                aircraft.category in policeAlertCategories
             ) {
                 return aircraftCandidate(
                     keyPrefix = "police",
                     title = "Police / emergency vehicle nearby",
                     aircraft = aircraft,
-                    rangeRequired = true,
                     priority = 2
                 )
             }
@@ -149,10 +143,8 @@ class SkyAlertPolicy(
             keyPrefix: String,
             title: String,
             aircraft: Aircraft,
-            rangeRequired: Boolean,
             priority: Int
-        ): SkyAlertCandidate? {
-            if (rangeRequired && aircraft.distanceMeters == null) return null
+        ): SkyAlertCandidate {
             val label = aircraft.alertLabel()
             val distanceText = aircraft.distanceMeters?.let(::formatDistance)
             return SkyAlertCandidate(
@@ -180,12 +172,9 @@ class SkyAlertPolicy(
             }
         }
 
-        private fun Aircraft.isWithinTacticalRange(): Boolean =
-            distanceMeters?.let { it.isFinite() && it in 0.0..TACTICAL_ALERT_RADIUS_METERS } == true
-
         private fun formatDistance(meters: Double): String =
-            if (meters >= METERS_PER_MILE) {
-                val miles = meters / METERS_PER_MILE
+            if (meters >= AircraftRange.METERS_PER_MILE) {
+                val miles = meters / AircraftRange.METERS_PER_MILE
                 "${"%.1f".format(miles)} mi"
             } else {
                 "${meters.roundToInt()} m"

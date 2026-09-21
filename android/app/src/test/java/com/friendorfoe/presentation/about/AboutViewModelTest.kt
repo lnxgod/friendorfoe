@@ -407,6 +407,31 @@ class AboutViewModelTest {
     }
 
     @Test
+    fun aircraftRangeChangesPublishWithoutChangingAlertToggles() = runTest {
+        val settings = FakeInfoSettingsStore(DetectionSettings.defaults())
+        val viewModel = viewModel(settings, sessionRepository())
+        advanceUntilIdle()
+        assertEquals(10, viewModel.uiState.value.settings.aircraftRangeMiles)
+
+        viewModel.setAircraftRangeMiles(5)
+        advanceUntilIdle()
+        assertEquals(5, viewModel.uiState.value.settings.aircraftRangeMiles)
+        assertFalse(viewModel.uiState.value.settings.helicopterAlertsEnabled)
+
+        viewModel.setAircraftRangeMiles(15)
+        advanceUntilIdle()
+        assertEquals(15, settings.settings.value.aircraftRangeMiles)
+
+        viewModel.setAircraftRangeMiles(0)
+        advanceUntilIdle()
+        assertEquals(1, settings.settings.value.aircraftRangeMiles)
+        viewModel.setAircraftRangeMiles(100)
+        advanceUntilIdle()
+        assertEquals(50, settings.settings.value.aircraftRangeMiles)
+        assertTrue(settings.writes.isEmpty())
+    }
+
+    @Test
     fun onlyCollectorTopologySettingsRequestASkyRestart() {
         val settings = DetectionSettings.defaults()
 
@@ -463,6 +488,10 @@ private class FakeInfoSettingsStore(initial: DetectionSettings) : InfoSettingsSt
     override fun saveBackendEndpoint(endpoint: BackendEndpoint) {
         lastSavedEndpoint = endpoint
         mutableSettings.value = settings.value.copy(backendUrl = endpoint.baseUrl)
+    }
+
+    override fun setAircraftRangeMiles(miles: Int) {
+        mutableSettings.value = settings.value.copy(aircraftRangeMiles = miles)
     }
 }
 

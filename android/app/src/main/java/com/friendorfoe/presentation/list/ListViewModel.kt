@@ -8,8 +8,12 @@ import android.os.SystemClock
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.friendorfoe.data.DetectionPrefs
+import com.friendorfoe.data.DetectionSettings
 import com.friendorfoe.data.repository.SkyObjectRepository
 import com.friendorfoe.data.repository.validatedLocationAccuracyMeters
+import com.friendorfoe.domain.model.Aircraft
+import com.friendorfoe.domain.model.AircraftRange
 import com.friendorfoe.domain.model.FilterState
 import com.friendorfoe.domain.model.Position
 import com.friendorfoe.domain.model.SkyObject
@@ -18,6 +22,7 @@ import com.friendorfoe.sensor.VisualFocusRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -30,9 +35,9 @@ import javax.inject.Inject
 /**
  * ViewModel for the List View screen.
  *
- * Exposes sky objects from [SkyObjectRepository] sorted by distance
- * from the user (nearest first). Objects without a known distance
- * are placed at the end of the list.
+ * Exposes sky objects from [SkyObjectRepository] with nearby visual focus first,
+ * then nearby category priority and nearest distance. Within each focus group,
+ * objects without a usable distance are placed at the end of the list.
  *
  * Also manages location updates to ensure scanning is started even
  * if the user navigates directly to the List tab.
@@ -41,7 +46,8 @@ import javax.inject.Inject
 class ListViewModel @Inject constructor(
     private val skyObjectRepository: SkyObjectRepository,
     private val visualFocusRepository: VisualFocusRepository,
-    private val locationManager: LocationManager
+    private val locationManager: LocationManager,
+    detectionPrefs: DetectionPrefs,
 ) : ViewModel() {
 
     companion object {
@@ -75,14 +81,13 @@ class ListViewModel @Inject constructor(
         initialValue = emptySet()
     )
 
-    /** All detected sky objects filtered and sorted nearest first; unknown distances come last. */
-    val skyObjects: StateFlow<List<SkyObject>> = combine(
+    /** Filtered detections sorted by nearby visual focus, priority, then distance. */
+    val skyObjects: StateFlow<List<SkyObject>> = observeSortedSkyObjectsForList(
         skyObjectRepository.skyObjects,
         _filterState,
-        activeVisualFocusIds
-    ) { objects, filter, visualFocusIds ->
-        sortSkyObjectsForList(FilterEngine.applyFilters(objects, filter), visualFocusIds)
-    }.stateIn(
+        activeVisualFocusIds,
+        detectionPrefs.settings,
+    ).stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(5000),
         initialValue = emptyList()
@@ -189,21 +194,35 @@ class ListViewModel @Inject constructor(
     }
 }
 
+internal fun observeSortedSkyObjectsForList(
+    objects: Flow<List<SkyObject>>,
+    filter: Flow<FilterState>,
+    activeVisualFocusIds: Flow<Set<String>>,
+    settings: Flow<DetectionSettings>,
+): Flow<List<SkyObject>> = combine(objects, filter, activeVisualFocusIds, settings) { rows, filters, focusIds, preferences ->
+    sortSkyObjectsForList(FilterEngine.applyFilters(rows, filters), focusIds, preferences.aircraftRangeMiles)
+}
+
 internal fun sortSkyObjectsForList(
     objects: List<SkyObject>,
-    activeVisualFocusIds: Set<String>
+    activeVisualFocusIds: Set<String>,
+    aircraftRangeMiles: Int = AircraftRange.DEFAULT_MILES,
 ): List<SkyObject> {
     return objects.sortedWith(
-        compareBy<SkyObject> {
-            it.distanceMeters?.takeIf { distance -> distance.isFinite() && distance >= 0.0 }
-                ?: Double.POSITIVE_INFINITY
+        compareByDescending<SkyObject> {
+            it.id in activeVisualFocusIds &&
+                (it !is Aircraft || AircraftRange.contains(it.distanceMeters, aircraftRangeMiles))
         }
-            .thenByDescending { it.id in activeVisualFocusIds }
-            .thenByDescending { listSurfacePriority(it) }
+            .thenBy { !it.listSortDistance().isFinite() }
+            .thenByDescending { listSurfacePriority(it, aircraftRangeMiles) }
+            .thenBy { it.listSortDistance() }
             .thenByDescending { it.confidence }
             .thenBy { it.id }
     )
 }
+
+private fun SkyObject.listSortDistance(): Double =
+    distanceMeters?.takeIf { it.isFinite() && it >= 0.0 } ?: Double.POSITIVE_INFINITY
 
 private fun Location.toListLocationFix() = ListLocationFix(
     position = Position(latitude, longitude, altitude),

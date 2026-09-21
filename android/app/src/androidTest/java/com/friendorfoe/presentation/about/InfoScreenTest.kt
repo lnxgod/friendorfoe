@@ -9,6 +9,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
@@ -22,6 +23,7 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performScrollToIndex
+import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
 import com.friendorfoe.data.AppVersion
@@ -83,6 +85,31 @@ class InfoScreenTest {
             .performScrollTo()
             .performClick()
             .assertIsOn()
+    }
+
+    @Test
+    fun aircraftRangeControlChangesTheValueAndResetsToTenMiles() {
+        var miles by mutableStateOf(10)
+        compose.setContent {
+            FriendOrFoeTheme {
+                InfoContent(
+                    state = state().copy(settings = DetectionSettings.defaults().copy(aircraftRangeMiles = miles)),
+                    actions = InfoActions(onSetAircraftRangeMiles = { miles = it }),
+                )
+            }
+        }
+
+        compose.onNodeWithTag("aircraft_range_slider")
+            .performScrollTo()
+            .performSemanticsAction(SemanticsActions.SetProgress) { it(5f) }
+        compose.runOnIdle { assertEquals(5, miles) }
+        compose.onNodeWithTag("aircraft_range_value").assertTextContains("5 mi")
+        compose.onNodeWithTag("setting_helicopter_alerts").performScrollTo()
+        compose.onNodeWithText("Notify for helicopters within 5 miles").assertIsDisplayed()
+
+        compose.onNodeWithTag("aircraft_range_reset").performScrollTo().performClick()
+        compose.runOnIdle { assertEquals(10, miles) }
+        compose.onNodeWithTag("aircraft_range_value").assertTextContains("10 mi")
     }
 
     @Test
