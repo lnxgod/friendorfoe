@@ -7,6 +7,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Fixed
+- **Aircraft alerts and list priority now default to a 10-mile radius.** Adjust it
+  from 1 to 50 statute miles in About → App settings → Alerts; the setting is
+  saved, applies immediately, and can be reset to 10 miles.
+- Aircraft outside the selected radius receive no category or camera-focus
+  priority. Distance precedes confidence within each priority group, with
+  invalid or unknown distances last and stable identity ordering for ties.
+- Aircraft alerts require a valid distance within the selected radius,
+  including the boundary. Recent-location selection and the separate local
+  radio drone alert policy remain in effect.
+
 - **Flock/ALPR evidence now requires explicit Wi-Fi OUI proof.** Android,
   backend, ESP32 scanner, and badge policy now treat Flock Safety as the
   registered `B4:1E:52` OUI only, normalize common MAC formats, and reject
