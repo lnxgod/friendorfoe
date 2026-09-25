@@ -26,15 +26,14 @@ class WelcomeScreenTest {
     val compose = createComposeRule()
 
     @Test
-    fun primaryActionComesBeforeOptionalContentAndWelcomeHasNoUpdater() {
+    fun primaryActionStaysVisibleWhileOptionalContentExpandsAndWelcomeHasNoUpdater() {
         var continued = 0
         setWelcome(onContinue = { continued++ })
 
         val action = compose.onNodeWithTag("welcome_get_started").assertIsDisplayed()
-        val actionTop = action.fetchSemanticsNode().boundsInRoot.top
-        val optionalTop = compose.onNodeWithTag("welcome_scope")
-            .fetchSemanticsNode().boundsInRoot.top
-        assertTrue(actionTop < optionalTop)
+        compose.onNodeWithTag("welcome_data").performScrollTo().performClick()
+        compose.onNodeWithText("GitHub Repository").performScrollTo().assertIsDisplayed()
+        action.assertIsDisplayed()
         action.performClick()
         compose.runOnIdle { assertEquals(1, continued) }
 
@@ -50,13 +49,14 @@ class WelcomeScreenTest {
     @Test
     fun scopeDataAndPermissionTimingCopyStayTruthful() {
         setWelcome()
+        compose.onNodeWithTag("welcome_data").performScrollTo().performClick()
 
         listOf(
             "Observations are evidence, not proof of identity, intent, or ownership.",
-            "Coverage depends on nearby signals, available data, granted permissions, and configured services.",
+            "Coverage depends on nearby signals, permissions and configured services.",
             "History may store observations and phone coordinates locally.",
             "Network features may exchange location or detection data with the service you use.",
-            "Android asks for access when a feature needs it, not all at once during welcome.",
+            "Android asks for access when a feature needs it.",
         ).forEach { fact ->
             compose.onNodeWithText(fact).performScrollTo().assertIsDisplayed()
         }
@@ -66,6 +66,7 @@ class WelcomeScreenTest {
     fun optionalLinksOnlyOpenFixedHttpsDestinations() {
         val opened = mutableListOf<String>()
         setWelcome(onOpenLink = opened::add)
+        compose.onNodeWithTag("welcome_data").performScrollTo().performClick()
 
         compose.onNodeWithText("GameChangers")
             .performScrollTo()
@@ -109,7 +110,7 @@ class WelcomeScreenTest {
             }
         }
 
-        val frame = compose.onNodeWithTag("welcome_scroll").fetchSemanticsNode().boundsInRoot
+        val frame = compose.onNodeWithTag("welcome_frame").fetchSemanticsNode().boundsInRoot
         val action = compose.onNodeWithTag("welcome_get_started")
             .assertIsDisplayed()
             .fetchSemanticsNode().boundsInRoot

@@ -47,7 +47,7 @@ class ListViewModel @Inject constructor(
     private val skyObjectRepository: SkyObjectRepository,
     private val visualFocusRepository: VisualFocusRepository,
     private val locationManager: LocationManager,
-    detectionPrefs: DetectionPrefs,
+    private val detectionPrefs: DetectionPrefs,
 ) : ViewModel() {
 
     companion object {
@@ -61,6 +61,12 @@ class ListViewModel @Inject constructor(
             emit(System.currentTimeMillis())
             delay(1000L)
         }
+    }
+
+    val settings = detectionPrefs.settings
+
+    fun setAircraftRangeMiles(miles: Int) {
+        detectionPrefs.aircraftRangeMiles = AircraftRange.normalizeMiles(miles)
     }
 
     private val _filterState = MutableStateFlow(FilterState())

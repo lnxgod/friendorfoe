@@ -8,8 +8,8 @@ class TopLevelDestinationTest {
     @Test
     fun destinationsStayInApprovedOrder() {
         assertEquals(
-            listOf("AR", "Map", "List", "Privacy", "Badge", "History", "About"),
-            TopLevelDestination.entries.map { it.label }
+            listOf("Nearby", "Map", "Camera", "Privacy", "More"),
+            primaryDestinations.map { it.label }
         )
         assertEquals(7, TopLevelDestination.entries.map { it.route }.distinct().size)
         assertFalse(TopLevelDestination.entries.any { it.route == "calibrate" })
@@ -17,8 +17,11 @@ class TopLevelDestinationTest {
 
     @Test
     fun topLevelBackExitsAndSecondaryBackPops() {
-        TopLevelDestination.entries.forEach {
+        primaryDestinations.forEach {
             assertEquals(BackDisposition.EXIT_APP, backDisposition(it.route))
+        }
+        listOf(Screen.Badge.route, Screen.History.route).forEach {
+            assertEquals(BackDisposition.POP_SECONDARY, backDisposition(it))
         }
         assertEquals(
             BackDisposition.POP_SECONDARY,

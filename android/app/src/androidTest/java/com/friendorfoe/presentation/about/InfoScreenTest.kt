@@ -23,6 +23,8 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performScrollToIndex
+import androidx.compose.ui.test.performScrollToNode
+import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
@@ -46,7 +48,7 @@ class InfoScreenTest {
         assertEquals(
             listOf(
                 "Source & permission status",
-                "Settings",
+                "Detection & connections",
                 "Guide & category legend",
                 "Privacy & Data",
                 "About, support, version & updates",
@@ -56,7 +58,8 @@ class InfoScreenTest {
         )
         setInfoContent()
 
-        compose.onNodeWithTag("info_section_0").assertIsDisplayed()
+        compose.onNodeWithTag("aircraft_range_slider").assertIsDisplayed()
+        compose.onNodeWithTag("advanced_magnetic_field").assertDoesNotExist()
         scrollToSection(5)
         compose.onNodeWithTag("info_section_5").assertIsDisplayed()
         compose.onNodeWithTag("advanced_magnetic_field").performScrollTo().assertIsEnabled()
@@ -81,6 +84,7 @@ class InfoScreenTest {
             }
         }
 
+        scrollToSection(1)
         compose.onNodeWithTag("setting_phone_privacy_scan")
             .performScrollTo()
             .performClick()
@@ -163,6 +167,7 @@ class InfoScreenTest {
             actions = InfoActions(onSaveBackendUrl = { saved++ }),
         )
 
+        scrollToSection(1)
         compose.onNodeWithTag("backend_save").performScrollTo().assertIsNotEnabled()
         compose.onNodeWithText("Enter a complete http:// or https:// URL")
             .assertIsDisplayed()
@@ -232,6 +237,8 @@ class InfoScreenTest {
 
         scrollToSection(5)
         compose.onNodeWithTag("calibration_entry")
+            .performScrollTo()
+            .assertIsDisplayed()
             .assertIsEnabled()
             .performClick()
         compose.runOnIdle { assertEquals(1, opened) }
@@ -327,7 +334,8 @@ class InfoScreenTest {
     }
 
     private fun scrollToSection(index: Int) {
-        compose.onNodeWithTag("info_list").performScrollToIndex(index + 1)
+        compose.onNodeWithTag("info_list").performScrollToNode(hasTestTag("info_section_$index"))
+        compose.onNodeWithTag("info_section_$index").performClick()
     }
 
     private fun state(phonePrivacyEnabled: Boolean = false): InfoUiState = InfoUiState(

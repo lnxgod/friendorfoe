@@ -4,10 +4,10 @@ import android.net.Uri
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.History
-import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.MoreHoriz
 import androidx.compose.material.icons.filled.Map
 import androidx.compose.material.icons.filled.Shield
-import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.ui.graphics.vector.ImageVector
 import com.friendorfoe.presentation.badge.BadgeMarkIcon
 import com.friendorfoe.presentation.privacy.PrivacyFindingKey
@@ -86,17 +86,25 @@ enum class TopLevelDestination(
     val route: String,
     val icon: ImageVector,
 ) {
-    AR("AR", Screen.ArView.route, Icons.Default.Visibility),
+    AR("Camera", Screen.ArView.route, Icons.Default.CameraAlt),
     MAP("Map", Screen.MapView.route, Icons.Default.Map),
-    LIST("List", Screen.ListView.route, Icons.AutoMirrored.Filled.List),
+    LIST("Nearby", Screen.ListView.route, Icons.AutoMirrored.Filled.List),
     PRIVACY("Privacy", Screen.Privacy.route, Icons.Default.Shield),
     BADGE("Badge", Screen.Badge.route, BadgeMarkIcon),
     HISTORY("History", Screen.History.route, Icons.Default.History),
-    ABOUT("About", Screen.About.route, Icons.Default.Info),
+    ABOUT("More", Screen.About.route, Icons.Default.MoreHoriz),
 }
+
+val primaryDestinations = listOf(
+    TopLevelDestination.LIST,
+    TopLevelDestination.MAP,
+    TopLevelDestination.AR,
+    TopLevelDestination.PRIVACY,
+    TopLevelDestination.ABOUT,
+)
 
 enum class BackDisposition { EXIT_APP, POP_SECONDARY }
 
 fun backDisposition(route: String?): BackDisposition =
-    if (route in TopLevelDestination.entries.map { it.route }) BackDisposition.EXIT_APP
+    if (route in primaryDestinations.map { it.route }) BackDisposition.EXIT_APP
     else BackDisposition.POP_SECONDARY

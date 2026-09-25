@@ -1,8 +1,15 @@
 package com.friendorfoe.presentation.welcome
 
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.Icon
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Flight
+import androidx.compose.material.icons.filled.Map
+import androidx.compose.material.icons.filled.Shield
+import androidx.compose.ui.graphics.vector.ImageVector
+import com.friendorfoe.presentation.components.FofDisclosure
 import android.content.Intent
 import android.net.Uri
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.defaultMinSize
@@ -20,10 +27,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
-import com.friendorfoe.presentation.components.FofSection
 
 private const val GAMECHANGERS_URL = "https://gamechangersai.org"
 private const val REPOSITORY_URL = "https://github.com/lnxgod/friendorfoe"
@@ -50,98 +54,57 @@ fun WelcomeScreen(onGetStarted: () -> Unit) {
 
 @Composable
 fun WelcomeContent(actions: WelcomeActions) {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .testTag("welcome_scroll")
-            .verticalScroll(rememberScrollState())
-            .padding(horizontal = 24.dp, vertical = 20.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(14.dp),
-    ) {
-        Text(
-            text = "Friend or Foe",
-            style = MaterialTheme.typography.headlineLarge,
-            fontWeight = FontWeight.Bold,
-            color = MaterialTheme.colorScheme.primary,
-        )
-        Text(
-            text = "Inspect nearby aircraft, broadcast drone signals, and supported privacy observations.",
-            style = MaterialTheme.typography.bodyLarge,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            textAlign = TextAlign.Center,
-        )
-
-        Button(
-            onClick = actions.onGetStarted,
-            modifier = Modifier
-                .fillMaxWidth()
-                .defaultMinSize(minHeight = 56.dp)
-                .testTag("welcome_get_started"),
-            shape = MaterialTheme.shapes.small,
-        ) {
-            Text(
-                text = "Continue",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold,
-            )
+    Column(Modifier.fillMaxSize().testTag("welcome_frame")
+        .windowInsetsPadding(androidx.compose.foundation.layout.WindowInsets.safeDrawing)
+        .padding(horizontal = 24.dp, vertical = 16.dp)) {
+        Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).testTag("welcome_scroll"),
+            verticalArrangement = Arrangement.spacedBy(20.dp)) {
+            Text("Friend or Foe", style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold)
+            Text("Aircraft, drones and nearby signals", style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
+            WelcomeFeature(Icons.Default.Flight, "Nearby", "See what is close, with distance first.")
+            WelcomeFeature(Icons.Default.Map, "Map & trails", "Follow received positions and review flight paths.")
+            WelcomeFeature(Icons.Default.Shield, "Privacy", "Inspect nearby signals and their evidence.")
+            Text("Observations are evidence, not proof of identity, intent, or ownership.",
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.testTag("welcome_scope"))
+            FofDisclosure("Data & permissions", tag = "welcome_data") {
+                WelcomeFact("History may store observations and phone coordinates locally.")
+                WelcomeFact("Network features may exchange location or detection data with the service you use.")
+                WelcomeFact("Android asks for access when a feature needs it.")
+                WelcomeFact("Coverage depends on nearby signals, permissions and configured services.")
+                WelcomeLinkRow("GameChangers") { actions.onOpenLink(GAMECHANGERS_URL) }
+                WelcomeLinkRow("GitHub Repository") { actions.onOpenLink(REPOSITORY_URL) }
+            }
         }
-
-        FofSection(
-            title = "What this app can tell you",
-            modifier = Modifier.testTag("welcome_scope"),
-        ) {
-            WelcomeFact("Observations are evidence, not proof of identity, intent, or ownership.")
-            WelcomeFact(
-                "Coverage depends on nearby signals, available data, granted permissions, and configured services.",
-            )
+        Text("Permissions are requested when you use a feature.",
+            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(vertical = 12.dp))
+        Button(onClick = actions.onGetStarted, modifier = Modifier.fillMaxWidth()
+            .defaultMinSize(minHeight = 56.dp).testTag("welcome_get_started")) {
+            Text("Get started", style = MaterialTheme.typography.titleMedium)
         }
+    }
+}
 
-        FofSection(title = "Data & permissions") {
-            WelcomeFact("History may store observations and phone coordinates locally.")
-            WelcomeFact(
-                "Network features may exchange location or detection data with the service you use.",
-            )
-            WelcomeFact(
-                "Android asks for access when a feature needs it, not all at once during welcome.",
-            )
-        }
-
-        FofSection(title = "Optional links") {
-            WelcomeLinkRow(
-                label = "GameChangers",
-                onClick = { actions.onOpenLink(GAMECHANGERS_URL) },
-            )
-            WelcomeLinkRow(
-                label = "GitHub Repository",
-                onClick = { actions.onOpenLink(REPOSITORY_URL) },
-            )
+@Composable
+private fun WelcomeFeature(icon: ImageVector, title: String, detail: String) {
+    Row(horizontalArrangement = Arrangement.spacedBy(16.dp), verticalAlignment = Alignment.CenterVertically) {
+        Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(28.dp))
+        Column {
+            Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            Text(detail, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
 }
 
 @Composable
 private fun WelcomeFact(text: String) {
-    Text(
-        text = text,
-        style = MaterialTheme.typography.bodyMedium,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-        modifier = Modifier.fillMaxWidth(),
-    )
+    Text(text, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp))
 }
 
 @Composable
 private fun WelcomeLinkRow(label: String, onClick: () -> Unit) {
-    Text(
-        text = label,
-        style = MaterialTheme.typography.bodyMedium,
-        fontWeight = FontWeight.Medium,
-        color = MaterialTheme.colorScheme.primary,
-        textDecoration = TextDecoration.Underline,
-        modifier = Modifier
-            .fillMaxWidth()
-            .defaultMinSize(minHeight = 48.dp)
-            .clickable(onClick = onClick)
-            .padding(vertical = 12.dp),
-    )
+    androidx.compose.material3.TextButton(onClick = onClick) { Text(label) }
 }

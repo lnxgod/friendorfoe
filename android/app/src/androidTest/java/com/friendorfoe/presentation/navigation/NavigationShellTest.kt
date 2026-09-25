@@ -45,7 +45,7 @@ class NavigationShellTest {
     val compose = createComposeRule()
 
     @Test
-    fun sevenDestinationsAreReachableWithoutHiltScreenDependencies() {
+    fun fivePrimaryDestinationsAreReachableWithoutHiltScreenDependencies() {
         val selected = mutableStateOf(TopLevelDestination.AR)
         compose.setContent {
             FriendOrFoeTheme {
@@ -64,11 +64,10 @@ class NavigationShellTest {
         assertEquals("info", Screen.About.route)
         assertEquals("info/settings", Screen.AboutSettings.route)
 
-        listOf("AR", "Map", "List", "Privacy", "Badge", "History", "About")
-            .forEach { label ->
-                compose.onNodeWithContentDescription(label).assertHasClickAction().performClick()
-                compose.onNodeWithTag("screen_${label.lowercase()}").assertIsDisplayed()
-            }
+        primaryDestinations.forEach { destination ->
+            compose.onNodeWithContentDescription(destination.label).assertHasClickAction().performClick()
+            compose.onNodeWithTag("screen_${destination.name.lowercase()}").assertIsDisplayed()
+        }
     }
 
     @Test
@@ -119,7 +118,7 @@ class NavigationShellTest {
             }
         }
 
-        compose.onNodeWithContentDescription("About").performClick()
+        compose.onNodeWithContentDescription("More").performClick()
         compose.onNodeWithText("Open ignored").performClick()
         compose.onNodeWithTag("screen_ignored_devices").assertIsDisplayed()
         compose.onNodeWithTag("navigation_bar").assertDoesNotExist()

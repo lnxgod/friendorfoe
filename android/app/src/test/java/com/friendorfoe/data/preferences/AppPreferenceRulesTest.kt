@@ -8,15 +8,15 @@ import org.junit.Test
 class AppPreferenceRulesTest {
 
     @Test
-    fun invalidTopLevelRouteFallsBackToAbout() {
-        assertEquals("info", sanitizeTopLevelRoute("calibrate"))
-        assertEquals("info", sanitizeTopLevelRoute(null))
+    fun invalidTopLevelRouteFallsBackToNearby() {
+        assertEquals("list_view", sanitizeTopLevelRoute("calibrate"))
+        assertEquals("list_view", sanitizeTopLevelRoute(null))
     }
 
     @Test
-    fun normalLaunchAlwaysUsesAboutInsteadOfTheSavedTopLevelRoute() {
+    fun normalLaunchAlwaysUsesNearbyInsteadOfTheSavedTopLevelRoute() {
         assertEquals("privacy", sanitizeTopLevelRoute("privacy"))
-        assertEquals("info", normalLaunchRoute())
+        assertEquals("list_view", normalLaunchRoute())
     }
 
     @Test

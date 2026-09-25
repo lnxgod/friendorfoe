@@ -61,10 +61,11 @@ import com.friendorfoe.presentation.permissions.permissionRecovery
 import com.friendorfoe.presentation.permissions.permissionTitle
 import com.friendorfoe.presentation.permissions.rememberPermissionBindings
 import kotlin.math.roundToInt
+import com.friendorfoe.presentation.components.FofDisclosure
 
 val INFO_SECTION_TITLES = listOf(
     "Source & permission status",
-    "Settings",
+    "Detection & connections",
     "Guide & category legend",
     "Privacy & Data",
     "About, support, version & updates",
@@ -264,14 +265,17 @@ fun InfoContent(
     ) {
         if (showHeader) {
             item(key = "info_header") {
-                FofScreenHeader("Info")
+                FofScreenHeader("App settings")
             }
         }
-        item(key = "info_sources") {
-            InfoSection(index = 0) { SourcePermissionRows(state) }
+        item(key = "info_alerts") {
+            FofSection("Alerts") { AlertSettingsRows(state, actions) }
         }
         item(key = "info_settings") {
             InfoSection(index = 1) { RuntimeSettingsRows(state, actions) }
+        }
+        item(key = "info_sources") {
+            InfoSection(index = 0) { SourcePermissionRows(state) }
         }
         item(key = "info_guide") {
             InfoSection(index = 2) { GuideAndLegendRows(actions) }
@@ -293,9 +297,9 @@ private fun InfoSection(
     index: Int,
     content: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit,
 ) {
-    FofSection(
+    FofDisclosure(
         title = INFO_SECTION_TITLES[index],
-        modifier = Modifier.testTag("info_section_$index"),
+        tag = "info_section_$index",
         content = content,
     )
 }
@@ -438,8 +442,10 @@ private fun RuntimeSettingsRows(state: InfoUiState, actions: InfoActions) {
     )
     BackendEndpointEditor(state, actions)
 
-    SettingsGroupDivider()
-    SettingsGroupLabel("Alerts")
+}
+
+@Composable
+private fun AlertSettingsRows(state: InfoUiState, actions: InfoActions) {
     AircraftRangeControl(
         miles = state.settings.aircraftRangeMiles,
         onSetMiles = actions.onSetAircraftRangeMiles,
@@ -482,7 +488,7 @@ private fun RuntimeSettingsRows(state: InfoUiState, actions: InfoActions) {
 }
 
 @Composable
-private fun AircraftRangeControl(miles: Int, onSetMiles: (Int) -> Unit) {
+internal fun AircraftRangeControl(miles: Int, onSetMiles: (Int) -> Unit) {
     var draftMiles by remember(miles) { mutableIntStateOf(AircraftRange.normalizeMiles(miles)) }
     Column(Modifier.fillMaxWidth().padding(vertical = 12.dp)) {
         Row(

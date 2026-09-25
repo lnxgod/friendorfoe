@@ -1,0 +1,146 @@
+[
+  {
+    "asset": "aircraft/T38.jpg",
+    "source": "https://commons.wikimedia.org/wiki/File:T-38_in_flight_over_Dry_Lake.jpg",
+    "file": "File:T-38 in flight over Dry Lake.jpg",
+    "author": "Jim Ross/NASA",
+    "license": "Public domain",
+    "license_url": "",
+    "sha256": "2ef2167b039cba408fd1ba22bf7dd74379c715bc0d1a15f4d25f49592eeb0157"
+  },
+  {
+    "asset": "aircraft/KC10.jpg",
+    "source": "https://commons.wikimedia.org/wiki/File:305thopgroup-kc10.jpg",
+    "file": "File:305thopgroup-kc10.jpg",
+    "author": "United States Air Force",
+    "license": "Public domain",
+    "license_url": "",
+    "sha256": "a404ad0ea59aebc85298c207feee9be5561537672e0b3a9bb69bfdc1d98f3bed"
+  },
+  {
+    "asset": "aircraft/C130.jpg",
+    "source": "https://commons.wikimedia.org/wiki/File:Lockheed_C-130_NASA_707_in_flight_(AC84-0407-8).jpg",
+    "file": "File:Lockheed C-130 NASA 707 in flight (AC84-0407-8).jpg",
+    "author": "NASA/Larry Sammons",
+    "license": "Public domain",
+    "license_url": "",
+    "sha256": "3be2df6fedc9198303548881b1d1057e71f516019ca31d9ec47a464abb488281"
+  },
+  {
+    "asset": "aircraft/GLF6.jpg",
+    "source": "https://commons.wikimedia.org/wiki/File:EC-LZU_Gulfstream_G650_SCQ.jpg",
+    "file": "File:EC-LZU Gulfstream G650 SCQ.jpg",
+    "author": "Bene Riobó",
+    "license": "CC BY-SA 4.0",
+    "license_url": "https://creativecommons.org/licenses/by-sa/4.0",
+    "sha256": "0be67a89900135c232913d75d3979cf233a33461345c87ebcc07c3383d833078"
+  },
+  {
+    "asset": "aircraft/BE20.jpg",
+    "source": "https://commons.wikimedia.org/wiki/File:G-WNCH_Beech_Super_King_Air_200_Synergy_Aircraft_Leasing_Ltd_(28419210132).jpg",
+    "file": "File:G-WNCH Beech Super King Air 200 Synergy Aircraft Leasing Ltd (28419210132).jpg",
+    "author": "James from Cheltenham, Gloucestershire",
+    "license": "CC BY-SA 2.0",
+    "license_url": "https://creativecommons.org/licenses/by-sa/2.0",
+    "sha256": "7a9d4156de02fb0606a747180bf7910bbac4bc08acc51b497b29ee1ba274e9ca"
+  },
+  {
+    "asset": "aircraft/BE36.jpg",
+    "source": "https://commons.wikimedia.org/wiki/File:Bizair_Aircraft_(VH-FIM)_Beech_A36_Bonanza_taxiing_at_Temora_Airport.jpg",
+    "file": "File:Bizair Aircraft (VH-FIM) Beech A36 Bonanza taxiing at Temora Airport.jpg",
+    "author": "Bidgee",
+    "license": "CC BY-SA 3.0 au",
+    "license_url": "https://creativecommons.org/licenses/by-sa/3.0/au/deed.en",
+    "sha256": "3812586979c77998fb2752dd4cc26104672ee462086e5142ddcb1905522892af"
+  },
+  {
+    "asset": "aircraft/C208.jpg",
+    "source": "https://commons.wikimedia.org/wiki/File:Los_Alamos_Cessna_208_2.JPG",
+    "file": "File:Los Alamos Cessna 208 2.JPG",
+    "author": "Dschwen",
+    "license": "CC BY-SA 4.0",
+    "license_url": "https://creativecommons.org/licenses/by-sa/4.0",
+    "sha256": "6e753fce5673b4a9a15526412b2d67839bace33ae39bf5ebe0901576d9198883"
+  },
+  {
+    "asset": "aircraft/C510.jpg",
+    "source": "https://commons.wikimedia.org/wiki/File:Cessna_510_Citation_Mustang_(N610PT,_cn_510-0172)_(12-8-2022).jpg",
+    "file": "File:Cessna 510 Citation Mustang (N610PT, cn 510-0172) (12-8-2022).jpg",
+    "author": "ZLEA",
+    "license": "CC0",
+    "license_url": "http://creativecommons.org/publicdomain/zero/1.0/deed.en",
+    "sha256": "8fbea797fa16f040cae8806efb594d6a5b4092323aa8d13235c2ea2196b07713"
+  },
+  {
+    "asset": "aircraft/PRM1.jpg",
+    "source": "https://commons.wikimedia.org/wiki/File:Raytheon_390_Premier_I_ZS-AVM_and_Beech_200_ZS-NTT_(14024922360)_(2).jpg",
+    "file": "File:Raytheon 390 Premier I ZS-AVM and Beech 200 ZS-NTT (14024922360) (2).jpg",
+    "author": "Bob Adams from Amanzimtoti, South Africa",
+    "license": "CC BY-SA 2.0",
+    "license_url": "https://creativecommons.org/licenses/by-sa/2.0",
+    "sha256": "bcc2c68f5bd6a1c6cd764c6dd4fc58507c827b77b31e6796d520f6a8741cd84d"
+  },
+  {
+    "asset": "aircraft/E195.jpg",
+    "source": "https://commons.wikimedia.org/wiki/File:SAS_Link_Embraer_195_SE-RSR_Oslo_Gardermoen_2024_(02).jpg",
+    "file": "File:SAS Link Embraer 195 SE-RSR Oslo Gardermoen 2024 (02).jpg",
+    "author": "Bahnfrend",
+    "license": "CC BY-SA 4.0",
+    "license_url": "https://creativecommons.org/licenses/by-sa/4.0",
+    "sha256": "f1c83e78f8319d1016c0665bc3ec3eebb30417b8ea130e78051c65079fda4c9f"
+  },
+  {
+    "asset": "aircraft/B77L.jpg",
+    "source": "https://commons.wikimedia.org/wiki/File:Delta_Airlines_Boeing_777-200LR_N702DN.jpg",
+    "file": "File:Delta Airlines Boeing 777-200LR N702DN.jpg",
+    "author": "BriYYZ",
+    "license": "CC BY-SA 2.0",
+    "license_url": "https://creativecommons.org/licenses/by-sa/2.0",
+    "sha256": "4e0711b2b15980433c47cc5ad4a7b6850bd6c5b67b29ba30a9d079f25cca00d0"
+  },
+  {
+    "asset": "drones/dji_mavic3.jpg",
+    "source": "https://commons.wikimedia.org/wiki/File:DJI_Mavic_3.jpg",
+    "file": "File:DJI Mavic 3.jpg",
+    "author": "HKesteloo",
+    "license": "CC BY-SA 4.0",
+    "license_url": "https://creativecommons.org/licenses/by-sa/4.0",
+    "sha256": "d2dd03b054b0c20fa0f6f630053552647a49d8b1eb3d0513ed48e24f9d0f2221"
+  },
+  {
+    "asset": "drones/dji_air.jpg",
+    "source": "https://commons.wikimedia.org/wiki/File:2024_Dron_DJI_Air_3_(02).jpg",
+    "file": "File:2024 Dron DJI Air 3 (02).jpg",
+    "author": "Jacek Halicki",
+    "license": "CC BY-SA 4.0",
+    "license_url": "https://creativecommons.org/licenses/by-sa/4.0",
+    "sha256": "7e10ede7da0dcbe0f8051546f7a27c828052025e266aae1ebc237d63ca47dc17"
+  },
+  {
+    "asset": "drones/bayraktar_tb2.jpg",
+    "source": "https://commons.wikimedia.org/wiki/File:Bayraktar_TB2_Runway.jpg",
+    "file": "File:Bayraktar TB2 Runway.jpg",
+    "author": "Bayhaluk",
+    "license": "CC BY-SA 4.0",
+    "license_url": "https://creativecommons.org/licenses/by-sa/4.0",
+    "sha256": "e0d8aa9989e5129beec8ed8afaf102d6129323d2557371d59238fe784281af4f"
+  },
+  {
+    "asset": "drones/hoverair_x1.jpg",
+    "source": "https://commons.wikimedia.org/wiki/File:HOVERAir_X1_Smart.jpg",
+    "file": "File:HOVERAir X1 Smart.jpg",
+    "author": "Kyu3a",
+    "license": "CC BY-SA 4.0",
+    "license_url": "https://creativecommons.org/licenses/by-sa/4.0",
+    "sha256": "4014d1bf76f939c36e9d3038adb17d46fdf3d3b4405c1e00693ecc02a8578245"
+  },
+  {
+    "asset": "drones/yuneec_typhoon.jpg",
+    "source": "https://commons.wikimedia.org/wiki/File:Yuneec_Typhoon_H_(2-2-2025).jpg",
+    "file": "File:Yuneec Typhoon H (2-2-2025).jpg",
+    "author": "ZLEA",
+    "license": "CC BY-SA 4.0",
+    "license_url": "https://creativecommons.org/licenses/by-sa/4.0",
+    "sha256": "ff77c5804b917ff6321b1b20395eb0677b5abd4bfeafeb79aeae4acd4b6f3848"
+  }
+]

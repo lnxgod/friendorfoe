@@ -37,7 +37,7 @@ class ContextualPermissionTest {
             FriendOrFoeTheme { WelcomeScreen(onGetStarted = {}) }
         }
 
-        compose.onNodeWithText("Continue").assertIsDisplayed()
+        compose.onNodeWithText("Get started").assertIsDisplayed()
         listOf("Camera for AR", "Nearby-device access", "Notifications", "Microphone")
             .forEach { text ->
                 compose.onNodeWithText(text, substring = true).assertDoesNotExist()
@@ -72,7 +72,7 @@ class ContextualPermissionTest {
         }
 
         compose.onNodeWithText("Camera for AR").assertIsDisplayed()
-        compose.onNodeWithContentDescription("About").performClick()
+        compose.onNodeWithContentDescription("More").performClick()
         compose.onNodeWithTag("screen_about").assertIsDisplayed()
     }
 

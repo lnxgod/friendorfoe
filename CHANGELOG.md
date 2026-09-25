@@ -7,16 +7,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Fixed
-- **Aircraft alerts and list priority now default to a 10-mile radius.** Adjust it
-  from 1 to 50 statute miles in About → App settings → Alerts; the setting is
-  saved, applies immediately, and can be reset to 10 miles.
-- Aircraft outside the selected radius receive no category or camera-focus
-  priority. Distance precedes confidence within each priority group, with
-  invalid or unknown distances last and stable identity ordering for ties.
-- Aircraft alerts require a valid distance within the selected radius,
-  including the boundary. Recent-location selection and the separate local
-  radio drone alert policy remain in effect.
-
 - **Flock/ALPR evidence now requires explicit Wi-Fi OUI proof.** Android,
   backend, ESP32 scanner, and badge policy now treat Flock Safety as the
   registered `B4:1E:52` OUI only, normalize common MAC formats, and reject
@@ -50,6 +40,46 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and web flasher manifests now identify the current production/app/backend
   release as `0.64.64-privacy-oui`; the FoF Badge track remains separate at
   `0.64.64-badge-privacy-oui`.
+
+## [0.67.23-android-interface-refresh] - 2026-09-25
+
+### Changed
+- Map search now opens on demand, leaving more room for aircraft and trails;
+  active filters remain visible. Search fields have a clear button and dismiss
+  the keyboard with Search; filter sheets have an explicit Done action.
+- Reference guides clearly show expandable details, recover from empty searches,
+  retain search/selection after screen recreation, and wrap metadata at large
+  text sizes. Passive drone metadata no longer looks like tappable controls.
+- Android opens on Nearby with five labeled tabs: Nearby, Map, Camera, Privacy,
+  and More. History, badge controls, settings and reference guides remain
+  accessible from More, with Back returning to the previous screen.
+- Aircraft rows emphasize identity, type and distance, use matching silhouettes,
+  and open details directly. The saved 1–50 mile alert/priority range can also
+  be changed from Nearby.
+- Light and dark surfaces use a consistent neutral palette. Settings start
+  with alerts; diagnostics and optional information expand on demand.
+  Map trail windows use a compact menu, preserving Off, Fit and Retry actions.
+- Onboarding keeps Get started visible while optional information scrolls.
+
+### Fixed
+- Reference guides and aircraft details keep visible artwork when photos are
+  missing or fail. Reviewed photo replacements, corrected model associations,
+  and labeled fallbacks prevent unrelated images from appearing as references.
+  Duplicate Kfir and DJI Neo entries no longer share list keys.
+- Dark maps use a neutral palette, and map marker outlines no longer clip at
+  their bitmap edges. Aircraft photos preserve the full airframe.
+- **Aircraft alerts and list priority now default to a 10-mile radius.** Adjust it
+  from 1 to 50 statute miles in More → App settings → Alerts; the setting is
+  saved, applies immediately, and can be reset to 10 miles.
+- Aircraft outside the selected radius receive no category or camera-focus
+  priority. Distance precedes confidence within each priority group, with
+  invalid or unknown distances last and stable identity ordering for ties.
+- Aircraft alerts require a valid distance within the selected radius,
+  including the boundary. Recent-location selection and the separate local
+  radio drone alert policy remain in effect.
+
+### Release
+- Android version code 131; signed with the existing production certificate.
 
 ## [0.67.22-android-map-trails] - 2026-09-18
 

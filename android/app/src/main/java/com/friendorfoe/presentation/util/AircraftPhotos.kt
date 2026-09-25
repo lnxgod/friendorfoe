@@ -101,39 +101,10 @@ private val AVAILABLE_PHOTOS: Set<String> = setOf(
 fun getAircraftPhotoUrl(typeCode: String?): String? {
     if (typeCode.isNullOrBlank()) return null
     val normalized = typeCode.trim().uppercase()
-    // Use AircraftDatabase as single source of truth for photo mapping
-    val dbEntry = AircraftDatabase.matchByTypeCode(normalized)
-    // Extract just the filename without path/extension from photoAsset (e.g., "aircraft/B738.jpg" → "B738")
-    val rawPhotoCode = dbEntry?.photoAsset
-        ?.substringAfterLast("/")
-        ?.substringBeforeLast(".")
-    val photoCode = if (!rawPhotoCode.isNullOrBlank()) rawPhotoCode else normalized
-
-    if (photoCode in AVAILABLE_PHOTOS) {
-        return "file:///android_asset/aircraft/$photoCode.jpg"
-    }
-    // Fuzzy match: try stripping trailing variant letter (B39M → B39, then B738 family)
-    val stripped = photoCode.replace(Regex("[A-Z]$"), "")
-    if (stripped != photoCode && stripped in AVAILABLE_PHOTOS) {
-        return "file:///android_asset/aircraft/$stripped.jpg"
-    }
-    // Try common prefix (first 3 chars) — e.g., MH60 matches UH60 family
-    val prefix = photoCode.take(3)
-    val prefixMatch = AVAILABLE_PHOTOS.firstOrNull { it.startsWith(prefix) }
-    if (prefixMatch != null) {
-        return "file:///android_asset/aircraft/$prefixMatch.jpg"
-    }
-    // Try without leading letter for military variants (CH53 → H53 → no, but SH60 → H60 → UH60)
-    if (photoCode.length >= 3) {
-        val noPrefix = photoCode.drop(1)
-        if (noPrefix in AVAILABLE_PHOTOS) {
-            return "file:///android_asset/aircraft/$noPrefix.jpg"
-        }
-        // Try known military helo prefix swaps: MH60/SH60/HH60 → UH60
-        val heloBase = photoCode.replace(Regex("^[MSH]H"), "UH")
-        if (heloBase != photoCode && heloBase in AVAILABLE_PHOTOS) {
-            return "file:///android_asset/aircraft/$heloBase.jpg"
-        }
-    }
-    return null
+    val reference = AircraftDatabase.matchByTypeCode(normalized)
+    if (reference != null) return aircraftReferencePhotoUrl(reference)
+    // Only exact known assets are safe. Prefix guessing can show unrelated aircraft.
+    return if (normalized in AVAILABLE_PHOTOS) {
+        bundledReferencePhotoUrl("aircraft/$normalized.jpg")
+    } else null
 }

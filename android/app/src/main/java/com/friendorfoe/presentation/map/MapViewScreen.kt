@@ -54,7 +54,6 @@ import com.friendorfoe.presentation.detail.AircraftDetailContent
 import com.friendorfoe.presentation.detail.DetailState
 import com.friendorfoe.presentation.detail.DetailViewModel
 import com.friendorfoe.presentation.detail.DroneDetailContent
-import com.friendorfoe.presentation.filter.FilterBar
 import com.friendorfoe.presentation.permissions.PermissionUiState
 import com.friendorfoe.presentation.permissions.isUsable
 import com.friendorfoe.domain.model.Position
@@ -348,22 +347,23 @@ fun MapViewScreen(
         }
     }
 
-    // Apply dark mode color filter to map tiles
+    // Neutral luminance keeps labels readable without inverting parks and water into neon hues.
     LaunchedEffect(isDarkTheme) {
         if (isDarkTheme) {
             mapView.overlayManager.tilesOverlay.setColorFilter(
                 android.graphics.ColorMatrixColorFilter(
                     android.graphics.ColorMatrix(floatArrayOf(
-                        -1f, 0f, 0f, 0f, 255f,
-                         0f,-1f, 0f, 0f, 255f,
-                         0f, 0f,-1f, 0f, 255f,
-                         0f, 0f, 0f, 1f,   0f
+                        -0.128f, -0.429f, -0.043f, 0f, 170f,
+                        -0.128f, -0.429f, -0.043f, 0f, 179f,
+                        -0.128f, -0.429f, -0.043f, 0f, 181f,
+                         0f,      0f,      0f,     1f,   0f
                     ))
                 )
             )
         } else {
             mapView.overlayManager.tilesOverlay.setColorFilter(null)
         }
+        mapView.invalidate()
     }
 
     androidx.compose.foundation.layout.Column(Modifier.fillMaxSize()) {
@@ -372,9 +372,9 @@ fun MapViewScreen(
             Modifier.fillMaxWidth()
                 .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.94f)),
         ) {
-            FilterBar(
-                filterState = filterState,
-                onFilterStateChange = { viewModel.updateFilter(it) },
+            MapWorkspaceControls(
+                filter = filterState,
+                onFilterChange = viewModel::updateFilter,
                 resultCount = mapTracks.size + formationPoints.size,
             )
             MapFlightTrailControls(trailWindow, flightTrails, viewModel::setTrailWindow, onFit = {
@@ -477,12 +477,12 @@ fun MapViewScreen(
                     .padding(16.dp)
                     .size(48.dp),
                 shape = CircleShape,
-                containerColor = if (followCompass) Color(0xFF2196F3) else Color(0xFF424242)
+                containerColor = if (followCompass) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerHigh
             ) {
                 Icon(
                     imageVector = if (followCompass) Icons.Filled.Navigation else Icons.Filled.Explore,
                     contentDescription = if (followCompass) "Disable compass follow" else "Follow compass",
-                    tint = Color.White,
+                    tint = if (followCompass) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface,
                     modifier = if (followCompass) Modifier.rotate(-stabilizedMapHeading) else Modifier
                 )
             }

@@ -1,5 +1,6 @@
 package com.friendorfoe.presentation.history
 
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -77,12 +78,14 @@ fun HistoryScreen(
     onNavigateToReferenceGuide: (() -> Unit)? = null,
     onNavigateToAbout: (() -> Unit)? = null,
     viewModel: HistoryViewModel = hiltViewModel(),
+    onBack: (() -> Unit)? = null,
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     var filtersOpen by rememberSaveable { mutableStateOf(false) }
 
     HistoryContent(
         state = state,
+        onBack = onBack,
         actions = HistoryActions(
             onQueryChanged = { query ->
                 viewModel.updateFilter(state.filter.copy(searchQuery = query))
@@ -112,6 +115,7 @@ fun HistoryScreen(
 internal fun HistoryContent(
     state: HistoryUiState,
     actions: HistoryActions,
+    onBack: (() -> Unit)? = null,
 ) {
     val headerCount = when (state.body) {
         CollectionBodyState.Loading, is CollectionBodyState.Failed -> null
@@ -122,6 +126,11 @@ internal fun HistoryContent(
             modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp, top = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
+            onBack?.let { back ->
+                androidx.compose.material3.IconButton(onClick = back) {
+                    Icon(androidx.compose.material.icons.Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                }
+            }
             Column(Modifier.weight(1f)) {
                 FofScreenHeader(
                     title = "History",
