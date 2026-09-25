@@ -1,27 +1,36 @@
 package com.friendorfoe.presentation.list
 
-import androidx.compose.foundation.background
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.ui.res.painterResource
+import com.friendorfoe.presentation.util.silhouetteDrawableRes
+import com.friendorfoe.presentation.util.silhouetteForTypeCode
+import com.friendorfoe.presentation.util.silhouetteForCategory
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.material.icons.filled.Tune
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.rememberModalBottomSheetState
+import androidx.compose.ui.text.style.TextOverflow
+import com.friendorfoe.domain.model.Aircraft
+import com.friendorfoe.domain.model.AircraftRange
+import com.friendorfoe.presentation.about.AircraftRangeControl
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Bluetooth
-import androidx.compose.material.icons.filled.CellTower
-import androidx.compose.material.icons.filled.Visibility
-import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -40,9 +49,6 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
@@ -60,11 +66,7 @@ import com.friendorfoe.presentation.components.FofEmptyState
 import com.friendorfoe.presentation.components.FofFailureState
 import com.friendorfoe.presentation.components.FofLoadingState
 import com.friendorfoe.presentation.components.FofNoMatchesState
-import com.friendorfoe.presentation.components.FofScreenHeader
 import com.friendorfoe.presentation.components.FofStaleBanner
-import com.friendorfoe.presentation.ar.ObjectPeek
-import com.friendorfoe.presentation.ar.ObjectPeekState
-import com.friendorfoe.presentation.ar.objectPeekEvidence
 import com.friendorfoe.presentation.filter.CompactFilterBar
 import com.friendorfoe.presentation.filter.FilterModalSheet
 import com.friendorfoe.presentation.permissions.AppFeature
@@ -72,8 +74,6 @@ import com.friendorfoe.presentation.permissions.PermissionSettingsLaunchResult
 import com.friendorfoe.presentation.permissions.PermissionUiState
 import com.friendorfoe.presentation.permissions.isUsableFor
 import com.friendorfoe.presentation.permissions.rememberPermissionBindings
-import com.friendorfoe.presentation.util.categoryBadge
-import com.friendorfoe.presentation.util.categoryColor
 import java.time.Duration
 import java.time.Instant
 
@@ -86,6 +86,7 @@ fun ListViewScreen(
     viewModel: ListViewModel = hiltViewModel(),
 ) {
     val skyObjects by viewModel.skyObjects.collectAsStateWithLifecycle()
+    val preferences by viewModel.settings.collectAsStateWithLifecycle()
     val activeVisualFocusIds by viewModel.activeVisualFocusIds.collectAsStateWithLifecycle()
     val filterState by viewModel.filterState.collectAsStateWithLifecycle()
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -137,8 +138,11 @@ fun ListViewScreen(
             body = body,
             locationPermissionState = locationPermissionState,
             locationSettingsLaunchFailed = locationSettingsLaunchFailed,
+            aircraftRangeMiles = preferences.aircraftRangeMiles,
         ),
         actions = ListActions(
+            onSetAircraftRangeMiles = viewModel::setAircraftRangeMiles,
+            onOpenSettings = onNavigateToAbout,
             onQueryChanged = { viewModel.updateFilter(filterState.copy(searchQuery = it)) },
             onOpenFilters = { filtersOpen = true },
             onClearFilters = { viewModel.updateFilter(filterState.cleared()) },
@@ -190,54 +194,45 @@ internal fun ListDestinationContent(
     onFullDetails: (String) -> Unit,
     activeVisualFocusIds: Set<String> = emptySet(),
 ) {
-    var peekObject by remember { mutableStateOf<SkyObject?>(null) }
     ListContent(
         state = state,
-        actions = actions.copy(onOpenPeek = { peekObject = it }),
+        actions = actions.copy(onOpenPeek = { onFullDetails(it.id) }),
         activeVisualFocusIds = activeVisualFocusIds,
     )
-    peekObject?.let { skyObject ->
-        val openDetails = {
-            peekObject = null
-            onFullDetails(skyObject.id)
-        }
-        ObjectPeek(
-            state = ObjectPeekState(
-                objectId = skyObject.id,
-                title = listPrimaryText(skyObject),
-                evidence = objectPeekEvidence(skyObject.source),
-                canCapture = false,
-            ),
-            onInspect = openDetails,
-            onCapture = {},
-            onFullDetails = openDetails,
-            onDismiss = { peekObject = null },
-        )
-    }
 }
 
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 internal fun ListContent(
     state: ListUiState,
     actions: ListActions,
     activeVisualFocusIds: Set<String> = emptySet(),
 ) {
+    var rangeOpen by rememberSaveable { mutableStateOf(false) }
     val visibleCount = visibleListCount(state.body)
     val headerCount = when (state.body) {
         ListBodyState.Loading, is ListBodyState.Failed -> null
         else -> visibleCount
     }
     Column(modifier = Modifier.fillMaxSize()) {
-        Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp)) {
-            FofScreenHeader(
-                title = "List",
-                count = headerCount,
-                countLabel = if (headerCount == 1) "object" else "objects",
-            )
+        FlowRow(
+            Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 12.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalArrangement = Arrangement.Center,
+        ) {
+            Column(Modifier.padding(end = 12.dp, bottom = 4.dp)) {
+                Text("Nearby", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold)
+                Text(headerCount?.let { "$it detections" } ?: "Aircraft & drones",
+                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            TextButton(onClick = { rangeOpen = true }, modifier = Modifier.heightIn(min = 48.dp).testTag("nearby_range")) {
+                Icon(Icons.Default.Tune, contentDescription = null, modifier = Modifier.size(18.dp))
+                Text("${state.aircraftRangeMiles} mi range", modifier = Modifier.padding(start = 6.dp))
+            }
         }
         CompactFilterBar(
             filterState = state.filter,
-            resultCount = headerCount?.let { visibleCount },
+            resultCount = null,
             activeFilterCount = state.activeFilterCount,
             onQueryChanged = actions.onQueryChanged,
             onOpenFilters = actions.onOpenFilters,
@@ -271,6 +266,7 @@ internal fun ListContent(
             ) {
                 FofEmptyState(
                     title = "No nearby detections",
+                    modifier = Modifier.padding(horizontal = 24.dp),
                     detail = "Aircraft and drones will appear here when detected nearby.",
                 )
             }
@@ -279,6 +275,21 @@ internal fun ListContent(
                 onClearFilters = actions.onClearFilters,
             )
             is ListBodyState.Failed -> FofFailureState(body.message)
+        }
+    }
+    if (rangeOpen) {
+        ModalBottomSheet(
+            onDismissRequest = { rangeOpen = false },
+            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        ) {
+            Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 24.dp, vertical = 8.dp)) {
+                Text("Aircraft range", style = MaterialTheme.typography.titleLarge)
+                AircraftRangeControl(state.aircraftRangeMiles, actions.onSetAircraftRangeMiles)
+                actions.onOpenSettings?.let { open ->
+                    TextButton(onClick = { rangeOpen = false; open() }) { Text("Notification settings") }
+                }
+                TextButton(onClick = { rangeOpen = false }, modifier = Modifier.align(Alignment.End)) { Text("Done") }
+            }
         }
     }
 }
@@ -297,7 +308,7 @@ private fun ListLocationRecoveryBanner(
 
         PermissionUiState.Loading -> Text(
             "Checking location access for nearby distances…",
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+            modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -307,7 +318,7 @@ private fun ListLocationRecoveryBanner(
         -> Surface(
             color = MaterialTheme.colorScheme.surfaceVariant,
             shape = RoundedCornerShape(12.dp),
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+            modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
         ) {
             Row(
                 modifier = Modifier.padding(12.dp),
@@ -365,7 +376,7 @@ private fun ListRows(
                 FofStaleBanner(
                     message = staleMessage,
                     ageMs = staleAgeMs,
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
                 )
             }
         }
@@ -389,96 +400,46 @@ private fun SkyObjectItem(
     isVisuallyConfirmed: Boolean,
     onClick: () -> Unit,
 ) {
-    val attentionColor = listAttentionColor(skyObject)
-    val rowBackground = attentionColor
-        ?.let { color ->
-            Modifier.background(
-                color.copy(alpha = if (skyObject.category == ObjectCategory.EMERGENCY) 0.10f else 0.08f),
-            )
-        }
-        ?: Modifier
-
+    val category = listAttentionLabel(skyObject) ?: listCategoryLabel(skyObject.category)
+    val name = when (skyObject) {
+        is Aircraft -> skyObject.callsign?.trim()?.takeIf(String::isNotEmpty)
+            ?: skyObject.registration?.takeIf(String::isNotBlank) ?: skyObject.icaoHex
+        else -> listPrimaryText(skyObject)
+    }
+    val description = listOf(category, listSecondaryText(skyObject))
+        .filterNot { it.startsWith("Unknown ") }.distinct().joinToString(" · ")
     Row(
-        modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).then(rowBackground)
+        Modifier.fillMaxWidth().heightIn(min = 88.dp)
             .clickable(onClick = onClick).testTag("list_row_${skyObject.id}")
-            .padding(horizontal = 16.dp, vertical = 10.dp),
+            .padding(horizontal = 20.dp, vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Box(
-            modifier = Modifier.size(12.dp).clip(CircleShape)
-                .background(attentionColor ?: categoryColor(skyObject.category)),
+        Icon(
+            painter = painterResource(silhouetteDrawableRes(
+                (skyObject as? Aircraft)?.aircraftType?.let(::silhouetteForTypeCode)
+                    ?: silhouetteForCategory(skyObject.category))),
+            contentDescription = null, modifier = Modifier.size(28.dp),
+            tint = if (skyObject.category == ObjectCategory.EMERGENCY) MaterialTheme.colorScheme.error
+                else MaterialTheme.colorScheme.onSurfaceVariant,
         )
-        Spacer(Modifier.width(12.dp))
-        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    text = listPrimaryText(skyObject),
-                    style = MaterialTheme.typography.bodyLarge,
-                    fontWeight = FontWeight.Medium,
-                    modifier = Modifier.weight(1f, fill = false),
-                )
-                val badge = listBadgeVisual(skyObject)?.let { it.label to it.color }
-                    ?: categoryBadge(skyObject.category)
-                if (badge != null) {
-                    Spacer(Modifier.width(6.dp))
-                    Text(
-                        text = badge.first,
-                        style = MaterialTheme.typography.labelSmall,
-                        fontWeight = FontWeight.Bold,
-                        color = Color.White,
-                        modifier = Modifier.background(badge.second, RoundedCornerShape(4.dp))
-                            .padding(horizontal = 4.dp, vertical = 1.dp),
-                    )
-                }
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold,
+                maxLines = 2, overflow = TextOverflow.Ellipsis)
+            Text(description, style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            Text("${listSourceLabel(skyObject.source)} · ${formatAltitude(skyObject.position.altitudeMeters)}",
+                style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            if (isVisuallyConfirmed) {
+                Text("Camera confirmed", style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.primary)
             }
-            Text(
-                text = listSecondaryText(skyObject),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Text(
-                text = listCategoryLabel(skyObject.category),
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(
-                    imageVector = detectionSourceIcon(skyObject.source),
-                    contentDescription = null,
-                    modifier = Modifier.size(14.dp),
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Spacer(Modifier.width(4.dp))
-                Text(
-                    text = listSourceLabel(skyObject.source),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            listAttentionLabel(skyObject)
-                ?.takeUnless { it == listCategoryLabel(skyObject.category) }
-                ?.let { label ->
-                Text(
-                    text = label,
-                    style = MaterialTheme.typography.labelSmall,
-                    fontWeight = FontWeight.Bold,
-                    color = attentionColor ?: MaterialTheme.colorScheme.onSurface,
-                )
-            }
-            Text(
-                text = listObservationText(skyObject),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
         }
-        if (isVisuallyConfirmed) {
-            Spacer(Modifier.width(8.dp))
-            Icon(
-                imageVector = Icons.Default.Visibility,
-                contentDescription = "Camera confirmed",
-                modifier = Modifier.size(20.dp),
-                tint = Color(0xFF43A047),
-            )
+        Column(Modifier.widthIn(max = 112.dp), horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(listDistanceLabel(skyObject.distanceMeters), style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.SemiBold, modifier = Modifier.testTag("list_distance_${skyObject.id}"))
+            Text(formatAge(skyObject.lastUpdated), style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
 }
@@ -489,35 +450,23 @@ private fun visibleListCount(body: ListBodyState): Int = when (body) {
     else -> 0
 }
 
-private fun listObservationText(skyObject: SkyObject): String = buildList {
-    add(formatAltitude(skyObject.position.altitudeMeters))
-    skyObject.distanceMeters?.let { add(formatDistance(it)) }
-    add(formatAge(skyObject.lastUpdated))
-}.joinToString(" · ")
-
 private fun formatAltitude(altitudeMeters: Double): String {
+    if (!altitudeMeters.isFinite()) return "Altitude unknown"
     val feet = (altitudeMeters * 3.281).toInt()
     return if (feet >= 18_000) "FL${feet / 100}" else "${"%,d".format(feet)} ft"
 }
 
-private fun formatDistance(distanceMeters: Double): String = if (distanceMeters > 800.0) {
-    val miles = distanceMeters / 1609.344
-    if (miles >= 10.0) "${"%.0f".format(miles)} mi" else "${"%.1f".format(miles)} mi"
-} else {
-    "${distanceMeters.toInt()} m"
+internal fun listDistanceLabel(distanceMeters: Double?): String = when {
+    distanceMeters == null || !distanceMeters.isFinite() || distanceMeters < 0.0 -> "Unknown"
+    distanceMeters < 800.0 -> "${distanceMeters.toInt()} m"
+    else -> "${"%.1f".format(distanceMeters / AircraftRange.METERS_PER_MILE)} mi"
 }
 
 private fun formatAge(lastUpdated: Instant, now: Instant = Instant.now()): String {
     val ageSeconds = Duration.between(lastUpdated, now).seconds.coerceAtLeast(0L)
     return when {
-        ageSeconds < 60L -> "Updated now"
-        ageSeconds < 3_600L -> "Updated ${ageSeconds / 60L} min ago"
-        else -> "Updated ${ageSeconds / 3_600L} hr ago"
+        ageSeconds < 60L -> "Just now"
+        ageSeconds < 3_600L -> "${ageSeconds / 60L}m ago"
+        else -> "${ageSeconds / 3_600L}h ago"
     }
-}
-
-private fun detectionSourceIcon(source: DetectionSource): ImageVector = when (source) {
-    DetectionSource.ADS_B -> Icons.Default.CellTower
-    DetectionSource.REMOTE_ID -> Icons.Default.Bluetooth
-    DetectionSource.WIFI_NAN, DetectionSource.WIFI_BEACON, DetectionSource.WIFI -> Icons.Default.Wifi
 }

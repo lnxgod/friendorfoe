@@ -372,6 +372,9 @@ fun MapViewScreen(
             Modifier.fillMaxWidth()
                 .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.94f)),
         ) {
+            androidx.compose.foundation.layout.Column(Modifier.padding(horizontal = 20.dp, vertical = 12.dp)) {
+                com.friendorfoe.presentation.components.FofScreenHeader(title = "Map")
+            }
             FilterBar(
                 filterState = filterState,
                 onFilterStateChange = { viewModel.updateFilter(it) },

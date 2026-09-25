@@ -15,6 +15,9 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
@@ -66,6 +69,7 @@ internal fun boundedBadgeActivityFeed(
 @Composable
 fun BadgeControlScreen(
     initialFocusKey: String? = null,
+    onBack: (() -> Unit)? = null,
     viewModel: BadgeControlViewModel = hiltViewModel(),
 ) {
     val state by viewModel.badgeState.collectAsStateWithLifecycle()
@@ -108,7 +112,7 @@ fun BadgeControlScreen(
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         item {
-            BadgeHeader(isBackendLite)
+            BadgeHeader(isBackendLite, onBack)
         }
         item {
             BadgeStatusSection(
@@ -228,7 +232,7 @@ fun BadgeControlScreen(
 }
 
 @Composable
-internal fun BadgeHeader(isBackendLite: Boolean = false) {
+internal fun BadgeHeader(isBackendLite: Boolean = false, onBack: (() -> Unit)? = null) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -236,6 +240,11 @@ internal fun BadgeHeader(isBackendLite: Boolean = false) {
         horizontalArrangement = Arrangement.spacedBy(10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        onBack?.let { back ->
+            IconButton(onClick = back) {
+                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+            }
+        }
         Icon(
             imageVector = BadgeMarkIcon,
             contentDescription = null,

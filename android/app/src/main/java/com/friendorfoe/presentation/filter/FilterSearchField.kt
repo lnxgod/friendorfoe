@@ -24,9 +24,8 @@ fun FilterSearchField(
         value = query,
         onValueChange = onQueryChange,
         modifier = modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 8.dp),
-        placeholder = { Text("Search...") },
+            .fillMaxWidth(),
+        placeholder = { Text("Search detections", maxLines = 1) },
         leadingIcon = { Icon(Icons.Default.Search, contentDescription = "Search") },
         singleLine = true,
         shape = RoundedCornerShape(12.dp),

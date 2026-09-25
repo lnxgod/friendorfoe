@@ -86,40 +86,27 @@ fun CompactFilterBar(
     modifier: Modifier = Modifier,
 ) {
     Column(modifier = modifier.fillMaxWidth()) {
-        FilterSearchField(
-            query = filterState.searchQuery,
-            onQueryChange = onQueryChanged,
-        )
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            if (resultCount != null) {
-                Text(
-                    text = if (resultCount == 1) "1 result" else "$resultCount results",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+        Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically) {
+            FilterSearchField(query = filterState.searchQuery, onQueryChange = onQueryChanged,
+                modifier = Modifier.weight(1f))
+            androidx.compose.material3.IconButton(onClick = onOpenFilters,
+                modifier = Modifier.padding(start = 8.dp).heightIn(min = 48.dp).testTag("filter_open")) {
+                Icon(Icons.Default.FilterList, contentDescription =
+                    if (activeFilterCount == 0) "Filters" else "Filters, $activeFilterCount active")
             }
-            Spacer(Modifier.weight(1f))
-            if (activeFilterCount > 0) {
-                TextButton(
-                    onClick = onClearFilters,
-                    modifier = Modifier.heightIn(min = 48.dp).testTag("filter_clear"),
-                ) {
-                    Text("Clear filters")
+        }
+        if (resultCount != null || activeFilterCount > 0) {
+            Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text(listOfNotNull(resultCount?.let { if (it == 1) "1 result" else "$it results" },
+                    activeFilterCount.takeIf { it > 0 }?.let { "$it filters active" }).joinToString(" · "),
+                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(Modifier.weight(1f))
+                if (activeFilterCount > 0) {
+                    TextButton(onClick = onClearFilters,
+                        modifier = Modifier.heightIn(min = 48.dp).testTag("filter_clear")) { Text("Clear filters") }
                 }
             }
-            AssistChip(
-                onClick = onOpenFilters,
-                label = {
-                    Text(if (activeFilterCount == 0) "Filters" else "Filters $activeFilterCount")
-                },
-                leadingIcon = {
-                    Icon(Icons.Default.FilterList, contentDescription = null)
-                },
-                modifier = Modifier.heightIn(min = 48.dp).testTag("filter_open"),
-            )
         }
     }
 }

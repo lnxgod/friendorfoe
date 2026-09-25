@@ -31,6 +31,7 @@ import com.friendorfoe.presentation.navigation.FofNavigationSuite
 import com.friendorfoe.presentation.navigation.MainNavGraph
 import com.friendorfoe.presentation.navigation.TopLevelDestination
 import com.friendorfoe.presentation.navigation.backDisposition
+import com.friendorfoe.presentation.navigation.primaryDestinations
 import com.friendorfoe.presentation.navigation.navigateTopLevel
 import com.friendorfoe.presentation.privacy.PendingPrivacyRouteQueue
 import com.friendorfoe.presentation.privacy.PrivacyLaunchIntentPayload
@@ -154,7 +155,7 @@ fun MainApplicationShell(
     val graphStartRoute = rememberSaveable { sanitizeTopLevelRoute(startRoute) }
     val entry by navController.currentBackStackEntryAsState()
     val currentRoute = entry?.destination?.route
-    val isTopLevel = currentRoute in TopLevelDestination.entries.map { it.route }
+    val isTopLevel = currentRoute in primaryDestinations.map { it.route }
     val activity = LocalContext.current as? Activity
 
     PendingPrivacyRouteNavigationEffect(

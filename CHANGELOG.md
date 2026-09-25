@@ -6,9 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+- Android opens on Nearby with five labeled tabs: Nearby, Map, Camera, Privacy,
+  and More. History, badge controls, settings and reference guides remain
+  accessible from More, with Back returning to the previous screen.
+- Aircraft rows emphasize identity, type and distance, use matching silhouettes,
+  and open details directly. The saved 1–50 mile alert/priority range can also
+  be changed from Nearby.
+- Light and dark surfaces use a consistent neutral palette. Settings start
+  with alerts; diagnostics and optional information expand on demand.
+  Map trail windows use a compact menu, preserving Off, Fit and Retry actions.
+- Onboarding keeps Get started visible while optional information scrolls.
+
 ### Fixed
 - **Aircraft alerts and list priority now default to a 10-mile radius.** Adjust it
-  from 1 to 50 statute miles in About → App settings → Alerts; the setting is
+  from 1 to 50 statute miles in More → App settings → Alerts; the setting is
   saved, applies immediately, and can be reset to 10 miles.
 - Aircraft outside the selected radius receive no category or camera-focus
   priority. Distance precedes confidence within each priority group, with

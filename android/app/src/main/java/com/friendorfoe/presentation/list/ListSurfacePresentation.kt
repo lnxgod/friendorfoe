@@ -30,6 +30,7 @@ data class ListUiState(
     val body: ListBodyState = ListBodyState.Loading,
     val locationPermissionState: PermissionUiState = PermissionUiState.Loading,
     val locationSettingsLaunchFailed: Boolean = false,
+    val aircraftRangeMiles: Int = AircraftRange.DEFAULT_MILES,
 )
 
 data class ListActions(
@@ -37,6 +38,8 @@ data class ListActions(
     val onOpenFilters: () -> Unit = {},
     val onClearFilters: () -> Unit = {},
     val onOpenPeek: (SkyObject) -> Unit = {},
+    val onSetAircraftRangeMiles: (Int) -> Unit = {},
+    val onOpenSettings: (() -> Unit)? = null,
     val onRequestLocation: () -> Unit = {},
     val onOpenLocationSettings: () -> PermissionSettingsLaunchResult = {
         PermissionSettingsLaunchResult.Failed

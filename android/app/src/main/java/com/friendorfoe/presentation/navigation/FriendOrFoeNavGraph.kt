@@ -3,8 +3,6 @@ package com.friendorfoe.presentation.navigation
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.animation.slideInHorizontally
-import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
@@ -74,16 +72,16 @@ fun MainNavGraph(
         navController = navController,
         startDestination = MAIN_GRAPH_ROUTE,
         modifier = modifier,
-        enterTransition = { fadeIn(tween(300)) + slideInHorizontally { it / 4 } },
-        exitTransition = { fadeOut(tween(200)) },
-        popEnterTransition = { fadeIn(tween(300)) + slideInHorizontally { -it / 4 } },
-        popExitTransition = { fadeOut(tween(200)) + slideOutHorizontally { it / 4 } },
+        enterTransition = { fadeIn(tween(160)) },
+        exitTransition = { fadeOut(tween(100)) },
+        popEnterTransition = { fadeIn(tween(160)) },
+        popExitTransition = { fadeOut(tween(100)) },
     ) {
         navigation(
             route = MAIN_GRAPH_ROUTE,
             startDestination = sanitizeTopLevelRoute(startRoute),
         ) {
-            registerSevenTopLevelDestinations(navController)
+            registerDestinations(navController)
             registerSecondaryDestinations(navController)
         }
     }
@@ -95,7 +93,7 @@ internal fun TopLevelRouteRoot(
     content: @Composable () -> Unit,
 ) {
     Box(
-        Modifier.fillMaxSize().testTag("screen_${destination.label.lowercase()}"),
+        Modifier.fillMaxSize().testTag("screen_${destination.name.lowercase()}"),
     ) { content() }
 }
 
@@ -117,7 +115,7 @@ internal fun ArPermissionRoute(
     }
 }
 
-private fun NavGraphBuilder.registerSevenTopLevelDestinations(
+private fun NavGraphBuilder.registerDestinations(
     navController: NavHostController,
 ) {
     composable(Screen.ArView.route) {
@@ -180,7 +178,7 @@ private fun NavGraphBuilder.registerSevenTopLevelDestinations(
                     navController.navigate(REFERENCE_GUIDE_BASE_ROUTE) { launchSingleTop = true }
                 },
                 onNavigateToAbout = {
-                    navigateTopLevel(navController, TopLevelDestination.ABOUT)
+                    navController.navigate(Screen.AboutSettings.route) { launchSingleTop = true }
                 },
             )
         }
@@ -204,24 +202,25 @@ private fun NavGraphBuilder.registerSevenTopLevelDestinations(
     }
 
     composable(Screen.Badge.route) {
-        TopLevelRouteRoot(TopLevelDestination.BADGE) {
-            BadgeControlScreen()
+        Box(Modifier.fillMaxSize().testTag("screen_badge")) {
+            BadgeControlScreen(onBack = navController::popBackStack)
         }
     }
 
     composable(Screen.History.route) {
-        TopLevelRouteRoot(TopLevelDestination.HISTORY) {
-            HistoryScreen(
-                onEntryTapped = { historyId ->
-                    navController.navigate(Screen.HistoricalDetail.createRoute(historyId))
-                },
-                onNavigateToReferenceGuide = {
-                    navController.navigate(REFERENCE_GUIDE_BASE_ROUTE) { launchSingleTop = true }
-                },
-                onNavigateToAbout = {
-                    navigateTopLevel(navController, TopLevelDestination.ABOUT)
-                },
-            )
+        Column(Modifier.fillMaxSize().testTag("screen_history")) {
+            Box(Modifier.weight(1f)) {
+                HistoryScreen(
+                    onBack = navController::popBackStack,
+                    onEntryTapped = { navController.navigate(Screen.HistoricalDetail.createRoute(it)) },
+                    onNavigateToReferenceGuide = {
+                        navController.navigate(REFERENCE_GUIDE_BASE_ROUTE) { launchSingleTop = true }
+                    },
+                    onNavigateToAbout = {
+                        navController.navigate(Screen.AboutSettings.route) { launchSingleTop = true }
+                    },
+                )
+            }
         }
     }
 
@@ -268,6 +267,8 @@ internal fun AboutTopLevelRoute(
                 .ifBlank { BuildConfig.VERSION_NAME },
             updateState = state.updateState,
             actions = AboutLandingActions(
+                onOpenHistory = { navController.navigate(Screen.History.route) { launchSingleTop = true } },
+                onOpenBadge = { navController.navigate(Screen.Badge.route) { launchSingleTop = true } },
                 onOpenSettings = {
                     navController.navigate(Screen.AboutSettings.route) { launchSingleTop = true }
                 },
@@ -467,7 +468,7 @@ private fun NavGraphBuilder.registerSecondaryDestinations(
         arguments = listOf(navArgument("focusKey") { type = NavType.StringType }),
     ) { backStackEntry ->
         val focusKey = backStackEntry.arguments?.getString("focusKey")
-        BadgeControlScreen(initialFocusKey = focusKey)
+        BadgeControlScreen(initialFocusKey = focusKey, onBack = navController::popBackStack)
     }
 
     composable(Screen.Calibrate.route) {

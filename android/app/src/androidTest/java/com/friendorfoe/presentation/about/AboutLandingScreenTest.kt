@@ -19,7 +19,7 @@ class AboutLandingScreenTest {
     val compose = createComposeRule()
 
     @Test
-    fun landingShowsTheAboutIdentityEvidenceCaveatAndActions() {
+    fun moreShowsDailyToolsBeforeSupportAndKeepsActions() {
         var settingsOpened = 0
 
         compose.setContent {
@@ -33,18 +33,17 @@ class AboutLandingScreenTest {
         }
 
         compose.onNodeWithTag("about_landing").assertIsDisplayed()
-        compose.onNodeWithTag("about_triforce").assertIsDisplayed()
         compose.onNodeWithText("Friend or Foe").assertIsDisplayed()
-        compose.onNodeWithText(
-            "Were you at our DEF CON talk? Thank you for coming—we're glad you're here.",
-        ).assertIsDisplayed()
-        compose.onNodeWithText(
-            "Observations are evidence, not proof of identity, intent, or ownership.",
-        ).assertIsDisplayed()
         compose.onNodeWithTag("about_app_settings").assertIsDisplayed().performClick()
+        compose.onNodeWithTag("more_history").assertIsDisplayed()
+        compose.onNodeWithTag("more_badge").assertIsDisplayed()
         compose.onNodeWithTag("about_reference").assertIsDisplayed()
-        compose.onNodeWithTag("about_contact").assertIsDisplayed()
-        compose.onNodeWithTag("about_github").assertIsDisplayed()
+        compose.onNodeWithTag("about_contact").assertDoesNotExist()
+        compose.onNodeWithTag("more_support").performScrollTo().performClick()
+        compose.onNodeWithText("Observations are evidence, not proof of identity, intent, or ownership.")
+            .performScrollTo().assertIsDisplayed()
+        compose.onNodeWithTag("about_contact").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithTag("about_github").performScrollTo().assertIsDisplayed()
         compose.runOnIdle { assertEquals(1, settingsOpened) }
     }
 
