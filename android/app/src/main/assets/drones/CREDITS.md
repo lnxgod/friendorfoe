@@ -11,15 +11,15 @@ Licensed under Creative Commons or Public Domain.
 | autel_evo_max4t | Autel EVO Max 4T drone | ZLEA / CC BY-SA 4.0 / https://commons.wikimedia.org/wiki/File:Autel_EVO_II_Pro_Enterprise_V3_(FA3XWRMFNT)_(2-2-2024).jpg |
 | autel_evo_nano | Autel EVO Nano drone | Richard Keatinge / CC BY-SA 4.0 / https://commons.wikimedia.org/wiki/File:Western_ramparts_of_Dinorwic_hill_fort_from_the_SE.JPG |
 | bayraktar_akinci | Bayraktar Akinci drone | Press Service of the President of the Republic of Azerbaijan / CC BY 4.0 / https://commons.wikimedia.org/wiki/File:Bayraktar_Ak%C4%B1nc%C4%B1_in_Azerbaijani_Air_Force_2.jpg |
-| bayraktar_tb2 | Bayraktar TB2 drone | Lolagpk35 / CC BY-SA 4.0 / https://commons.wikimedia.org/wiki/File:Utilisateurs_du_Bayraktar_TB2.png |
+| bayraktar_tb2 | Bayraktar TB2 drone | Bayhaluk / CC BY-SA 4.0 / https://commons.wikimedia.org/wiki/File:Bayraktar_TB2_Runway.jpg |
 | bayraktar_tb3 | Bayraktar TB3 drone | Wikimedia Commons / CC BY-SA 4.0 / https://commons.wikimedia.org/wiki/File:Baykar_Bayraktar_TB3_Teknofest_2025.jpg |
 | dji_agras_t40 | DJI Agras T40/T50 ag drone | Blervis / CC0 / https://commons.wikimedia.org/wiki/File:DJI_Agras_T50_in_flight.jpg |
-| dji_air | DJI Air 3 drone | Jacek Halicki / CC BY-SA 4.0 / https://commons.wikimedia.org/wiki/File:2024_Dron_DJI_Air_3S_(3).jpg |
+| dji_air | DJI Air 3 drone | Jacek Halicki / CC BY-SA 4.0 / https://commons.wikimedia.org/wiki/File:2024_Dron_DJI_Air_3_(02).jpg |
 | dji_air2 | DJI Air 2 / Mavic Air 2 | C.Stadler/Bwag / CC BY-SA 4.0 / https://commons.wikimedia.org/wiki/File:DJI_-_Drohne_Mavic_Air_2_(b).JPG |
 | dji_fpv | DJI FPV drone | KKPCW / CC BY-SA 4.0 / https://commons.wikimedia.org/wiki/File:DJI_FPV_-_1.jpg |
 | dji_inspire3 | DJI Inspire 3 drone | Don Ramey Logan / CC BY 4.0 / https://commons.wikimedia.org/wiki/File:Oreo_the_Kitty_and_a_DJI_Inspire_1_pro_Drone_D_Ramey_Logan.jpg |
 | dji_matrice | DJI Matrice 300 RTK drone | Territorial Defence Forces of Ukraine / CC BY 4.0 / https://commons.wikimedia.org/wiki/File:UA_army_DJI_Matrice_300_RTK_(1).jpg |
-| dji_mavic3 | DJI Mavic 3 drone | C.Stadler/Bwag / CC BY-SA 4.0 / https://commons.wikimedia.org/wiki/File:DJI_-_Drohne_Mavic_4_Pro.JPG |
+| dji_mavic3 | DJI Mavic 3 drone | HKesteloo / CC BY-SA 4.0 / https://commons.wikimedia.org/wiki/File:DJI_Mavic_3.jpg |
 | dji_mavic_air2s | DJI Mavic Air 2S drone | C.Stadler/Bwag / CC BY-SA 4.0 / https://commons.wikimedia.org/wiki/File:DJI_-_Drohne_Mavic_Air_2.JPG |
 | dji_mini3 | DJI Mini 3 drone | Wikimedia Commons / CC BY-SA 4.0 / https://commons.wikimedia.org/wiki/File:Drone_dji_mini_3_pro.jpg |
 | dji_mini4 | DJI Mini 4 Pro drone | Jacek Halicki / CC BY-SA 4.0 / https://commons.wikimedia.org/wiki/File:2024_Dron_DJI_Mini_4_Pro_(14).jpg |
@@ -28,7 +28,7 @@ Licensed under Creative Commons or Public Domain.
 | fimi_x8 | FIMI X8 drone Xiaomi | Syrio / CC BY-SA 4.0 / https://commons.wikimedia.org/wiki/File:FIMI_X8_SE_hovering_01.jpg |
 | heron | IAI Heron drone Israel | SSGT REYNALDO RAMON, USAF / Public domain / https://commons.wikimedia.org/wiki/File:IAI_Heron_1_in_flight_2.JPEG |
 | holy_stone | Holy Stone drone quadcopter | Wikimedia Commons (see source file) |
-| hoverair_x1 | HOVERAir X1 selfie drone | Wikimedia Commons (see source file) |
+| hoverair_x1 | HOVERAir X1 selfie drone | Kyu3a / CC BY-SA 4.0 / https://commons.wikimedia.org/wiki/File:HOVERAir_X1_Smart.jpg |
 | hubsan | Hubsan Zino drone | Hohepa3580 / CC BY-SA 4.0 / https://commons.wikimedia.org/wiki/File:Sommatino-panorama.jpg |
 | lancet | ZALA Lancet drone | Mztourist / CC BY 4.0 / https://commons.wikimedia.org/wiki/File:ZALA_drones_at_IDEX_2025.jpg |
 | mohajer_6 | Mohajer-6 drone Iran | Tasnim News Agency / CC BY 4.0 / https://commons.wikimedia.org/wiki/File:6-(Drone_Mohajer_6-_Army_ground_force).jpg |
@@ -54,5 +54,5 @@ Licensed under Creative Commons or Public Domain.
 | wing_loong | Wing Loong II drone China | Wikimedia Commons (see source file) |
 | wingtraone | WingtraOne VTOL mapping drone | Emily Loosli / CC BY-SA 4.0 / https://commons.wikimedia.org/wiki/File:WingtraOne_drone.jpg |
 | xq58_valkyrie | XQ-58 Valkyrie drone | U.S. Air Force / Public domain / https://commons.wikimedia.org/wiki/File:XQ-58A_Valkyrie_demonstrator_first_flight.jpg |
-| yuneec_typhoon | Yuneec Typhoon H drone | Timo Rüßler / CC BY-SA 3.0 / https://commons.wikimedia.org/wiki/File:Two_In_Field_(197060585).jpeg |
+| yuneec_typhoon | Yuneec Typhoon H drone | ZLEA / CC BY-SA 4.0 / https://commons.wikimedia.org/wiki/File:Yuneec_Typhoon_H_(2-2-2025).jpg |
 | zipline_p2 | Zipline delivery drone | Wikimedia Commons / CC BY 4.0 / https://commons.wikimedia.org/wiki/File:Zipline_Drone_Rain_Recovery.jpg |

@@ -27,7 +27,7 @@ class DetailOverviewContentTest {
 
         compose.onNodeWithText("SAVED").assertIsDisplayed()
         compose.onNodeWithText("Historical detection").assertIsDisplayed()
-        compose.onNodeWithText("Immutable snapshot from History").assertIsDisplayed()
+        compose.onNodeWithText("Saved observation").assertIsDisplayed()
         compose.onNodeWithText("History record").assertDoesNotExist()
         compose.onNodeWithTag("detail_aircraft_photo").assertDoesNotExist()
 

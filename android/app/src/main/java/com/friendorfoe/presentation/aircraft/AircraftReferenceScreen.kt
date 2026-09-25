@@ -40,12 +40,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import coil.compose.AsyncImage
+import com.friendorfoe.presentation.components.ReferenceImage
+import com.friendorfoe.presentation.util.*
 import com.friendorfoe.presentation.util.AircraftCategory
 import com.friendorfoe.presentation.util.AircraftDatabase
 import com.friendorfoe.presentation.util.AircraftReference
@@ -68,7 +68,7 @@ fun AircraftReferenceScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Aircraft Reference Guide") },
+                title = { Text("Aircraft guide") },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(
@@ -220,37 +220,34 @@ private fun AircraftReferenceCard(
     ) {
         Column {
             // Photo
-            AsyncImage(
-                model = "file:///android_asset/${aircraft.photoAsset}",
-                contentDescription = aircraft.name,
+            ReferenceImage(
+                model = aircraftReferencePhotoUrl(aircraft),
+                description = aircraft.name,
+                silhouetteRes = silhouetteDrawableRes(silhouetteForAircraftReference(aircraft.category)),
+                caption = referenceImageCaption(aircraft.photoAsset),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(if (isExpanded) 200.dp else 140.dp)
+                    .height(if (isExpanded) 220.dp else 170.dp)
                     .clip(RoundedCornerShape(topStart = 12.dp, topEnd = 12.dp)),
-                contentScale = ContentScale.Crop
             )
 
             Column(modifier = Modifier.padding(12.dp)) {
-                // Name and category badge
+                Text(
+                    text = aircraft.name,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                )
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
+                    modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = aircraft.name,
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        Text(
-                            text = aircraft.manufacturer,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
-                        )
-                    }
+                    Text(
+                        text = aircraft.manufacturer,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.weight(1f),
+                    )
                     AircraftCategoryBadge(aircraft.category)
                 }
 

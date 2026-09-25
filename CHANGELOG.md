@@ -19,6 +19,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Onboarding keeps Get started visible while optional information scrolls.
 
 ### Fixed
+- Reference guides and aircraft details keep visible artwork when photos are
+  missing or fail. Reviewed photo replacements, corrected model associations,
+  and labeled fallbacks prevent unrelated images from appearing as references.
+  Duplicate Kfir and DJI Neo entries no longer share list keys.
+- Dark maps use a neutral palette, and map marker outlines no longer clip at
+  their bitmap edges. Aircraft photos preserve the full airframe.
 - **Aircraft alerts and list priority now default to a 10-mile radius.** Adjust it
   from 1 to 50 statute miles in More → App settings → Alerts; the setting is
   saved, applies immediately, and can be reset to 10 miles.

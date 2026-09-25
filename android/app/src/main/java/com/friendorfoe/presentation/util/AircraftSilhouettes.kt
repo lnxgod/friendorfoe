@@ -5,7 +5,7 @@ import com.friendorfoe.domain.model.ObjectCategory
 
 enum class SilhouetteCategory {
     NARROWBODY, WIDEBODY, REGIONAL, TURBOPROP, BIZJET,
-    HELICOPTER, FIGHTER, CARGO, LIGHTPLANE, DRONE
+    HELICOPTER, FIGHTER, CARGO, LIGHTPLANE, DRONE, UAV, GROUND_VEHICLE, UNKNOWN
 }
 
 /**
@@ -14,7 +14,7 @@ enum class SilhouetteCategory {
  */
 fun silhouetteForTypeCode(typeCode: String?): SilhouetteCategory? {
     if (typeCode.isNullOrBlank()) return null
-    return TYPE_CODE_MAP[typeCode.uppercase()]
+    return TYPE_CODE_MAP[typeCode.trim().uppercase()]
 }
 
 /**
@@ -30,8 +30,8 @@ fun silhouetteForCategory(category: ObjectCategory): SilhouetteCategory {
         ObjectCategory.EMERGENCY -> SilhouetteCategory.NARROWBODY
         ObjectCategory.CARGO -> SilhouetteCategory.CARGO
         ObjectCategory.DRONE -> SilhouetteCategory.DRONE
-        ObjectCategory.GROUND_VEHICLE -> SilhouetteCategory.LIGHTPLANE
-        ObjectCategory.UNKNOWN -> SilhouetteCategory.NARROWBODY
+        ObjectCategory.GROUND_VEHICLE -> SilhouetteCategory.GROUND_VEHICLE
+        ObjectCategory.UNKNOWN -> SilhouetteCategory.UNKNOWN
     }
 }
 
@@ -50,7 +50,28 @@ fun silhouetteDrawableRes(silhouette: SilhouetteCategory): Int {
         SilhouetteCategory.CARGO -> R.drawable.ic_silhouette_cargo
         SilhouetteCategory.LIGHTPLANE -> R.drawable.ic_silhouette_lightplane
         SilhouetteCategory.DRONE -> R.drawable.ic_silhouette_drone
+        SilhouetteCategory.UAV -> R.drawable.ic_silhouette_uav
+        SilhouetteCategory.GROUND_VEHICLE -> R.drawable.ic_silhouette_vehicle
+        SilhouetteCategory.UNKNOWN -> R.drawable.ic_silhouette_unknown
     }
+}
+
+fun silhouetteForAircraftReference(category: AircraftCategory): SilhouetteCategory = when (category) {
+    AircraftCategory.NARROWBODY -> SilhouetteCategory.NARROWBODY
+    AircraftCategory.WIDEBODY -> SilhouetteCategory.WIDEBODY
+    AircraftCategory.REGIONAL -> SilhouetteCategory.REGIONAL
+    AircraftCategory.TURBOPROP -> SilhouetteCategory.TURBOPROP
+    AircraftCategory.BIZJET -> SilhouetteCategory.BIZJET
+    AircraftCategory.HELICOPTER -> SilhouetteCategory.HELICOPTER
+    AircraftCategory.FIGHTER, AircraftCategory.TRAINER -> SilhouetteCategory.FIGHTER
+    AircraftCategory.CARGO -> SilhouetteCategory.CARGO
+    AircraftCategory.LIGHTPLANE -> SilhouetteCategory.LIGHTPLANE
+}
+
+fun silhouetteForDroneReference(category: DroneCategory): SilhouetteCategory = when (category) {
+    DroneCategory.MILITARY_RECON, DroneCategory.MILITARY_STRIKE,
+    DroneCategory.LOITERING_MUNITION -> SilhouetteCategory.UAV
+    else -> SilhouetteCategory.DRONE
 }
 
 private val TYPE_CODE_MAP: Map<String, SilhouetteCategory> = buildMap {
@@ -150,4 +171,7 @@ private val TYPE_CODE_MAP: Map<String, SilhouetteCategory> = buildMap {
         "BE55", "BE76", "PA44", "PA34", "C310", "C340",
         "C414", "C421", "C150", "PA18", "M20T"
     )) put(code, SilhouetteCategory.LIGHTPLANE)
+    // Known unmanned and transport airframes should not inherit fighter artwork.
+    for (code in listOf("MQ1", "MQ9", "RQ4", "RQ170")) put(code, SilhouetteCategory.UAV)
+    for (code in listOf("C130H", "AC130", "C12")) put(code, SilhouetteCategory.CARGO)
 }

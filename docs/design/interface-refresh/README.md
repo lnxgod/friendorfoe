@@ -33,6 +33,9 @@ Honor system animation settings and large text through Compose.
 ImageGen supplies a visual concept for the Nearby workspace, not a bitmap UI.
 The shipped interface uses native Compose text, controls, icons and live data.
 
+The follow-up [image and icon audit](image-audit.md) covers every bundled photo,
+image fallback behavior, incorrect reference associations, and map presentation.
+
 ## Acceptance
 
 - Fresh and returning normal launches open the chosen primary workspace.
@@ -62,14 +65,20 @@ paths, large text, direct details, range changes and the existing permission gat
 
 ## Validation
 
-- `./gradlew testDebugUnitTest lintDebug assembleDebug assembleDebugAndroidTest --offline --console=plain` passed (1,125 JVM tests, no failures or skips).
+- `./gradlew testDebugUnitTest lintDebug assembleDebug assembleDebugAndroidTest --offline --console=plain` passed (1,130 JVM tests, no failures or skips).
 - 67 API 35 emulator checks passed. After the final tab-layout fix, all 19 navigation,
   redesigned-workspace and permission checks passed again.
-- Screenshot fixtures cover light/dark Nearby, double text size, and the More menu.
+- All 20 follow-up image, reference-guide, detail, map/trail and workspace checks passed.
+  Android decoded all 371 photos; all 13 silhouettes and category markers rendered,
+  with no clipped marker edges at 0°, 45° or 90°.
+- Screenshot fixtures cover light/dark Nearby, double text size, the More menu,
+  actual reference guides, and failed-photo fallbacks.
 - Real app walkthrough confirmed a 5-mile range survives restart, appears in
   settings, and resets to 10 miles. Live aircraft open details directly. History
   and Badge open from More and return with Back. One-hour trails and Fit trails
   display recorded paths. The map screenshot uses a synthetic San Diego location.
+- Follow-up map walkthrough confirmed the neutral dark tiles load, live markers and
+  recorded trails remain visible, and Fit trails works. Emulator crash buffer was empty.
 - No changes to detection engines, backend, firmware, recorded-track persistence or
   the existing 10-mile alert/priority policy.
 
@@ -84,3 +93,12 @@ The old landing screen appears first. The new Nearby examples use test fixtures.
 [Large text](screenshots/nearby-dark-large-text.png) · [More](screenshots/more-dark.png) ·
 [Settings](screenshots/settings-dark.png) · [Map trails](screenshots/map-dark.png) ·
 [Welcome](screenshots/welcome-dark.png)
+
+
+| Aircraft guide, light | Drone guide, dark | Unavailable photo fallback |
+| --- | --- | --- |
+| <img src="screenshots/aircraft-reference-light.png" width="220" alt="Correct F/A-18 photo with a readable model name"> | <img src="screenshots/drone-reference-dark.png" width="220" alt="Correct Mavic 3 photo, fitted without cropping"> | <img src="screenshots/reference-withheld-dark.png" width="220" alt="Category artwork with an explicit unavailable-photo label"> |
+
+[Detail photo fallback](screenshots/detail-photo-fallback.png) shows the bundled
+type reference after the primary image fails. These guide screenshots render the
+real catalog and components; they do not substitute sample images.

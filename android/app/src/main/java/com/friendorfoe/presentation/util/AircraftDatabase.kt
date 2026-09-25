@@ -940,7 +940,7 @@ object AircraftDatabase {
             category = AircraftCategory.FIGHTER,
             description = "US Navy's primary carrier-based fighter. The Super Hornet (E/F) is 25% larger than the Legacy Hornet (A-D). EA-18G Growler is the electronic warfare variant. Blue Angels fly F/A-18s.",
             specs = "Crew: 1-2 | Max speed: Mach 1.8 | Range: 2,346km | Engines: 2x F414-GE-400",
-            photoAsset = "aircraft/FA18.jpg",
+            photoAsset = "aircraft/F18.jpg",
             icaoTypeCodes = listOf("F18", "FA18", "EA18")
         ),
         AircraftReference(
@@ -1705,14 +1705,14 @@ object AircraftDatabase {
             category = AircraftCategory.FIGHTER,
             description = "Russia's stealth fifth-generation twin-engine multirole fighter for air superiority and ground strike missions.",
             specs = "Crew: 1 | Range: 3,500km | Cruise: Mach 1.3 | Engines: 2x Saturn AL-41F1",
-            photoAsset = "aircraft/F22.jpg", icaoTypeCodes = listOf("SU57")
+            photoAsset = "aircraft/SU57.jpg", icaoTypeCodes = listOf("SU57")
         ),
         AircraftReference(
             id = "su25", name = "Sukhoi Su-25 Frogfoot", manufacturer = "Sukhoi",
             category = AircraftCategory.FIGHTER,
             description = "A heavily armored Soviet close air support jet, exceptionally effective at low-altitude ground attack missions.",
             specs = "Crew: 1 | Range: 1,000km | Cruise: 750km/h | Engines: 2x R-195 turbojets",
-            photoAsset = "aircraft/A10.jpg", icaoTypeCodes = listOf("SU25")
+            photoAsset = "aircraft/SU25.jpg", icaoTypeCodes = listOf("SU25")
         ),
         AircraftReference(
             id = "fc31", name = "Shenyang FC-31 Gyrfalcon", manufacturer = "Shenyang Aircraft Corp",
@@ -1754,21 +1754,14 @@ object AircraftDatabase {
             category = AircraftCategory.FIGHTER,
             description = "A legendary tandem two-seat supersonic jet interceptor that served prolifically during the Cold War and Vietnam War.",
             specs = "Crew: 2 | Range: 2,600km | Cruise: 940km/h | Engines: 2x GE J79 turbojets",
-            photoAsset = "aircraft/F15.jpg", icaoTypeCodes = listOf("F4")
+            photoAsset = "aircraft/F4.jpg", icaoTypeCodes = listOf("F4")
         ),
         AircraftReference(
             id = "f5", name = "Northrop F-5 Tiger II", manufacturer = "Northrop",
             category = AircraftCategory.FIGHTER,
             description = "An iconic light supersonic fighter renowned for aerodynamic simplicity, low cost, and effectiveness as an aggressor training aircraft.",
             specs = "Crew: 1 | Range: 1,400km | Cruise: 1,040km/h | Engines: 2x GE J85-GE-21B turbojets",
-            photoAsset = "aircraft/F16.jpg", icaoTypeCodes = listOf("F5")
-        ),
-        AircraftReference(
-            id = "kfir", name = "IAI Kfir", manufacturer = "Israel Aerospace Industries",
-            category = AircraftCategory.FIGHTER,
-            description = "An Israeli all-weather multirole fighter developed by mating the Dassault Mirage 5 airframe with a US-built J79 turbojet engine.",
-            specs = "Crew: 1 | Range: 768km | Cruise: Mach 2.0 | Engines: 1x GE J79-J1E turbojet",
-            photoAsset = "aircraft/RFAL.jpg", icaoTypeCodes = listOf("KFIR")
+            photoAsset = "aircraft/F5.jpg", icaoTypeCodes = listOf("F5")
         ),
         // Military helicopters
         AircraftReference(
@@ -1776,14 +1769,14 @@ object AircraftDatabase {
             category = AircraftCategory.HELICOPTER,
             description = "A massive heavy-lift transport helicopter for the US Marine Corps, excelling at deploying heavy equipment and large troop contingents.",
             specs = "Crew: 3 | Range: 1,000km | Cruise: 278km/h | Engines: 2x GE T64-GE-413 turboshafts",
-            photoAsset = "", icaoTypeCodes = listOf("CH53")
+            photoAsset = "aircraft/CH53.jpg", icaoTypeCodes = listOf("CH53")
         ),
         AircraftReference(
             id = "ch46", name = "Boeing CH-46 Sea Knight", manufacturer = "Boeing Vertol",
             category = AircraftCategory.HELICOPTER,
             description = "A medium-lift tandem-rotor transport helicopter relied upon by the US Marine Corps for troop transport and ship-to-ship resupply.",
             specs = "Crew: 5 | Range: 1,020km | Cruise: 265km/h | Engines: 2x GE T58-GE-16 turboshafts",
-            photoAsset = "aircraft/CH47.jpg", icaoTypeCodes = listOf("CH46")
+            photoAsset = "aircraft/CH46.jpg", icaoTypeCodes = listOf("CH46")
         ),
         AircraftReference(
             id = "mh60", name = "Sikorsky MH-60 Seahawk", manufacturer = "Sikorsky",
@@ -1818,7 +1811,7 @@ object AircraftDatabase {
             category = AircraftCategory.HELICOPTER,
             description = "A medium-sized twin-engine multi-role NATO helicopter — the world's first to fly with full fly-by-wire controls.",
             specs = "Crew: 2 | Range: 800km | Cruise: 300km/h | Engines: 2x RTM322 turboshafts",
-            photoAsset = "aircraft/UH60.jpg", icaoTypeCodes = listOf("NH90")
+            photoAsset = "aircraft/NH90.jpg", icaoTypeCodes = listOf("NH90")
         ),
         AircraftReference(
             id = "eh10", name = "AgustaWestland EH101 Merlin", manufacturer = "AgustaWestland",
@@ -1832,7 +1825,7 @@ object AircraftDatabase {
             category = AircraftCategory.HELICOPTER,
             description = "The largest and most powerful helicopter ever to enter serial production, capable of lifting up to 20 tons of cargo.",
             specs = "Crew: 5 | Range: 800km | Cruise: 255km/h | Engines: 2x Lotarev D-136 turboshafts",
-            photoAsset = "aircraft/CH47.jpg", icaoTypeCodes = listOf("MI26")
+            photoAsset = "aircraft/MI26.jpg", icaoTypeCodes = listOf("MI26")
         ),
         // UAVs
         AircraftReference(
@@ -1840,14 +1833,14 @@ object AircraftDatabase {
             category = AircraftCategory.FIGHTER,
             description = "An iconic remotely piloted aircraft that ushered in the modern era of military drones, later armed for targeted strike missions.",
             specs = "Crew: 0 | Range: 1,100km | Cruise: 135km/h | Engines: 1x Rotax 914F turbocharged",
-            photoAsset = "aircraft/MQ9.jpg", icaoTypeCodes = listOf("MQ1")
+            photoAsset = "aircraft/MQ1.jpg", icaoTypeCodes = listOf("MQ1")
         ),
         AircraftReference(
             id = "rq4", name = "Northrop Grumman RQ-4 Global Hawk", manufacturer = "Northrop Grumman",
             category = AircraftCategory.FIGHTER,
             description = "A high-altitude, long-endurance unmanned surveillance platform capable of gathering broad-area intelligence over incredible distances.",
             specs = "Crew: 0 | Range: 22,780km | Cruise: 575km/h | Engines: 1x Rolls-Royce F137-RR-100 turbofan",
-            photoAsset = "aircraft/MQ9.jpg", icaoTypeCodes = listOf("RQ4")
+            photoAsset = "aircraft/RQ4.jpg", icaoTypeCodes = listOf("RQ4")
         ),
         // Business jets
         AircraftReference(
@@ -1862,14 +1855,14 @@ object AircraftDatabase {
             category = AircraftCategory.BIZJET,
             description = "The 'Super Versatile Jet' uniquely combining jet speed with the short, unpaved runway capability of a turboprop.",
             specs = "Crew: 1-2 | Range: 3,704km | Cruise: 815km/h | Engines: 2x Williams FJ44-4A turbofans",
-            photoAsset = "aircraft/PC12.jpg", icaoTypeCodes = listOf("PC24")
+            photoAsset = "aircraft/PC24.jpg", icaoTypeCodes = listOf("PC24")
         ),
         AircraftReference(
             id = "sf50", name = "Cirrus Vision Jet SF50", manufacturer = "Cirrus Aircraft",
             category = AircraftCategory.BIZJET,
             description = "A groundbreaking single-engine very light jet with a unique V-tail and whole-airframe parachute system for personal/owner-pilot use.",
             specs = "Crew: 1 | Range: 2,222km | Cruise: 556km/h | Engines: 1x Williams FJ33-5A turbofan",
-            photoAsset = "aircraft/HDJT.jpg", icaoTypeCodes = listOf("SF50")
+            photoAsset = "aircraft/SF50.jpg", icaoTypeCodes = listOf("SF50")
         ),
         // Civilian helicopters
         AircraftReference(
