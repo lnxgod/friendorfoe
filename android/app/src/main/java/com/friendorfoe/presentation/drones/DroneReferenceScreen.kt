@@ -1,10 +1,20 @@
 package com.friendorfoe.presentation.drones
 
+import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.clickable
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.platform.testTag
+import com.friendorfoe.presentation.filter.FilterSearchField
+import com.friendorfoe.presentation.reference.ReferenceNoMatches
+import com.friendorfoe.presentation.reference.ReferenceExpansionHint
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -16,7 +26,6 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -27,8 +36,6 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextField
-import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
@@ -36,22 +43,17 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.friendorfoe.presentation.components.ReferenceImage
 import com.friendorfoe.presentation.util.*
-import com.friendorfoe.presentation.util.AutonomyLevel
 import com.friendorfoe.presentation.util.DroneCategory
 import com.friendorfoe.presentation.util.DroneDatabase
 import com.friendorfoe.presentation.util.DroneReference
 import com.friendorfoe.presentation.util.RiskLevel
-import com.friendorfoe.presentation.util.ThreatClassification
 
 /**
  * Drone reference guide screen showing all known drone types with photos,
@@ -98,9 +100,9 @@ fun DroneReferenceScreen(
 fun DroneReferenceContent(
     initialManufacturerFilter: String? = null
 ) {
-    var searchQuery by remember { mutableStateOf(initialManufacturerFilter ?: "") }
-    var selectedCategory by remember { mutableStateOf<DroneCategory?>(null) }
-    var expandedDroneId by remember { mutableStateOf<String?>(null) }
+    var searchQuery by rememberSaveable { mutableStateOf(initialManufacturerFilter ?: "") }
+    var selectedCategory by rememberSaveable { mutableStateOf<DroneCategory?>(null) }
+    var expandedDroneId by rememberSaveable { mutableStateOf<String?>(null) }
 
     val filteredDrones = remember(searchQuery, selectedCategory) {
         var drones = if (searchQuery.isNotBlank()) {
@@ -115,23 +117,11 @@ fun DroneReferenceContent(
     }
 
     Column(modifier = Modifier.fillMaxSize()) {
-        // Search bar
-        TextField(
-            value = searchQuery,
-            onValueChange = { searchQuery = it },
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 8.dp),
-            placeholder = { Text("Search drones...") },
-            leadingIcon = {
-                Icon(Icons.Default.Search, contentDescription = "Search")
-            },
-            singleLine = true,
-            shape = RoundedCornerShape(12.dp),
-            colors = TextFieldDefaults.colors(
-                focusedIndicatorColor = Color.Transparent,
-                unfocusedIndicatorColor = Color.Transparent
-            )
+        FilterSearchField(
+            query = searchQuery,
+            onQueryChange = { searchQuery = it },
+            placeholder = "Search drones",
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
         )
 
         // Category filter chips
@@ -159,8 +149,8 @@ fun DroneReferenceContent(
                     },
                     label = { Text(category.label) },
                     colors = FilterChipDefaults.filterChipColors(
-                        selectedContainerColor = categoryChipColor(category),
-                        selectedLabelColor = Color.White
+                        selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
+                        selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
                     )
                 )
             }
@@ -173,14 +163,17 @@ fun DroneReferenceContent(
             text = "${filteredDrones.size} drone${if (filteredDrones.size != 1) "s" else ""}",
             modifier = Modifier.padding(horizontal = 16.dp),
             style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+            color = MaterialTheme.colorScheme.onSurfaceVariant
         )
 
         Spacer(modifier = Modifier.height(4.dp))
 
-        // Drone list
-        LazyColumn(
-            modifier = Modifier.fillMaxSize(),
+        if (filteredDrones.isEmpty()) {
+            ReferenceNoMatches("drones", onReset = { searchQuery = ""; selectedCategory = null })
+        }
+
+        if (filteredDrones.isNotEmpty()) LazyColumn(
+            modifier = Modifier.fillMaxSize().testTag("drone_reference_results"),
             contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
@@ -197,6 +190,7 @@ fun DroneReferenceContent(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun DroneReferenceCard(
     drone: DroneReference,
@@ -206,7 +200,10 @@ private fun DroneReferenceCard(
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onToggle),
+            .animateContentSize()
+            .testTag("reference_card_${drone.id}")
+            .semantics { stateDescription = if (isExpanded) "Expanded" else "Collapsed" }
+            .clickable(role = Role.Button, onClickLabel = if (isExpanded) "Hide details" else "View details", onClick = onToggle),
         shape = RoundedCornerShape(12.dp),
         elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
         colors = CardDefaults.cardColors(
@@ -232,25 +229,24 @@ private fun DroneReferenceCard(
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold,
                 )
-                Row(
+                FlowRow(
                     modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
                     Text(
                         text = drone.manufacturer,
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.weight(1f),
                     )
                     CategoryBadge(drone.category)
                 }
 
                 // Risk level badge, country, sanctioned warning
-                Row(
+                FlowRow(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     drone.riskLevel?.let { risk ->
                         RiskBadge(risk)
@@ -292,42 +288,15 @@ private fun DroneReferenceCard(
 
                     Spacer(modifier = Modifier.height(8.dp))
 
-                    // Threat classification, autonomy, swarm
-                    Row(
+                    FlowRow(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        verticalAlignment = Alignment.CenterVertically
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
                     ) {
-                        drone.threatClassification?.let { tc ->
-                            FilterChip(
-                                selected = false,
-                                onClick = {},
-                                label = { Text(tc.label, style = MaterialTheme.typography.labelSmall) },
-                                colors = FilterChipDefaults.filterChipColors(
-                                    containerColor = MaterialTheme.colorScheme.surfaceVariant
-                                )
-                            )
-                        }
-                        drone.autonomyLevel?.let { al ->
-                            FilterChip(
-                                selected = false,
-                                onClick = {},
-                                label = { Text(al.label, style = MaterialTheme.typography.labelSmall) },
-                                colors = FilterChipDefaults.filterChipColors(
-                                    containerColor = MaterialTheme.colorScheme.surfaceVariant
-                                )
-                            )
-                        }
-                        if (drone.swarmCapable) {
-                            FilterChip(
-                                selected = true,
-                                onClick = {},
-                                label = { Text("Swarm", style = MaterialTheme.typography.labelSmall) },
-                                colors = FilterChipDefaults.filterChipColors(
-                                    selectedContainerColor = Color(0xFFF44336).copy(alpha = 0.15f),
-                                    selectedLabelColor = Color(0xFFF44336)
-                                )
-                            )
+                        listOfNotNull(drone.threatClassification?.label, drone.autonomyLevel?.label,
+                            "Swarm capable".takeIf { drone.swarmCapable }).forEach { label ->
+                            Text(label, style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     }
 
@@ -380,20 +349,11 @@ private fun DroneReferenceCard(
                         Text(
                             text = "WiFi patterns: ${drone.wifiPatterns.joinToString(", ")}",
                             style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f)
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
-                } else {
-                    // Collapsed: show specs summary
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        text = drone.specs,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
                 }
+                ReferenceExpansionHint(isExpanded)
             }
         }
     }

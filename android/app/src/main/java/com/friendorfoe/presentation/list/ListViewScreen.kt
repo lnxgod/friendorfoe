@@ -222,7 +222,7 @@ internal fun ListContent(
         ) {
             Column(Modifier.padding(end = 12.dp, bottom = 4.dp)) {
                 Text("Nearby", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold)
-                Text(headerCount?.let { "$it detections" } ?: "Aircraft & drones",
+                Text(headerCount?.let { if (it == 1) "1 detection" else "$it detections" } ?: "Aircraft & drones",
                     style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             TextButton(onClick = { rangeOpen = true }, modifier = Modifier.heightIn(min = 48.dp).testTag("nearby_range")) {

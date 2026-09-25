@@ -99,9 +99,9 @@ fun CompactFilterBar(
         if (resultCount != null || activeFilterCount > 0) {
             Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text(listOfNotNull(resultCount?.let { if (it == 1) "1 result" else "$it results" },
-                    activeFilterCount.takeIf { it > 0 }?.let { "$it filters active" }).joinToString(" · "),
-                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Spacer(Modifier.weight(1f))
+                    activeFilterCount.takeIf { it > 0 }?.let { if (it == 1) "1 filter active" else "$it filters active" }).joinToString(" · "),
+                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f))
                 if (activeFilterCount > 0) {
                     TextButton(onClick = onClearFilters,
                         modifier = Modifier.heightIn(min = 48.dp).testTag("filter_clear")) { Text("Clear filters") }
@@ -127,18 +127,18 @@ fun FilterModalSheet(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text("Filters", style = MaterialTheme.typography.titleLarge)
-                Spacer(Modifier.weight(1f))
-                if (activeFilterCount(filterState) > 0) {
-                    TextButton(
-                        onClick = { onFilterStateChange(filterState.cleared()) },
-                        modifier = Modifier.heightIn(min = 48.dp),
-                    ) {
-                        Text("Clear filters")
-                    }
-                }
+                Text("Filters", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
+                TextButton(onClick = onDismiss, modifier = Modifier.testTag("filter_done")) { Text("Done") }
             }
             HorizontalDivider()
+            if (activeFilterCount(filterState) > 0) {
+                TextButton(
+                    onClick = { onFilterStateChange(filterState.cleared()) },
+                    modifier = Modifier.padding(start = 16.dp).heightIn(min = 48.dp).testTag("filter_sheet_clear"),
+                ) {
+                    Text("Clear filters")
+                }
+            }
             Text(
                 text = "Category",
                 style = MaterialTheme.typography.titleSmall,

@@ -102,3 +102,47 @@ The old landing screen appears first. The new Nearby examples use test fixtures.
 [Detail photo fallback](screenshots/detail-photo-fallback.png) shows the bundled
 type reference after the primary image fails. These guide screenshots render the
 real catalog and components; they do not substitute sample images.
+
+## Final usability pass
+
+Visual thesis: keep the calm charcoal/sea-green instrument style, with more room
+for the map and clearer reference content.
+
+Content plan: map and observations remain primary; search and filters open when
+needed, active restrictions stay visible, and reference cards clearly expose
+specifications and recovery from an empty search.
+
+Interaction thesis: a short search-panel reveal, smooth reference-card expansion,
+and direct clear/done actions. Use native Compose motion and respect the system's
+animation scale.
+
+- Map search opens on demand. Search restrictions remain visible when the field
+  is hidden; clearing search preserves other filters. Trail selection, Fit, Retry,
+  and permission recovery remain available.
+- Search supports a one-tap clear action and Search on the keyboard dismisses
+  focus. Filter sheets have a Done action that preserves selections.
+- Reference cards have explicit View/Hide details affordances, accessible expanded
+  state, and smooth size changes. Empty results offer a reset of both query and
+  category. Saved searches and expanded entries survive screen recreation.
+- Guide metadata wraps at double text size; passive attributes no longer resemble
+  buttons. Result counts use singular labels where appropriate.
+
+Validation: 1,130 JVM tests, lint, and both APK builds passed. All 40 affected
+emulator checks passed (23 map/image/navigation/guide checks plus 17 Nearby/History
+checks). The seven new usability checks passed again after the final indicator
+refinement; a strengthened edited-query restoration check also passed.
+
+| Map before this pass | Map with compact controls |
+| --- | --- |
+| <img src="screenshots/map-before-polish.png" width="260" alt="Previous map controls"> | <img src="screenshots/map-dark.png" width="260" alt="Map with search available on demand"> |
+
+[Empty search recovery](screenshots/reference-empty-dark.png) ·
+[Large-text controls](screenshots/map-controls-large-text.png) ·
+[Large-text guide](screenshots/reference-large-text.png) ·
+[Expanded guide at large text](screenshots/reference-expanded-large-text.png)
+
+The live-app walkthrough confirmed Fit trails, search entry, keyboard dismissal,
+clearing search, and returning to the compact map. On the 360 dp test phone, the
+map gains 212 physical pixels (about 76 dp, or 17% of its previous visible area).
+The screenshots use a synthetic San Diego location. The emulator crash buffer
+was empty.

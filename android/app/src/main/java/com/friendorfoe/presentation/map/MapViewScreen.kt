@@ -54,7 +54,6 @@ import com.friendorfoe.presentation.detail.AircraftDetailContent
 import com.friendorfoe.presentation.detail.DetailState
 import com.friendorfoe.presentation.detail.DetailViewModel
 import com.friendorfoe.presentation.detail.DroneDetailContent
-import com.friendorfoe.presentation.filter.FilterBar
 import com.friendorfoe.presentation.permissions.PermissionUiState
 import com.friendorfoe.presentation.permissions.isUsable
 import com.friendorfoe.domain.model.Position
@@ -373,12 +372,9 @@ fun MapViewScreen(
             Modifier.fillMaxWidth()
                 .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.94f)),
         ) {
-            androidx.compose.foundation.layout.Column(Modifier.padding(horizontal = 20.dp, vertical = 12.dp)) {
-                com.friendorfoe.presentation.components.FofScreenHeader(title = "Map")
-            }
-            FilterBar(
-                filterState = filterState,
-                onFilterStateChange = { viewModel.updateFilter(it) },
+            MapWorkspaceControls(
+                filter = filterState,
+                onFilterChange = viewModel::updateFilter,
                 resultCount = mapTracks.size + formationPoints.size,
             )
             MapFlightTrailControls(trailWindow, flightTrails, viewModel::setTrailWindow, onFit = {
@@ -481,12 +477,12 @@ fun MapViewScreen(
                     .padding(16.dp)
                     .size(48.dp),
                 shape = CircleShape,
-                containerColor = if (followCompass) Color(0xFF2196F3) else Color(0xFF424242)
+                containerColor = if (followCompass) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerHigh
             ) {
                 Icon(
                     imageVector = if (followCompass) Icons.Filled.Navigation else Icons.Filled.Explore,
                     contentDescription = if (followCompass) "Disable compass follow" else "Follow compass",
-                    tint = Color.White,
+                    tint = if (followCompass) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface,
                     modifier = if (followCompass) Modifier.rotate(-stabilizedMapHeading) else Modifier
                 )
             }

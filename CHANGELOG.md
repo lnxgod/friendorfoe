@@ -7,6 +7,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Changed
+- Map search now opens on demand, leaving more room for aircraft and trails;
+  active filters remain visible. Search fields have a clear button and dismiss
+  the keyboard with Search; filter sheets have an explicit Done action.
+- Reference guides clearly show expandable details, recover from empty searches,
+  retain search/selection after screen recreation, and wrap metadata at large
+  text sizes. Passive drone metadata no longer looks like tappable controls.
 - Android opens on Nearby with five labeled tabs: Nearby, Map, Camera, Privacy,
   and More. History, badge controls, settings and reference guides remain
   accessible from More, with Back returning to the previous screen.
