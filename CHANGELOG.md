@@ -6,6 +6,43 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+- **Flock/ALPR evidence now requires explicit Wi-Fi OUI proof.** Android,
+  backend, ESP32 scanner, and badge policy now treat Flock Safety as the
+  registered `B4:1E:52` OUI only, normalize common MAC formats, and reject
+  malformed near-matches instead of promoting broad Flock-looking names.
+- **Badge scanner auto-update catalog now includes badge firmware.** Backend
+  firmware metadata now serves `scanner-s3-combo-fof_badge` and
+  `uplink-s3-fof_badge`, and local metadata preserves the badge version track
+  so a single flashed badge uplink can cache and relay the matching scanner
+  image instead of requiring each scanner port to be flashed manually.
+- **RSSI distance fallback now uses the field-calibrated scale.** Android,
+  backend, and ESP32 scanner code now share the same RSSI range profile, and
+  BLE Remote ID detections carry a rough RSSI range when no RTT range is
+  available.
+- **Android update check now has a real release version to find.** The Android
+  app version is bumped to `0.64.64-privacy-oui` so GitHub Releases can
+  publish a newer APK than the installed build.
+
+### Added
+- **Possible AirPods listening-path detection.** Backend, Android local BLE
+  scanning, and badge threat policy now surface cautious `Possible Listening`
+  rows when Apple Continuity data indicates connected AirPods with audio,
+  phone, or video activity, or connected AirPods very close by.
+
+### Changed
+- **README now reflects the current Codex-first workflow.** Claude is credited
+  for the initial bootstrap, while Codex is documented as the day-to-day
+  engineering partner for implementation, firmware/version work, tests,
+  review, and release prep.
+- **RSSI drone-range release versions refreshed.** README, backend firmware
+  readiness expectations, ESP32 version metadata, Android version metadata,
+  and web flasher manifests now identify the current production/app/backend
+  release as `0.64.64-privacy-oui`; the FoF Badge track remains separate at
+  `0.64.64-badge-privacy-oui`.
+
+## [0.67.23-android-interface-refresh] - 2026-09-25
+
 ### Changed
 - Map search now opens on demand, leaving more room for aircraft and trails;
   active filters remain visible. Search fields have a clear button and dismiss
@@ -41,39 +78,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   including the boundary. Recent-location selection and the separate local
   radio drone alert policy remain in effect.
 
-- **Flock/ALPR evidence now requires explicit Wi-Fi OUI proof.** Android,
-  backend, ESP32 scanner, and badge policy now treat Flock Safety as the
-  registered `B4:1E:52` OUI only, normalize common MAC formats, and reject
-  malformed near-matches instead of promoting broad Flock-looking names.
-- **Badge scanner auto-update catalog now includes badge firmware.** Backend
-  firmware metadata now serves `scanner-s3-combo-fof_badge` and
-  `uplink-s3-fof_badge`, and local metadata preserves the badge version track
-  so a single flashed badge uplink can cache and relay the matching scanner
-  image instead of requiring each scanner port to be flashed manually.
-- **RSSI distance fallback now uses the field-calibrated scale.** Android,
-  backend, and ESP32 scanner code now share the same RSSI range profile, and
-  BLE Remote ID detections carry a rough RSSI range when no RTT range is
-  available.
-- **Android update check now has a real release version to find.** The Android
-  app version is bumped to `0.64.64-privacy-oui` so GitHub Releases can
-  publish a newer APK than the installed build.
-
-### Added
-- **Possible AirPods listening-path detection.** Backend, Android local BLE
-  scanning, and badge threat policy now surface cautious `Possible Listening`
-  rows when Apple Continuity data indicates connected AirPods with audio,
-  phone, or video activity, or connected AirPods very close by.
-
-### Changed
-- **README now reflects the current Codex-first workflow.** Claude is credited
-  for the initial bootstrap, while Codex is documented as the day-to-day
-  engineering partner for implementation, firmware/version work, tests,
-  review, and release prep.
-- **RSSI drone-range release versions refreshed.** README, backend firmware
-  readiness expectations, ESP32 version metadata, Android version metadata,
-  and web flasher manifests now identify the current production/app/backend
-  release as `0.64.64-privacy-oui`; the FoF Badge track remains separate at
-  `0.64.64-badge-privacy-oui`.
+### Release
+- Android version code 131; signed with the existing production certificate.
 
 ## [0.67.22-android-map-trails] - 2026-09-18
 
