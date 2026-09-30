@@ -9,6 +9,19 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class AircraftRangePreferenceTest {
+    @Test fun nearestSortPreferencePersistsAcrossPreferenceInstances() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val prefs = DetectionPrefs(context)
+        val original = prefs.nearestFirst
+        try {
+            prefs.nearestFirst = true
+            assertEquals(true, DetectionPrefs(context).nearestFirst)
+            assertEquals(true, prefs.settings.value.nearestFirst)
+            prefs.nearestFirst = false
+            assertEquals(false, DetectionPrefs(context).nearestFirst)
+        } finally { prefs.nearestFirst = original }
+    }
+
     @Test
     fun rangeDefaultsToTenMilesAndPersistsChangesWithLiveSnapshots() = runBlocking {
         val context = ApplicationProvider.getApplicationContext<Context>()

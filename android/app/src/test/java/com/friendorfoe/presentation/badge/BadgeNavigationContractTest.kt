@@ -2,6 +2,7 @@ package com.friendorfoe.presentation.badge
 
 import com.friendorfoe.data.badge.BadgeUsbActivity
 import com.friendorfoe.data.badge.BadgeUsbActivityKind
+import com.friendorfoe.presentation.navigation.primaryDestinations
 import com.friendorfoe.presentation.navigation.Screen
 import com.friendorfoe.presentation.navigation.TopLevelDestination
 import java.io.File
@@ -14,10 +15,10 @@ import org.junit.Test
 class BadgeNavigationContractTest {
 
     @Test
-    fun `bottom navigation uses exact seven item order with badge after privacy`() {
+    fun `primary navigation is compact while badge keeps its stable route`() {
         assertEquals(
-            listOf("AR", "Map", "List", "Privacy", "Badge", "History", "About"),
-            TopLevelDestination.entries.map { it.label },
+            listOf("Nearby", "Map", "Camera", "Privacy", "More"),
+            primaryDestinations.map { it.label },
         )
         assertEquals(
             Screen.Badge.route,
@@ -37,7 +38,7 @@ class BadgeNavigationContractTest {
         assertTrue(screen.contains("Uri.encode(focusKey)"))
         assertTrue(graph.contains("composable(Screen.Badge.route)"))
         assertTrue(graph.contains("route = Screen.BadgeFocus.route"))
-        assertTrue(graph.contains("BadgeControlScreen(initialFocusKey = focusKey)"))
+        assertTrue(graph.contains("BadgeControlScreen(initialFocusKey = focusKey, onBack = navController::popBackStack)"))
         assertTrue(graph.contains("onNavigateToCalibrate"))
         assertTrue(graph.contains("navigate(Screen.Calibrate.route)"))
     }

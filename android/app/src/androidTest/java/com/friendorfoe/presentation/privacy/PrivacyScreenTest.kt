@@ -168,6 +168,7 @@ class PrivacyScreenTest {
             }
         }
 
+        compose.onNodeWithTag("privacy_source_status").performClick()
         compose.onNodeWithText("Turn on").assertHasClickAction().performClick()
         compose.runOnIdle { assertEquals(1, activations) }
         compose.onNodeWithText("Phone privacy scan").assertDoesNotExist()

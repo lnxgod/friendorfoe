@@ -28,6 +28,7 @@ data class DetectionSettings(
     val backendOnlyMode: Boolean,
     val backendUrl: String,
     val aircraftRangeMiles: Int = AircraftRange.DEFAULT_MILES,
+    val nearestFirst: Boolean = false,
 ) {
     companion object {
         fun defaults() = DetectionSettings(
@@ -115,6 +116,7 @@ class DetectionPrefs @Inject constructor(
         backendOnlyMode = backendOnlyMode,
         backendUrl = backendUrl,
         aircraftRangeMiles = aircraftRangeMiles,
+        nearestFirst = nearestFirst,
     )
 
     private fun updateSettings(action: SharedPreferences.Editor.() -> Unit) {
@@ -186,6 +188,10 @@ class DetectionPrefs @Inject constructor(
     var policeAlertsEnabled: Boolean
         get() = prefs.getBoolean(KEY_POLICE_ALERTS, false)
         set(value) = updateSettings { putBoolean(KEY_POLICE_ALERTS, value) }
+
+    var nearestFirst: Boolean
+        get() = prefs.getBoolean("list_nearest_first", false)
+        set(value) = updateSettings { putBoolean("list_nearest_first", value) }
 
     var aircraftRangeMiles: Int
         get() = AircraftRange.normalizeMiles(

@@ -1,10 +1,11 @@
 package com.friendorfoe.presentation.map
 
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.rememberScrollState
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material3.*
-import androidx.compose.runtime.Composable
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
@@ -17,31 +18,40 @@ internal fun MapFlightTrailControls(
     onFit: () -> Unit,
     onRetry: () -> Unit,
 ) {
-    Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp)) {
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            Text("Flight trails", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(top = 12.dp))
+    var menuOpen by remember { mutableStateOf(false) }
+    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.weight(1f)) {
+                TextButton(onClick = { menuOpen = true }, modifier = Modifier.testTag("flight_trails_menu")) {
+                    Text("Trails · ${window.label}")
+                    Icon(Icons.Default.ExpandMore, contentDescription = null)
+                }
+                DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                    FlightTrailWindow.entries.forEach { option ->
+                        DropdownMenuItem(
+                            text = { Text(option.label) },
+                            onClick = { onWindow(option); menuOpen = false },
+                            leadingIcon = { RadioButton(selected = window == option, onClick = null) },
+                            modifier = Modifier.testTag("flight_trails_${option.name}"),
+                        )
+                    }
+                }
+            }
             TextButton(onClick = onFit, enabled = state.trails.isNotEmpty(), modifier = Modifier.testTag("fit_flight_trails")) {
                 Text("Fit trails")
             }
         }
-        Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            FlightTrailWindow.entries.forEach { option ->
-                FilterChip(selected = window == option, onClick = { onWindow(option) }, label = { Text(option.label) },
-                    modifier = Modifier.testTag("flight_trails_${option.name}"))
-            }
-        }
         if (window != FlightTrailWindow.OFF) {
-            when {
-                state.error -> TextButton(onClick = onRetry) { Text("Couldn't load trails · Retry") }
-                state.loading -> Text("Loading recorded paths…", style = MaterialTheme.typography.bodySmall)
-                state.trails.isEmpty() -> Text("No recorded paths match this view yet. Keep aircraft detection running.",
-                    style = MaterialTheme.typography.bodySmall)
-                else -> Text(
-                    "${state.trails.size} recorded ${if (state.trails.size == 1) "path" else "paths"}${if (state.trails.size == 40) " (up to 40 shown)" else ""} · dots mark last received positions. Tap a dot to review.",
-                    style = MaterialTheme.typography.bodySmall,
-                )
+            if (state.error) {
+                TextButton(onClick = onRetry) { Text("Couldn't load trails · Retry") }
+            } else {
+                Text(when {
+                    state.loading -> "Loading recorded paths…"
+                    state.trails.isEmpty() -> "No recorded paths yet. Keep aircraft detection running."
+                    else -> "${state.trails.size} paths · tap an endpoint to review"
+                }, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(start = 12.dp, bottom = 8.dp))
             }
-            Spacer(Modifier.height(8.dp))
         }
     }
 }

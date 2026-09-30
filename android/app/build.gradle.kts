@@ -23,8 +23,8 @@ android {
         applicationId = "com.friendorfoe"
         minSdk = 26
         targetSdk = 34
-        versionCode = 130
-        versionName = "0.67.22-android-map-trails"
+        versionCode = 132
+        versionName = "0.67.24-android-nearby-watch"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

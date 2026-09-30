@@ -32,7 +32,7 @@ fun createCategoryMarkerDrawable(
 
     if (visuallyConfirmed) {
         val ringPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            this.color = 0xFF76FF03.toInt()
+            this.color = 0xFF80D8C5.toInt()
             style = Paint.Style.STROKE
             strokeWidth = 2.5f * density
         }
@@ -50,9 +50,12 @@ fun createCategoryMarkerDrawable(
         this.color = 0xFF000000.toInt()
         style = Paint.Style.STROKE
         strokeWidth = config.borderWidth * density
+        strokeJoin = Paint.Join.ROUND
+        strokeCap = Paint.Cap.ROUND
     }
 
-    val u = sizePx / 10f
+    // Inset the geometry so thick outlines and rotated tips stay inside the bitmap.
+    val u = (sizePx - config.borderWidth * density - 2f * density) / 10f
 
     val path = when (category) {
         ObjectCategory.COMMERCIAL -> airlinerPath(cx, cy, u)
@@ -257,11 +260,11 @@ private data class MarkerConfig(val sizeDp: Int, val borderWidth: Float)
 private val MARKER_CONFIG = mapOf(
     ObjectCategory.COMMERCIAL to MarkerConfig(22, 1.5f),
     ObjectCategory.GENERAL_AVIATION to MarkerConfig(18, 1.5f),
-    ObjectCategory.MILITARY to MarkerConfig(26, 3f),
+    ObjectCategory.MILITARY to MarkerConfig(24, 1.25f),
     ObjectCategory.HELICOPTER to MarkerConfig(22, 1.5f),
-    ObjectCategory.GOVERNMENT to MarkerConfig(24, 2.5f),
-    ObjectCategory.EMERGENCY to MarkerConfig(24, 3f),
-    ObjectCategory.CARGO to MarkerConfig(26, 2f),
+    ObjectCategory.GOVERNMENT to MarkerConfig(24, 1.25f),
+    ObjectCategory.EMERGENCY to MarkerConfig(24, 1.25f),
+    ObjectCategory.CARGO to MarkerConfig(24, 1.25f),
     ObjectCategory.DRONE to MarkerConfig(18, 1.5f),
     ObjectCategory.GROUND_VEHICLE to MarkerConfig(16, 1.5f),
     ObjectCategory.UNKNOWN to MarkerConfig(16, 1f)

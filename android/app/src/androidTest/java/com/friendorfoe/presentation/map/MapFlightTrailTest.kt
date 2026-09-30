@@ -63,10 +63,12 @@ class MapFlightTrailTest {
                 { chosen = it }, {}, { retried = true })
         } }
         compose.onNodeWithTag("fit_flight_trails").assertIsNotEnabled()
+        compose.onNodeWithTag("flight_trails_menu").performClick()
         compose.onNodeWithTag("flight_trails_DAY").performClick()
         compose.runOnIdle { assertEquals(FlightTrailWindow.DAY, chosen) }
         compose.onNodeWithText("Couldn't load trails · Retry").performClick()
         compose.runOnIdle { assertTrue(retried) }
+        compose.onNodeWithTag("flight_trails_menu").performClick()
         compose.onNodeWithTag("flight_trails_OFF").performClick()
         compose.runOnIdle { assertEquals(FlightTrailWindow.OFF, chosen) }
     }

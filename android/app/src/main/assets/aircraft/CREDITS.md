@@ -60,23 +60,23 @@ Licensed under Creative Commons or Public Domain.
 | B763 | Boeing 767-300 | Wikimedia Commons (see source file) |
 | B764 | Boeing 767-400 | Wikimedia Commons (see source file) |
 | B772 | Boeing 777-200 | Wikimedia Commons (see source file) |
-| B77L | Boeing 777-200LR | Wikimedia Commons (see source file) |
+| B77L | Boeing 777-200LR | BriYYZ / CC BY-SA 2.0 / https://commons.wikimedia.org/wiki/File:Delta_Airlines_Boeing_777-200LR_N702DN.jpg |
 | B77W | Boeing 777-300ER | Wikimedia Commons (see source file) |
 | B788 | Boeing 787-8 Dreamliner | Wikimedia Commons (see source file) |
 | B789 | Boeing 787-9 Dreamliner | Wikimedia Commons (see source file) |
 | B78X | Boeing 787-10 Dreamliner | Wikimedia Commons (see source file) |
 | BCS1 | Airbus A220-100 | Wikimedia Commons (see source file) |
 | BCS3 | Airbus A220-300 | Wikimedia Commons (see source file) |
-| BE20 | Beechcraft King Air 200 | Wikimedia Commons (see source file) |
+| BE20 | Beechcraft King Air 200 | James from Cheltenham, Gloucestershire / CC BY-SA 2.0 / https://commons.wikimedia.org/wiki/File:G-WNCH_Beech_Super_King_Air_200_Synergy_Aircraft_Leasing_Ltd_(28419210132).jpg |
 | BE30 | Beechcraft King Air 300 | Wikimedia Commons (see source file) |
-| BE36 | Beechcraft Bonanza | Wikimedia Commons (see source file) |
+| BE36 | Beechcraft Bonanza | Bidgee / CC BY-SA 3.0 au / https://commons.wikimedia.org/wiki/File:Bizair_Aircraft_(VH-FIM)_Beech_A36_Bonanza_taxiing_at_Temora_Airport.jpg |
 | BE40 | Beechjet 400A | Acroterion / CC BY-SA 4.0 / https://commons.wikimedia.org/wiki/File:Beechjet_400A_N940VA_FDK_MD1.jpg |
 | BE55 | Beechcraft Baron 55 | Matti Blume / CC BY-SA 4.0 / https://commons.wikimedia.org/wiki/File:Beechcraft_Baron,_AERO_Friedrichshafen_2018,_Friedrichshafen_(1X7A4261).jpg |
 | BE58 | Beechcraft Baron | Wikimedia Commons (see source file) |
 | BE76 | Beechcraft Duchess | NTPS / CC BY-SA 3.0 / https://commons.wikimedia.org/wiki/File:Ntps-be76-N5410M-090123-02-cr8.jpg |
 | BK17 | Kawasaki BK117 | Wikimedia Commons (see source file) |
 | C12 | Beechcraft C-12 Huron | kitmasterbloke / CC BY 2.0 / https://commons.wikimedia.org/wiki/File:84-00165_Beechcraft_C_12_Huron_FFD_130785.jpg |
-| C130 | Lockheed C-130 Hercules | Wikimedia Commons (see source file) |
+| C130 | Lockheed C-130 Hercules | NASA/Larry Sammons / Public domain / https://commons.wikimedia.org/wiki/File:Lockheed_C-130_NASA_707_in_flight_(AC84-0407-8).jpg |
 | C130H | Lockheed C-130 Hercules | Wikimedia Commons (see source file) |
 | C150 | Cessna 150 | Smallbones / CC0 / https://commons.wikimedia.org/wiki/File:NASW_Cessna_150.jpg |
 | C152 | Cessna 152 | Wikimedia Commons (see source file) |
@@ -85,7 +85,7 @@ Licensed under Creative Commons or Public Domain.
 | C17A | Boeing C-17 Globemaster III | Wikimedia Commons (see source file) |
 | C182 | Cessna 182 Skylane | Wikimedia Commons (see source file) |
 | C206 | Cessna 206 Stationair | Wikimedia Commons (see source file) |
-| C208 | Cessna 208 Caravan | Wikimedia Commons (see source file) |
+| C208 | Cessna 208 Caravan | Dschwen / CC BY-SA 4.0 / https://commons.wikimedia.org/wiki/File:Los_Alamos_Cessna_208_2.JPG |
 | C210 | Cessna 210 Centurion | Wikimedia Commons (see source file) |
 | C25A | Cessna Citation CJ2 | Wikimedia Commons (see source file) |
 | C25B | Cessna Citation CJ3 | Wikimedia Commons (see source file) |
@@ -97,7 +97,7 @@ Licensed under Creative Commons or Public Domain.
 | C414 | Cessna 414 | ZLEA / CC BY-SA 4.0 / https://commons.wikimedia.org/wiki/File:Cessna_414_(N882BC,_cn_414-0470)_(4-12-2024).jpg |
 | C421 | Cessna 421 | Cory W. Watts from Madison, Wisconsin, United States of America / CC BY-SA 2.0 / https://commons.wikimedia.org/wiki/File:Cessna_421_Golden_Eagle_(293274079).jpg |
 | C5 | Lockheed C-5 Galaxy | Wikimedia Commons / CC BY 2.0 / https://commons.wikimedia.org/wiki/File:C-5_Galaxy_(10563974324).jpg |
-| C510 | Cessna Citation Mustang | Wikimedia Commons (see source file) |
+| C510 | Cessna Citation Mustang | ZLEA / CC0 / https://commons.wikimedia.org/wiki/File:Cessna_510_Citation_Mustang_(N610PT,_cn_510-0172)_(12-8-2022).jpg |
 | C525 | Cessna CitationJet CJ1 | Wikimedia Commons (see source file) |
 | C560 | Cessna Citation V | Wikimedia Commons (see source file) |
 | C56X | Cessna Citation Excel | Wikimedia Commons (see source file) |
@@ -123,7 +123,7 @@ Licensed under Creative Commons or Public Domain.
 | E145 | Embraer ERJ-145 | Łukasz Golowanow &amp; Maciek Hypś, Konflikty.pl / Attribution / https://commons.wikimedia.org/wiki/File:Embraer_ERJ-145MP_SP-LGM_2.JPG |
 | E170 | Embraer E170 | Wikimedia Commons (see source file) |
 | E190 | Embraer E190 | Wikimedia Commons (see source file) |
-| E195 | Embraer E195 | Wikimedia Commons (see source file) |
+| E195 | Embraer E195 | Bahnfrend / CC BY-SA 4.0 / https://commons.wikimedia.org/wiki/File:SAS_Link_Embraer_195_SE-RSR_Oslo_Gardermoen_2024_(02).jpg |
 | E290 | Embraer E190-E2 | Wikimedia Commons (see source file) |
 | E295 | Embraer E195-E2 | Wikimedia Commons (see source file) |
 | E2C | Grumman E-2 Hawkeye | Wikimedia Commons (see source file) |
@@ -155,12 +155,12 @@ Licensed under Creative Commons or Public Domain.
 | GLEX | Bombardier Global Express | Wikimedia Commons (see source file) |
 | GLF4 | Gulfstream IV | Wikimedia Commons (see source file) |
 | GLF5 | Gulfstream V | Wikimedia Commons (see source file) |
-| GLF6 | Gulfstream G650 | Wikimedia Commons (see source file) |
+| GLF6 | Gulfstream G650 | Bene Riobó / CC BY-SA 4.0 / https://commons.wikimedia.org/wiki/File:EC-LZU_Gulfstream_G650_SCQ.jpg |
 | H25B | Hawker 800XP | Cory W. Watts from Madison, Wisconsin, United States of America / CC BY-SA 2.0 / https://commons.wikimedia.org/wiki/File:The_Hawker_800XP_at_%22mad-town%22_(455375803).jpg |
 | H60 | Sikorsky VH-60 Black Hawk | Acroterion / CC BY-SA 4.0 / https://commons.wikimedia.org/wiki/File:Sikorsky_VH-60M_09-20197_FDK_MD6.jpg |
 | HDJT | Honda HA-420 HondaJet | Wikimedia Commons (see source file) |
 | IL76 | Ilyushin Il-76 | Wikimedia Commons (see source file) |
-| KC10 | McDonnell Douglas KC-10 Extender | Wikimedia Commons (see source file) |
+| KC10 | McDonnell Douglas KC-10 Extender | United States Air Force / Public domain / https://commons.wikimedia.org/wiki/File:305thopgroup-kc10.jpg |
 | KC135 | Boeing KC-135 Stratotanker | Wikimedia Commons (see source file) |
 | KC46 | Boeing KC-46 Pegasus | Wikimedia Commons (see source file) |
 | LJ35 | Learjet 35 | Wikimedia Commons (see source file) |
@@ -182,7 +182,7 @@ Licensed under Creative Commons or Public Domain.
 | PA44 | Piper Seminole | KGG1951 / CC BY-SA 3.0 / https://commons.wikimedia.org/wiki/File:Piper-pa-44.jpg |
 | PC12 | Pilatus PC-12 | Wikimedia Commons (see source file) |
 | PC6 | Pilatus PC-6 Porter | Wikimedia Commons (see source file) |
-| PRM1 | Raytheon Premier I | Sean D Silva / GFDL 1.2 / https://commons.wikimedia.org/wiki/File:Raytheon_390_Premier_I,_Raytheon_Aircraft_JP7554008.jpg |
+| PRM1 | Raytheon Premier I | Bob Adams from Amanzimtoti, South Africa / CC BY-SA 2.0 / https://commons.wikimedia.org/wiki/File:Raytheon_390_Premier_I_ZS-AVM_and_Beech_200_ZS-NTT_(14024922360)_(2).jpg |
 | R22 | Robinson R22 | Wikimedia Commons / https://commons.wikimedia.org/wiki/File:Robinson_R22_Helicopter_hovering.jpg |
 | R44 | Robinson R44 Raven II | PENTAX Corporation / CC BY-SA 3.0 / https://commons.wikimedia.org/wiki/File:Robinson_R44_Raven_II_Bakoma.JPG |
 | RFAL | Dassault Rafale | Wikimedia Commons (see source file) |
@@ -197,7 +197,7 @@ Licensed under Creative Commons or Public Domain.
 | SR71 | Lockheed SR-71 Blackbird | USAF / Judson Brohmer / Public domain / https://commons.wikimedia.org/wiki/File:Lockheed_SR-71_Blackbird.jpg |
 | SU95 | Sukhoi Superjet 100 | Wikimedia Commons (see source file) |
 | SW4 | Fairchild Metroliner | Wikimedia Commons (see source file) |
-| T38 | Northrop T-38 Talon | Wikimedia Commons (see source file) |
+| T38 | Northrop T-38 Talon | Jim Ross/NASA / Public domain / https://commons.wikimedia.org/wiki/File:T-38_in_flight_over_Dry_Lake.jpg |
 | T45 | Boeing T-45 Goshawk | Wikimedia Commons (see source file) |
 | T6 | Beechcraft T-6 Texan II | Wikimedia Commons (see source file) |
 | TBM7 | Socata TBM 700 | Wikimedia Commons (see source file) |

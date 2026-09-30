@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.junit4.createComposeRule
@@ -171,13 +172,13 @@ class CoreDestinationCleanupTest {
         )
 
         compose.onNodeWithTag("list_results").assertIsDisplayed()
-        compose.onNodeWithText("List").assertIsDisplayed()
-        compose.onNodeWithText("ADS-B").assertIsDisplayed()
-        compose.onNodeWithText("Remote ID").assertIsDisplayed()
-        compose.onNodeWithText("Remote ID · Wi-Fi").assertIsDisplayed()
-        compose.onNodeWithText("Phone").assertIsDisplayed()
-        compose.onNodeWithText("Commercial").assertIsDisplayed()
-        compose.onNodeWithText("Military").assertIsDisplayed()
+        compose.onNodeWithText("Nearby").assertIsDisplayed()
+        compose.onNodeWithTag("list_row_N123").assertTextContains("ADS-B", substring = true)
+        compose.onNodeWithTag("list_row_RID").assertTextContains("Remote ID", substring = true)
+        compose.onNodeWithTag("list_row_MIL").assertTextContains("Remote ID · Wi-Fi", substring = true)
+        compose.onNodeWithTag("list_row_PHONE").assertTextContains("Phone", substring = true)
+        compose.onNodeWithTag("list_row_N123").assertTextContains("Commercial", substring = true)
+        compose.onNodeWithTag("list_row_MIL").assertTextContains("Military", substring = true)
         compose.onNodeWithText("Badge status", substring = true).assertDoesNotExist()
         compose.onNodeWithText("Privacy", substring = true).assertDoesNotExist()
         compose.onNodeWithText("About", substring = true).assertDoesNotExist()
@@ -188,7 +189,7 @@ class CoreDestinationCleanupTest {
     }
 
     @Test
-    fun listRowOpensObjectPeekBeforeFullDetails() {
+    fun listRowOpensFullDetailsDirectly() {
         val row = aircraft(id = "PEEK", source = DetectionSource.ADS_B)
         var fullDetailsId: String? = null
         compose.setContent {
@@ -203,9 +204,7 @@ class CoreDestinationCleanupTest {
 
         compose.onNodeWithTag("list_row_PEEK").performClick()
 
-        compose.onNodeWithText("ADS-B radio match").assertIsDisplayed()
-        compose.onNodeWithText("Capture").assertIsNotEnabled()
-        compose.onNodeWithText("Full details").performClick()
+        compose.onNodeWithText("Full details").assertDoesNotExist()
         assertTrue(fullDetailsId == "PEEK")
     }
 
@@ -295,7 +294,7 @@ class CoreDestinationCleanupTest {
             val bounds = compose.onNodeWithTag(tag)
                 .assertIsDisplayed()
                 .fetchSemanticsNode().boundsInRoot
-            assertTrue(bounds.height >= with(compose.density) { 48.dp.toPx() })
+            assertTrue("$tag height ${bounds.height}", bounds.height >= with(compose.density) { 48.dp.roundToPx().toFloat() })
             assertTrue(bounds.left >= 0f)
             assertTrue(bounds.right <= with(compose.density) { 360.dp.toPx() })
         }

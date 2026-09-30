@@ -102,8 +102,8 @@ fun FilterAdvancedSection(
             Spacer(modifier = Modifier.height(12.dp))
 
             // Distance slider
-            val distanceValue = filterState.maxDistanceNm ?: 100f
-            Text("Max Distance: ${if (filterState.maxDistanceNm != null) "${distanceValue.roundToInt()} NM" else "No limit"}")
+            val distanceValue = filterState.maxDistanceNm?.let { it * 1852f / 1609.344f } ?: 100f
+            Text("Max Distance: ${if (filterState.maxDistanceNm != null) "${distanceValue.roundToInt()} mi" else "No limit"}")
             if (filterState.maxDistanceNm != null) {
                 Text(
                     text = "Rows without distance are excluded",
@@ -116,7 +116,7 @@ fun FilterAdvancedSection(
                 value = distanceValue,
                 onValueChange = { value ->
                     val snapped = (value / 5f).roundToInt() * 5f
-                    onFilterStateChange(filterState.copy(maxDistanceNm = if (snapped >= 100f) null else snapped))
+                    onFilterStateChange(filterState.copy(maxDistanceNm = if (snapped >= 100f) null else snapped * 1609.344f / 1852f))
                 },
                 valueRange = 0f..100f,
                 modifier = Modifier.fillMaxWidth()

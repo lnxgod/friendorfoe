@@ -26,6 +26,9 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
@@ -33,6 +36,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -61,10 +65,11 @@ import com.friendorfoe.presentation.permissions.permissionRecovery
 import com.friendorfoe.presentation.permissions.permissionTitle
 import com.friendorfoe.presentation.permissions.rememberPermissionBindings
 import kotlin.math.roundToInt
+import com.friendorfoe.presentation.components.FofDisclosure
 
 val INFO_SECTION_TITLES = listOf(
     "Source & permission status",
-    "Settings",
+    "Detection & connections",
     "Guide & category legend",
     "Privacy & Data",
     "About, support, version & updates",
@@ -264,14 +269,17 @@ fun InfoContent(
     ) {
         if (showHeader) {
             item(key = "info_header") {
-                FofScreenHeader("Info")
+                FofScreenHeader("App settings")
             }
         }
-        item(key = "info_sources") {
-            InfoSection(index = 0) { SourcePermissionRows(state) }
+        item(key = "info_alerts") {
+            FofSection("Alerts") { AlertSettingsRows(state, actions) }
         }
         item(key = "info_settings") {
             InfoSection(index = 1) { RuntimeSettingsRows(state, actions) }
+        }
+        item(key = "info_sources") {
+            InfoSection(index = 0) { SourcePermissionRows(state) }
         }
         item(key = "info_guide") {
             InfoSection(index = 2) { GuideAndLegendRows(actions) }
@@ -293,9 +301,9 @@ private fun InfoSection(
     index: Int,
     content: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit,
 ) {
-    FofSection(
+    FofDisclosure(
         title = INFO_SECTION_TITLES[index],
-        modifier = Modifier.testTag("info_section_$index"),
+        tag = "info_section_$index",
         content = content,
     )
 }
@@ -438,8 +446,10 @@ private fun RuntimeSettingsRows(state: InfoUiState, actions: InfoActions) {
     )
     BackendEndpointEditor(state, actions)
 
-    SettingsGroupDivider()
-    SettingsGroupLabel("Alerts")
+}
+
+@Composable
+private fun AlertSettingsRows(state: InfoUiState, actions: InfoActions) {
     AircraftRangeControl(
         miles = state.settings.aircraftRangeMiles,
         onSetMiles = actions.onSetAircraftRangeMiles,
@@ -481,9 +491,20 @@ private fun RuntimeSettingsRows(state: InfoUiState, actions: InfoActions) {
     )
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun AircraftRangeControl(miles: Int, onSetMiles: (Int) -> Unit) {
+internal fun AircraftRangeControl(miles: Int, onSetMiles: (Int) -> Unit) {
     var draftMiles by remember(miles) { mutableIntStateOf(AircraftRange.normalizeMiles(miles)) }
+    var customOpen by remember { mutableStateOf(false) }
+    var customValue by remember { mutableStateOf(miles.toString()) }
+    if (customOpen) AlertDialog(onDismissRequest = { customOpen = false }, title = { Text("Custom aircraft range") },
+        text = { OutlinedTextField(value = customValue, onValueChange = { customValue = it.take(3) },
+            label = { Text("Miles · 1–50") }, singleLine = true,
+            keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.Number),
+            modifier = Modifier.testTag("custom_range_input")) },
+        confirmButton = { TextButton(enabled = customValue.toIntOrNull() in 1..50, onClick = {
+            customValue.toIntOrNull()?.let { draftMiles = it; onSetMiles(it) }; customOpen = false
+        }) { Text("Apply") } }, dismissButton = { TextButton(onClick = { customOpen = false }) { Text("Cancel") } })
     Column(Modifier.fillMaxWidth().padding(vertical = 12.dp)) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
@@ -507,6 +528,14 @@ private fun AircraftRangeControl(miles: Int, onSetMiles: (Int) -> Unit) {
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf(5, 10, 15).forEach { preset ->
+                FilterChip(selected = draftMiles == preset, onClick = { draftMiles = preset; onSetMiles(preset) },
+                    label = { Text("$preset mi") }, modifier = Modifier.testTag("range_preset_$preset"))
+            }
+            FilterChip(selected = draftMiles !in listOf(5, 10, 15), onClick = { customValue = draftMiles.toString(); customOpen = true },
+                label = { Text("Custom") })
+        }
         Slider(
             value = draftMiles.toFloat(),
             onValueChange = { draftMiles = AircraftRange.normalizeMiles(it.roundToInt()) },

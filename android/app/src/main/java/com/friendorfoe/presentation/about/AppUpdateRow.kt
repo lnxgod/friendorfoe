@@ -17,14 +17,14 @@ internal fun AppUpdateRow(
     when (update) {
         UpdateUiState.Idle -> FofActionRow(
             title = "App updates",
-            description = "Check the official GitHub release feed",
+            description = "Check for a newer Android release",
             trailingLabel = "Check",
             onClick = onCheck,
             modifier = Modifier.testTag(checkTag),
         )
         UpdateUiState.Checking -> FofActionRow(
             title = "Checking for updates",
-            description = "Comparing ordered app versions",
+            description = "Checking GitHub releases",
             trailingLabel = "Checking…",
             enabled = false,
             onClick = onCheck,
@@ -32,7 +32,7 @@ internal fun AppUpdateRow(
         )
         is UpdateUiState.UpToDate -> FofActionRow(
             title = "Up to date",
-            description = "Version ${update.installed.name} is not older than the latest release",
+            description = "No newer release available",
             trailingLabel = "Check again",
             onClick = onCheck,
             modifier = Modifier.testTag(checkTag),
@@ -55,7 +55,7 @@ internal fun AppUpdateRow(
         }
         is UpdateUiState.Failed -> FofActionRow(
             title = update.message,
-            description = "Check your network and try again. Your installed app is unchanged.",
+            description = "Try again in a moment.",
             trailingLabel = "Retry",
             onClick = onCheck,
             modifier = Modifier.testTag(checkTag),

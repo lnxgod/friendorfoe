@@ -19,7 +19,7 @@ private val TOP_LEVEL_ROUTES = setOf(
     "ar_view", "map_view", "list_view", "privacy", "badge", "history", "info"
 )
 
-internal const val DEFAULT_TOP_LEVEL_ROUTE = "info"
+internal const val DEFAULT_TOP_LEVEL_ROUTE = "list_view"
 
 internal fun normalLaunchRoute(): String = DEFAULT_TOP_LEVEL_ROUTE
 

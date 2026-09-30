@@ -1,6 +1,8 @@
 package com.friendorfoe.presentation.privacy
 
+import androidx.compose.animation.AnimatedVisibility
 import android.app.Activity
+import com.friendorfoe.presentation.components.FofDisclosure
 import android.bluetooth.BluetoothAdapter
 import android.content.Intent
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -380,15 +382,17 @@ private fun PrivacySourceHealthSummary(
     summaries: List<PrivacySourceSummary>,
     actions: PrivacyActions,
 ) {
-    Column(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+    val needsAction = summaries.count { it.state in setOf(
+        SourceHealthState.PERMISSION_BLOCKED, SourceHealthState.FAILED,
+    ) }
+    FofDisclosure(
+        title = "Detection sources",
+        summary = if (needsAction > 0) "$needsAction need attention" else summaries.joinToString(" · ") { "${it.group.label}: ${it.state.userLabel()}" },
+        modifier = Modifier.padding(horizontal = 20.dp),
+        tag = "privacy_source_status",
+        initiallyExpanded = needsAction > 0,
     ) {
-        summaries.forEachIndexed { index, summary ->
-            PrivacySourceStatusRow(summary, actions)
-            if (index != summaries.lastIndex) {
-                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-            }
-        }
+        summaries.forEach { PrivacySourceStatusRow(it, actions) }
     }
 }
 
@@ -477,10 +481,37 @@ private fun PrivacySearchAndFilters(
 ) {
     var categoriesOpen by remember { mutableStateOf(false) }
     var sourcesOpen by remember { mutableStateOf(false) }
+    var filtersOpen by remember { mutableStateOf(false) }
     Column(
         modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            OutlinedTextField(
+                value = state.filters.query,
+                onValueChange = actions.onQueryChanged,
+                modifier = Modifier.weight(1f).testTag("privacy_search"),
+                singleLine = true,
+                placeholder = { Text("Search findings", maxLines = 1) },
+                leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+                trailingIcon = if (state.filters.query.isNotEmpty()) {
+                    {
+                        IconButton(
+                            onClick = { actions.onQueryChanged("") },
+                            modifier = Modifier.size(48.dp),
+                        ) {
+                            Icon(Icons.Default.Close, contentDescription = "Clear search")
+                        }
+                    }
+                } else {
+                    null
+                },
+            )
+            IconButton(onClick = { filtersOpen = !filtersOpen }, modifier = Modifier.testTag("privacy_filters")) {
+                Icon(Icons.Default.FilterList, contentDescription =
+                    if (state.filters.activeFilterCount > 0) "Filters, ${state.filters.activeFilterCount} active" else "Filters")
+            }
+        }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             FilterChip(
                 selected = state.filters.attentionOnly,
@@ -498,90 +529,72 @@ private fun PrivacySearchAndFilters(
                 Text("Recent encounters")
             }
         }
-        OutlinedTextField(
-            value = state.filters.query,
-            onValueChange = actions.onQueryChanged,
-            modifier = Modifier.fillMaxWidth().testTag("privacy_search"),
-            singleLine = true,
-            label = { Text("Search current findings") },
-            leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
-            trailingIcon = if (state.filters.query.isNotEmpty()) {
-                {
-                    IconButton(
-                        onClick = { actions.onQueryChanged("") },
-                        modifier = Modifier.size(48.dp),
+        AnimatedVisibility(filtersOpen) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Box {
+                    FilterChip(
+                        selected = state.filters.categories.isNotEmpty(),
+                        onClick = { categoriesOpen = true },
+                        label = {
+                            Text(filterLabel("Categories", state.filters.categories.size))
+                        },
+                        leadingIcon = { Icon(Icons.Default.FilterList, contentDescription = null) },
+                        modifier = Modifier.heightIn(min = 48.dp),
+                    )
+                    DropdownMenu(
+                        expanded = categoriesOpen,
+                        onDismissRequest = { categoriesOpen = false },
                     ) {
-                        Icon(Icons.Default.Close, contentDescription = "Clear search")
+                        state.availableCategories.forEach { category ->
+                            DropdownMenuItem(
+                                text = { Text(category.label) },
+                                onClick = { actions.onToggleCategory(category) },
+                                leadingIcon = {
+                                    Checkbox(
+                                        checked = category in state.filters.categories,
+                                        onCheckedChange = null,
+                                    )
+                                },
+                            )
+                        }
                     }
                 }
-            } else {
-                null
-            },
-        )
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Box {
-                FilterChip(
-                    selected = state.filters.categories.isNotEmpty(),
-                    onClick = { categoriesOpen = true },
-                    label = {
-                        Text(filterLabel("Categories", state.filters.categories.size))
-                    },
-                    leadingIcon = { Icon(Icons.Default.FilterList, contentDescription = null) },
-                    modifier = Modifier.heightIn(min = 48.dp),
-                )
-                DropdownMenu(
-                    expanded = categoriesOpen,
-                    onDismissRequest = { categoriesOpen = false },
-                ) {
-                    state.availableCategories.forEach { category ->
-                        DropdownMenuItem(
-                            text = { Text(category.label) },
-                            onClick = { actions.onToggleCategory(category) },
-                            leadingIcon = {
-                                Checkbox(
-                                    checked = category in state.filters.categories,
-                                    onCheckedChange = null,
-                                )
-                            },
-                        )
+                Box {
+                    FilterChip(
+                        selected = state.filters.sources.isNotEmpty(),
+                        onClick = { sourcesOpen = true },
+                        label = { Text(filterLabel("Sources", state.filters.sources.size)) },
+                        modifier = Modifier.heightIn(min = 48.dp),
+                    )
+                    DropdownMenu(
+                        expanded = sourcesOpen,
+                        onDismissRequest = { sourcesOpen = false },
+                    ) {
+                        state.availableSources.forEach { source ->
+                            DropdownMenuItem(
+                                text = { Text(source.userLabel()) },
+                                onClick = { actions.onToggleSource(source) },
+                                leadingIcon = {
+                                    Checkbox(
+                                        checked = source in state.filters.sources,
+                                        onCheckedChange = null,
+                                    )
+                                },
+                            )
+                        }
                     }
                 }
-            }
-            Box {
-                FilterChip(
-                    selected = state.filters.sources.isNotEmpty(),
-                    onClick = { sourcesOpen = true },
-                    label = { Text(filterLabel("Sources", state.filters.sources.size)) },
-                    modifier = Modifier.heightIn(min = 48.dp),
-                )
-                DropdownMenu(
-                    expanded = sourcesOpen,
-                    onDismissRequest = { sourcesOpen = false },
-                ) {
-                    state.availableSources.forEach { source ->
-                        DropdownMenuItem(
-                            text = { Text(source.userLabel()) },
-                            onClick = { actions.onToggleSource(source) },
-                            leadingIcon = {
-                                Checkbox(
-                                    checked = source in state.filters.sources,
-                                    onCheckedChange = null,
-                                )
-                            },
-                        )
+                if (state.filters.activeFilterCount > 0) {
+                    TextButton(
+                        onClick = actions.onClearFilters,
+                        modifier = Modifier.heightIn(min = 48.dp),
+                    ) {
+                        Text("Clear")
                     }
-                }
-            }
-            if (state.filters.activeFilterCount > 0) {
-                TextButton(
-                    onClick = actions.onClearFilters,
-                    modifier = Modifier.heightIn(min = 48.dp),
-                ) {
-                    Text("Clear")
                 }
             }
         }

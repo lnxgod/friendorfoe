@@ -1,10 +1,20 @@
 package com.friendorfoe.presentation.aircraft
 
+import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.clickable
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.platform.testTag
+import com.friendorfoe.presentation.filter.FilterSearchField
+import com.friendorfoe.presentation.reference.ReferenceNoMatches
+import com.friendorfoe.presentation.reference.ReferenceExpansionHint
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -16,7 +26,6 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -27,8 +36,6 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextField
-import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
@@ -36,16 +43,13 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
-import coil.compose.AsyncImage
+import com.friendorfoe.presentation.components.ReferenceImage
+import com.friendorfoe.presentation.util.*
 import com.friendorfoe.presentation.util.AircraftCategory
 import com.friendorfoe.presentation.util.AircraftDatabase
 import com.friendorfoe.presentation.util.AircraftReference
@@ -68,7 +72,7 @@ fun AircraftReferenceScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Aircraft Reference Guide") },
+                title = { Text("Aircraft guide") },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(
@@ -97,15 +101,15 @@ fun AircraftReferenceScreen(
 fun AircraftReferenceContent(
     initialTypeFilter: String? = null
 ) {
-    var searchQuery by remember {
+    var searchQuery by rememberSaveable {
         mutableStateOf(
             if (initialTypeFilter != null) {
                 AircraftDatabase.matchByTypeCode(initialTypeFilter)?.name ?: initialTypeFilter
             } else ""
         )
     }
-    var selectedCategory by remember { mutableStateOf<AircraftCategory?>(null) }
-    var expandedAircraftId by remember { mutableStateOf<String?>(null) }
+    var selectedCategory by rememberSaveable { mutableStateOf<AircraftCategory?>(null) }
+    var expandedAircraftId by rememberSaveable { mutableStateOf<String?>(null) }
 
     val filteredAircraft = remember(searchQuery, selectedCategory) {
         var aircraft = if (searchQuery.isNotBlank()) {
@@ -120,23 +124,11 @@ fun AircraftReferenceContent(
     }
 
     Column(modifier = Modifier.fillMaxSize()) {
-        // Search bar
-        TextField(
-            value = searchQuery,
-            onValueChange = { searchQuery = it },
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 8.dp),
-            placeholder = { Text("Search aircraft...") },
-            leadingIcon = {
-                Icon(Icons.Default.Search, contentDescription = "Search")
-            },
-            singleLine = true,
-            shape = RoundedCornerShape(12.dp),
-            colors = TextFieldDefaults.colors(
-                focusedIndicatorColor = Color.Transparent,
-                unfocusedIndicatorColor = Color.Transparent
-            )
+        FilterSearchField(
+            query = searchQuery,
+            onQueryChange = { searchQuery = it },
+            placeholder = "Search aircraft",
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
         )
 
         // Category filter chips
@@ -164,8 +156,8 @@ fun AircraftReferenceContent(
                     },
                     label = { Text(category.label) },
                     colors = FilterChipDefaults.filterChipColors(
-                        selectedContainerColor = aircraftCategoryColor(category),
-                        selectedLabelColor = Color.White
+                        selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
+                        selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
                     )
                 )
             }
@@ -178,14 +170,17 @@ fun AircraftReferenceContent(
             text = "${filteredAircraft.size} aircraft",
             modifier = Modifier.padding(horizontal = 16.dp),
             style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+            color = MaterialTheme.colorScheme.onSurfaceVariant
         )
 
         Spacer(modifier = Modifier.height(4.dp))
 
-        // Aircraft list
-        LazyColumn(
-            modifier = Modifier.fillMaxSize(),
+        if (filteredAircraft.isEmpty()) {
+            ReferenceNoMatches("aircraft", onReset = { searchQuery = ""; selectedCategory = null })
+        }
+
+        if (filteredAircraft.isNotEmpty()) LazyColumn(
+            modifier = Modifier.fillMaxSize().testTag("aircraft_reference_results"),
             contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
@@ -202,6 +197,7 @@ fun AircraftReferenceContent(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun AircraftReferenceCard(
     aircraft: AircraftReference,
@@ -211,7 +207,10 @@ private fun AircraftReferenceCard(
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onToggle),
+            .animateContentSize()
+            .testTag("reference_card_${aircraft.id}")
+            .semantics { stateDescription = if (isExpanded) "Expanded" else "Collapsed" }
+            .clickable(role = Role.Button, onClickLabel = if (isExpanded) "Hide details" else "View details", onClick = onToggle),
         shape = RoundedCornerShape(12.dp),
         elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
         colors = CardDefaults.cardColors(
@@ -220,37 +219,33 @@ private fun AircraftReferenceCard(
     ) {
         Column {
             // Photo
-            AsyncImage(
-                model = "file:///android_asset/${aircraft.photoAsset}",
-                contentDescription = aircraft.name,
+            ReferenceImage(
+                model = aircraftReferencePhotoUrl(aircraft),
+                description = aircraft.name,
+                silhouetteRes = silhouetteDrawableRes(silhouetteForAircraftReference(aircraft.category)),
+                caption = referenceImageCaption(aircraft.photoAsset),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(if (isExpanded) 200.dp else 140.dp)
+                    .height(if (isExpanded) 220.dp else 170.dp)
                     .clip(RoundedCornerShape(topStart = 12.dp, topEnd = 12.dp)),
-                contentScale = ContentScale.Crop
             )
 
             Column(modifier = Modifier.padding(12.dp)) {
-                // Name and category badge
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
+                Text(
+                    text = aircraft.name,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                )
+                FlowRow(
+                    modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = aircraft.name,
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        Text(
-                            text = aircraft.manufacturer,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
-                        )
-                    }
+                    Text(
+                        text = aircraft.manufacturer,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                     AircraftCategoryBadge(aircraft.category)
                 }
 
@@ -287,20 +282,11 @@ private fun AircraftReferenceCard(
                         Text(
                             text = "ICAO: ${aircraft.icaoTypeCodes.joinToString(", ")}",
                             style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f)
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
-                } else {
-                    // Collapsed: show specs summary
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        text = aircraft.specs,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
                 }
+                ReferenceExpansionHint(isExpanded)
             }
         }
     }

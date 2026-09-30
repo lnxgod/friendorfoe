@@ -1603,23 +1603,6 @@ object DroneDatabase {
             maxSpeedKmh = 57f
         ),
         DroneReference(
-            id = "dji_neo",
-            name = "DJI Neo",
-            manufacturer = "DJI",
-            category = DroneCategory.CONSUMER,
-            description = "Palm-sized selfie drone that can launch from your hand. AI subject tracking and QuickShots. Ultra-portable for on-the-go content creation. No controller required.",
-            specs = "Weight: 135g | Range: 6km | Max speed: 50km/h | Flight time: 18min",
-            photoAsset = "drones/dji_neo.jpg",
-            wifiPatterns = listOf("DJI-", "NEO-"),
-            countryOfOrigin = "China",
-            riskLevel = RiskLevel.BENIGN,
-            threatClassification = ThreatClassification.CIVILIAN,
-            autonomyLevel = AutonomyLevel.FULLY_AUTONOMOUS,
-            maxRangeKm = 6f,
-            maxEnduranceMin = 18,
-            maxSpeedKmh = 50f
-        ),
-        DroneReference(
             id = "autel_evo3_pro",
             name = "Autel EVO III Pro",
             manufacturer = "Autel",

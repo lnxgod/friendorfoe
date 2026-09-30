@@ -5,6 +5,7 @@ import androidx.room.Entity
 import androidx.room.Index
 import androidx.room.PrimaryKey
 
+@androidx.annotation.Keep
 @Entity(
     tableName = "position_tracking",
     indices = [

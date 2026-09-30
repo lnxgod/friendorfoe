@@ -62,9 +62,9 @@ fun DetailOverviewContent(
             detail = if (model.observationStale) {
                 "Last received observation; this aircraft is no longer in the current feed."
             } else if (model.isLive) {
-                "Current local observation"
+                "Latest received position"
             } else {
-                "Immutable snapshot from History"
+                "Saved observation"
             },
             tone = if (model.isLive && !model.observationStale) FofTone.Success else FofTone.Primary,
         )
@@ -95,7 +95,7 @@ fun DetailOverviewContent(
         if (onOpenFlightPath != null) {
             FofActionRow(
                 title = "Recorded flight path",
-                description = "Review where this aircraft was observed during the last 24 hours.",
+                description = "Positions received in the last 24 hours.",
                 trailingLabel = "Open",
                 onClick = onOpenFlightPath,
             )
@@ -150,7 +150,7 @@ private fun IdentifierSection(identifiers: List<DetailIdentifier>) {
     var copiedLabel by rememberSaveable { mutableStateOf<String?>(null) }
     FofSection(
         title = "Identifiers",
-        subtitle = "Use Copy when you need an exact value.",
+        subtitle = null,
     ) {
         identifiers.forEachIndexed { index, identifier ->
             if (index > 0) HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)

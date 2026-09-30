@@ -167,6 +167,10 @@ class SkyObjectRepository @Inject constructor(
     /** Current data source status for ADS-B data. */
     val dataSourceStatus: StateFlow<DataSourceStatus> get() = adsbPoller.dataSourceStatus
 
+    val aircraftFeedState get() = adsbPoller.feedState
+
+    fun retryAircraftFeed() = adsbPoller.retry()
+
     /** Last error message, null when healthy. */
     val lastError: StateFlow<String?> get() = adsbPoller.lastError
 

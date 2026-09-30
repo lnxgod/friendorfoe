@@ -3,10 +3,8 @@ package com.friendorfoe.data.repository
 import androidx.compose.material3.Text
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.test.platform.app.InstrumentationRegistry
-import dagger.hilt.EntryPoint
-import dagger.hilt.InstallIn
+import com.friendorfoe.IntegrationTestEntryPoint
 import dagger.hilt.android.EntryPointAccessors
-import dagger.hilt.components.SingletonComponent
 import kotlinx.coroutines.Job
 import org.junit.Assert.assertNotSame
 import org.junit.Assert.assertTrue
@@ -22,7 +20,7 @@ class SkyObjectRepositoryPermissionTest {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val repository = EntryPointAccessors.fromApplication(
             context.applicationContext,
-            SkyObjectRepositoryTestEntryPoint::class.java,
+            IntegrationTestEntryPoint::class.java,
         ).skyObjectRepository()
         val permissions = MutableLocalDetectionPermissionProvider(LocalDetectionPermissions.None)
         val productionProvider = repository.replacePermissionProviderForTest(permissions)
@@ -59,11 +57,6 @@ class SkyObjectRepositoryPermissionTest {
     }
 }
 
-@EntryPoint
-@InstallIn(SingletonComponent::class)
-interface SkyObjectRepositoryTestEntryPoint {
-    fun skyObjectRepository(): SkyObjectRepository
-}
 
 private class MutableLocalDetectionPermissionProvider(
     var current: LocalDetectionPermissions,

@@ -459,7 +459,7 @@ class ObjectPeekTest {
         compose.onNodeWithText(
             "Photos access was not granted. Grant access to save this capture.",
         ).assertIsDisplayed()
-        compose.onNodeWithText("Retry save").performClick()
+        compose.onNodeWithText("Retry").performClick()
         assertEquals(1, retryCalls)
     }
 }
