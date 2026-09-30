@@ -59,7 +59,7 @@ class InterfaceRefreshTest {
         val helicopter = compose.onNodeWithTag("list_row_HELI").fetchSemanticsNode().boundsInRoot
         val close = compose.onNodeWithTag("list_row_CLOSE").fetchSemanticsNode().boundsInRoot
         assertTrue(helicopter.top < close.top)
-        compose.onNodeWithTag("nearby_range").assertTextContains("15 mi range").performClick()
+        compose.onNodeWithTag("nearby_range").assertTextContains("15 mi alerts").performClick()
         compose.onNodeWithTag("aircraft_range_reset").performClick()
         compose.runOnIdle { assertEquals(10, miles) }
         compose.onNodeWithText("Notification settings").performClick()

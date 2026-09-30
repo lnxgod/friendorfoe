@@ -7,8 +7,8 @@ ANDROID_GRADLE = REPO_ROOT / "android" / "app" / "build.gradle.kts"
 ANDROID_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "android-build.yml"
 ESP32_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "esp32-web-flasher.yml"
 
-VERSION_NAME = "0.67.23-android-interface-refresh"
-VERSION_CODE = 131
+VERSION_NAME = "0.67.24-android-nearby-watch"
+VERSION_CODE = 132
 SIGNER_SHA256 = (
     "3a1581ba5d10df59fdb28e09987851d6c7d79ce26df4eb69b9f6d262b9b68e95"
 )
@@ -16,10 +16,11 @@ APKSIGNER_V2_CERT_OUTPUT = (
     "V2 Signer: certificate SHA-256 digest: " + SIGNER_SHA256
 )
 ACTION_PINS = {
-    "actions/checkout": ("34e114876b0b11c390a56381ad16ebd13914f8d5", "v4", 2),
-    "actions/setup-java": ("c1e323688fd81a25caa38c78aa6df2d33d3e20d9", "v4", 2),
-    "actions/cache": ("0057852bfaa89a56745cba8c7296529d2fc39830", "v4", 2),
-    "actions/upload-artifact": ("ea165f8d65b6e75b540449e92b4886f43607fa02", "v4", 2),
+    "reactivecircus/android-emulator-runner": ("a421e43855164a8197daf9d8d40fe71c6996bb0d", "v2", 1),
+    "actions/checkout": ("34e114876b0b11c390a56381ad16ebd13914f8d5", "v4", 3),
+    "actions/setup-java": ("c1e323688fd81a25caa38c78aa6df2d33d3e20d9", "v4", 3),
+    "actions/cache": ("0057852bfaa89a56745cba8c7296529d2fc39830", "v4", 3),
+    "actions/upload-artifact": ("ea165f8d65b6e75b540449e92b4886f43607fa02", "v4", 3),
     "actions/download-artifact": ("d3f86a106a0bac45b974a628896c90dbdf5c8093", "v4", 1),
     "softprops/action-gh-release": ("3d0d9888cb7fd7b750713d6e236d1fcb99157228", "v3", 1),
 }
@@ -88,7 +89,12 @@ def test_release_signing_is_test_gated_verified_and_secret_scoped():
 
     assert "contents: read" in build
     assert "./gradlew clean testDebugUnitTest lintDebug assembleDebug" in build
-    assert "needs: build" in signing
+    assert "needs: [build, ui-tests]" in signing
+    ui = _job(workflow, "ui-tests", "sign-release")
+    assert "connectedDebugAndroidTest" in ui
+    assert "if: always()" in ui
+    assert "contents: read" in ui
+    assert "secrets." not in ui
     assert "contents: read" in signing
     assert "contents: write" not in signing
     assert signing.index("- name: Validate signing secrets") < signing.index(

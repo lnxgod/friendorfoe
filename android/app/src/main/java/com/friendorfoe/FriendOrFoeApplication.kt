@@ -16,6 +16,7 @@ class FriendOrFoeApplication : Application(), DefaultLifecycleObserver {
 
     @Inject lateinit var badgeUsbRepository: BadgeUsbRepository
     @Inject lateinit var privacyAlertBootstrap: PrivacyAlertBootstrap
+    @Inject lateinit var watchMode: com.friendorfoe.presentation.watch.WatchModeController
     @Inject lateinit var skyObjectRepository: SkyObjectRepository
 
     override fun onCreate() {
@@ -33,7 +34,7 @@ class FriendOrFoeApplication : Application(), DefaultLifecycleObserver {
 
     override fun onStop(owner: LifecycleOwner) {
         Log.i("FriendOrFoeApp", "App backgrounded — stopping scanning to save battery")
-        skyObjectRepository.stop()
+        if (!watchMode.state.value.active && !watchMode.state.value.starting) skyObjectRepository.stop()
         badgeUsbRepository.stop()
     }
 }

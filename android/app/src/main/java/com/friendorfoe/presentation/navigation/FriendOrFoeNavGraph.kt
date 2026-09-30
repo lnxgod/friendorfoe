@@ -207,6 +207,13 @@ private fun NavGraphBuilder.registerDestinations(
         }
     }
 
+    composable(Screen.SavedFlights.route) {
+        com.friendorfoe.presentation.trails.SavedFlightsScreen(navController::popBackStack,
+            onOpen = { navController.navigate(Screen.SavedFlight.createRoute(it)) })
+    }
+    composable(Screen.SavedFlight.route, arguments = listOf(navArgument("savedId") { type = NavType.StringType })) {
+        com.friendorfoe.presentation.trails.FlightPathScreen(onBack = navController::popBackStack)
+    }
     composable(Screen.History.route) {
         Column(Modifier.fillMaxSize().testTag("screen_history")) {
             Box(Modifier.weight(1f)) {
@@ -267,6 +274,7 @@ internal fun AboutTopLevelRoute(
                 .ifBlank { BuildConfig.VERSION_NAME },
             updateState = state.updateState,
             actions = AboutLandingActions(
+                onOpenSavedFlights = { navController.navigate(Screen.SavedFlights.route) },
                 onOpenHistory = { navController.navigate(Screen.History.route) { launchSingleTop = true } },
                 onOpenBadge = { navController.navigate(Screen.Badge.route) { launchSingleTop = true } },
                 onOpenSettings = {

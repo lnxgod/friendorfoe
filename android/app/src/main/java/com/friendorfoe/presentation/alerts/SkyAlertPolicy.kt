@@ -21,7 +21,8 @@ data class SkyAlertCandidate(
     val title: String,
     val body: String,
     val priority: Int = 100,
-    val distanceMeters: Double? = null
+    val distanceMeters: Double? = null,
+    val objectId: String = "",
 )
 
 class SkyAlertPolicy(
@@ -33,10 +34,16 @@ class SkyAlertPolicy(
         candidate: SkyAlertCandidate,
         nowMs: Long = System.currentTimeMillis()
     ): Boolean {
-        val last = lastNotifiedAt[candidate.key]
-        if (last != null && nowMs - last < cooldownMs) return false
-        lastNotifiedAt[candidate.key] = nowMs
+        if (!isEligible(candidate, nowMs)) return false
+        markDelivered(candidate, nowMs)
         return true
+    }
+
+    fun isEligible(candidate: SkyAlertCandidate, nowMs: Long = System.currentTimeMillis()): Boolean =
+        lastNotifiedAt[candidate.key]?.let { nowMs - it >= cooldownMs || nowMs < it } ?: true
+
+    fun markDelivered(candidate: SkyAlertCandidate, nowMs: Long = System.currentTimeMillis()) {
+        lastNotifiedAt[candidate.key] = nowMs
     }
 
     fun reset() {
@@ -90,6 +97,7 @@ class SkyAlertPolicy(
                 title = "Drone nearby",
                 body = "$label detected${rangeText?.let { " around ${formatDistance(it)}" } ?: ""}",
                 priority = 0,
+                objectId = drone.id,
                 distanceMeters = rangeText
             )
         }
@@ -152,6 +160,7 @@ class SkyAlertPolicy(
                 title = title,
                 body = listOfNotNull(label, distanceText).joinToString(" - "),
                 priority = priority,
+                objectId = aircraft.id,
                 distanceMeters = aircraft.distanceMeters
             )
         }

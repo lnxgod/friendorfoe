@@ -100,6 +100,24 @@ class FriendOrFoeDatabaseMigrationTest {
         migrated.close()
     }
 
+    @Test
+    fun migration_6_to_7_keeps_live_trails_and_creates_independent_saved_flights() {
+        helper.createDatabase(TEST_DATABASE, 6).apply {
+            execSQL("INSERT INTO position_tracking (object_id, latitude, longitude, altitude_meters, heading, speed_mps, timestamp) VALUES ('abc123', 32.7, -117.1, 1200, 90, 100, 1000)")
+            close()
+        }
+        val migrated = helper.runMigrationsAndValidate(TEST_DATABASE, 7, true, FriendOrFoeDatabase.MIGRATION_6_7)
+        migrated.query("SELECT object_id FROM position_tracking").use {
+            assertTrue(it.moveToFirst()); assertEquals("abc123", it.getString(0))
+        }
+        migrated.execSQL("INSERT INTO saved_flights VALUES ('saved', 'abc123', 'N123', 1000, 1, '[]')")
+        migrated.execSQL("DELETE FROM position_tracking")
+        migrated.query("SELECT label FROM saved_flights").use {
+            assertTrue(it.moveToFirst()); assertEquals("N123", it.getString(0))
+        }
+        migrated.close()
+    }
+
     private fun assertNullColumn(databaseCursor: android.database.Cursor, columnName: String) {
         assertTrue(databaseCursor.isNull(databaseCursor.getColumnIndexOrThrow(columnName)))
     }

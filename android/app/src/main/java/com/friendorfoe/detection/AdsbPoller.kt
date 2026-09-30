@@ -10,7 +10,9 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.delay
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -61,6 +63,15 @@ class AdsbPoller @Inject constructor(
 
     private var scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var pollingJob: Job? = null
+    @Volatile private var sessionEnabled = false
+    private val retryRequests = Channel<Unit>(Channel.CONFLATED)
+    private val _feedState = MutableStateFlow(AircraftFeedState())
+    val feedState: StateFlow<AircraftFeedState> = _feedState.asStateFlow()
+
+    fun retry() {
+        // Respect provider rate limits even when Retry is pressed.
+        if (isPolling && _dataSourceStatus.value != DataSourceStatus.RATE_LIMITED) retryRequests.trySend(Unit)
+    }
 
     private val _aircraft = MutableSharedFlow<List<Aircraft>>(replay = 1)
     val aircraft: Flow<List<Aircraft>> = _aircraft.asSharedFlow()
@@ -73,12 +84,16 @@ class AdsbPoller @Inject constructor(
 
     fun start(latitude: Double, longitude: Double) {
         stop()
+        sessionEnabled = true
+        if (!validAircraftFeedPosition(latitude, longitude)) return
         scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
         Log.i(TAG, "Starting ADS-B polling at ($latitude, $longitude)")
 
         currentLat = latitude
         currentLon = longitude
+        _feedState.value = AircraftFeedState(phase = AircraftFeedPhase.CONNECTING)
+        while (retryRequests.tryReceive().isSuccess) { /* discard requests from the old session */ }
 
         pollingJob = scope.launch {
             var consecutiveFailures = 0
@@ -122,10 +137,13 @@ class AdsbPoller @Inject constructor(
                         _dataSourceStatus.value = status
                         _lastError.value = null
                         consecutiveFailures = 0
+                        _feedState.value = AircraftFeedState(AircraftFeedPhase.LIVE, System.currentTimeMillis())
                     }.onFailure { error ->
-                        handleError(error, consecutiveFailures)
+                        handleError(error)
                         consecutiveFailures++
                     }
+                } catch (e: CancellationException) {
+                    throw e
                 } catch (e: Exception) {
                     Log.e(TAG, "Unexpected error during ADS-B poll", e)
                     // Don't emit emptyList() — let stale aircraft persist until pruned
@@ -135,12 +153,15 @@ class AdsbPoller @Inject constructor(
                 }
 
                 val backoffMs = calculateBackoff(consecutiveFailures)
-                delay(backoffMs)
+                if (consecutiveFailures > 0) {
+                    _feedState.value = _feedState.value.failed(System.currentTimeMillis(), consecutiveFailures, backoffMs, _dataSourceStatus.value == DataSourceStatus.RATE_LIMITED)
+                }
+                withTimeoutOrNull(backoffMs) { retryRequests.receive() }
             }
         }
     }
 
-    private fun handleError(error: Throwable, consecutiveFailures: Int) {
+    private fun handleError(error: Throwable) {
         // Update status/error for UI, but DON'T emit emptyList() — let stale aircraft
         // persist in SkyObjectRepository until pruned after STALE_THRESHOLD (60s).
         when (error) {
@@ -183,14 +204,18 @@ class AdsbPoller @Inject constructor(
     @Volatile private var currentLon = 0.0
 
     fun updatePosition(latitude: Double, longitude: Double) {
+        if (!validAircraftFeedPosition(latitude, longitude)) return
+        if (sessionEnabled && !isPolling) { start(latitude, longitude); return }
         currentLat = latitude
         currentLon = longitude
     }
 
     fun stop() {
+        sessionEnabled = false
         pollingJob?.cancel()
         pollingJob = null
         scope.cancel()
+        _feedState.value = AircraftFeedState()
         Log.i(TAG, "ADS-B polling stopped")
     }
 

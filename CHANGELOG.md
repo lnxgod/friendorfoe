@@ -41,6 +41,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   release as `0.64.64-privacy-oui`; the FoF Badge track remains separate at
   `0.64.64-badge-privacy-oui`.
 
+## [0.67.24-android-nearby-watch] - 2026-09-29
+
+### Added
+- Nearby feed status distinguishes connecting, live, reconnecting, offline, and
+  waiting for location. Failed feeds offer Retry and retain labeled older results.
+- Persistent Nearby priority / Nearest first sorting, distance sections, and
+  exact custom alert ranges from 1–50 miles. The default remains 10 miles.
+- Alert notifications open the detected aircraft or drone and provide mute and
+  30-minute snooze actions, with resume and unmute controls under Nearby → Watch.
+- Aircraft follow on the map; recorded-flight playback at 1×, 4×, or 16×;
+  altitude/speed charts; GPX export; saved flight copies kept until deleted.
+- Explicit background watch with an ongoing status notification and Stop action.
+  Watch follows existing alert settings and pauses alerts without a fresh fix.
+- Android emulator interaction, persistence, and migration tests gate signed
+  GitHub releases alongside unit tests and lint.
+
+### Fixed
+- Blocked or failed notifications no longer consume the alert cooldown.
+- Nearby row ages advance while the aircraft feed is unavailable.
+- Saved flight copies survive rolling trail cleanup; database migration preserves
+  existing History and recent paths. History clearing explains this distinction.
+
 ## [0.67.23-android-interface-refresh] - 2026-09-25
 
 ### Changed

@@ -1,5 +1,8 @@
 package com.friendorfoe.presentation.map
 
+import org.osmdroid.util.GeoPoint
+import androidx.compose.ui.platform.testTag
+
 import android.content.Context
 import android.os.SystemClock
 import android.view.View
@@ -213,6 +216,7 @@ fun MapViewScreen(
     val filterState by viewModel.filterState.collectAsStateWithLifecycle()
     val userLocationFix by viewModel.userLocationFix.collectAsStateWithLifecycle()
     val selectedObjectId by viewModel.selectedObjectId.collectAsStateWithLifecycle()
+    var followedAircraftId by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf<String?>(null) }
     val detailState by detailViewModel.detailState.collectAsStateWithLifecycle()
     val followCompass by viewModel.followCompass.collectAsStateWithLifecycle()
     val stabilizedMapHeading by viewModel.stabilizedMapHeading.collectAsStateWithLifecycle()
@@ -280,7 +284,7 @@ fun MapViewScreen(
     }
     val openRecordedPath by androidx.compose.runtime.rememberUpdatedState(onOpenFlightPath)
     val trailOverlay = remember(mapView) { MapFlightTrailOverlay(mapView) { openRecordedPath?.invoke(it) } }
-    LaunchedEffect(flightTrails.trails, selectedObjectId) { trailOverlay.render(flightTrails.trails, selectedObjectId) }
+    LaunchedEffect(flightTrails.trails, selectedObjectId, followedAircraftId) { trailOverlay.render(flightTrails.trails, selectedObjectId ?: followedAircraftId) }
     val cameraOwnership = rememberMapCameraOwnership(mapView)
     var userControlsCamera by cameraOwnership
     val overlayController = remember(mapView) {
@@ -313,6 +317,7 @@ fun MapViewScreen(
             isMapRevealed = { revealMap },
             onUserTouch = {
                 cameraOwnership.value = true
+                followedAircraftId = null
                 viewModel.stopFollowingCompass()
             },
         )
@@ -347,6 +352,13 @@ fun MapViewScreen(
         }
     }
 
+    LaunchedEffect(followedAircraftId, mapTracks) {
+        val track = mapTracks.firstOrNull { it.skyObject.id == followedAircraftId }
+        if (track != null && track.position.hasValidMapCoordinates()) {
+            mapView.controller.setCenter(GeoPoint(track.position.latitude, track.position.longitude))
+        }
+    }
+
     // Neutral luminance keeps labels readable without inverting parks and water into neon hues.
     LaunchedEffect(isDarkTheme) {
         if (isDarkTheme) {
@@ -377,8 +389,17 @@ fun MapViewScreen(
                 onFilterChange = viewModel::updateFilter,
                 resultCount = mapTracks.size + formationPoints.size,
             )
+            followedAircraftId?.let { id ->
+                val aircraft = mapTracks.firstOrNull { it.skyObject.id == id }?.skyObject as? com.friendorfoe.domain.model.Aircraft
+                androidx.compose.foundation.layout.Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text(if (aircraft == null) "Follow paused · aircraft not visible" else "Following ${aircraft.callsign ?: aircraft.registration ?: id}",
+                        style = MaterialTheme.typography.labelLarge, modifier = Modifier.weight(1f))
+                    TextButton(onClick = { followedAircraftId = null }) { Text("Stop following") }
+                }
+            }
             MapFlightTrailControls(trailWindow, flightTrails, viewModel::setTrailWindow, onFit = {
                 userControlsCamera = true
+                followedAircraftId = null
                 viewModel.stopFollowingCompass()
                 trailOverlay.fit(flightTrails.trails)
             }, onRetry = viewModel::retryTrails)
@@ -469,6 +490,7 @@ fun MapViewScreen(
             // Compass follow toggle FAB
             FloatingActionButton(
                 onClick = {
+                    followedAircraftId = null
                     if (!followCompass) userControlsCamera = false
                     viewModel.toggleFollowCompass()
                 },
@@ -510,6 +532,14 @@ fun MapViewScreen(
                     }
                 }
                 is DetailState.AircraftLoaded -> {
+                    TextButton(onClick = {
+                        followedAircraftId = state.aircraft.id
+                        userControlsCamera = true
+                        viewModel.stopFollowingCompass()
+                        viewModel.selectObject(null)
+                    }, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp).testTag("follow_aircraft")) {
+                        Text("Follow this aircraft")
+                    }
                     onOpenFlightPath?.let { open ->
                         Button(
                             onClick = { viewModel.selectObject(null); open(state.aircraft.id) },

@@ -36,6 +36,9 @@
     <!-- Microphone for acoustic drone engine detection -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
+
     <!-- Network for backend API -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
@@ -91,6 +94,10 @@
                 android:name="android.support.FILE_PROVIDER_PATHS"
                 android:resource="@xml/share_file_paths" />
         </provider>
+
+        <service android:name=".presentation.watch.NearbyWatchService" android:foregroundServiceType="location" android:exported="false" />
+
+        <receiver android:name=".presentation.alerts.SkyAlertActionReceiver" android:exported="false" />
 
         <activity
             android:name=".presentation.MainActivity"

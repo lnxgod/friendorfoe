@@ -31,6 +31,12 @@ data class ListUiState(
     val locationPermissionState: PermissionUiState = PermissionUiState.Loading,
     val locationSettingsLaunchFailed: Boolean = false,
     val aircraftRangeMiles: Int = AircraftRange.DEFAULT_MILES,
+    val nearestFirst: Boolean = false,
+    val feedLabel: String? = null,
+    val feedDetail: String? = null,
+    val canRetryFeed: Boolean = false,
+    val feedWaitingForLocation: Boolean = false,
+    val nowMs: Long = System.currentTimeMillis(),
 )
 
 data class ListActions(
@@ -40,6 +46,9 @@ data class ListActions(
     val onOpenPeek: (SkyObject) -> Unit = {},
     val onSetAircraftRangeMiles: (Int) -> Unit = {},
     val onOpenSettings: (() -> Unit)? = null,
+    val onSetNearestFirst: (Boolean) -> Unit = {},
+    val onRetryFeed: () -> Unit = {},
+    val onCheckLocation: () -> Unit = {},
     val onRequestLocation: () -> Unit = {},
     val onOpenLocationSettings: () -> PermissionSettingsLaunchResult = {
         PermissionSettingsLaunchResult.Failed

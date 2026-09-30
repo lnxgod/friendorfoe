@@ -22,6 +22,10 @@ sealed class Screen(val route: String) {
     data object BadgeFocus : Screen("badge/{focusKey}") {
         fun createRoute(focusKey: String) = "badge/${Uri.encode(focusKey)}"
     }
+    data object SavedFlights : Screen("saved_flights")
+    data object SavedFlight : Screen("saved_flight/{savedId}") {
+        fun createRoute(id: String) = "saved_flight/${encodeRouteSegment(id)}"
+    }
     data object History : Screen("history")
     data object About : Screen("info")
     data object AboutSettings : Screen("info/settings")

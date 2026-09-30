@@ -37,6 +37,9 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Surface
+import androidx.compose.material3.FilterChip
+import androidx.compose.runtime.produceState
+import kotlinx.coroutines.delay
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -85,7 +88,13 @@ fun ListViewScreen(
     onNavigateToAbout: (() -> Unit)? = null,
     viewModel: ListViewModel = hiltViewModel(),
 ) {
+    val context = androidx.compose.ui.platform.LocalContext.current
     val skyObjects by viewModel.skyObjects.collectAsStateWithLifecycle()
+    val rawObjects by viewModel.allObjects.collectAsStateWithLifecycle()
+    val feed by viewModel.aircraftFeedState.collectAsStateWithLifecycle()
+    val nowMs by produceState(System.currentTimeMillis()) {
+        while (true) { delay(1000); value = System.currentTimeMillis() }
+    }
     val preferences by viewModel.settings.collectAsStateWithLifecycle()
     val activeVisualFocusIds by viewModel.activeVisualFocusIds.collectAsStateWithLifecycle()
     val filterState by viewModel.filterState.collectAsStateWithLifecycle()
@@ -126,22 +135,30 @@ fun ListViewScreen(
     }
 
     val filterCount = activeFilterCount(filterState)
-    val body = when {
-        skyObjects.isNotEmpty() -> ListBodyState.Results(skyObjects)
-        filterCount > 0 -> ListBodyState.NoMatches(filterCount)
-        else -> ListBodyState.NoDetections
-    }
+    val presentation = nearbyFeedPresentation(feed, preferences.adsbEnabled, rawObjects, skyObjects, filterCount, nowMs)
     ListDestinationContent(
         state = ListUiState(
             filter = filterState,
             activeFilterCount = filterCount,
-            body = body,
+            body = presentation.body,
             locationPermissionState = locationPermissionState,
             locationSettingsLaunchFailed = locationSettingsLaunchFailed,
             aircraftRangeMiles = preferences.aircraftRangeMiles,
+            nearestFirst = preferences.nearestFirst,
+            feedLabel = presentation.label,
+            feedDetail = presentation.detail,
+            canRetryFeed = presentation.canRetry,
+            feedWaitingForLocation = preferences.adsbEnabled && feed.phase == com.friendorfoe.detection.AircraftFeedPhase.WAITING,
+            nowMs = nowMs,
         ),
         actions = ListActions(
             onSetAircraftRangeMiles = viewModel::setAircraftRangeMiles,
+            onSetNearestFirst = viewModel::setNearestFirst,
+            onRetryFeed = viewModel::retryAircraftFeed,
+            onCheckLocation = {
+                runCatching { context.startActivity(android.content.Intent(android.provider.Settings.ACTION_LOCATION_SOURCE_SETTINGS)) }
+                    .onFailure { locationSettingsLaunchFailed = true }
+            },
             onOpenSettings = onNavigateToAbout,
             onQueryChanged = { viewModel.updateFilter(filterState.copy(searchQuery = it)) },
             onOpenFilters = { filtersOpen = true },
@@ -155,6 +172,7 @@ fun ListViewScreen(
         ),
         onFullDetails = onObjectTapped,
         activeVisualFocusIds = activeVisualFocusIds,
+        watchContent = { com.friendorfoe.presentation.watch.WatchControls() },
     )
 
     if (filtersOpen) {
@@ -193,11 +211,13 @@ internal fun ListDestinationContent(
     actions: ListActions,
     onFullDetails: (String) -> Unit,
     activeVisualFocusIds: Set<String> = emptySet(),
+    watchContent: @Composable () -> Unit = {},
 ) {
     ListContent(
         state = state,
         actions = actions.copy(onOpenPeek = { onFullDetails(it.id) }),
         activeVisualFocusIds = activeVisualFocusIds,
+        watchContent = watchContent,
     )
 }
 
@@ -207,6 +227,7 @@ internal fun ListContent(
     state: ListUiState,
     actions: ListActions,
     activeVisualFocusIds: Set<String> = emptySet(),
+    watchContent: @Composable () -> Unit = {},
 ) {
     var rangeOpen by rememberSaveable { mutableStateOf(false) }
     val visibleCount = visibleListCount(state.body)
@@ -227,7 +248,18 @@ internal fun ListContent(
             }
             TextButton(onClick = { rangeOpen = true }, modifier = Modifier.heightIn(min = 48.dp).testTag("nearby_range")) {
                 Icon(Icons.Default.Tune, contentDescription = null, modifier = Modifier.size(18.dp))
-                Text("${state.aircraftRangeMiles} mi range", modifier = Modifier.padding(start = 6.dp))
+                Text("${state.aircraftRangeMiles} mi alerts", modifier = Modifier.padding(start = 6.dp))
+            }
+        }
+        state.feedLabel?.let { label ->
+            Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text(listOfNotNull(label, state.feedDetail).joinToString(" · "),
+                    style = MaterialTheme.typography.labelMedium, modifier = Modifier.weight(1f).testTag("nearby_feed_status"))
+                if (state.canRetryFeed) TextButton(onClick = actions.onRetryFeed) { Text("Retry") }
+                if (state.feedWaitingForLocation && state.locationPermissionState.isUsableFor(AppFeature.AR_MAP_LOCATION)) {
+                    TextButton(onClick = actions.onCheckLocation) { Text("Location") }
+                }
+                watchContent()
             }
         }
         CompactFilterBar(
@@ -238,6 +270,13 @@ internal fun ListContent(
             onOpenFilters = actions.onOpenFilters,
             onClearFilters = actions.onClearFilters,
         )
+
+        FlowRow(Modifier.padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FilterChip(selected = !state.nearestFirst, onClick = { actions.onSetNearestFirst(false) },
+                label = { Text("Nearby priority") }, modifier = Modifier.testTag("sort_priority"))
+            FilterChip(selected = state.nearestFirst, onClick = { actions.onSetNearestFirst(true) },
+                label = { Text("Nearest first") }, modifier = Modifier.testTag("sort_nearest"))
+        }
 
         ListLocationRecoveryBanner(
             permissionState = state.locationPermissionState,
@@ -252,11 +291,17 @@ internal fun ListContent(
                 rows = body.rows,
                 actions = actions,
                 activeVisualFocusIds = activeVisualFocusIds,
+                rangeMiles = state.aircraftRangeMiles,
+                nearestFirst = state.nearestFirst,
+                nowMs = state.nowMs,
             )
             is ListBodyState.StaleResults -> ListRows(
                 rows = body.rows,
                 actions = actions,
                 activeVisualFocusIds = activeVisualFocusIds,
+                rangeMiles = state.aircraftRangeMiles,
+                nearestFirst = state.nearestFirst,
+                nowMs = state.nowMs,
                 staleMessage = body.message,
                 staleAgeMs = body.ageMs,
             )
@@ -274,7 +319,7 @@ internal fun ListContent(
                 activeFilterCount = body.activeFilterCount,
                 onClearFilters = actions.onClearFilters,
             )
-            is ListBodyState.Failed -> FofFailureState(body.message)
+            is ListBodyState.Failed -> FofFailureState(body.message, if (state.canRetryFeed) actions.onRetryFeed else null)
         }
     }
     if (rangeOpen) {
@@ -283,7 +328,6 @@ internal fun ListContent(
             sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
         ) {
             Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 24.dp, vertical = 8.dp)) {
-                Text("Aircraft range", style = MaterialTheme.typography.titleLarge)
                 AircraftRangeControl(state.aircraftRangeMiles, actions.onSetAircraftRangeMiles)
                 actions.onOpenSettings?.let { open ->
                     TextButton(onClick = { rangeOpen = false; open() }) { Text("Notification settings") }
@@ -367,6 +411,9 @@ private fun ListRows(
     rows: List<SkyObject>,
     actions: ListActions,
     activeVisualFocusIds: Set<String>,
+    rangeMiles: Int = AircraftRange.DEFAULT_MILES,
+    nearestFirst: Boolean = false,
+    nowMs: Long,
     staleMessage: String? = null,
     staleAgeMs: Long? = null,
 ) {
@@ -380,16 +427,21 @@ private fun ListRows(
                 )
             }
         }
-        items(items = rows, key = SkyObject::id) { skyObject ->
-            SkyObjectItem(
-                skyObject = skyObject,
-                isVisuallyConfirmed = skyObject.id in activeVisualFocusIds,
-                onClick = { actions.onOpenPeek(skyObject) },
-            )
-            HorizontalDivider(
-                color = MaterialTheme.colorScheme.outlineVariant,
-                thickness = 0.5.dp,
-            )
+        val groups = if (nearestFirst) listOf("" to rows) else listOf(
+            "Within $rangeMiles mi" to rows.filter { AircraftRange.contains(it.distanceMeters, rangeMiles) },
+            "Farther away" to rows.filter { it.distanceMeters?.let { d -> d.isFinite() && d >= 0 } == true && !AircraftRange.contains(it.distanceMeters, rangeMiles) },
+            "Distance unknown" to rows.filter { it.distanceMeters?.let { d -> d.isFinite() && d >= 0 } != true },
+        )
+        groups.filter { it.second.isNotEmpty() }.forEach { (label, group) ->
+            if (label.isNotEmpty()) item(key = "group_$label") {
+                Text(label, style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp))
+            }
+            items(items = group, key = SkyObject::id) { skyObject ->
+                SkyObjectItem(skyObject, skyObject.id in activeVisualFocusIds, nowMs) { actions.onOpenPeek(skyObject) }
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant, thickness = 0.5.dp)
+            }
         }
     }
 }
@@ -398,6 +450,7 @@ private fun ListRows(
 private fun SkyObjectItem(
     skyObject: SkyObject,
     isVisuallyConfirmed: Boolean,
+    nowMs: Long,
     onClick: () -> Unit,
 ) {
     val category = listAttentionLabel(skyObject) ?: listCategoryLabel(skyObject.category)
@@ -438,7 +491,7 @@ private fun SkyObjectItem(
         Column(Modifier.widthIn(max = 112.dp), horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text(listDistanceLabel(skyObject.distanceMeters), style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.SemiBold, modifier = Modifier.testTag("list_distance_${skyObject.id}"))
-            Text(formatAge(skyObject.lastUpdated), style = MaterialTheme.typography.labelSmall,
+            Text(formatAge(skyObject.lastUpdated, Instant.ofEpochMilli(nowMs)), style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }

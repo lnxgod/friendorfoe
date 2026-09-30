@@ -14,14 +14,15 @@ import androidx.sqlite.db.SupportSQLiteDatabase
  * aircraft metadata for offline use.
  */
 @Database(
-    entities = [HistoryEntity::class, TrackingEntity::class],
-    version = 6,
+    entities = [HistoryEntity::class, TrackingEntity::class, SavedFlightEntity::class],
+    version = 7,
     exportSchema = true
 )
 abstract class FriendOrFoeDatabase : RoomDatabase() {
 
     abstract fun historyDao(): HistoryDao
     abstract fun trackingDao(): TrackingDao
+    abstract fun savedFlightDao(): SavedFlightDao
 
     companion object {
         private const val DATABASE_NAME = "friendorfoe.db"
@@ -61,13 +62,19 @@ abstract class FriendOrFoeDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_6_7 = object : Migration(6, 7) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE TABLE IF NOT EXISTS `saved_flights` (`id` TEXT NOT NULL, `objectId` TEXT NOT NULL, `label` TEXT NOT NULL, `savedAt` INTEGER NOT NULL, `pointCount` INTEGER NOT NULL, `pointsJson` TEXT NOT NULL, PRIMARY KEY(`id`))")
+            }
+        }
+
         fun create(context: Context): FriendOrFoeDatabase {
             return Room.databaseBuilder(
                 context.applicationContext,
                 FriendOrFoeDatabase::class.java,
                 DATABASE_NAME
             )
-                .addMigrations(MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
+                .addMigrations(MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7)
                 .build()
         }
     }

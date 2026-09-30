@@ -64,6 +64,10 @@ class ListViewModel @Inject constructor(
     }
 
     val settings = detectionPrefs.settings
+    val aircraftFeedState = skyObjectRepository.aircraftFeedState
+    val allObjects = skyObjectRepository.skyObjects
+    fun retryAircraftFeed() = skyObjectRepository.retryAircraftFeed()
+    fun setNearestFirst(value: Boolean) { detectionPrefs.nearestFirst = value }
 
     fun setAircraftRangeMiles(miles: Int) {
         detectionPrefs.aircraftRangeMiles = AircraftRange.normalizeMiles(miles)
@@ -206,14 +210,16 @@ internal fun observeSortedSkyObjectsForList(
     activeVisualFocusIds: Flow<Set<String>>,
     settings: Flow<DetectionSettings>,
 ): Flow<List<SkyObject>> = combine(objects, filter, activeVisualFocusIds, settings) { rows, filters, focusIds, preferences ->
-    sortSkyObjectsForList(FilterEngine.applyFilters(rows, filters), focusIds, preferences.aircraftRangeMiles)
+    sortSkyObjectsForList(FilterEngine.applyFilters(rows, filters), focusIds, preferences.aircraftRangeMiles, preferences.nearestFirst)
 }
 
 internal fun sortSkyObjectsForList(
     objects: List<SkyObject>,
     activeVisualFocusIds: Set<String>,
     aircraftRangeMiles: Int = AircraftRange.DEFAULT_MILES,
+    nearestFirst: Boolean = false,
 ): List<SkyObject> {
+    if (nearestFirst) return objects.sortedWith(compareBy<SkyObject> { it.listSortDistance() }.thenBy { it.id })
     return objects.sortedWith(
         compareByDescending<SkyObject> {
             it.id in activeVisualFocusIds &&

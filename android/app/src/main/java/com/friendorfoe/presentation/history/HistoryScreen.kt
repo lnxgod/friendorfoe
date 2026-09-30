@@ -205,7 +205,7 @@ internal fun HistoryContent(
         )
         PendingHistoryDeletion.All -> FofConfirmationDialog(
             title = "Clear all history?",
-            message = "This permanently removes every saved detection and recorded flight path. New positions can still be recorded while scanning.",
+            message = "This clears History and recent recorded paths. Saved flight copies remain in More → Saved flights. New positions can still be recorded while scanning.",
             confirmLabel = when {
                 state.deletionInProgress -> "Clearing…"
                 state.deletionError != null -> "Retry"

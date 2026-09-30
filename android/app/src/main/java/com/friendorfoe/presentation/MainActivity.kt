@@ -3,6 +3,9 @@ package com.friendorfoe.presentation
 import android.app.Activity
 import android.content.Intent
 import android.os.Bundle
+import kotlinx.coroutines.flow.MutableStateFlow
+import com.friendorfoe.presentation.alerts.SkyAlertRoute
+import com.friendorfoe.presentation.navigation.Screen
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
@@ -51,6 +54,8 @@ class MainActivity : ComponentActivity() {
     @Inject lateinit var runtimePermissionChangeNotifier: RuntimePermissionChangeNotifier
     @Inject lateinit var wifiScanCoordinator: WifiScanCoordinator
 
+    private val pendingSkyObject = MutableStateFlow<String?>(null)
+
     private lateinit var pendingPrivacyRoute: PendingPrivacyRouteQueue
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -58,12 +63,17 @@ class MainActivity : ComponentActivity() {
         pendingPrivacyRoute = PendingPrivacyRouteQueue(
             savedInstanceState?.getString(SAVED_PRIVACY_ROUTE),
         )
+        pendingSkyObject.value = savedInstanceState?.getString("pending_sky_object")?.takeIf(SkyAlertRoute::validObjectId)
+        enqueueSkyObject(intent)
         enqueuePrivacyRoute(intent)
         enableEdgeToEdge()
         setContent {
             val pendingRoute by pendingPrivacyRoute.pending.collectAsStateWithLifecycle()
+            val skyObjectId by pendingSkyObject.collectAsStateWithLifecycle()
             FriendOrFoeTheme {
                 FriendOrFoeApp(
+                    pendingSkyObject = skyObjectId,
+                    onSkyObjectConsumed = { pendingSkyObject.value = null },
                     pendingPrivacyRoute = pendingRoute,
                     onPrivacyRouteConsumed = pendingPrivacyRoute::consume,
                 )
@@ -74,6 +84,7 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
+        enqueueSkyObject(intent)
         enqueuePrivacyRoute(intent)
     }
 
@@ -91,8 +102,18 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
+        pendingSkyObject.value?.let { outState.putString("pending_sky_object", it) }
         pendingPrivacyRoute.savedRoute()?.let { outState.putString(SAVED_PRIVACY_ROUTE, it) }
         super.onSaveInstanceState(outState)
+    }
+
+    private fun enqueueSkyObject(intent: Intent?) {
+        SkyAlertRoute.parse(intent?.action, intent?.getStringExtra(SkyAlertRoute.OBJECT_ID))?.let {
+            pendingSkyObject.value = it
+            intent?.removeExtra(SkyAlertRoute.OBJECT_ID)
+            intent?.action = null
+            intent?.data = null
+        }
     }
 
     private fun enqueuePrivacyRoute(intent: Intent?) {
@@ -126,6 +147,8 @@ internal fun notifyRuntimePlatformStateChanged(
 @Composable
 fun FriendOrFoeApp(
     viewModel: AppChromeViewModel = hiltViewModel(),
+    pendingSkyObject: String? = null,
+    onSkyObjectConsumed: () -> Unit = {},
     pendingPrivacyRoute: String? = null,
     onPrivacyRouteConsumed: (String) -> Unit = {},
 ) {
@@ -137,6 +160,8 @@ fun FriendOrFoeApp(
         is AppLaunchState.Ready -> MainApplicationShell(
             startRoute = launch.startRoute,
             onTopLevelSelected = viewModel::recordTopLevelRoute,
+            pendingSkyObject = pendingSkyObject,
+            onSkyObjectConsumed = onSkyObjectConsumed,
             pendingPrivacyRoute = pendingPrivacyRoute,
             onPrivacyRouteConsumed = onPrivacyRouteConsumed,
         )
@@ -148,6 +173,8 @@ fun MainApplicationShell(
     startRoute: String,
     onTopLevelSelected: (String) -> Unit,
     onExitRequested: (() -> Unit)? = null,
+    pendingSkyObject: String? = null,
+    onSkyObjectConsumed: () -> Unit = {},
     pendingPrivacyRoute: String? = null,
     onPrivacyRouteConsumed: (String) -> Unit = {},
 ) {
@@ -158,6 +185,7 @@ fun MainApplicationShell(
     val isTopLevel = currentRoute in primaryDestinations.map { it.route }
     val activity = LocalContext.current as? Activity
 
+    PendingSkyObjectNavigationEffect(navController, currentRoute, pendingSkyObject, onSkyObjectConsumed)
     PendingPrivacyRouteNavigationEffect(
         navController = navController,
         currentRoute = currentRoute,
@@ -183,6 +211,21 @@ fun MainApplicationShell(
         },
     ) { padding ->
         MainNavGraph(navController, graphStartRoute, Modifier.padding(padding))
+    }
+}
+
+@Composable
+internal fun PendingSkyObjectNavigationEffect(
+    navController: NavHostController,
+    currentRoute: String?,
+    pendingSkyObject: String?,
+    onSkyObjectConsumed: () -> Unit,
+) {
+    LaunchedEffect(pendingSkyObject, currentRoute) {
+        if (currentRoute != null && pendingSkyObject != null && SkyAlertRoute.validObjectId(pendingSkyObject)) {
+            navController.navigate(Screen.Detail.createRoute(pendingSkyObject)) { launchSingleTop = true }
+            onSkyObjectConsumed()
+        }
     }
 }
 

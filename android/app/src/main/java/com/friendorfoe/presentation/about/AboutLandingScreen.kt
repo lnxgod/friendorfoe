@@ -21,6 +21,7 @@ data class AboutLandingActions(
     val onOpenGithub: () -> Unit = {},
     val onCheckForUpdates: () -> Unit = {},
     val onOpenUpdate: (String) -> Unit = {},
+    val onOpenSavedFlights: () -> Unit = {},
     val onOpenHistory: () -> Unit = {},
     val onOpenBadge: () -> Unit = {},
 )
@@ -45,6 +46,9 @@ fun AboutLandingScreen(
         HorizontalDivider()
         FofActionRow("History", "Saved observations and flight paths", onClick = actions.onOpenHistory,
             modifier = Modifier.testTag("more_history"))
+        HorizontalDivider()
+        FofActionRow("Saved flights", "Flights you chose to keep", onClick = actions.onOpenSavedFlights,
+            modifier = Modifier.testTag("more_saved_flights"))
         HorizontalDivider()
         FofActionRow("Badge", "Connect and manage your scanner", onClick = actions.onOpenBadge,
             modifier = Modifier.testTag("more_badge"))
