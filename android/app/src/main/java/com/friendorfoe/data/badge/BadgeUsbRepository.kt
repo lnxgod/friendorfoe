@@ -4869,9 +4869,10 @@ class BadgeUsbRepository @Inject constructor(
 
     private fun findBadgeCandidates(): List<UsbDevice> {
         return usbManager.deviceList.values.filter { device ->
-            device.vendorId == ESPRESSIF_VENDOR_ID ||
+            (device.vendorId == ESPRESSIF_VENDOR_ID ||
                 device.safeManufacturerName().orEmpty().contains("Espressif", ignoreCase = true) ||
-                device.safeProductName().orEmpty().contains("JTAG", ignoreCase = true)
+                device.safeProductName().orEmpty().contains("JTAG", ignoreCase = true)) &&
+                !com.friendorfoe.data.probes.isUsbProbeProduct(device.vendorId, device.productId, device.safeProductName())
         }
     }
 

@@ -87,3 +87,12 @@ echo "Badge scanner: $(ls -lh "$FW_DIR/badge-scanner/firmware.bin" | awk '{print
 echo "Badge uplink:  $(ls -lh "$FW_DIR/badge-uplink/firmware.bin" | awk '{print $5}')"
 echo ""
 echo "Serve locally with: cd $SCRIPT_DIR && python3 -m http.server 8080"
+
+# Dedicated standalone USB probe receiver.
+cd "$ESP32_DIR/probe-scanner"
+"$PIO_BIN" run -e probe-scanner-s3
+mkdir -p "$FW_DIR/probe-scanner"
+cp .pio/build/probe-scanner-s3/bootloader.bin "$FW_DIR/probe-scanner/"
+cp .pio/build/probe-scanner-s3/partitions.bin "$FW_DIR/probe-scanner/partition-table.bin"
+cp .pio/build/probe-scanner-s3/firmware.bin "$FW_DIR/probe-scanner/"
+python3 "$ESP32_DIR/scripts/verify_probe_firmware.py" --firmware-dir "$FW_DIR/probe-scanner"

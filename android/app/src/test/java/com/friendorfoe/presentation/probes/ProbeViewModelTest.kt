@@ -51,4 +51,38 @@ class ProbeViewModelTest {
         assertEquals(count, requested.size)
         assertTrue(vm.state.value.rows.isEmpty())
     }
+    @Test fun usbIsDefaultNeedsNoBackendAndStopsOnSourceSwitchAndBackground() = runTest {
+        val settings = MutableStateFlow(DetectionSettings.defaults())
+        var networkCalls = 0
+        var running = false
+        val source = object : com.friendorfoe.data.probes.UsbProbeSource {
+            override val state = MutableStateFlow(com.friendorfoe.data.probes.UsbProbeState())
+            override fun start() { running = true }
+            override fun stop() { running = false; state.value = com.friendorfoe.data.probes.UsbProbeState() }
+            override fun connect() {}
+        }
+        val api = object : SensorMapApiService by FakeSensorMapApiService() {
+            override suspend fun getProbeActivity(sensorId: String?, maxAgeS: Int): ProbeActivityDto {
+                networkCalls++; return ProbeActivityDto(sensorId)
+            }
+        }
+        val clock = object : MonotonicClock {
+            override fun nowElapsedMs() = testScheduler.currentTime
+            override fun nowWallClock() = Instant.EPOCH
+            override fun ticks(periodMs: Long): Flow<Long> = flow { while (true) { emit(nowElapsedMs()); delay(periodMs) } }
+        }
+        val vm = ProbeViewModel(settings, api, clock, usb = source)
+        vm.setActive(true); runCurrent()
+        assertTrue(running); assertTrue(vm.state.value.usbSource)
+        assertEquals(0, networkCalls)
+        source.state.value = com.friendorfoe.data.probes.UsbProbeState(connected = true,
+            snapshot = ProbeActivityDto("usb-local", transmitters = listOf(ProbeTransmitterDto("02:11:22:33:44:55", "usb-local"))), receivedMs = 0)
+        runCurrent(); assertEquals(1, vm.state.value.rows.size)
+        vm.selectUsb(false); runCurrent()
+        assertFalse(running); assertFalse(vm.state.value.usbSource); assertTrue(vm.state.value.rows.isEmpty())
+        assertEquals(0, networkCalls)
+        vm.selectUsb(true); runCurrent(); assertTrue(running)
+        vm.setActive(false); runCurrent(); assertFalse(running); assertTrue(vm.state.value.rows.isEmpty())
+    }
+
 }

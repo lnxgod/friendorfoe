@@ -7,6 +7,8 @@ const val PROBE_WINDOW_SECONDS = 300
 
 data class ProbeUiState(
     val enabled: Boolean = false,
+    val usbSource: Boolean = false,
+    val usb: com.friendorfoe.data.probes.UsbProbeState = com.friendorfoe.data.probes.UsbProbeState(),
     val loading: Boolean = false,
     val sensorId: String? = null,
     val snapshot: ProbeActivityDto = ProbeActivityDto(),

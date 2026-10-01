@@ -1,0 +1,12 @@
+{
+  "name": "Friend or Foe USB Wi-Fi Probe Scanner",
+  "version": "1.0.0",
+  "builds": [{
+    "chipFamily": "ESP32-S3",
+    "parts": [
+      {"path": "firmware/probe-scanner/bootloader.bin", "offset": 0},
+      {"path": "firmware/probe-scanner/partition-table.bin", "offset": 32768},
+      {"path": "firmware/probe-scanner/firmware.bin", "offset": 65536}
+    ]
+  }]
+}

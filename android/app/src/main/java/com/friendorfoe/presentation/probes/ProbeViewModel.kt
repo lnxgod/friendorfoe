@@ -3,6 +3,8 @@ package com.friendorfoe.presentation.probes
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.friendorfoe.data.probes.UsbProbeSource
+import com.friendorfoe.data.probes.UsbProbeRepository
 import com.friendorfoe.data.DetectionSettings
 import com.friendorfoe.data.DetectionPrefs
 import com.friendorfoe.data.remote.SensorMapApiService
@@ -29,22 +31,43 @@ class ProbeViewModel internal constructor(
     private val api: SensorMapApiService,
     private val clock: MonotonicClock,
     private val savedState: SavedStateHandle = SavedStateHandle(),
+    private val usb: UsbProbeSource? = null,
 ) : ViewModel() {
-    @Inject constructor(prefs: DetectionPrefs, api: SensorMapApiService, clock: MonotonicClock, savedState: SavedStateHandle) :
-        this(prefs.settings, api, clock, savedState)
+    @Inject constructor(prefs: DetectionPrefs, api: SensorMapApiService, clock: MonotonicClock, savedState: SavedStateHandle, usb: UsbProbeRepository) :
+        this(prefs.settings, api, clock, savedState, usb)
 
     private val _state = MutableStateFlow(ProbeUiState())
     val state: StateFlow<ProbeUiState> = _state
     private val active = MutableStateFlow(false)
     private val selected = savedState.getStateFlow<String?>("probe_sensor", null)
+    private val useUsb = savedState.getStateFlow("probe_usb", usb != null)
     private val refresh = Channel<Unit>(Channel.CONFLATED)
     private val changes = ProbeActivityChanges()
 
     init {
         viewModelScope.launch {
-            combine(active, selected, settings.map { it.sensorBackendEnabled to it.backendUrl }.distinctUntilChanged()) {
-                visible, sensor, backend -> Triple(visible, sensor, backend)
-            }.collectLatest { (visible, sensor, backend) ->
+            combine(active, useUsb) { visible, direct -> visible to direct }.collectLatest { (visible, direct) ->
+                if (direct && visible) usb?.start() else usb?.stop()
+            }
+        }
+        viewModelScope.launch {
+            combine(active, useUsb, selected, settings.map { it.sensorBackendEnabled to it.backendUrl }.distinctUntilChanged()) {
+                visible, direct, sensor, backend -> ProbeSourceSelection(visible, direct, sensor, backend)
+            }.collectLatest { (visible, direct, sensor, backend) ->
+                if (direct && usb != null) {
+                    changes.reset()
+                    _state.update { it.copy(usbSource = true, enabled = true, sensorId = null,
+                        snapshot = com.friendorfoe.data.remote.ProbeActivityDto(), snapshotElapsedMs = null, error = null, newActivity = null) }
+                    if (visible) usb.state.collect { value ->
+                        val next = _state.value.copy(usb = value, sensorId = value.snapshot.sensorId,
+                            snapshot = value.snapshot, snapshotElapsedMs = value.receivedMs,
+                            nowElapsedMs = clock.nowElapsedMs(), loading = value.connecting)
+                        val count = changes.update(next.rows)
+                        _state.value = next.copy(newActivity = if (next.announceNew && count > 0)
+                            "$count probe addresses with new activity" else null)
+                    }
+                    return@collectLatest
+                }
                 val previousBackend = savedState.get<String>("probe_backend")
                 savedState["probe_backend"] = backend.second
                 if (previousBackend != null && previousBackend != backend.second && sensor != null) {
@@ -55,7 +78,7 @@ class ProbeViewModel internal constructor(
                 }
                 changes.reset()
                 // Clear cached rows on source/URL/permission changes; never relabel another sensor's data.
-                _state.update { it.copy(enabled = backend.first, sensorId = sensor,
+                _state.update { it.copy(usbSource = false, enabled = backend.first, sensorId = sensor,
                     snapshot = com.friendorfoe.data.remote.ProbeActivityDto(), snapshotElapsedMs = null,
                     loading = false, error = null, newActivity = null) }
                 if (!visible || !backend.first) return@collectLatest
@@ -87,10 +110,14 @@ class ProbeViewModel internal constructor(
     }
     fun setActive(value: Boolean) { active.value = value }
     fun selectSensor(value: String) { savedState["probe_sensor"] = value }
-    fun retry() { refresh.trySend(Unit) }
+    fun selectUsb(value: Boolean) { savedState["probe_usb"] = value }
+    fun retry() { if (useUsb.value) usb?.connect() else refresh.trySend(Unit) }
+    override fun onCleared() { usb?.stop(); super.onCleared() }
     fun query(value: String) { changes.reset(); _state.update { it.copy(query = value) } }
     fun minimumSignal(value: Int?) { changes.reset(); _state.update { it.copy(minimumRssi = value) } }
     fun directedOnly(value: Boolean) { changes.reset(); _state.update { it.copy(directedOnly = value) } }
     fun strongestFirst(value: Boolean) { _state.update { it.copy(strongestFirst = value) } }
     fun announce(value: Boolean) { changes.reset(); _state.update { it.copy(announceNew = value, newActivity = null) } }
 }
+
+private data class ProbeSourceSelection(val visible: Boolean, val usb: Boolean, val sensor: String?, val backend: Pair<Boolean, String>)

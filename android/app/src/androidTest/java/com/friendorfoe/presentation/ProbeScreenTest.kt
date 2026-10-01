@@ -67,6 +67,32 @@ class ProbeScreenTest {
         compose.onNodeWithTag("about_landing").assertIsDisplayed()
     }
 
+    @Test fun usbSetupAndLiveReportsDoNotRequireBackendSettings() {
+        var connected = false
+        var state by mutableStateOf(ProbeUiState(enabled = true, usbSource = true))
+        compose.setContent { FriendOrFoeTheme { Surface { ProbeContent(state, ProbeActions(
+            onRetry = { connected = true }, onSelectUsb = { state = state.copy(usbSource = it) }
+        )) } } }
+        compose.onNodeWithText("USB Wi-Fi probe scanner").assertIsDisplayed()
+        compose.onNodeWithText("Get scanner firmware").assertIsDisplayed()
+        compose.onNodeWithText("Connect USB").performClick()
+        compose.runOnIdle { assertTrue(connected) }
+        capture("usb-setup")
+        compose.runOnIdle {
+            state = state.copy(sensorId = "usb-local", snapshotElapsedMs = 0,
+                usb = com.friendorfoe.data.probes.UsbProbeState(connected = true, message = "USB live · 2.4 GHz · channels 1–13"),
+                snapshot = ProbeActivityDto("usb-local", transmitters = listOf(
+                    ProbeTransmitterDto("02:11:22:33:44:55", "usb-local", reports = 3, rssi = -48, channel = 6,
+                        targets = listOf(ProbeTargetDto("Home, Wi-Fi"))),
+                    ProbeTransmitterDto("04:11:22:33:44:66", "usb-local", reports = 2, wildcardReports = 2, rssi = -70, channel = 1))))
+        }
+        compose.onNodeWithText("Scanner connected").assertIsDisplayed()
+        compose.onNodeWithText("Home, Wi-Fi").performScrollTo().assertIsDisplayed()
+        capture("usb-live")
+        compose.onNodeWithTag("probe_scanner").assertDoesNotExist()
+        compose.onNodeWithText("Any network · wildcard scan").performScrollTo().assertIsDisplayed()
+    }
+
     private fun capture(name: String) {
         compose.waitForIdle()
         val instrumentation = InstrumentationRegistry.getInstrumentation()
