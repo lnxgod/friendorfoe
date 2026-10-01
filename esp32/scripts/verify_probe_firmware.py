@@ -29,6 +29,8 @@ def verify(firmware_dir, manifest):
         if magic == 0x50AA and kind == 0:
             apps.append((subtype, offset, size))
     assert apps == [(0, 0x10000, 0x300000)], 'Expected a single factory app in 4 MB flash'
+    # CDC configuration: two interfaces, 75 bytes, bus powered, 500 mA.
+    assert bytes.fromhex('09 02 4b 00 02 01 00 80 fa') in image, 'Missing 500 mA USB configuration'
     assert len(image) <= apps[0][2], 'Probe image exceeds its partition'
     assert (firmware_dir / 'bootloader.bin').read_bytes()[0] == 0xE9, 'Invalid bootloader'
 

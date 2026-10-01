@@ -18,6 +18,7 @@ def package(tmp_path):
     struct.pack_into('<I', image, 32, 0xABCD5432)
     image[48:53] = b'1.0.0'
     image[80:94] = b'fof_wifi_probe'
+    image[200:209] = bytes.fromhex('09 02 4b 00 02 01 00 80 fa')
     (tmp_path / 'firmware.bin').write_bytes(image)
     (tmp_path / 'bootloader.bin').write_bytes(b'\xe9' + bytes(255))
     table = bytearray(32)
@@ -62,3 +63,11 @@ def test_probe_has_ci_build_packaging_and_pages_manifest():
     assert 'esp32/web-flasher/manifest-probe-scanner.json _site/' in workflow
     assert 'verify_probe_firmware.py --firmware-dir _site/firmware/probe-scanner' in workflow
     assert 'manifest="manifest-probe-scanner.json"' in (ROOT / 'esp32/web-flasher/index.html').read_text()
+
+
+def test_rejects_insufficient_usb_power_descriptor(package):
+    file = package[0] / 'firmware.bin'
+    image = bytearray(file.read_bytes()); image[208] = 50
+    file.write_bytes(image)
+    with pytest.raises(AssertionError):
+        verify(*package)
