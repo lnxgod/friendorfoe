@@ -23,7 +23,8 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: esp32-web-flasher
+  # Android-only tags skip firmware; they must not cancel a main Pages deployment.
+  group: esp32-web-flasher-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:

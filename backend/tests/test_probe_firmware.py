@@ -57,6 +57,7 @@ def test_rejects_another_app(package):
 
 def test_probe_has_ci_build_packaging_and_pages_manifest():
     workflow = (ROOT / '.github/workflows/esp32-web-flasher.yml').read_text()
+    assert 'group: esp32-web-flasher-${{ github.ref }}' in workflow
     assert 'cd esp32/probe-scanner && pio run -e probe-scanner-s3' in workflow
     assert 'esp32/web-flasher/manifest-probe-scanner.json _site/' in workflow
     assert 'verify_probe_firmware.py --firmware-dir _site/firmware/probe-scanner' in workflow
