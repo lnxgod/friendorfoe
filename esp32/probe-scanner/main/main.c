@@ -34,6 +34,13 @@ typedef struct {
     int64_t ms;
 } probe_t;
 
+/* Advertise the full USB 2.0 bus-power budget for the S3 radio and board.
+ * The generic TinyUSB descriptor requests only 100 mA. No remote wakeup. */
+static const uint8_t s_usb_configuration[] = {
+    TUD_CONFIG_DESCRIPTOR(1, 2, 0, TUD_CONFIG_DESC_LEN + TUD_CDC_DESC_LEN, 0, 500),
+    TUD_CDC_DESCRIPTOR(0, 4, 0x81, 8, 0x02, 0x82, 64),
+};
+
 static QueueHandle_t s_queue;
 static atomic_uint s_dropped;
 static char s_sensor[32];
@@ -105,7 +112,8 @@ void app_main(void)
              mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
     snprintf(s_boot, sizeof(s_boot), "%08lx%08lx", (unsigned long)esp_random(), (unsigned long)esp_random());
     const char *strings[] = { (const char[]){0x09, 0x04}, "Friend or Foe", "FoF WiFi Probe", s_sensor, "Probe CDC" };
-    tinyusb_config_t usb = { .string_descriptor = strings, .string_descriptor_count = 5 };
+    tinyusb_config_t usb = { .string_descriptor = strings, .string_descriptor_count = 5,
+                             .configuration_descriptor = s_usb_configuration };
     ESP_ERROR_CHECK(tinyusb_driver_install(&usb));
     tinyusb_config_cdcacm_t cdc = { .usb_dev = TINYUSB_USBDEV_0, .cdc_port = TINYUSB_CDC_ACM_0,
                                   .rx_unread_buf_sz = 64 };
