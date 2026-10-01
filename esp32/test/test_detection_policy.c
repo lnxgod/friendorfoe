@@ -538,7 +538,7 @@ void test_evil_twin_strong_different_oui_security_clone_alerts(void)
     TEST_ASSERT_EQUAL_STRING("WPA3 clone vs WPA2", alert.detail);
 }
 
-void test_dedupe_key_groups_probe_ie_hash_across_rotated_macs(void)
+void test_dedupe_key_keeps_probe_addresses_separate(void)
 {
     drone_detection_t a = {0};
     drone_detection_t b = {0};
@@ -556,7 +556,12 @@ void test_dedupe_key_groups_probe_ie_hash_across_rotated_macs(void)
         &a, 1700000000100LL, 500, key_a, sizeof(key_a)));
     TEST_ASSERT_TRUE(fof_policy_detection_dedupe_key(
         &b, 1700000000200LL, 500, key_b, sizeof(key_b)));
-    TEST_ASSERT_EQUAL_STRING(key_a, key_b);
+    TEST_ASSERT_NOT_EQUAL(0, strcmp(key_a, key_b));
+    strncpy(b.bssid, a.bssid, sizeof(b.bssid) - 1);
+    strncpy(b.ssid, "Different target", sizeof(b.ssid) - 1);
+    TEST_ASSERT_TRUE(fof_policy_detection_dedupe_key(
+        &b, 1700000000200LL, 500, key_b, sizeof(key_b)));
+    TEST_ASSERT_NOT_EQUAL(0, strcmp(key_a, key_b));
 }
 
 void test_dedupe_key_changes_across_time_bucket(void)

@@ -88,6 +88,7 @@ data class PrivacyActions(
     val onClearFilters: () -> Unit = {},
     val onToggleAttentionOnly: () -> Unit = {},
     val onToggleLiveOnly: () -> Unit = {},
+    val onOpenProbes: (() -> Unit)? = null,
     val onOpenEncounters: (() -> Unit)? = null,
     val onRetryAllSources: () -> Unit = {},
     val onOpenBackendSettings: (() -> Unit)? = null,
@@ -102,6 +103,7 @@ fun PrivacyScreen(
     onOpenIgnoredDevices: (() -> Unit)? = null,
     onOpenInfo: (() -> Unit)? = null,
     onOpenFinding: ((PrivacyFindingKey) -> Unit)? = null,
+    onOpenProbes: (() -> Unit)? = null,
     onOpenEncounters: (() -> Unit)? = null,
     viewModel: PrivacyViewModel = hiltViewModel(),
 ) {
@@ -143,6 +145,7 @@ fun PrivacyScreen(
             onClearFilters = viewModel::clearFilters,
             onToggleAttentionOnly = viewModel::toggleAttentionOnly,
             onToggleLiveOnly = viewModel::toggleLiveOnly,
+            onOpenProbes = onOpenProbes,
             onOpenEncounters = onOpenEncounters,
             onRetryAllSources = viewModel::retryAllFailed,
             onOpenBackendSettings = onOpenInfo,
@@ -249,6 +252,11 @@ fun PrivacyContent(
     ) {
         item {
             PrivacyHeader(state, actions.onOpenIgnoredDevices)
+            actions.onOpenProbes?.let { open ->
+                TextButton(onClick = open, modifier = Modifier.padding(horizontal = 8.dp).testTag("privacy_probes")) {
+                    Text("Wi-Fi probes · what nearby devices request")
+                }
+            }
         }
         if (state.sourceSummaries.isNotEmpty()) {
             item {

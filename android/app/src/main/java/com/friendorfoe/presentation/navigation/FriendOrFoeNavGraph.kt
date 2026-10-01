@@ -187,6 +187,7 @@ private fun NavGraphBuilder.registerDestinations(
     composable(Screen.Privacy.route) {
         TopLevelRouteRoot(TopLevelDestination.PRIVACY) {
             PrivacyScreen(
+                onOpenProbes = { navController.navigate(Screen.Probes.route) },
                 onOpenEncounters = { navController.navigate(Screen.PrivacyEncounters.route) },
                 onOpenIgnoredDevices = {
                     navController.navigate(Screen.IgnoredDevices.route) { launchSingleTop = true }
@@ -199,6 +200,14 @@ private fun NavGraphBuilder.registerDestinations(
                 },
             )
         }
+    }
+
+    composable(Screen.Probes.route) {
+        com.friendorfoe.presentation.probes.ProbeScreen(
+            onBack = navController::popBackStack,
+            onSettings = { navController.navigate(Screen.AboutSettings.route) },
+            onBadge = { navController.navigate(Screen.Badge.route) },
+        )
     }
 
     composable(Screen.Badge.route) {
@@ -274,6 +283,7 @@ internal fun AboutTopLevelRoute(
                 .ifBlank { BuildConfig.VERSION_NAME },
             updateState = state.updateState,
             actions = AboutLandingActions(
+                onOpenProbes = { navController.navigate(Screen.Probes.route) },
                 onOpenSavedFlights = { navController.navigate(Screen.SavedFlights.route) },
                 onOpenHistory = { navController.navigate(Screen.History.route) { launchSingleTop = true } },
                 onOpenBadge = { navController.navigate(Screen.Badge.route) { launchSingleTop = true } },

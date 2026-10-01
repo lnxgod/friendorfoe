@@ -15,6 +15,7 @@
 
 #include "wifi_scanner.h"
 #include "wifi_ssid_patterns.h"
+#include "wifi_probe_capture.h"
 #include "wifi_oui_database.h"
 #include "dji_drone_id_parser.h"
 #include "wifi_beacon_rid_parser.h"
@@ -1029,19 +1030,20 @@ typedef struct {
 } probe_cache_entry_t;
 
 static probe_cache_entry_t s_probe_cache[PROBE_CACHE_SLOTS];
+static fof_probe_budget_t s_probe_budget;
 static int s_probe_cache_idx = 0;  /* circular write index */
 
 /**
- * Check if a probe from this MAC+SSID was recently seen (within 5s).
+ * Check if a probe from this MAC+SSID was seen within its sampling interval.
  * If not, record it and return true (allow). If yes, return false (suppress).
  */
-static bool probe_rate_limit_allow(const uint8_t *mac, const char *ssid, int64_t ts_ms)
+static bool probe_rate_limit_allow(const uint8_t *mac, const char *ssid, int64_t ts_ms, int interval_ms)
 {
     /* Search for existing entry */
     for (int i = 0; i < PROBE_CACHE_SLOTS; i++) {
         if (memcmp(s_probe_cache[i].mac, mac, 6) == 0 &&
             strcmp(s_probe_cache[i].ssid, ssid) == 0) {
-            if ((ts_ms - s_probe_cache[i].last_seen_ms) < PROBE_RATE_LIMIT_MS) {
+            if ((ts_ms - s_probe_cache[i].last_seen_ms) < interval_ms) {
                 return false;  /* rate-limited */
             }
             /* Expired — update timestamp and allow */
@@ -1087,6 +1089,8 @@ static void process_probe_request(const uint8_t *frame, int frame_len,
 
     /* Parse ALL Information Elements — extract SSID, capabilities, and fingerprint */
     char ssid[33] = {0};
+    bool wildcard = false, binary = false;
+    if (!fof_probe_ssid(frame, (size_t)frame_len, ssid, &wildcard, &binary)) return;
     char probed_ssids[128] = {0};
     int probed_pos = 0;
     uint32_t ie_hash = 0x811c9dc5;  /* FNV1a offset basis */
@@ -1131,7 +1135,7 @@ static void process_probe_request(const uint8_t *frame, int frame_len,
             case 0:  /* SSID */
                 ssid_ie_present = true;
                 wildcard_ssid_ie = (tag_len == 0);
-                if (tag_len > 0 && tag_len <= 32) {
+                if (!binary && tag_len > 0 && tag_len <= 32) {
                     memcpy(ssid, &frame[tag_data_offset], tag_len);
                     ssid[tag_len] = '\0';
 #ifdef FOF_BADGE_VARIANT
@@ -1190,19 +1194,8 @@ static void process_probe_request(const uint8_t *frame, int frame_len,
         src_oui &&
         src_oui->role == OUI_ROLE_PRIVACY_FLOCK;
 
-    /* Drop broadcast probes — they flood UART/queue/heap for zero value.
-     * Exception: field research has observed Flock ALPR nodes sending wildcard
-     * probe requests from known Flock/ALPR OUIs. Keep that high-value signature. */
-    bool is_broadcast = fof_policy_probe_should_ignore_broadcast(ssid);
-    if (is_broadcast && !flock_wildcard_probe) {
-        return;
-    }
-
-    /* Rate-limit: 1 per MAC+SSID pair per 5 seconds */
+    bool is_broadcast = wildcard;
     int64_t ts = now_ms();
-    if (!probe_rate_limit_allow(src_mac, is_broadcast ? "(wildcard)" : ssid, ts)) {
-        return;
-    }
 
     /* Check SSID against drone patterns */
     const drone_ssid_pattern_t *pattern = NULL;
@@ -1212,12 +1205,13 @@ static void process_probe_request(const uint8_t *frame, int frame_len,
         soft = (!pattern && wifi_ssid_match_soft(ssid));
     }
 
-#ifdef FOF_BADGE_VARIANT
     const bool notable = !is_broadcast && fof_policy_ssid_is_notable(ssid);
-    if (!pattern && !notable && !flock_wildcard_probe) {
-        return;
-    }
-#endif
+    const bool priority_probe = pattern || notable || flock_wildcard_probe;
+    if (!priority_probe && s_detection_queue &&
+        uxQueueMessagesWaiting(s_detection_queue) >= 8) return;
+    if (!probe_rate_limit_allow(src_mac, is_broadcast ? "(wildcard)" : ssid,
+                                ts, priority_probe ? PROBE_RATE_LIMIT_MS : 30000)) return;
+    if (!priority_probe && !fof_probe_budget_allow(&s_probe_budget, ts)) return;
 
     float conf = flock_wildcard_probe ? 0.88f :
                  pattern ? fof_policy_probe_confidence(true) :
@@ -1251,12 +1245,16 @@ static void process_probe_request(const uint8_t *frame, int frame_len,
     init_detection(&det, src_mac, rssi, is_broadcast ? "" : ssid);
     det.source = DETECTION_SRC_WIFI_PROBE_REQUEST;
     det.confidence = conf;
-    det.freq_mhz = (channel <= 13) ? (2407 + channel * 5) : (5000 + channel * 5);
+    det.freq_mhz = fof_probe_frequency_mhz(channel);
     det.probe_ie_hash = ie_hash;
     det.wifi_generation = wifi_gen;
     strncpy(det.probed_ssids, probed_ssids, sizeof(det.probed_ssids) - 1);
 
     strncpy(det.manufacturer, mfr, sizeof(det.manufacturer) - 1);
+    if (!priority_probe) {
+        strncpy(det.class_reason, binary ? "Wi-Fi probe (binary SSID)" :
+                (wildcard ? "Wi-Fi wildcard probe" : "Wi-Fi directed probe"), sizeof(det.class_reason) - 1);
+    }
     if (flock_wildcard_probe) {
         strncpy(det.class_reason, "Flock wildcard probe",
                 sizeof(det.class_reason) - 1);
@@ -1286,7 +1284,7 @@ static void process_probe_request(const uint8_t *frame, int frame_len,
              flock_wildcard_probe ? " flock_wildcard" : "");
 
     if (s_detection_queue) {
-        xQueueSend(s_detection_queue, &det, pdMS_TO_TICKS(10));
+        xQueueSend(s_detection_queue, &det, 0);
     }
 }
 
@@ -1489,7 +1487,11 @@ static void wifi_promiscuous_cb(void *buf, wifi_promiscuous_pkt_type_t type)
 
     if (frame_ctrl == 0x40) {
         /* Probe requests have NO 12-byte fixed params -- use dedicated parser */
-        process_probe_request(frame, frame_len, rssi, s_current_channel);
+        /* ESP-IDF sig_len includes the 4-byte FCS, which is not an IE. */
+        if (frame_len >= 30 && pkt->rx_ctrl.rx_state == 0) {
+            /* Active scans hop independently of the configured channel. */
+            process_probe_request(frame, frame_len - 4, rssi, pkt->rx_ctrl.channel);
+        }
     } else {
         /* Beacons (0x80) and probe responses (0x50) share the same frame layout.
          * Probe responses are replies to a client's search — not an actively

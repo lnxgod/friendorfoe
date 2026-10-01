@@ -18,6 +18,7 @@ sealed class Screen(val route: String) {
     data object MapView : Screen("map_view")
     data object ListView : Screen("list_view")
     data object Privacy : Screen("privacy")
+    data object Probes : Screen("wifi_probes")
     data object Badge : Screen("badge")
     data object BadgeFocus : Screen("badge/{focusKey}") {
         fun createRoute(focusKey: String) = "badge/${Uri.encode(focusKey)}"

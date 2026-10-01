@@ -535,6 +535,7 @@ static bool wifi_anomaly_is_lcd_worthy(const drone_detection_t *det)
         return true;
     }
     if (det->source == DETECTION_SRC_WIFI_PROBE_REQUEST) {
+        if (strncmp(det->class_reason, "Wi-Fi ", 6) == 0) return false;
         return det->confidence >= 0.62f ||
                (det->rssi < 0 && det->rssi >= -50);
     }

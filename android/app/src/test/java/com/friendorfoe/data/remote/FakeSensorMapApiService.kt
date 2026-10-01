@@ -1,6 +1,8 @@
 package com.friendorfoe.data.remote
 
 class FakeSensorMapApiService : SensorMapApiService {
+    override suspend fun getProbeActivity(sensorId: String?, maxAgeS: Int) = ProbeActivityDto(sensorId = sensorId)
+
     var droneMap = DroneMapDto()
     var sensors = SensorsDto()
     var nodesStatus = NodeStatusDto()
