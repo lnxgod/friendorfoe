@@ -43,11 +43,12 @@ class ProbeScreenTest {
         )) } } }
         compose.onNodeWithTag("probe_scanner").performClick()
         compose.onNodeWithText("desk-scanner").performClick()
-        compose.onNodeWithText("Home, Wi-Fi").performScrollTo().assertIsDisplayed()
+        showText("Home, Wi-Fi")
         capture("activity")
-        compose.onNodeWithText("Any network · wildcard scan").performScrollTo().assertIsDisplayed()
-        compose.onNodeWithTag("probe_search").performScrollTo().performTextInput("Office")
-        compose.onNodeWithText("Home, Wi-Fi").performScrollTo().assertIsDisplayed()
+        showText("Any network · wildcard scan")
+        compose.onNodeWithTag("probe_screen").performScrollToNode(hasTestTag("probe_search"))
+        compose.onNodeWithTag("probe_search").performTextInput("Office")
+        showText("Home, Wi-Fi")
         compose.onNodeWithText("Any network · wildcard scan").assertDoesNotExist()
     }
 
@@ -87,10 +88,16 @@ class ProbeScreenTest {
                     ProbeTransmitterDto("04:11:22:33:44:66", "usb-local", reports = 2, wildcardReports = 2, rssi = -70, channel = 1))))
         }
         compose.onNodeWithText("Scanner connected").assertIsDisplayed()
-        compose.onNodeWithText("Home, Wi-Fi").performScrollTo().assertIsDisplayed()
+        showText("Home, Wi-Fi")
         capture("usb-live")
         compose.onNodeWithTag("probe_scanner").assertDoesNotExist()
-        compose.onNodeWithText("Any network · wildcard scan").performScrollTo().assertIsDisplayed()
+        showText("Any network · wildcard scan")
+    }
+
+    private fun showText(text: String) {
+        // Off-screen LazyColumn rows may not exist yet on a shorter viewport.
+        compose.onNodeWithTag("probe_screen").performScrollToNode(hasText(text))
+        compose.onNodeWithText(text).assertIsDisplayed()
     }
 
     private fun capture(name: String) {
