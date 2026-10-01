@@ -1844,7 +1844,10 @@ static void uart_tx_task(void *arg)
 
 #ifdef FOF_BADGE_VARIANT
             bool filter_breakthrough = false;
-            if (!display_policy_allows_detection(&det, &filter_breakthrough)) {
+            /* Probe telemetry belongs to the app's activity feed. LCD filters
+             * must not discard these sampled reports before backend upload. */
+            if (det.source != DETECTION_SRC_WIFI_PROBE_REQUEST &&
+                !display_policy_allows_detection(&det, &filter_breakthrough)) {
                 note_uart_drop(&det, UART_DROP_LOW_VALUE);
                 continue;
             }

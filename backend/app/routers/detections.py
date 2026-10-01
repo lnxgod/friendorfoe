@@ -2,6 +2,7 @@
 
 import json
 import logging
+import math
 import re
 import secrets as _secrets
 import time
@@ -3921,6 +3922,41 @@ async def get_probe_history(
 
 # GET /detections/probes — WiFi probe request device summary
 # ---------------------------------------------------------------------------
+
+@router.get("/probes/activity")
+async def get_probe_activity(
+    sensor_id: Annotated[str | None, Query(max_length=128)] = None,
+    max_age_s: Annotated[int, Query(ge=10, le=3600)] = 300,
+):
+    """Recent probe reports at one explicitly selected scanner, not near the phone."""
+    from app.services.probe_activity import probe_activity
+
+    now = time.time()
+    observers = {}
+    for device_id, hb in _node_heartbeats.items():
+        last_seen = hb.get("last_seen", 0)
+        if isinstance(last_seen, (int, float)) and math.isfinite(last_seen) and 0 <= now - last_seen <= 86400:
+            observers[device_id] = {
+                "sensor_id": device_id,
+                "age_s": round(max(0.0, now - last_seen), 1),
+            }
+    for detection in _recent_detections:
+        if detection.source != "wifi_probe_request":
+            continue
+        age = now - detection.received_at
+        if not math.isfinite(age) or not 0 <= age <= 3600:
+            continue
+        previous = observers.get(detection.device_id)
+        if previous is None or age < previous["age_s"]:
+            observers[detection.device_id] = {"sensor_id": detection.device_id, "age_s": round(age, 1)}
+    return {
+        "sensor_id": sensor_id,
+        "window_s": max_age_s,
+        "observers": sorted(observers.values(), key=lambda s: (s["age_s"], s["sensor_id"])),
+        "transmitters": probe_activity(_recent_detections, now=now, sensor_id=sensor_id, max_age_s=max_age_s)
+            if sensor_id else [],
+    }
+
 
 @router.get("/probes")
 async def get_probe_devices(

@@ -23,7 +23,8 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: esp32-web-flasher
+  # Android-only tags skip firmware; they must not cancel a main Pages deployment.
+  group: esp32-web-flasher-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -50,7 +51,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.platformio
-          key: ${{ runner.os }}-pio-${{ hashFiles('esp32/platformio.ini', 'esp32/scanner/platformio.ini', 'esp32/uplink/platformio.ini') }}
+          key: ${{ runner.os }}-pio-${{ hashFiles('esp32/platformio.ini', 'esp32/scanner/platformio.ini', 'esp32/uplink/platformio.ini', 'esp32/probe-scanner/platformio.ini', 'esp32/probe-scanner/dependencies.lock') }}
           restore-keys: |
             ${{ runner.os }}-pio-
 
@@ -68,6 +69,12 @@ jobs:
 
       - name: Test firmware build-version guard
         run: python -m pytest backend/tests/test_firmware_build_version.py -q
+
+      - name: Build standalone USB probe scanner
+        run: cd esp32/probe-scanner && pio run -e probe-scanner-s3
+
+      - name: Test USB probe firmware packaging
+        run: python -m pytest backend/tests/test_probe_firmware.py -q
 
       - name: Build Scanner firmware (ESP32-S3 combo)
         run: umask 0022 && cd esp32/scanner && pio run -e scanner-s3-combo
@@ -177,7 +184,11 @@ jobs:
       - name: Package firmware binaries
         run: |
           mkdir -p firmware/scanner firmware/scanner-seed firmware/uplink-s3
-          mkdir -p firmware/badge-scanner firmware/badge-uplink
+          mkdir -p firmware/badge-scanner firmware/badge-uplink firmware/probe-scanner
+          cp esp32/probe-scanner/.pio/build/probe-scanner-s3/bootloader.bin firmware/probe-scanner/
+          cp esp32/probe-scanner/.pio/build/probe-scanner-s3/partitions.bin firmware/probe-scanner/partition-table.bin
+          cp esp32/probe-scanner/.pio/build/probe-scanner-s3/firmware.bin firmware/probe-scanner/
+          python esp32/scripts/verify_probe_firmware.py --firmware-dir firmware/probe-scanner
 
           cp esp32/scanner/.pio/build/scanner-s3-combo/bootloader.bin firmware/scanner/
           cp esp32/scanner/.pio/build/scanner-s3-combo/partitions.bin firmware/scanner/partition-table.bin
@@ -249,7 +260,9 @@ jobs:
           cd firmware/uplink-s3      && tar czf /tmp/uplink-s3-firmware-${TAG}.tar.gz *.bin && cd -
           cd firmware/badge-scanner  && tar czf /tmp/badge-scanner-firmware-${TAG}.tar.gz *.bin && cd -
           cd firmware/badge-uplink   && tar czf /tmp/badge-uplink-firmware-${TAG}.tar.gz *.bin && cd -
+          tar czf /tmp/usb-probe-scanner-${TAG}.tar.gz -C firmware/probe-scanner .
           gh release upload "$TAG" \
+            /tmp/usb-probe-scanner-${TAG}.tar.gz \
             /tmp/scanner-s3-combo-${TAG}.bin \
             /tmp/scanner-s3-combo-seed-${TAG}.bin \
             /tmp/uplink-s3-${TAG}.bin \
@@ -287,6 +300,7 @@ jobs:
           mkdir -p _site/firmware/badge-scanner _site/firmware/badge-uplink
 
           # Web flasher page + manifests
+          cp esp32/web-flasher/manifest-probe-scanner.json _site/
           cp esp32/web-flasher/index.html                    _site/
           cp esp32/web-flasher/manifest-scanner.json          _site/
           cp esp32/web-flasher/manifest-scanner-seed.json     _site/
@@ -305,6 +319,7 @@ jobs:
           echo "=== Pages site ==="
           find _site -type f -exec ls -lh {} \;
           python esp32/scripts/verify_firmware_versions.py --repo-root . --site-root _site
+          python esp32/scripts/verify_probe_firmware.py --firmware-dir _site/firmware/probe-scanner --manifest _site/manifest-probe-scanner.json
 
       - name: Setup Pages
         uses: actions/configure-pages@v5

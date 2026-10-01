@@ -21,6 +21,7 @@ data class AboutLandingActions(
     val onOpenGithub: () -> Unit = {},
     val onCheckForUpdates: () -> Unit = {},
     val onOpenUpdate: (String) -> Unit = {},
+    val onOpenProbes: () -> Unit = {},
     val onOpenSavedFlights: () -> Unit = {},
     val onOpenHistory: () -> Unit = {},
     val onOpenBadge: () -> Unit = {},
@@ -43,6 +44,9 @@ fun AboutLandingScreen(
         Spacer(Modifier.height(20.dp))
         FofActionRow("App settings", "Alerts, detection and connections", onClick = actions.onOpenSettings,
             modifier = Modifier.testTag("about_app_settings"))
+        HorizontalDivider()
+        FofActionRow("Wi-Fi probes", "See which networks nearby devices request", onClick = actions.onOpenProbes,
+            modifier = Modifier.testTag("more_probes"))
         HorizontalDivider()
         FofActionRow("History", "Saved observations and flight paths", onClick = actions.onOpenHistory,
             modifier = Modifier.testTag("more_history"))

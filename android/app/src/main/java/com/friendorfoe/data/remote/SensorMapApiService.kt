@@ -41,6 +41,12 @@ interface SensorMapApiService {
     @POST("detections/events/{eventId}/ack")
     suspend fun ackEvent(@Path("eventId") eventId: Int): AckResponseDto
 
+    @GET("detections/probes/activity")
+    suspend fun getProbeActivity(
+        @Query("sensor_id") sensorId: String? = null,
+        @Query("max_age_s") maxAgeS: Int = 300,
+    ): ProbeActivityDto
+
     @GET("detections/probes")
     suspend fun getProbeDevices(
         @Query("max_age_s") maxAgeS: Int = 86400,
@@ -470,4 +476,37 @@ data class CalibrationModelDto(
     @SerializedName("applied_listener_count") val appliedListenerCount: Int = 0,
     @SerializedName("last_calibration") val lastCalibration: Double? = null,
     @SerializedName("r_squared") val rSquared: Double? = null,
+)
+
+/** Observed addresses at an explicitly selected scanner; never fingerprint-merged. */
+data class ProbeActivityDto(
+    @SerializedName("sensor_id") val sensorId: String? = null,
+    @SerializedName("window_s") val windowSeconds: Int = 300,
+    val observers: List<ProbeObserverDto> = emptyList(),
+    val transmitters: List<ProbeTransmitterDto> = emptyList(),
+)
+
+data class ProbeObserverDto(
+    @SerializedName("sensor_id") val sensorId: String,
+    @SerializedName("age_s") val ageSeconds: Double? = null,
+)
+
+data class ProbeTransmitterDto(
+    val mac: String,
+    @SerializedName("sensor_id") val sensorId: String,
+    @SerializedName("locally_administered") val locallyAdministered: Boolean = false,
+    val reports: Int = 0,
+    @SerializedName("wildcard_reports") val wildcardReports: Int = 0,
+    @SerializedName("unknown_reports") val unknownReports: Int = 0,
+    @SerializedName("last_seen") val lastSeen: Double = 0.0,
+    @SerializedName("age_s") val ageSeconds: Double = 0.0,
+    val rssi: Int? = null,
+    val channel: Int? = null,
+    val targets: List<ProbeTargetDto> = emptyList(),
+)
+
+data class ProbeTargetDto(
+    val ssid: String,
+    val reports: Int = 0,
+    @SerializedName("last_seen") val lastSeen: Double = 0.0,
 )

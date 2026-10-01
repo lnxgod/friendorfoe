@@ -606,6 +606,11 @@ void test_badge_wifi_noise_is_ignored(void)
 
     TEST_ASSERT_FALSE(badge_threat_state_ingest(&state, &ap, 1000, NULL));
     TEST_ASSERT_FALSE(badge_threat_state_ingest(&state, &probe, 1100, NULL));
+    probe.rssi = -25;
+    strncpy(probe.class_reason, "Wi-Fi directed probe", sizeof(probe.class_reason) - 1);
+    TEST_ASSERT_FALSE(badge_threat_state_ingest(&state, &probe, 1200, NULL));
+    strncpy(probe.class_reason, "Wi-Fi wildcard probe", sizeof(probe.class_reason) - 1);
+    TEST_ASSERT_FALSE(badge_threat_state_ingest(&state, &probe, 1300, NULL));
     badge_threat_state_snapshot(&state, 1500, &snapshot);
 
     TEST_ASSERT_EQUAL_UINT32(0, snapshot.active_counts[BADGE_THREAT_WIFI_ANOMALY]);

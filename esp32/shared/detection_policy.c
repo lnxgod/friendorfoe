@@ -452,11 +452,7 @@ bool fof_policy_detection_identity_key(const drone_detection_t *det,
     }
 
     if (det->source == DETECTION_SRC_WIFI_PROBE_REQUEST) {
-        if (det->probe_ie_hash != 0) {
-            snprintf(out, out_len, "PROBE:%08lx",
-                     (unsigned long)det->probe_ie_hash);
-            return true;
-        }
+        /* Equal capability fingerprints do not establish device identity. */
         if (det->bssid[0] != '\0') {
             snprintf(out, out_len, "PROBE:%s", det->bssid);
             return true;
@@ -532,6 +528,13 @@ bool fof_policy_detection_dedupe_key(const drone_detection_t *det,
     int64_t bucket = timestamp_ms > 0
         ? (timestamp_ms / (int64_t)bucket_ms)
         : 0;
+    if (det->source == DETECTION_SRC_WIFI_PROBE_REQUEST) {
+        char target_hash[16];
+        fof_policy_probe_rate_aux(0, det->ssid, target_hash, sizeof(target_hash));
+        snprintf(out, out_len, "%u:%s:%s:%lld", (unsigned)det->source,
+                 identity, target_hash, (long long)bucket);
+        return true;
+    }
     snprintf(out, out_len, "%u:%s:%lld",
              (unsigned)det->source,
              identity,

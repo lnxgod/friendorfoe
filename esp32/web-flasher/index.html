@@ -260,6 +260,27 @@
       (version 89+). Firefox and Safari are not supported.
     </div>
 
+    <section id="usb-probe" class="flash-card no-config" style="margin-top:2rem">
+      <h2>USB Wi-Fi Probe Scanner</h2>
+      <div class="chip">Standalone ESP32-S3 · native USB · 4 MB flash or larger · no PSRAM required</div>
+      <p>See nearby Wi-Fi network searches in the Android app. This dedicated firmware passively listens
+        on 2.4 GHz channels 1–13 and sends probe names, addresses, signal, and channel straight to your phone.</p>
+      <ol>
+        <li>On a computer, connect a standalone ESP32-S3 using its <strong>native USB / OTG port</strong> (GPIO 19/20), not a UART bridge port.</li>
+        <li>Hold <strong>BOOT</strong>, tap <strong>RESET</strong>, then release BOOT. Select the ESP32-S3 port below and install.</li>
+        <li>Tap RESET after flashing. Connect the same native USB port to your Android phone with a USB data cable / OTG adapter.</li>
+        <li>In Friend or Foe <strong>0.67.25 or newer</strong>, open <strong>More → Wi-Fi probes → USB scanner</strong> and allow USB access.</li>
+      </ol>
+      <esp-web-install-button manifest="manifest-probe-scanner.json">
+        <button slot="activate">Flash USB Wi-Fi Probe Scanner</button>
+        <span slot="unsupported">Use Chrome or Edge on a desktop computer to flash over USB.</span>
+      </esp-web-install-button>
+      <p class="desc">No router, account, backend, or second ESP32 required. Scanning runs while the probe screen is open.
+        ESP32-S3 cannot listen on 5/6 GHz and hears one channel at a time. Busy traffic is sampled.
+        This replaces the board’s current firmware; use a standalone board, not a chip installed in a FoF Badge.
+        To flash again, use the BOOT/RESET sequence above. Hardware validation on a physical phone and board is still pending.</p>
+    </section>
+
     <!-- ── Step 1: Flash ──────────────────────────────────────────────── -->
     <h2>Step 1 — Flash Firmware</h2>
 
