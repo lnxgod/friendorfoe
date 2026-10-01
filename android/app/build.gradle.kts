@@ -23,8 +23,8 @@ android {
         applicationId = "com.friendorfoe"
         minSdk = 26
         targetSdk = 34
-        versionCode = 133
-        versionName = "0.67.25-android-usb-probes"
+        versionCode = 134
+        versionName = "0.67.26-android-usb-probes"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
