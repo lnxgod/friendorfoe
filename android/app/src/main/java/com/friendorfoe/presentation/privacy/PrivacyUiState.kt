@@ -64,6 +64,7 @@ data class PrivacyUiState(
     val availableSources: List<PrivacySourceKind> = emptyList(),
     val visibleFindings: List<PrivacyFinding> = emptyList(),
     val totalCurrentCount: Int = 0,
+    val totalBeaconCount: Int = 0,
     val threatCount: Int = 0,
     val filters: PrivacyFilterState = PrivacyFilterState(),
     val body: PrivacyBodyState = PrivacyBodyState.Loading,
@@ -75,7 +76,14 @@ data class PrivacyUiState(
     val focusedFindingExpired: Boolean = false,
 ) {
     val findingCountLabel: String
-        get() = privacyFindingCountLabel(totalCurrentCount, initialResolutionComplete)
+        get() = privacyFindingCountLabel(totalCurrentCount - totalBeaconCount, initialResolutionComplete) +
+            if (totalBeaconCount == 0) "" else " · $totalBeaconCount beacon${if (totalBeaconCount == 1) "" else "s"} grouped"
+
+    val groupedBeacons: List<PrivacyFinding>
+        get() = visibleFindings.filter(PrivacyFinding::isRoutineBeacon)
+
+    val individualFindings: List<PrivacyFinding>
+        get() = visibleFindings.filterNot(PrivacyFinding::isRoutineBeacon)
 }
 
 fun projectPrivacyUiState(
@@ -99,6 +107,7 @@ fun projectPrivacyUiState(
             .sortedBy(PrivacySourceKind::preferenceId),
         visibleFindings = visible,
         totalCurrentCount = current.findings.size,
+        totalBeaconCount = current.findings.count(PrivacyFinding::isRoutineBeacon),
         threatCount = current.threatCount,
         filters = filters,
         body = privacyBodyState(current, visible, filters),
@@ -113,6 +122,10 @@ fun projectPrivacyUiState(
             focused == null,
     )
 }
+
+// Behavioral tracker/tool detections use their own categories and remain separate.
+fun PrivacyFinding.isRoutineBeacon(): Boolean =
+    category == PrivacyCategory.VENUE_BEACON
 
 private fun privacyFindingCountLabel(
     count: Int,

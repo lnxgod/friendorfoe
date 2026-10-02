@@ -46,7 +46,46 @@ The encounter log stays in memory for this app session, expires entries after
 not written to disk and adds no location history. Ignored findings are removed.
 **Clear** removes the log; only new observations may appear afterward.
 
-## Verification
+## Beacon grouping and phone detections (0.67.27)
+
+Android `0.67.27-android-nearby-detections` (version code 135) collapses routine
+venue beacons, including iBeacon and Eddystone, into one group at the bottom of
+Privacy. The header counts these separately. Tap the group to inspect individual
+observations; search, source/category filters, freshness, Ignore, Details, and
+supported RSSI sweeps still work. Separate tracker and attack detections stay outside the
+group. Venue-beacon observations are informational across all sources, regardless
+of proximity scores, and do not alert.
+
+Enable **Phone privacy scan** and **Wi-Fi anomaly detection** in Settings for
+these additions; neither needs USB hardware or a backend:
+
+- **Find Hub accessories:** matches the FEAA service's 0x40/0x41 frames with
+  validated lengths, separate from Eddystone. Both 160-bit and 256-bit identifier
+  formats are parsed; reception of extended advertisements depends on phone
+  support. A nearby accessory may be a tag or headphones. Its advertising mode
+  does not prove ownership, separation from an owner, or following. Addresses
+  remain separate; the app does not resolve encrypted identifiers or flags.
+- **Weak Wi-Fi security:** reports APs advertising WEP or TKIP, including mixed
+  TKIP/CCMP support, with the observed network, BSSID, RSSI, and frequency. This
+  reports advertised options, not a client's negotiated encryption or an attack.
+- **Fewer Wi-Fi false alerts:** WPA3/SAE, OWE, enterprise, DPP, and unknown
+  capabilities are not assumed open. A name shared by open and authenticated APs
+  is an awareness finding, because legitimate configurations can do this too.
+
+Android's Wi-Fi scan permissions, location-services requirements, and scan
+throttling still apply. Raw Wi-Fi probe reception remains the USB scanner's job.
+Physical radio reception has not been validated for these additions; parser,
+classification, and emulator tests use controlled fixtures.
+
+References: [Google Find Hub frame specification](https://developers.google.com/nearby/fast-pair/specifications/extensions/fmdn),
+[Android scan capability classification](https://android.googlesource.com/platform/packages/modules/Wifi/+/refs/heads/main/framework/java/android/net/wifi/util/ScanResultUtil.java),
+[Android Wi-Fi scanning](https://developer.android.com/develop/connectivity/wifi/wifi-scan),
+[WEP/TKIP guidance](https://support.apple.com/en-us/102766).
+
+UI test fixtures: [collapsed](design/beacon-grouping/collapsed.png) and
+[expanded](design/beacon-grouping/expanded.png), captured at 1080 × 1920 / 420 dpi.
+
+## Original flight-path release verification
 
 - 1,096 JVM tests and Android lint passed.
 - 35 API 35 emulator tests passed, including the database upgrade, storage

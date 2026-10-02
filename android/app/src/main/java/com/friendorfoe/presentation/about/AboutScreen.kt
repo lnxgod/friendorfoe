@@ -392,7 +392,7 @@ private fun RuntimeSettingsRows(state: InfoUiState, actions: InfoActions) {
     SettingsToggleRow(
         key = InfoSettingKey.PHONE_PRIVACY_SCAN,
         title = "Phone privacy scan",
-        description = "Use this phone's local BLE and Wi-Fi collectors",
+        description = "Find nearby trackers, including Find Hub accessories, and recognizable device broadcasts using this phone",
         checked = state.settings.phonePrivacyScanEnabled,
         actions = actions,
     )
@@ -406,7 +406,7 @@ private fun RuntimeSettingsRows(state: InfoUiState, actions: InfoActions) {
     SettingsToggleRow(
         key = InfoSettingKey.WIFI_ANOMALY,
         title = "Wi-Fi anomaly detection",
-        description = "Look for suspicious access-point behavior and duplicates",
+        description = "Use this phone to check WEP/TKIP security, mixed-security names, and suspicious AP behavior",
         checked = state.settings.wifiAnomalyEnabled,
         actions = actions,
     )

@@ -28,6 +28,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Block
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.FilterList
 import androidx.compose.material.icons.filled.MyLocation
 import androidx.compose.material.icons.filled.Search
@@ -50,12 +52,14 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -246,6 +250,9 @@ fun PrivacyContent(
     actions: PrivacyActions,
     modifier: Modifier = Modifier,
 ) {
+    var beaconsExpanded by rememberSaveable { mutableStateOf(false) }
+    val beacons = state.groupedBeacons
+    val individualFindings = state.individualFindings
     LazyColumn(
         modifier = modifier.fillMaxSize().testTag("privacy_content"),
         contentPadding = PaddingValues(bottom = 24.dp),
@@ -325,7 +332,7 @@ fun PrivacyContent(
             }
             PrivacyBodyState.Content -> {
                 PrivacySection.entries.forEach { section ->
-                    val rows = state.visibleFindings.filter { it.section() == section }
+                    val rows = individualFindings.filter { it.section() == section }
                     if (rows.isNotEmpty()) {
                         item(key = "section_${section.name}") {
                             PrivacySectionStrip(section, rows.size)
@@ -334,6 +341,42 @@ fun PrivacyContent(
                             items = rows,
                             key = { it.observationKey.encoded },
                         ) { finding ->
+                            PrivacyFindingRow(finding, actions)
+                        }
+                    }
+                }
+                if (beacons.isNotEmpty()) {
+                    item(key = "venue_beacon_group") {
+                        Row(
+                            modifier = Modifier.fillMaxWidth().heightIn(min = 72.dp)
+                                .testTag("privacy_beacon_group")
+                                .semantics { stateDescription = if (beaconsExpanded) "Expanded" else "Collapsed" }
+                                .clickable { beaconsExpanded = !beaconsExpanded }
+                                .padding(16.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Column(Modifier.weight(1f)) {
+                                Text("Venue beacons · ${beacons.size}", fontWeight = FontWeight.SemiBold)
+                                Text(
+                                    "iBeacon and Eddystone · routine broadcasts",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                                val liveCount = beacons.count { it.freshness == FindingFreshness.LIVE }
+                                Text(
+                                    "$liveCount live · ${beacons.size - liveCount} cached · tap to ${if (beaconsExpanded) "collapse" else "inspect"}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            Icon(
+                                if (beaconsExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                                contentDescription = null,
+                            )
+                        }
+                    }
+                    if (beaconsExpanded) {
+                        items(beacons, key = { it.observationKey.encoded }) { finding ->
                             PrivacyFindingRow(finding, actions)
                         }
                     }

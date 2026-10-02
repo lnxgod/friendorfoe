@@ -6,8 +6,7 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * Detects WiFi anomalies that indicate evil twin attacks, rogue APs,
- * or karma/SSID spoofing attacks.
+ * Reports advertised Wi-Fi security weaknesses and possible access-point anomalies.
  *
  * Detection methods (all work on stock Android, no root):
  * 1. Same SSID on multiple BSSIDs with mixed security (open + WPA)
@@ -15,8 +14,8 @@ import javax.inject.Singleton
  *
  * Note: a rule that flagged "same SSID across multiple OUI vendors" was
  * removed — it false-positived on legitimate multi-vendor mesh deployments
- * (Eero + Google Home extender, Apple TV mesh, etc.). The mixed-security
- * check below is the actually-diagnostic evil twin signal.
+ * (Eero + Google Home extender, Apple TV mesh, etc.). Mixed-security names
+ * also occur legitimately; they are awareness findings, not proof of an attack.
  */
 @Singleton
 class WifiAnomalyDetector @Inject constructor(
@@ -55,6 +54,24 @@ class WifiAnomalyDetector @Inject constructor(
                 }
             }
 
+            // Advertised legacy support is observable on stock Android. It does not
+            // establish the cipher used by any client or prove an active attack.
+            for (network in networks.distinctBy { it.bssid.lowercase() }) {
+                val security = WifiSecurityProfile.parse(network.capabilities)
+                if (security.obsoleteModes.isEmpty()) continue
+                anomalies.add(WifiAnomaly(
+                    type = "weak_security",
+                    ssid = network.ssid.ifBlank { "(hidden)" },
+                    details = "${network.ssid.ifBlank { "Hidden network" }} advertises obsolete " +
+                        "${security.obsoleteModes.joinToString(" + ")} security. " +
+                        "Prefer WPA2 with AES/CCMP or WPA3. AP: ${network.toEvidence().summary()}",
+                    threatLevel = 2,
+                    bssids = listOf(network.bssid),
+                    evidence = listOf(network.toEvidence()),
+                    timestamp = now,
+                ))
+            }
+
             // Group by SSID
             val bySSID = networks
                 .filter { it.ssid.isNotBlank() }
@@ -63,17 +80,19 @@ class WifiAnomalyDetector @Inject constructor(
             for ((ssid, results) in bySSID) {
                 if (results.size < 2) continue
 
-                // Check 1: Mixed security (HIGH threat — classic evil twin)
-                val securities = results.map { getSecurityType(it.capabilities) }.toSet()
-                if (securities.size > 1 && securities.contains("OPEN")) {
-                    val evidence = results.map { it.toEvidence() }
+                // OWE/SAE/EAP/DPP and unknown AKMs are never assumed open.
+                val distinctAps = results.distinctBy { it.bssid.lowercase() }
+                val profiles = distinctAps.map { WifiSecurityProfile.parse(it.capabilities) }
+                val securities = profiles.map { it.label }.toSet()
+                if (distinctAps.size >= 2 && profiles.any { it.open } && profiles.any { it.authenticated }) {
+                    val evidence = distinctAps.map { it.toEvidence() }
                     anomalies.add(WifiAnomaly(
                         type = "evil_twin",
                         ssid = ssid,
                         details = "Same SSID with mixed security: ${securities.joinToString(" + ")}. " +
-                            "An open AP alongside a secured one is a classic evil twin attack. " +
+                            "Check which AP you join; this can be a legitimate configuration or a spoofed network. " +
                             "Observed APs: ${evidence.joinToString("; ") { it.summary() }}",
-                        threatLevel = 3,
+                        threatLevel = 2,
                         bssids = evidence.map { it.bssid },
                         evidence = evidence,
                         timestamp = now
@@ -124,16 +143,8 @@ class WifiAnomalyDetector @Inject constructor(
             )
         }
 
-        private fun getSecurityType(capabilities: String?): String {
-            val caps = capabilities ?: return "UNKNOWN"
-            return when {
-                caps.contains("WPA3") -> "WPA3"
-                caps.contains("WPA2") -> "WPA2"
-                caps.contains("WPA") -> "WPA"
-                caps.contains("WEP") -> "WEP"
-                else -> "OPEN"
-            }
-        }
+        private fun getSecurityType(capabilities: String?): String =
+            WifiSecurityProfile.parse(capabilities).label
 
         private fun safeLogWarning(message: String) {
             try {
@@ -165,7 +176,7 @@ class WifiAnomalyDetector @Inject constructor(
     }
 
     data class WifiAnomaly(
-        val type: String,       // "evil_twin", "rogue_ap", "karma_attack"
+        val type: String,       // "weak_security", "evil_twin", "pwnagotchi", "karma_attack"
         val ssid: String,
         val details: String,
         val threatLevel: Int,   // 1=low, 2=medium, 3=high

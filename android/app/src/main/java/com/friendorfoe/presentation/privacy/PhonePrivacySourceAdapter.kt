@@ -657,8 +657,8 @@ class PhonePrivacySourceAdapter internal constructor(
                 stableSourceId = canonical,
                 routableKey = key.takeIf { canonical != null },
                 title = detection.deviceType.ifBlank { detection.deviceName ?: "Nearby BLE device" },
-                evidence = knownEvidence,
-                limitation = null,
+                evidence = detection.details["evidence"] ?: knownEvidence,
+                limitation = detection.details["limitation"],
                 category = detection.category,
                 severity = severityFor(detection.category),
                 ownership = if (detection.isBonded ||

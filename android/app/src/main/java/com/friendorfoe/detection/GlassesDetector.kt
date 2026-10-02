@@ -43,6 +43,7 @@ enum class PrivacyCategory(val label: String, val icon: String, val threatLevel:
     REMOTE_LISTENING("Possible Listening", "\uD83C\uDFA7", 2),
     SMART_PEN("Smart Pens", "\u270F\uFE0F", 2),
     PAYMENT_READER("Payment Readers", "\uD83D\uDCB3", 2),
+    WIFI_SECURITY("Wi-Fi Security", "\uD83D\uDD12", 2),
     // Threat level 1 — nearby devices
     DOORBELL_CAMERA("Doorbell Cameras", "\uD83D\uDEAA", 1),
     SMART_SPEAKER("Smart Speakers", "\uD83D\uDD0A", 1),
@@ -55,12 +56,12 @@ enum class PrivacyCategory(val label: String, val icon: String, val threatLevel:
     ACTION_CAMERA("Action Cameras", "\uD83C\uDFA5", 1),
     DASH_CAMERA("Dash Cameras", "\uD83D\uDE99", 1),
     BLE_TRACKER("BLE Trackers", "\uD83D\uDCCD", 1),
-    VENUE_BEACON("Venue Beacons", "\uD83D\uDCCD", 1),
     EVENT_BADGE("Event Badges", "\uD83C\uDF9F\uFE0F", 1),
     BLE_HID("BLE Input Devices", "\u2328\uFE0F", 1),
     IOT_DEVICE("IoT Devices", "\uD83D\uDCE1", 1),
     SECURITY_INFRASTRUCTURE("Security Infrastructure", "\uD83D\uDEE1\uFE0F", 1),
     // Threat level 0 — informational
+    VENUE_BEACON("Venue Beacons", "\uD83D\uDCCD", 0),
     SMART_TV("Smart TVs", "\uD83D\uDCFA", 0),
     DRONE_CONTROLLER("Drone Controllers", "\uD83C\uDFAE", 0),
     E_SCOOTER("E-Scooters", "\uD83D\uDEF4", 0),
@@ -490,6 +491,7 @@ class GlassesDetector @Inject constructor(
             deviceType.contains("Mobile Key Lock", ignoreCase = true) -> PrivacyCategory.MOBILE_KEY_LOCK
             deviceType.contains("Mobile Access", ignoreCase = true) -> PrivacyCategory.MOBILE_KEY_LOCK
             deviceType.contains("Event Badge", ignoreCase = true) -> PrivacyCategory.EVENT_BADGE
+            deviceType.equals("Find Hub accessory", ignoreCase = true) -> PrivacyCategory.BLE_TRACKER
             deviceType.contains("Venue Beacon", ignoreCase = true) -> PrivacyCategory.VENUE_BEACON
             deviceType.contains("iBeacon", ignoreCase = true) -> PrivacyCategory.VENUE_BEACON
             deviceType.contains("Eddystone Beacon", ignoreCase = true) -> PrivacyCategory.VENUE_BEACON
@@ -819,8 +821,7 @@ class GlassesDetector @Inject constructor(
         // Samsung wearables
         UuidEntry(0xFD6A, "Samsung", "Galaxy Ring", 0.85f, false),
         UuidEntry(BleSignatures.SVC_EXPOSURE_NOTIFY, "Apple/Google", "Exposure Notification", 0.35f, false),
-        // Venue/location beacons: confirmed Eddystone protocol.
-        UuidEntry(0xFEAA, "Google", "Eddystone Beacon", 0.70f, false),
+        // FEAA needs frame validation: it is shared by Eddystone and Find Hub.
         // IoT ecosystems
         // Xiaomi UUID 0xFD2E removed — too broad, matches all Mi Home devices
     )
@@ -1214,6 +1215,8 @@ class GlassesDetector @Inject constructor(
             .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
             .setCallbackType(ScanSettings.CALLBACK_TYPE_ALL_MATCHES)
             .setReportDelay(0)
+            .setLegacy(false)
+            .setPhy(ScanSettings.PHY_LE_ALL_SUPPORTED)
             .build()
 
         fun reportPermissionBlocked(security: SecurityException) {
@@ -1629,7 +1632,7 @@ class GlassesDetector @Inject constructor(
                         }
                     }
                     // Else: iPhone/iPad/Mac FindMy relay — skip entirely (not a tracker)
-                } else if (appleType == 0x02 && appleData.size >= 23) {
+                } else if (BlePacketParser.parseIBeaconManufacturerData(appleData) != null) {
                     // iBeacon is a confirmed venue/location beacon protocol.
                     val c = 0.72f
                     if (c > bestConf) {
@@ -1700,6 +1703,24 @@ class GlassesDetector @Inject constructor(
             }
         }
 
+        val feaaMatch = record.serviceData
+            ?.takeIf { result.dataStatus == ScanResult.DATA_COMPLETE }
+            ?.entries?.firstNotNullOfOrNull { (uuid, data) ->
+                if (extractUuid16(uuid.uuid) == BleSignatures.SVC_EDDYSTONE) {
+                    FeaaServiceClassifier.classify(data)
+                } else null
+            }
+        // A shared beacon service must not replace more useful camera/tool evidence.
+        if (feaaMatch != null && feaaMatch.confidence > bestConf && !bestCamera &&
+            categorize(bestType) != PrivacyCategory.ATTACK_TOOL
+        ) {
+            bestConf = feaaMatch.confidence
+            bestMfr = feaaMatch.manufacturer
+            bestType = feaaMatch.deviceType
+            bestCamera = false
+            bestReason = feaaMatch.reason
+        }
+
         // Full v0.59 advertisement walk — Apple / Microsoft deep decode,
         // service UUIDs, advertising flags, appearance, local name.
         val adv = BlePacketParser.parseAdvertisement(result)
@@ -1733,6 +1754,11 @@ class GlassesDetector @Inject constructor(
 
         // Parse rich details from the raw packet.
         val parsedDetails = BlePacketParser.parseAllDetails(result).toMutableMap()
+
+        if (feaaMatch != null && bestReason == feaaMatch.reason) {
+            parsedDetails["evidence"] = feaaMatch.evidence
+            parsedDetails["limitation"] = feaaMatch.limitation
+        }
 
         // Prefer the Apple enriched label when available — folds in
         // "AirPods in, Watch paired" / "Wi-Fi Password Share" / iOS version.
