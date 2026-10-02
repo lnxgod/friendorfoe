@@ -83,7 +83,7 @@ data class PrivacyUiState(
         get() = visibleFindings.filter(PrivacyFinding::isRoutineBeacon)
 
     val individualFindings: List<PrivacyFinding>
-        get() = visibleFindings.filterNot(PrivacyFinding::isRoutineBeacon)
+        get() = visibleFindings.filter { it.deviceTreeFamily() == null }
 }
 
 fun projectPrivacyUiState(
@@ -200,11 +200,14 @@ private fun PrivacyFinding.matches(filters: PrivacyFilterState): Boolean {
     if (filters.sources.isNotEmpty() && source !in filters.sources) return false
     val query = filters.query.trim()
     if (query.isEmpty()) return true
+    val family = deviceFamily()
     return listOfNotNull(
         title,
         evidence,
         limitation,
         category.label,
+        family?.label,
+        family?.group?.label,
         source.userLabel(),
     ).any { it.contains(query, ignoreCase = true) }
 }

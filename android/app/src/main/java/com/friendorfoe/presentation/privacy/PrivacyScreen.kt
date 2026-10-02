@@ -28,8 +28,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Block
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.ExpandLess
-import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.FilterList
 import androidx.compose.material.icons.filled.MyLocation
 import androidx.compose.material.icons.filled.Search
@@ -59,7 +57,6 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -250,9 +247,13 @@ fun PrivacyContent(
     actions: PrivacyActions,
     modifier: Modifier = Modifier,
 ) {
-    var beaconsExpanded by rememberSaveable { mutableStateOf(false) }
-    val beacons = state.groupedBeacons
-    val individualFindings = state.individualFindings
+    val groups = remember(state.visibleFindings) { groupPrivacyDevices(state.visibleFindings) }
+    val branchKeys = groups.flatMap { branch -> listOf(branch.group.key) + branch.families.map { it.family.key } }
+    // Search/filter changes reveal matches; live scan updates keep the user's choices.
+    var expandByDefault by rememberSaveable(state.filters) { mutableStateOf(state.filters.activeFilterCount > 0) }
+    var toggledBranches by rememberSaveable(state.filters) { mutableStateOf(emptyList<String>()) }
+    val expandedKeys = branchKeys.filter { expandByDefault != (it in toggledBranches) }.toSet()
+    val individualFindings = remember(state.visibleFindings) { state.individualFindings }
     LazyColumn(
         modifier = modifier.fillMaxSize().testTag("privacy_content"),
         contentPadding = PaddingValues(bottom = 24.dp),
@@ -345,41 +346,24 @@ fun PrivacyContent(
                         }
                     }
                 }
-                if (beacons.isNotEmpty()) {
-                    item(key = "venue_beacon_group") {
-                        Row(
-                            modifier = Modifier.fillMaxWidth().heightIn(min = 72.dp)
-                                .testTag("privacy_beacon_group")
-                                .semantics { stateDescription = if (beaconsExpanded) "Expanded" else "Collapsed" }
-                                .clickable { beaconsExpanded = !beaconsExpanded }
-                                .padding(16.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Column(Modifier.weight(1f)) {
-                                Text("Venue beacons · ${beacons.size}", fontWeight = FontWeight.SemiBold)
-                                Text(
-                                    "iBeacon and Eddystone · routine broadcasts",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                                val liveCount = beacons.count { it.freshness == FindingFreshness.LIVE }
-                                Text(
-                                    "$liveCount live · ${beacons.size - liveCount} cached · tap to ${if (beaconsExpanded) "collapse" else "inspect"}",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
+                if (groups.isNotEmpty()) {
+                    item(key = "device_tree_controls") {
+                        Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+                            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                                Text("Browse nearby", modifier = Modifier.weight(1f), style = MaterialTheme.typography.titleSmall)
+                                val allExpanded = expandedKeys.size == branchKeys.size
+                                TextButton(
+                                    onClick = { expandByDefault = !allExpanded; toggledBranches = emptyList() },
+                                    modifier = Modifier.testTag("privacy_tree_toggle_all"),
+                                ) { Text(if (allExpanded) "Collapse all" else "Expand all") }
                             }
-                            Icon(
-                                if (beaconsExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
-                                contentDescription = null,
-                            )
+                            Text("Counts are observations, not unique devices.", style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     }
-                    if (beaconsExpanded) {
-                        items(beacons, key = { it.observationKey.encoded }) { finding ->
-                            PrivacyFindingRow(finding, actions)
-                        }
-                    }
+                    privacyDeviceTree(groups, expandedKeys, onToggle = { key ->
+                        toggledBranches = if (key in toggledBranches) toggledBranches - key else toggledBranches + key
+                    }, actions = actions)
                 }
             }
         }
@@ -681,9 +665,10 @@ private fun PrivacySectionStrip(section: PrivacySection, count: Int) {
 }
 
 @Composable
-private fun PrivacyFindingRow(
+internal fun PrivacyFindingRow(
     finding: PrivacyFinding,
     actions: PrivacyActions,
+    showObservationId: Boolean = false,
 ) {
     val accent = sectionColor(finding.section())
     val rowModifier = if (finding.routableKey != null) {
@@ -722,6 +707,15 @@ private fun PrivacyFindingRow(
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                    if (showObservationId) {
+                        Text(
+                            text = "Observed ID · ${finding.displayId}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
                 }
                 finding.signalDbm?.let {
                     Text(

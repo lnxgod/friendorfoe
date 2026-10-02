@@ -10,6 +10,7 @@ import java.io.File
 import androidx.compose.ui.test.assertHasClickAction
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.junit4.StateRestorationTester
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
@@ -30,8 +31,8 @@ class PrivacyScreenTest {
 
     @Test
     fun liveBluetoothUpdatesKeepRowPositionsAndTapTargetsStable() {
-        val first = finding(FindingSeverity.NEARBY, "a")
-        val second = finding(FindingSeverity.NEARBY, "b")
+        val first = finding(FindingSeverity.NEARBY, "a", category = PrivacyCategory.SMART_SPEAKER)
+        val second = finding(FindingSeverity.NEARBY, "b", category = PrivacyCategory.SMART_SPEAKER)
         fun project(rows: List<PrivacyFinding>) = projectPrivacyUiState(
             PrivacyCurrentReducer().reduce(
                 listOf(PrivacySourceSnapshot(
@@ -121,7 +122,7 @@ class PrivacyScreenTest {
                     health(PrivacySourceKind.BADGE_USB, SourceHealthState.LIVE),
                     health(PrivacySourceKind.WIFI_ANALYSIS, SourceHealthState.LIVE),
                 ),
-                findings = listOf(finding(FindingSeverity.NEARBY, "phone")),
+                findings = listOf(finding(FindingSeverity.NEARBY, "phone", category = PrivacyCategory.SMART_SPEAKER)),
                 threatCount = 0,
                 alertEligible = emptyList(),
                 initialResolutionComplete = true,
@@ -318,7 +319,7 @@ class PrivacyScreenTest {
         val state = projectPrivacyUiState(
             PrivacyCurrentState(
                 sources = listOf(health(PrivacySourceKind.PHONE_BLE, SourceHealthState.LIVE)),
-                findings = listOf(finding(FindingSeverity.NEARBY, "phone")),
+                findings = listOf(finding(FindingSeverity.NEARBY, "phone", category = PrivacyCategory.SMART_SPEAKER)),
                 threatCount = 0,
                 alertEligible = emptyList(),
                 initialResolutionComplete = true,
@@ -367,11 +368,13 @@ class PrivacyScreenTest {
                 ))
             }
         }
-        compose.onNodeWithTag("privacy_content").performScrollToNode(hasTestTag("privacy_beacon_group"))
+        compose.onNodeWithTag("privacy_content").performScrollToNode(hasTestTag("privacy_tree_beacons"))
         compose.onNodeWithText("Venue beacons · 1").assertIsDisplayed()
         compose.onNodeWithTag("finding_beacon").assertDoesNotExist()
         saveBeaconScreenshot("beacons-collapsed.png")
-        compose.onNodeWithTag("privacy_beacon_group").performClick()
+        compose.onNodeWithTag("privacy_tree_beacons").performClick()
+        compose.onNodeWithTag("finding_beacon").assertDoesNotExist()
+        clickBranch("ibeacon")
         compose.onNodeWithTag("privacy_content").performScrollToNode(hasTestTag("finding_beacon_ignore"))
         compose.onNodeWithTag("finding_beacon_ignore").performClick()
         compose.onNodeWithTag("privacy_content").performScrollToNode(hasTestTag("finding_beacon_track"))
@@ -387,8 +390,8 @@ class PrivacyScreenTest {
         }
         compose.onNodeWithTag("finding_beacon").assertIsDisplayed()
         saveBeaconScreenshot("beacons-expanded.png")
-        compose.onNodeWithTag("privacy_content").performScrollToNode(hasTestTag("privacy_beacon_group"))
-        compose.onNodeWithTag("privacy_beacon_group").performClick()
+        compose.onNodeWithTag("privacy_content").performScrollToNode(hasTestTag("privacy_tree_beacons"))
+        compose.onNodeWithTag("privacy_tree_beacons").performClick()
         compose.onNodeWithTag("finding_beacon").assertDoesNotExist()
     }
 
@@ -398,12 +401,94 @@ class PrivacyScreenTest {
         val current = PrivacyCurrentState(emptyList(), listOf(beacon), 0, emptyList(), true)
         val state = mutableStateOf(projectPrivacyUiState(current, PrivacyFilterState(query = "lobby")))
         compose.setContent { FriendOrFoeTheme { PrivacyContent(state.value, PrivacyActions()) } }
-        compose.onNodeWithTag("privacy_content").performScrollToNode(hasTestTag("privacy_beacon_group"))
-        compose.onNodeWithTag("privacy_beacon_group").performClick()
+        // Matching branches open automatically while searching.
         compose.onNodeWithTag("privacy_content").performScrollToNode(hasText("iBeacon Lobby"))
         compose.onNodeWithText("iBeacon Lobby").assertIsDisplayed()
         compose.runOnIdle { state.value = projectPrivacyUiState(current.copy(findings = emptyList())) }
-        compose.onNodeWithTag("privacy_beacon_group").assertDoesNotExist()
+        compose.onNodeWithTag("privacy_tree_beacons").assertDoesNotExist()
+    }
+
+    @Test
+    fun trackerFamiliesAreSeparateAndAttentionStaysVisibleAboveTheTree() {
+        val rows = listOf(
+            finding(FindingSeverity.AWARENESS, "attention").copy(title = "Repeated tracker encounter"),
+            finding(FindingSeverity.INFO, "airtag", category = PrivacyCategory.FINDMY).copy(title = "AirTag (Near Owner)"),
+            finding(FindingSeverity.NEARBY, "tile").copy(title = "BLE Tracker", evidence = "Tile • uuid:feed"),
+            finding(FindingSeverity.INFO, "beacon", category = PrivacyCategory.VENUE_BEACON).copy(title = "iBeacon Lobby"),
+            finding(FindingSeverity.INFO, "eddy", category = PrivacyCategory.VENUE_BEACON).copy(title = "Eddystone Beacon"),
+        )
+        val state = projectPrivacyUiState(PrivacyCurrentState(emptyList(), rows, 1, emptyList(), true))
+        compose.setContent { FriendOrFoeTheme { PrivacyContent(state, PrivacyActions()) } }
+        compose.onNodeWithTag("finding_attention").assertIsDisplayed()
+        compose.onNodeWithTag("finding_airtag").assertDoesNotExist()
+        saveBeaconScreenshot("device-tree-collapsed.png")
+        clickBranch("trackers")
+        clickBranch("beacons")
+        compose.onNodeWithTag("privacy_content").performScrollToNode(hasTestTag("privacy_tree_trackers"))
+        saveBeaconScreenshot("device-tree-families.png")
+        compose.onNodeWithTag("finding_tile").assertDoesNotExist()
+        clickBranch("find_my")
+        compose.onNodeWithTag("privacy_content").performScrollToNode(hasTestTag("finding_airtag"))
+        compose.onNodeWithTag("finding_airtag").assertIsDisplayed()
+        compose.onNodeWithTag("finding_tile").assertDoesNotExist()
+        clickBranch("find_my")
+        compose.onNodeWithTag("finding_airtag").assertDoesNotExist()
+    }
+
+    @Test
+    fun expandedTrackerBranchesSurviveUpdatesAndStateRestoration() {
+        val restorer = StateRestorationTester(compose)
+        val tracker = finding(FindingSeverity.NEARBY, "tracker").copy(title = "Find Hub accessory")
+        val current = PrivacyCurrentState(emptyList(), listOf(tracker), 0, emptyList(), true)
+        val state = mutableStateOf(projectPrivacyUiState(current))
+        restorer.setContent { FriendOrFoeTheme { PrivacyContent(state.value, PrivacyActions()) } }
+        clickBranch("trackers")
+        clickBranch("find_hub")
+        compose.onNodeWithTag("privacy_content").performScrollToNode(hasTestTag("finding_tracker"))
+        val bounds = compose.onNodeWithTag("finding_tracker").fetchSemanticsNode().boundsInRoot
+        compose.runOnIdle { state.value = projectPrivacyUiState(current.copy(findings = listOf(tracker.copy(signalDbm = -40)))) }
+        assertEquals(bounds, compose.onNodeWithTag("finding_tracker").fetchSemanticsNode().boundsInRoot)
+        restorer.emulateSavedInstanceStateRestore()
+        compose.onNodeWithTag("finding_tracker").assertIsDisplayed()
+    }
+
+    @Test
+    fun expandAllSupportsLongListsAndCollapseAllHidesTheirLeaves() {
+        val rows = (1..250).map { finding(FindingSeverity.NEARBY, "tile-$it").copy(title = "Tile $it") }
+        var opened: PrivacyFindingKey? = null
+        val state = projectPrivacyUiState(PrivacyCurrentState(emptyList(), rows, 0, emptyList(), true))
+        compose.setContent { FriendOrFoeTheme { PrivacyContent(state, PrivacyActions(onOpenDetails = { opened = it })) } }
+        compose.onNodeWithTag("privacy_tree_toggle_all").performClick()
+        compose.onNodeWithTag("privacy_content").performScrollToNode(hasTestTag("finding_tile-250_details"))
+        compose.onNodeWithTag("finding_tile-250_details").performClick()
+        compose.runOnIdle { assertEquals(rows.last().routableKey, opened) }
+        compose.onNodeWithTag("privacy_content").performScrollToNode(hasTestTag("privacy_tree_toggle_all"))
+        compose.onNodeWithText("Collapse all").performClick()
+        compose.onNodeWithTag("privacy_tree_tile").assertDoesNotExist()
+        compose.onNodeWithTag("finding_tile-1").assertDoesNotExist()
+        compose.onNodeWithText("Trackers · 250").assertIsDisplayed()
+    }
+
+    @Test
+    fun searchingOpensTrackerFamilyAndClearingSearchRestoresCompactTree() {
+        val tracker = finding(FindingSeverity.NEARBY, "tracker").copy(title = "BLE Tracker", evidence = "Samsung • uuid:fd5a")
+        val beacon = finding(FindingSeverity.INFO, "beacon", category = PrivacyCategory.VENUE_BEACON).copy(title = "iBeacon")
+        val current = PrivacyCurrentState(emptyList(), listOf(tracker, beacon), 0, emptyList(), true)
+        val state = mutableStateOf(projectPrivacyUiState(current))
+        compose.setContent { FriendOrFoeTheme { PrivacyContent(state.value, PrivacyActions()) } }
+        compose.runOnIdle { state.value = projectPrivacyUiState(current, PrivacyFilterState(query = "SmartTag")) }
+        compose.onNodeWithTag("privacy_content").performScrollToNode(hasTestTag("finding_tracker"))
+        compose.onNodeWithTag("finding_tracker").assertIsDisplayed()
+        compose.onNodeWithTag("privacy_tree_beacons").assertDoesNotExist()
+        compose.runOnIdle { state.value = projectPrivacyUiState(current) }
+        compose.onNodeWithTag("finding_tracker").assertDoesNotExist()
+        compose.onNodeWithTag("privacy_content").performScrollToNode(hasTestTag("privacy_tree_beacons"))
+        compose.onNodeWithTag("privacy_tree_beacons").assertIsDisplayed()
+    }
+
+    private fun clickBranch(key: String) {
+        compose.onNodeWithTag("privacy_content").performScrollToNode(hasTestTag("privacy_tree_$key"))
+        compose.onNodeWithTag("privacy_tree_$key").performClick()
     }
 
     private fun saveBeaconScreenshot(name: String) {
@@ -416,7 +501,7 @@ class PrivacyScreenTest {
         val rows = listOf(
             finding(FindingSeverity.CRITICAL, "critical", fullActions = true),
             finding(FindingSeverity.AWARENESS, "awareness"),
-            finding(FindingSeverity.NEARBY, "nearby"),
+            finding(FindingSeverity.NEARBY, "nearby", category = PrivacyCategory.SMART_SPEAKER),
             finding(FindingSeverity.INFO, "info", category = PrivacyCategory.APPLE_CONTINUITY),
         )
         return projectPrivacyUiState(
