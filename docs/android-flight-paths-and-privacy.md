@@ -48,6 +48,36 @@ not written to disk and adds no location history. Ignored findings are removed.
 
 ## Beacon grouping and phone detections (0.67.27)
 
+### Expandable device tree (0.67.28)
+
+Android `0.67.28-android-device-tree` (version code 136) adds two collapsed
+sections to Privacy: **Trackers** and **Venue beacons**. Open a section, then a
+family, then an individual observation:
+
+- Trackers → AirTags & Find My, Find Hub, Tile, Samsung SmartTag, Chipolo,
+  or Other trackers.
+- Venue beacons → iBeacon, Eddystone, or Other beacons.
+
+Only families currently present are shown. Grouping uses the existing reported
+category, title, and evidence; it is not a new detector. The Find My family can
+include accessories other than AirTags. Counts describe source observations,
+not unique physical devices: sources and rotating broadcast identities remain
+separate. Each leaf shows its source, observed ID, freshness, and signal, with
+the same Details, Ignore, and supported Track actions.
+
+**Expand all** and **Collapse all** control the full tree. Search and filters
+automatically open matching branches. Clearing filters returns to the compact
+tree; normal scan updates and screen recreation preserve branch choices.
+Awareness and critical findings stay above the tree in their existing sections,
+including tracker findings with stronger evidence. This changes presentation,
+not alert eligibility, detection thresholds, or radio collection.
+
+Tree screenshots: [collapsed](design/device-tree/collapsed.png),
+[family branches](design/device-tree/families.png), and
+[beacon observation](design/device-tree/observation.png).
+
+### Original grouping and added detections
+
 Android `0.67.27-android-nearby-detections` (version code 135) collapses routine
 venue beacons, including iBeacon and Eddystone, into one group at the bottom of
 Privacy. The header counts these separately. Tap the group to inspect individual

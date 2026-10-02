@@ -23,8 +23,8 @@ android {
         applicationId = "com.friendorfoe"
         minSdk = 26
         targetSdk = 34
-        versionCode = 135
-        versionName = "0.67.27-android-nearby-detections"
+        versionCode = 136
+        versionName = "0.67.28-android-device-tree"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
