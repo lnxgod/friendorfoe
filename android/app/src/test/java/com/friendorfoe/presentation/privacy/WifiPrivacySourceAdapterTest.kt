@@ -220,6 +220,21 @@ class WifiPrivacySourceAdapterTest {
         assertEquals(2, starts)
     }
 
+    @Test
+    fun weakSecurityIsPhoneOnlyAwarenessWithExactApDetailsAndNoCriticalAlert() {
+        val anomaly = WifiAnomalyDetector.analyzeNetworksForTest(listOf(
+            WifiAnomalyDetector.WifiNetwork("Old router", "AA:BB:CC:00:00:01", "[WPA2-PSK-TKIP][ESS]", -51, 2437),
+        )).single()
+        val finding = WifiPrivacySourceAdapter.mapAnomaly(anomaly, batch(id = 1, elapsed = 1_000, wall = 10_000))
+        assertEquals("Weak Wi-Fi security", finding.title)
+        assertEquals(PrivacyCategory.WIFI_SECURITY, finding.category)
+        assertEquals(FindingSeverity.AWARENESS, finding.severity)
+        assertEquals(PrivacySourceKind.WIFI_ANALYSIS, finding.source)
+        assertTrue(requireNotNull(finding.evidence).contains("TKIP"))
+        assertTrue(requireNotNull(finding.limitation).contains("does not confirm an attack"))
+        assertEquals(-51, finding.signalDbm)
+    }
+
     private fun kotlinx.coroutines.test.TestScope.adapter(
         settings: MutableStateFlow<DetectionSettings>,
         permissions: MutableStateFlow<LocalDetectionPermissions>,

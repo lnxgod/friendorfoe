@@ -241,6 +241,63 @@ class PrivacyUiProjectionTest {
         assertEquals(2, filtered.filters.activeFilterCount)
     }
 
+    @Test
+    fun beaconsGroupAcrossSourcesWithoutHidingTrackersOrStrongerEvidence() {
+        val phone = finding(id = "beacon", title = "iBeacon", routableId = "beacon").copy(category = PrivacyCategory.VENUE_BEACON)
+        val backend = finding(id = "backend-beacon", source = PrivacySourceKind.BACKEND).copy(category = PrivacyCategory.VENUE_BEACON)
+        val tracker = finding(id = "tracker", title = "Find Hub accessory")
+        val stronger = finding(id = "stronger", severity = FindingSeverity.AWARENESS).copy(category = PrivacyCategory.ATTACK_TOOL)
+        val state = projectPrivacyUiState(current(findings = listOf(phone, backend, tracker, stronger)))
+        assertEquals(listOf(phone, backend), state.groupedBeacons)
+        assertEquals(listOf(tracker, stronger), state.individualFindings)
+        assertEquals("2 current findings · 2 beacons grouped", state.findingCountLabel)
+        assertEquals(4, state.totalCurrentCount)
+        assertEquals(phone, projectPrivacyUiState(current(findings = listOf(phone)), focusedKey = phone.routableKey).focusedFinding)
+    }
+
+    @Test
+    fun searchSourceAndLiveFiltersStillApplyInsideBeaconGroup() {
+        val phone = finding(title = "iBeacon Lobby", id = "phone").copy(category = PrivacyCategory.VENUE_BEACON)
+        val stale = finding(title = "iBeacon Lobby", id = "stale").copy(category = PrivacyCategory.VENUE_BEACON, freshness = FindingFreshness.STALE)
+        val backend = finding(title = "iBeacon Lobby", id = "backend", source = PrivacySourceKind.BACKEND).copy(category = PrivacyCategory.VENUE_BEACON)
+        val rows = current(findings = listOf(phone, stale, backend))
+        val filtered = projectPrivacyUiState(rows, PrivacyFilterState(query = "lobby", liveOnly = true, sources = setOf(PrivacySourceKind.PHONE_BLE)))
+        assertEquals(listOf(phone), filtered.groupedBeacons)
+        assertEquals(PrivacyBodyState.Content, filtered.body)
+        assertTrue(projectPrivacyUiState(rows, PrivacyFilterState(attentionOnly = true)).groupedBeacons.isEmpty())
+        assertTrue(projectPrivacyUiState(rows, PrivacyFilterState(query = "absent")).body is PrivacyBodyState.NoMatches)
+    }
+
+    @Test
+    fun routineBeaconsNeverBecomeAlertsAndIgnoreStillRemovesExactRow() {
+        val beacon = finding(title = "iBeacon").copy(category = PrivacyCategory.VENUE_BEACON)
+        val snapshot = PrivacySourceSnapshot(health(PrivacySourceKind.PHONE_BLE, SourceHealthState.LIVE, wallMs = 1_000), listOf(beacon), 1_000)
+        val reducer = PrivacyCurrentReducer()
+        val current = reducer.reduce(listOf(snapshot), emptySet(), 1_000)
+        assertEquals(0, current.threatCount)
+        assertTrue(current.alertEligible.isEmpty())
+        assertEquals(1, projectPrivacyUiState(current).groupedBeacons.size)
+        assertTrue(reducer.reduce(listOf(snapshot), setOf(requireNotNull(beacon.ignoreKey).encoded), 1_000).findings.isEmpty())
+    }
+
+    @Test
+    fun proximityScoresCannotPromoteRoutineBeaconsFromAnySourceIntoAlerts() {
+        val snapshots = PrivacySourceKind.entries.map { source ->
+            PrivacySourceSnapshot(
+                health(source, SourceHealthState.LIVE, wallMs = 1_000),
+                listOf(finding(source = source, severity = FindingSeverity.CRITICAL, title = "iBeacon", routableId = "beacon")
+                    .copy(category = PrivacyCategory.VENUE_BEACON)),
+                1_000,
+            )
+        }
+        val reduced = PrivacyCurrentReducer().reduce(snapshots, emptySet(), 1_000)
+        assertEquals(PrivacySourceKind.entries.size, reduced.findings.size)
+        assertTrue(reduced.findings.all { it.severity == FindingSeverity.INFO })
+        assertEquals(0, reduced.threatCount)
+        assertTrue(reduced.alertEligible.isEmpty())
+        assertEquals(reduced.findings, projectPrivacyUiState(reduced).groupedBeacons)
+    }
+
     private fun current(
         findings: List<PrivacyFinding> = emptyList(),
         sources: List<PrivacySourceHealth> = listOf(

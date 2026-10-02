@@ -50,7 +50,8 @@ object PrivacyFindingNormalizer {
 
     fun normalize(input: PrivacyFinding): PrivacyFinding {
         val categorySafe = if (
-            input.category == PrivacyCategory.APPLE_CONTINUITY &&
+            (input.category == PrivacyCategory.APPLE_CONTINUITY ||
+                input.category == PrivacyCategory.VENUE_BEACON) &&
             input.severity != FindingSeverity.INFO
         ) {
             input.copy(severity = FindingSeverity.INFO)

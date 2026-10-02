@@ -351,14 +351,21 @@ class WifiPrivacySourceAdapter internal constructor(
                 stableSourceId = record,
                 routableKey = key,
                 title = when (anomaly.type.lowercase()) {
-                    "evil_twin" -> "Possible evil-twin Wi-Fi network"
+                    "weak_security" -> "Weak Wi-Fi security"
+                    "evil_twin" -> "Wi-Fi name with mixed security"
                     "karma_attack" -> "Possible Wi-Fi karma attack"
                     "pwnagotchi" -> "Pwnagotchi pen-test device"
                     else -> "Suspicious Wi-Fi activity"
                 },
                 evidence = anomaly.details,
-                limitation = "Wi-Fi analysis identifies network behavior, not a person.",
-                category = PrivacyCategory.ATTACK_TOOL,
+                limitation = if (anomaly.type == "weak_security" || anomaly.type == "evil_twin") {
+                    "Advertised settings only; this does not confirm an attack or your connection's security."
+                } else {
+                    "Wi-Fi analysis identifies network behavior, not a person."
+                },
+                category = if (anomaly.type == "weak_security" || anomaly.type == "evil_twin") {
+                    PrivacyCategory.WIFI_SECURITY
+                } else PrivacyCategory.ATTACK_TOOL,
                 severity = severityFor(anomaly.threatLevel),
                 ownership = Ownership.UNKNOWN,
                 signalDbm = anomaly.evidence.maxOfOrNull { it.rssi },

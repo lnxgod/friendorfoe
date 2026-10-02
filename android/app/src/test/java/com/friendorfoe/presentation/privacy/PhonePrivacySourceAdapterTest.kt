@@ -1066,6 +1066,24 @@ class PhonePrivacySourceAdapterTest {
     private fun PhonePrivacySourceAdapter.ultrasonicSnapshot(): PrivacySourceSnapshot =
         snapshots.value.single { it.health.source == PrivacySourceKind.PHONE_ULTRASONIC }
 
+    @Test
+    fun findHubEvidenceAndLimitsReachThePhoneFindingWithoutClaimingFollowing() {
+        val match = requireNotNull(com.friendorfoe.detection.FeaaServiceClassifier.classify(ByteArray(22).also { it[0] = 0x41 }))
+        val detection = glasses("mac:AA:BB", "AA:BB").copy(
+            deviceType = match.deviceType, manufacturer = match.manufacturer,
+            deviceName = null, hasCamera = false, matchReason = match.reason,
+            category = GlassesDetector.categorizeDeviceType(match.deviceType),
+            details = mapOf("evidence" to match.evidence, "limitation" to match.limitation),
+        )
+        val finding = PhonePrivacySourceAdapter.mapBle(detection, 1_000, 100_000)
+        assertEquals("Find Hub accessory", finding.title)
+        assertEquals(FindingSeverity.NEARBY, finding.severity)
+        assertFalse(finding.isRoutineBeacon())
+        assertEquals(match.evidence, finding.evidence)
+        assertEquals(match.limitation, finding.limitation)
+        assertFalse(finding.ownership == Ownership.OWNED)
+    }
+
     private fun glasses(fingerprint: String, mac: String) = GlassesDetection(
         mac = mac,
         deviceName = "Meta glasses",

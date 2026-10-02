@@ -339,6 +339,79 @@ class PrivacyScreenTest {
         compose.runOnIdle { assertEquals(1, cleared) }
     }
 
+    @Test
+    fun venueBeaconsStartCollapsedAndExpandWithWorkingDeviceActions() {
+        val beacon = finding(FindingSeverity.INFO, "beacon", fullActions = true, category = PrivacyCategory.VENUE_BEACON).copy(title = "iBeacon Lobby")
+        val tracker = finding(FindingSeverity.NEARBY, "findhub").copy(
+            title = "Find Hub accessory", evidence = "Google Find Hub advertisement · normal advertising mode",
+            limitation = "This broadcast does not establish ownership or following.",
+        )
+        val security = finding(FindingSeverity.AWARENESS, "wifi", category = PrivacyCategory.WIFI_SECURITY).copy(
+            title = "Weak Wi-Fi security", evidence = "Old router advertises TKIP", limitation = "Advertised settings do not confirm an attack.",
+            source = PrivacySourceKind.WIFI_ANALYSIS,
+            observationKey = PrivacyFindingKey(PrivacySourceKind.WIFI_ANALYSIS, "wifi"),
+            routableKey = PrivacyFindingKey(PrivacySourceKind.WIFI_ANALYSIS, "wifi"),
+        )
+        val initial = projectPrivacyUiState(PrivacyCurrentState(
+            sources = listOf(health(PrivacySourceKind.PHONE_BLE, SourceHealthState.LIVE)),
+            findings = listOf(security, tracker, beacon), threatCount = 1, alertEligible = emptyList(), initialResolutionComplete = true,
+        ))
+        val state = mutableStateOf(initial)
+        var ignored: PrivacyFinding? = null
+        var tracked: PrivacyFinding? = null
+        var opened: PrivacyFindingKey? = null
+        compose.setContent {
+            FriendOrFoeTheme {
+                PrivacyContent(state.value, PrivacyActions(
+                    onIgnore = { ignored = it }, onTrack = { tracked = it }, onOpenDetails = { opened = it },
+                ))
+            }
+        }
+        compose.onNodeWithTag("privacy_content").performScrollToNode(hasTestTag("privacy_beacon_group"))
+        compose.onNodeWithText("Venue beacons · 1").assertIsDisplayed()
+        compose.onNodeWithTag("finding_beacon").assertDoesNotExist()
+        saveBeaconScreenshot("beacons-collapsed.png")
+        compose.onNodeWithTag("privacy_beacon_group").performClick()
+        compose.onNodeWithTag("privacy_content").performScrollToNode(hasTestTag("finding_beacon_ignore"))
+        compose.onNodeWithTag("finding_beacon_ignore").performClick()
+        compose.onNodeWithTag("privacy_content").performScrollToNode(hasTestTag("finding_beacon_track"))
+        compose.onNodeWithTag("finding_beacon_track").performClick()
+        compose.onNodeWithTag("privacy_content").performScrollToNode(hasTestTag("finding_beacon_details"))
+        compose.onNodeWithTag("finding_beacon_details").performClick()
+        compose.runOnIdle {
+            assertEquals(beacon, ignored)
+            assertEquals(beacon, tracked)
+            assertEquals(beacon.routableKey, opened)
+            // A normal scan update must not collapse an expanded group.
+            state.value = initial.copy(visibleFindings = initial.visibleFindings.map { it.copy(signalDbm = -44) })
+        }
+        compose.onNodeWithTag("finding_beacon").assertIsDisplayed()
+        saveBeaconScreenshot("beacons-expanded.png")
+        compose.onNodeWithTag("privacy_content").performScrollToNode(hasTestTag("privacy_beacon_group"))
+        compose.onNodeWithTag("privacy_beacon_group").performClick()
+        compose.onNodeWithTag("finding_beacon").assertDoesNotExist()
+    }
+
+    @Test
+    fun beaconSearchShowsMatchingGroupAndClearsWhenIgnored() {
+        val beacon = finding(FindingSeverity.INFO, "beacon", category = PrivacyCategory.VENUE_BEACON).copy(title = "iBeacon Lobby")
+        val current = PrivacyCurrentState(emptyList(), listOf(beacon), 0, emptyList(), true)
+        val state = mutableStateOf(projectPrivacyUiState(current, PrivacyFilterState(query = "lobby")))
+        compose.setContent { FriendOrFoeTheme { PrivacyContent(state.value, PrivacyActions()) } }
+        compose.onNodeWithTag("privacy_content").performScrollToNode(hasTestTag("privacy_beacon_group"))
+        compose.onNodeWithTag("privacy_beacon_group").performClick()
+        compose.onNodeWithTag("privacy_content").performScrollToNode(hasText("iBeacon Lobby"))
+        compose.onNodeWithText("iBeacon Lobby").assertIsDisplayed()
+        compose.runOnIdle { state.value = projectPrivacyUiState(current.copy(findings = emptyList())) }
+        compose.onNodeWithTag("privacy_beacon_group").assertDoesNotExist()
+    }
+
+    private fun saveBeaconScreenshot(name: String) {
+        val image = compose.onRoot().captureToImage().asAndroidBitmap()
+        File(InstrumentationRegistry.getInstrumentation().targetContext.filesDir, name)
+            .outputStream().use { image.compress(Bitmap.CompressFormat.PNG, 100, it) }
+    }
+
     private fun stateWithAllSeverities(): PrivacyUiState {
         val rows = listOf(
             finding(FindingSeverity.CRITICAL, "critical", fullActions = true),
