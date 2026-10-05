@@ -31,7 +31,7 @@ data class ListUiState(
     val locationPermissionState: PermissionUiState = PermissionUiState.Loading,
     val locationSettingsLaunchFailed: Boolean = false,
     val aircraftRangeMiles: Int = AircraftRange.DEFAULT_MILES,
-    val nearestFirst: Boolean = false,
+    val groupAircraftByType: Boolean = true,
     val feedLabel: String? = null,
     val feedDetail: String? = null,
     val canRetryFeed: Boolean = false,
@@ -46,7 +46,7 @@ data class ListActions(
     val onOpenPeek: (SkyObject) -> Unit = {},
     val onSetAircraftRangeMiles: (Int) -> Unit = {},
     val onOpenSettings: (() -> Unit)? = null,
-    val onSetNearestFirst: (Boolean) -> Unit = {},
+    val onSetGroupAircraftByType: (Boolean) -> Unit = {},
     val onRetryFeed: () -> Unit = {},
     val onCheckLocation: () -> Unit = {},
     val onRequestLocation: () -> Unit = {},
@@ -165,23 +165,6 @@ internal fun listAttentionLabel(skyObject: SkyObject): String? = when (listBadge
     }
 }
 
-internal fun listSurfacePriority(
-    skyObject: SkyObject,
-    aircraftRangeMiles: Int = AircraftRange.DEFAULT_MILES,
-): Int = when (skyObject) {
-    is Aircraft -> when {
-        !AircraftRange.contains(skyObject.distanceMeters, aircraftRangeMiles) -> 0
-        isPublicSafetyAircraft(skyObject) && isRotorcraft(skyObject) -> 50
-        isPublicSafetyAircraft(skyObject) -> 45
-        skyObject.category == ObjectCategory.EMERGENCY -> 40
-        skyObject.category == ObjectCategory.MILITARY -> 35
-        skyObject.category == ObjectCategory.GOVERNMENT -> 30
-        skyObject.category == ObjectCategory.HELICOPTER -> 20
-        else -> 0
-    }
-    is Drone -> 25
-}
-
 private fun publicSafetyBadgeColor(badge: String): Color = when (badge) {
     "LAW" -> Color(0xFFE65100)
     "FIRE" -> Color(0xFFD32F2F)
@@ -244,7 +227,7 @@ private fun hasPublicSafetySignal(aircraft: Aircraft): Boolean =
 private fun evidenceContains(aircraft: Aircraft, needle: String): Boolean =
     listOfNotNull(aircraft.operatorName, aircraft.callsign).any { it.uppercase().contains(needle) }
 
-private fun isRotorcraft(aircraft: Aircraft): Boolean {
+internal fun isRotorcraft(aircraft: Aircraft): Boolean {
     if (aircraft.category == ObjectCategory.HELICOPTER) return true
     val typeCode = aircraft.aircraftType?.trim()?.uppercase()
     if (typeCode != null && typeCode in ROTORCRAFT_TYPE_CODES) return true

@@ -45,8 +45,8 @@ class InterfaceRefreshTest {
             FriendOrFoeTheme {
                 Surface {
                     ListContent(
-                        ListUiState(body = ListBodyState.Results(sortSkyObjectsForList(rows, emptySet(), miles)),
-                            locationPermissionState = PermissionUiState.Granted, aircraftRangeMiles = miles),
+                        ListUiState(body = ListBodyState.Results(sortSkyObjectsForList(rows)),
+                            locationPermissionState = PermissionUiState.Granted, aircraftRangeMiles = miles, groupAircraftByType = false),
                         ListActions(onSetAircraftRangeMiles = { miles = it }, onOpenSettings = { openedSettings = true }),
                     )
                 }
@@ -58,8 +58,8 @@ class InterfaceRefreshTest {
         compose.onNodeWithText("Done").performClick()
         val helicopter = compose.onNodeWithTag("list_row_HELI").fetchSemanticsNode().boundsInRoot
         val close = compose.onNodeWithTag("list_row_CLOSE").fetchSemanticsNode().boundsInRoot
-        assertTrue(helicopter.top < close.top)
-        compose.onNodeWithTag("nearby_range").assertTextContains("15 mi alerts").performClick()
+        assertTrue(close.top < helicopter.top)
+        compose.onNodeWithTag("nearby_range").assertTextContains("Range · 15 mi").performClick()
         compose.onNodeWithTag("aircraft_range_reset").performClick()
         compose.runOnIdle { assertEquals(10, miles) }
         compose.onNodeWithText("Notification settings").performClick()
@@ -106,7 +106,7 @@ class InterfaceRefreshTest {
                     Box(Modifier.width(360.dp).fillMaxHeight().testTag("refresh_frame")) {
                         FofNavigationSuite(true, selected.route, { selected = it }) {
                             ListContent(ListUiState(body = ListBodyState.Results(rows),
-                                locationPermissionState = PermissionUiState.Granted), ListActions())
+                                locationPermissionState = PermissionUiState.Granted, groupAircraftByType = false), ListActions())
                         }
                     }
                 }
@@ -114,6 +114,9 @@ class InterfaceRefreshTest {
         }
         val frame = compose.onNodeWithTag("refresh_frame").fetchSemanticsNode().boundsInRoot
         compose.onNodeWithTag("list_distance_N407PD", useUnmergedTree = true).assertTextEquals("2.4 mi")
+        compose.onNodeWithTag("list_row_N128ER").assertDoesNotExist()
+        compose.onNodeWithTag("list_results").performScrollToNode(hasTestTag("nearby_section_farther"))
+        compose.onNodeWithTag("nearby_section_farther").performClick()
         compose.onNodeWithTag("list_results").performScrollToNode(hasTestTag("list_row_N128ER"))
         compose.onNodeWithTag("list_distance_N128ER", useUnmergedTree = true).assertTextEquals("18.2 mi")
         compose.onNodeWithTag("list_results").performScrollToIndex(0)

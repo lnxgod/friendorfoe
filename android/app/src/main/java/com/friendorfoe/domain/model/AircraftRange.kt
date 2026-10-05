@@ -1,6 +1,6 @@
 package com.friendorfoe.domain.model
 
-/** Shared range for aircraft alerts and list priority, in statute miles. */
+/** Shared range for aircraft alerts and nearby list sections, in statute miles. */
 object AircraftRange {
     const val DEFAULT_MILES = 10
     const val MIN_MILES = 1

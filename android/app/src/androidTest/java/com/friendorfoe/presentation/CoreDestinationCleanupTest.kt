@@ -16,6 +16,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.hasTestTag
+import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
@@ -69,7 +71,8 @@ class CoreDestinationCleanupTest {
             FriendOrFoeTheme {
                 ListContent(
                     state = ListUiState(
-                        body = ListBodyState.Results(sortSkyObjectsForList(listOf(helicopter, nearby), emptySet())),
+                        groupAircraftByType = false,
+                        body = ListBodyState.Results(sortSkyObjectsForList(listOf(helicopter, nearby))),
                         locationPermissionState = PermissionUiState.Granted,
                     ),
                     actions = ListActions(),
@@ -77,11 +80,10 @@ class CoreDestinationCleanupTest {
             }
         }
         compose.onNodeWithTag("list_row_NEAR").assertIsDisplayed()
+        compose.onNodeWithTag("list_row_HELI").assertDoesNotExist()
+        compose.onNodeWithTag("nearby_section_farther").performClick()
+        compose.onNodeWithTag("list_results").performScrollToNode(hasTestTag("list_row_HELI"))
         compose.onNodeWithTag("list_row_HELI").assertIsDisplayed()
-        assertTrue(
-            compose.onNodeWithTag("list_row_NEAR").fetchSemanticsNode().boundsInRoot.top <
-                compose.onNodeWithTag("list_row_HELI").fetchSemanticsNode().boundsInRoot.top,
-        )
         val image = compose.onRoot().captureToImage().asAndroidBitmap()
         File(InstrumentationRegistry.getInstrumentation().targetContext.filesDir, "aircraft-nearby.png")
             .outputStream().use { image.compress(Bitmap.CompressFormat.PNG, 100, it) }
@@ -195,7 +197,7 @@ class CoreDestinationCleanupTest {
         compose.setContent {
             FriendOrFoeTheme {
                 ListDestinationContent(
-                    state = ListUiState(body = ListBodyState.Results(listOf(row))),
+                    state = ListUiState(body = ListBodyState.Results(listOf(row)), groupAircraftByType = false),
                     actions = ListActions(),
                     onFullDetails = { fullDetailsId = it },
                 )
@@ -279,6 +281,7 @@ class CoreDestinationCleanupTest {
                     Box(Modifier.width(360.dp).height(700.dp)) {
                         ListContent(
                             state = ListUiState(
+                        groupAircraftByType = false,
                                 body = ListBodyState.Results(
                                     listOf(aircraft("COMPACT", DetectionSource.ADS_B)),
                                 ),
@@ -321,6 +324,7 @@ class CoreDestinationCleanupTest {
             FriendOrFoeTheme {
                 ListContent(
                     state = ListUiState(
+                        groupAircraftByType = false,
                         filter = filter,
                         activeFilterCount = activeFilterCount,
                         body = body,

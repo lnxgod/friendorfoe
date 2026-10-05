@@ -23,8 +23,8 @@ android {
         applicationId = "com.friendorfoe"
         minSdk = 26
         targetSdk = 34
-        versionCode = 136
-        versionName = "0.67.28-android-device-tree"
+        versionCode = 137
+        versionName = "0.67.29-android-nearby-groups"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
