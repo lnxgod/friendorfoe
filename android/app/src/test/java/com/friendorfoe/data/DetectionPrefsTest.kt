@@ -8,6 +8,25 @@ import org.junit.Test
 
 class DetectionPrefsTest {
     @Test
+    fun newAndExistingPriorityInstallsDefaultToDistanceOrderedGroups() {
+        assertTrue(DetectionSettings.defaults().groupAircraftByType)
+        assertTrue(DetectionPrefs(TestContext(TestSharedPreferences())).groupAircraftByType)
+        assertTrue(DetectionPrefs(TestContext(TestSharedPreferences(mapOf("list_nearest_first" to false)))).groupAircraftByType)
+    }
+
+    @Test
+    fun explicitLegacyFlatViewIsPreservedUntilUserChoosesGrouping() {
+        val storage = TestSharedPreferences(mapOf("list_nearest_first" to true))
+        val prefs = DetectionPrefs(TestContext(storage))
+        assertFalse(prefs.groupAircraftByType)
+        prefs.groupAircraftByType = true
+        assertTrue(prefs.settings.value.groupAircraftByType)
+        assertTrue(DetectionPrefs(TestContext(storage)).groupAircraftByType)
+        prefs.groupAircraftByType = false
+        assertFalse(DetectionPrefs(TestContext(storage)).groupAircraftByType)
+    }
+
+    @Test
     fun missingPrivacyPreferenceDefaultsToEnabled() {
         val prefs = DetectionPrefs(TestContext(TestSharedPreferences()))
 

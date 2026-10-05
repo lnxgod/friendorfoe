@@ -9,17 +9,23 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class AircraftRangePreferenceTest {
-    @Test fun nearestSortPreferencePersistsAcrossPreferenceInstances() {
+    @Test fun groupedViewPreferencePersistsAcrossPreferenceInstances() {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val prefs = DetectionPrefs(context)
-        val original = prefs.nearestFirst
+        val storage = context.getSharedPreferences("fof_settings", Context.MODE_PRIVATE)
+        val key = "list_group_aircraft_by_type"
+        val original = storage.all[key] as Boolean?
         try {
-            prefs.nearestFirst = true
-            assertEquals(true, DetectionPrefs(context).nearestFirst)
-            assertEquals(true, prefs.settings.value.nearestFirst)
-            prefs.nearestFirst = false
-            assertEquals(false, DetectionPrefs(context).nearestFirst)
-        } finally { prefs.nearestFirst = original }
+            prefs.groupAircraftByType = true
+            assertEquals(true, DetectionPrefs(context).groupAircraftByType)
+            assertEquals(true, prefs.settings.value.groupAircraftByType)
+            prefs.groupAircraftByType = false
+            assertEquals(false, DetectionPrefs(context).groupAircraftByType)
+        } finally {
+            val editor = storage.edit()
+            if (original == null) editor.remove(key) else editor.putBoolean(key, original)
+            editor.commit()
+        }
     }
 
     @Test

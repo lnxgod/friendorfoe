@@ -36,20 +36,20 @@ class NearbyUpgradesTest {
         callsign = id, position = Position(32.7, -117.1, 1000.0), category = category,
         firstSeen = Instant.now(), lastUpdated = Instant.now(), distanceMeters = miles * 1609.344)
 
-    @Test fun sortChoiceReordersRowsAndRangePresetChangesGrouping() {
-        var nearest by mutableStateOf(false)
+    @Test fun viewChoicePreservesNearestOrderAndRangePresetChangesGrouping() {
+        var grouped by mutableStateOf(true)
         var miles by mutableIntStateOf(10)
         val rows = listOf(aircraft("HELI", 9.0, ObjectCategory.HELICOPTER), aircraft("CLOSE", 1.0, ObjectCategory.COMMERCIAL))
         compose.setContent { FriendOrFoeTheme { Surface { ListContent(ListUiState(
-            body = ListBodyState.Results(sortSkyObjectsForList(rows, emptySet(), miles, nearest)),
-            locationPermissionState = PermissionUiState.Granted, nearestFirst = nearest, aircraftRangeMiles = miles),
-            ListActions(onSetNearestFirst = { nearest = it }, onSetAircraftRangeMiles = { miles = it })) } } }
+            body = ListBodyState.Results(sortSkyObjectsForList(rows)),
+            locationPermissionState = PermissionUiState.Granted, groupAircraftByType = grouped, aircraftRangeMiles = miles),
+            ListActions(onSetGroupAircraftByType = { grouped = it }, onSetAircraftRangeMiles = { miles = it })) } } }
         capture("nearby-priority.png")
         compose.onNodeWithTag("sort_nearest").performClick()
-        compose.runOnIdle { assertTrue(nearest) }
+        compose.runOnIdle { assertFalse(grouped) }
         assertTrue(compose.onNodeWithTag("list_row_CLOSE").fetchSemanticsNode().boundsInRoot.top <
             compose.onNodeWithTag("list_row_HELI").fetchSemanticsNode().boundsInRoot.top)
-        compose.onNodeWithTag("sort_priority").performClick()
+        compose.onNodeWithTag("group_by_type").performClick()
         compose.onNodeWithTag("nearby_range").performClick()
         compose.onNodeWithTag("range_preset_5").performClick()
         compose.onNodeWithText("Done").performClick()

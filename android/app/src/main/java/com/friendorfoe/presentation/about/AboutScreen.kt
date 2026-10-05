@@ -511,7 +511,7 @@ internal fun AircraftRangeControl(miles: Int, onSetMiles: (Int) -> Unit) {
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             Text(
-                "Aircraft alert & priority range",
+                "Nearby & aircraft alert range",
                 style = MaterialTheme.typography.bodyLarge,
                 fontWeight = FontWeight.Medium,
                 modifier = Modifier.weight(1f),
@@ -523,8 +523,8 @@ internal fun AircraftRangeControl(miles: Int, onSetMiles: (Int) -> Unit) {
             )
         }
         Text(
-            "Aircraft alerts and extra list priority apply within this distance. " +
-                "Farther aircraft stay listed in distance order.",
+            "Nearby groups and aircraft alerts use this distance. " +
+                "Farther detections remain available in a collapsed section.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -543,7 +543,7 @@ internal fun AircraftRangeControl(miles: Int, onSetMiles: (Int) -> Unit) {
             valueRange = AircraftRange.MIN_MILES.toFloat()..AircraftRange.MAX_MILES.toFloat(),
             steps = AircraftRange.MAX_MILES - AircraftRange.MIN_MILES - 1,
             modifier = Modifier.testTag("aircraft_range_slider").semantics {
-                contentDescription = "Aircraft alert and priority range"
+                contentDescription = "Nearby and aircraft alert range"
                 stateDescription = "$draftMiles miles"
             },
         )

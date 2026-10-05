@@ -45,9 +45,8 @@ class NearbyFeedPresentationTest {
         assertEquals(ListBodyState.NoDetections, state.body)
         assertFalse(state.canRetry)
     }
-    @Test fun nearestFirstOverridesCategoryAndCameraPriorityButKeepsUnknownDistancesLast() {
+    @Test fun nearestFirstIsAlwaysUsedAndKeepsUnknownDistancesLast() {
         val rows = listOf(aircraft("HELI", 9.0, ObjectCategory.HELICOPTER), aircraft("CLOSE", 1.0), aircraft("UNKNOWN", null))
-        assertEquals(listOf("HELI", "CLOSE", "UNKNOWN"), sortSkyObjectsForList(rows, setOf("HELI")).map { it.id })
-        assertEquals(listOf("CLOSE", "HELI", "UNKNOWN"), sortSkyObjectsForList(rows, setOf("HELI"), nearestFirst = true).map { it.id })
+        assertEquals(listOf("CLOSE", "HELI", "UNKNOWN"), sortSkyObjectsForList(rows).map { it.id })
     }
 }

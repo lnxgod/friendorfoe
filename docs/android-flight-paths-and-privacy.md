@@ -124,3 +124,34 @@ UI test fixtures: [collapsed](design/beacon-grouping/collapsed.png) and
 - Flight-path and privacy-evidence screenshots were inspected on the emulator.
 - Physical Bluetooth/RF behavior still depends on the phone, permissions,
   connected scanner hardware, and the surrounding radio environment.
+
+## Nearby aircraft groups (0.67.29)
+
+Android `0.67.29-android-nearby-groups` (version code 137) removes category and
+camera-focus boosts from the Nearby list. Distance always determines row order;
+unknown, negative, and non-finite distances follow known distances. Stable IDs
+break ties so confidence changes do not shuffle equally distant rows.
+
+**By type** groups aircraft inside **Within 10 mi**, **Farther away**, and
+**Distance unknown**. Type groups are ordered by their closest member, and
+members are ordered nearest first. Helicopters stay together even when their
+reported category is government or military; agency labels remain on each row.
+Tap section or type headers to collapse or expand them. The distance sections
+also remain in **Nearest first**, which lists individual rows without type groups.
+
+Farther-away sections start collapsed. Search and filters open matching branches;
+clearing filters restores the compact distance sections. Live updates preserve
+manual expansion, including across screen recreation. The header reports nearby,
+farther, and unknown-distance counts separately.
+
+**Range** retains the adjustable 1–50 mile setting and 10-mile default. It controls
+the nearby section and aircraft notification eligibility, and changes apply to
+existing observations immediately. It does not enable notifications. Radio drone
+notification policy is unchanged. Selecting a wider range never boosts a
+helicopter ahead of a closer aircraft.
+
+New installs and existing priority-mode installs use By type. An explicitly saved
+Nearest first choice remains a flat view. Both views use the same distance ordering.
+
+Screenshots: [nearby groups](design/nearby-aircraft/nearby-groups.png) and
+[expanded distant helicopters](design/nearby-aircraft/farther-helicopters.png).

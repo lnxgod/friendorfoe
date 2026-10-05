@@ -27,11 +27,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.AlertDialog
@@ -69,7 +66,6 @@ import com.friendorfoe.presentation.components.FofEmptyState
 import com.friendorfoe.presentation.components.FofFailureState
 import com.friendorfoe.presentation.components.FofLoadingState
 import com.friendorfoe.presentation.components.FofNoMatchesState
-import com.friendorfoe.presentation.components.FofStaleBanner
 import com.friendorfoe.presentation.filter.CompactFilterBar
 import com.friendorfoe.presentation.filter.FilterModalSheet
 import com.friendorfoe.presentation.permissions.AppFeature
@@ -144,7 +140,7 @@ fun ListViewScreen(
             locationPermissionState = locationPermissionState,
             locationSettingsLaunchFailed = locationSettingsLaunchFailed,
             aircraftRangeMiles = preferences.aircraftRangeMiles,
-            nearestFirst = preferences.nearestFirst,
+            groupAircraftByType = preferences.groupAircraftByType,
             feedLabel = presentation.label,
             feedDetail = presentation.detail,
             canRetryFeed = presentation.canRetry,
@@ -153,7 +149,7 @@ fun ListViewScreen(
         ),
         actions = ListActions(
             onSetAircraftRangeMiles = viewModel::setAircraftRangeMiles,
-            onSetNearestFirst = viewModel::setNearestFirst,
+            onSetGroupAircraftByType = viewModel::setGroupAircraftByType,
             onRetryFeed = viewModel::retryAircraftFeed,
             onCheckLocation = {
                 runCatching { context.startActivity(android.content.Intent(android.provider.Settings.ACTION_LOCATION_SOURCE_SETTINGS)) }
@@ -230,10 +226,9 @@ internal fun ListContent(
     watchContent: @Composable () -> Unit = {},
 ) {
     var rangeOpen by rememberSaveable { mutableStateOf(false) }
-    val visibleCount = visibleListCount(state.body)
     val headerCount = when (state.body) {
         ListBodyState.Loading, is ListBodyState.Failed -> null
-        else -> visibleCount
+        else -> nearbyListCountLabel(visibleListRows(state.body), state.aircraftRangeMiles)
     }
     Column(modifier = Modifier.fillMaxSize()) {
         FlowRow(
@@ -243,12 +238,12 @@ internal fun ListContent(
         ) {
             Column(Modifier.padding(end = 12.dp, bottom = 4.dp)) {
                 Text("Nearby", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold)
-                Text(headerCount?.let { if (it == 1) "1 detection" else "$it detections" } ?: "Aircraft & drones",
+                Text(headerCount ?: "Aircraft & drones",
                     style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             TextButton(onClick = { rangeOpen = true }, modifier = Modifier.heightIn(min = 48.dp).testTag("nearby_range")) {
                 Icon(Icons.Default.Tune, contentDescription = null, modifier = Modifier.size(18.dp))
-                Text("${state.aircraftRangeMiles} mi alerts", modifier = Modifier.padding(start = 6.dp))
+                Text("Range · ${state.aircraftRangeMiles} mi", modifier = Modifier.padding(start = 6.dp))
             }
         }
         state.feedLabel?.let { label ->
@@ -272,9 +267,9 @@ internal fun ListContent(
         )
 
         FlowRow(Modifier.padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            FilterChip(selected = !state.nearestFirst, onClick = { actions.onSetNearestFirst(false) },
-                label = { Text("Nearby priority") }, modifier = Modifier.testTag("sort_priority"))
-            FilterChip(selected = state.nearestFirst, onClick = { actions.onSetNearestFirst(true) },
+            FilterChip(selected = state.groupAircraftByType, onClick = { actions.onSetGroupAircraftByType(true) },
+                label = { Text("By type") }, modifier = Modifier.testTag("group_by_type"))
+            FilterChip(selected = !state.groupAircraftByType, onClick = { actions.onSetGroupAircraftByType(false) },
                 label = { Text("Nearest first") }, modifier = Modifier.testTag("sort_nearest"))
         }
 
@@ -292,16 +287,18 @@ internal fun ListContent(
                 actions = actions,
                 activeVisualFocusIds = activeVisualFocusIds,
                 rangeMiles = state.aircraftRangeMiles,
-                nearestFirst = state.nearestFirst,
+                groupAircraftByType = state.groupAircraftByType,
                 nowMs = state.nowMs,
+                filter = state.filter,
             )
             is ListBodyState.StaleResults -> ListRows(
                 rows = body.rows,
                 actions = actions,
                 activeVisualFocusIds = activeVisualFocusIds,
                 rangeMiles = state.aircraftRangeMiles,
-                nearestFirst = state.nearestFirst,
+                groupAircraftByType = state.groupAircraftByType,
                 nowMs = state.nowMs,
+                filter = state.filter,
                 staleMessage = body.message,
                 staleAgeMs = body.ageMs,
             )
@@ -407,47 +404,7 @@ private fun ListLocationRecoveryBanner(
 }
 
 @Composable
-private fun ListRows(
-    rows: List<SkyObject>,
-    actions: ListActions,
-    activeVisualFocusIds: Set<String>,
-    rangeMiles: Int = AircraftRange.DEFAULT_MILES,
-    nearestFirst: Boolean = false,
-    nowMs: Long,
-    staleMessage: String? = null,
-    staleAgeMs: Long? = null,
-) {
-    LazyColumn(modifier = Modifier.fillMaxSize().testTag("list_results")) {
-        if (staleMessage != null) {
-            item(key = "stale") {
-                FofStaleBanner(
-                    message = staleMessage,
-                    ageMs = staleAgeMs,
-                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
-                )
-            }
-        }
-        val groups = if (nearestFirst) listOf("" to rows) else listOf(
-            "Within $rangeMiles mi" to rows.filter { AircraftRange.contains(it.distanceMeters, rangeMiles) },
-            "Farther away" to rows.filter { it.distanceMeters?.let { d -> d.isFinite() && d >= 0 } == true && !AircraftRange.contains(it.distanceMeters, rangeMiles) },
-            "Distance unknown" to rows.filter { it.distanceMeters?.let { d -> d.isFinite() && d >= 0 } != true },
-        )
-        groups.filter { it.second.isNotEmpty() }.forEach { (label, group) ->
-            if (label.isNotEmpty()) item(key = "group_$label") {
-                Text(label, style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp))
-            }
-            items(items = group, key = SkyObject::id) { skyObject ->
-                SkyObjectItem(skyObject, skyObject.id in activeVisualFocusIds, nowMs) { actions.onOpenPeek(skyObject) }
-                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant, thickness = 0.5.dp)
-            }
-        }
-    }
-}
-
-@Composable
-private fun SkyObjectItem(
+internal fun SkyObjectItem(
     skyObject: SkyObject,
     isVisuallyConfirmed: Boolean,
     nowMs: Long,
@@ -497,10 +454,10 @@ private fun SkyObjectItem(
     }
 }
 
-private fun visibleListCount(body: ListBodyState): Int = when (body) {
-    is ListBodyState.Results -> body.rows.size
-    is ListBodyState.StaleResults -> body.rows.size
-    else -> 0
+private fun visibleListRows(body: ListBodyState): List<SkyObject> = when (body) {
+    is ListBodyState.Results -> body.rows
+    is ListBodyState.StaleResults -> body.rows
+    else -> emptyList()
 }
 
 private fun formatAltitude(altitudeMeters: Double): String {
