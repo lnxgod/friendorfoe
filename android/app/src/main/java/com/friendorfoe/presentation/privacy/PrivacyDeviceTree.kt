@@ -52,7 +52,22 @@ internal fun LazyListScope.privacyDeviceTree(
                         nested = true, onToggle = { onToggle(family.key) })
                 }
                 if (family.key in expandedKeys) {
-                    items(familyBranch.findings, key = { it.observationKey.encoded }, contentType = { "device_finding" }) { finding ->
+                    if (familyBranch.networks.isNotEmpty()) {
+                        familyBranch.networks.forEach { network ->
+                            item(key = "tree_${network.key}", contentType = "beacon_network") {
+                                PrivacyTreeBranch(network.key, "iBeacon network",
+                                    network.uuid ?: "UUID unavailable", network.findings,
+                                    network.key in expandedKeys, true, { onToggle(network.key) })
+                            }
+                            if (network.key in expandedKeys) {
+                                items(network.findings, key = { it.observationKey.encoded }) { finding ->
+                                    Column(Modifier.padding(start = 32.dp)) {
+                                        PrivacyFindingRow(finding, actions, showObservationId = true)
+                                    }
+                                }
+                            }
+                        }
+                    } else items(familyBranch.findings, key = { it.observationKey.encoded }, contentType = { "device_finding" }) { finding ->
                         val lineColor = MaterialTheme.colorScheme.outlineVariant
                         Column(Modifier.drawBehind {
                             drawLine(lineColor, Offset(24.dp.toPx(), 0f), Offset(24.dp.toPx(), size.height), 1.dp.toPx())

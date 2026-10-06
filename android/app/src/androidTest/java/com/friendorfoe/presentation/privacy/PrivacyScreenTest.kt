@@ -26,6 +26,47 @@ import org.junit.Rule
 import org.junit.Test
 
 class PrivacyScreenTest {
+    @Test
+    fun recorderFiltersCoverageAndIBeaconNetworksAreUsable() {
+        val recorder = finding(FindingSeverity.AWARENESS, "plaud", category = PrivacyCategory.VOICE_RECORDER).copy(
+            title = "Plaud AI Voice Recorder", evidence = "Phone Bluetooth • name:PLAUDAB12",
+            limitation = "Recording status is unknown.")
+        val beacons = (1..12).map { index ->
+            finding(FindingSeverity.NEARBY, "beacon$index", category = PrivacyCategory.VENUE_BEACON).copy(
+                title = "iBeacon $index", beaconUuid = "00112233-4455-6677-8899-aabbccddeeff")
+        }
+        val current = PrivacyCurrentState(emptyList(), listOf(recorder) + beacons, 1, emptyList(), true)
+        val filters = mutableStateOf(PrivacyFilterState())
+        compose.setContent {
+            FriendOrFoeTheme { PrivacyContent(projectPrivacyUiState(current, filters.value), PrivacyActions(
+                onFocusChanged = { filters.value = filters.value.copy(focus = it) },
+                onClearFilters = { filters.value = PrivacyFilterState() },
+            )) }
+        }
+        compose.onNodeWithTag("privacy_focus_RECORDERS").performClick()
+        compose.onNodeWithTag("finding_plaud").assertExists()
+        compose.onNodeWithTag("privacy_tree_beacons").assertDoesNotExist()
+        compose.onNodeWithTag("recorder_coverage").performClick()
+        compose.onNodeWithTag("privacy_content").performScrollToNode(hasText("This Android phone can detect", substring = true))
+        compose.onNodeWithText("This Android phone can detect", substring = true).assertIsDisplayed()
+        saveBeaconScreenshot("recorders-phone-coverage.png")
+        compose.onNodeWithTag("privacy_content").performScrollToNode(hasTestTag("recorder_coverage"))
+        compose.onNodeWithTag("recorder_coverage").performClick()
+        compose.onNodeWithTag("privacy_content").performScrollToNode(hasTestTag("privacy_focus_BEACONS"))
+        compose.onNodeWithTag("privacy_focus_BEACONS").performClick()
+        compose.onNodeWithTag("finding_beacon1").assertDoesNotExist()
+        clickBranch("beacons")
+        clickBranch("ibeacon")
+        compose.onNodeWithTag("privacy_content").performScrollToNode(hasTestTag("privacy_tree_ibeacon_uuid:00112233-4455-6677-8899-aabbccddeeff"))
+        saveBeaconScreenshot("ibeacons-grouped-network.png")
+        clickBranch("ibeacon_uuid:00112233-4455-6677-8899-aabbccddeeff")
+        compose.onNodeWithTag("privacy_content").performScrollToNode(hasTestTag("finding_beacon1"))
+        compose.onNodeWithTag("finding_beacon1").assertIsDisplayed()
+        compose.onNodeWithTag("privacy_content").performScrollToNode(hasTestTag("privacy_focus_QUIET"))
+        compose.onNodeWithTag("privacy_focus_QUIET").performClick()
+        compose.onNodeWithTag("privacy_tree_beacons").assertDoesNotExist()
+    }
+
     @get:Rule
     val compose = createComposeRule()
 

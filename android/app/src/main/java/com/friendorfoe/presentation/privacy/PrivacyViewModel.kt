@@ -79,6 +79,10 @@ class PrivacyViewModel @Inject constructor(
         initialValue = projectPrivacyUiState(repository.currentState.value),
     )
 
+    fun setFocus(focus: PrivacyFocus) {
+        filters.value = filters.value.copy(focus = focus)
+    }
+
     fun updateQuery(query: String) {
         filters.value = filters.value.copy(query = query)
     }

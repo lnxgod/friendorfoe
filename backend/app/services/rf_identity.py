@@ -16,6 +16,7 @@ from app.services.ble_company_lookup import lookup_company as _legacy_lookup_com
 from app.services.drone_signature_reference import drone_wifi_ssid_matches
 from app.services.oui_db import is_random_mac
 from app.services.privacy_ble_signatures import first_privacy_ble_service_match
+from app.services.personal_recorders import match_personal_recorder
 from app.services.privacy_signature_catalog import match_privacy_wifi_ssid
 from app.services.rf_reference import lookup_ble_company, resolve_mac, source_details, ssid_pattern_hints
 from app.services.wifi_fingerprint import build_wifi_fingerprint_v2
@@ -473,6 +474,7 @@ def enrich_rf_evidence(
     known_networks = _known_network_labels(probed_ssids, ssid)
     ssid_hint = _ssid_family_hint(probed_ssids, ssid)
     ble_service_hint = first_privacy_ble_service_match(ble_svc_uuids)
+    recorder = match_personal_recorder(ble_name, ble_svc_uuids) if source_l.startswith("ble") else None
     apple_continuity = decode_apple_continuity(
         raw_mfr_hex=ble_raw_mfr,
         apple_type=ble_apple_type,
@@ -547,6 +549,13 @@ def enrich_rf_evidence(
         else 0.0
     )
 
+    if recorder:
+        brand = recorder["manufacturer"]
+        brand_source = "personal_recorder_signature"
+        brand_confidence = recorder["confidence"]
+        evidence.append(recorder["reason"])
+        evidence.append("Recorder presence only; active recording status unknown")
+
     if ble_service_hint:
         uuid_hex = str(ble_service_hint["uuid16_hex"])
         evidence.append(
@@ -605,6 +614,9 @@ def enrich_rf_evidence(
         evidence.append(f"Scanner class label: {mfr}")
 
     device_class, device_class_confidence = _device_class_from_name(ble_name, class_reason)
+    if recorder or "recorder:" in (class_reason or "") or "AI Voice Recorder" in mfr:
+        device_class = "voice_recorder"
+        device_class_confidence = recorder["confidence"] if recorder else 0.75
     if not device_class and apple_remote_active and apple_remote_confidence >= 0.55:
         device_class = "possible_remote_listening"
         device_class_confidence = apple_remote_confidence
@@ -690,7 +702,11 @@ def enrich_rf_evidence(
     family_source: str | None = None
     family_confidence: float | None = None
     vendor_hint = _vendor_family_hint(brand, vendor_long, manufacturer)
-    if known_networks and known_networks[0].get("device_family"):
+    if device_class == "voice_recorder":
+        device_family = "audio"
+        family_source = "device_class"
+        family_confidence = float(device_class_confidence or 0.75)
+    elif known_networks and known_networks[0].get("device_family"):
         device_family = str(known_networks[0]["device_family"])
         family_source = "known_network_label"
         family_confidence = float(known_networks[0]["confidence"])

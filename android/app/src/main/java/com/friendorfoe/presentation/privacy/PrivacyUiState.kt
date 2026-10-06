@@ -16,15 +16,20 @@ fun PrivacyFinding.section(): PrivacySection = when (severity) {
     FindingSeverity.INFO -> PrivacySection.INFO
 }
 
+enum class PrivacyFocus(val label: String) {
+    ALL("All"), RECORDERS("Recorders"), BEACONS("Beacons"), QUIET("Hide beacons"),
+}
+
 data class PrivacyFilterState(
     val query: String = "",
+    val focus: PrivacyFocus = PrivacyFocus.ALL,
     val categories: Set<PrivacyCategory> = emptySet(),
     val sources: Set<PrivacySourceKind> = emptySet(),
     val attentionOnly: Boolean = false,
     val liveOnly: Boolean = false,
 ) {
     val activeFilterCount: Int
-        get() = (if (query.isBlank()) 0 else 1) +
+        get() = (if (focus == PrivacyFocus.ALL) 0 else 1) + (if (query.isBlank()) 0 else 1) +
             (if (categories.isEmpty()) 0 else 1) +
             (if (sources.isEmpty()) 0 else 1) +
             (if (attentionOnly) 1 else 0) + (if (liveOnly) 1 else 0)
@@ -194,6 +199,12 @@ fun summarizePrivacySources(
 }
 
 private fun PrivacyFinding.matches(filters: PrivacyFilterState): Boolean {
+    when (filters.focus) {
+        PrivacyFocus.ALL -> Unit
+        PrivacyFocus.RECORDERS -> if (category != PrivacyCategory.VOICE_RECORDER) return false
+        PrivacyFocus.BEACONS -> if (!isRoutineBeacon()) return false
+        PrivacyFocus.QUIET -> if (isRoutineBeacon() && severity.rank < FindingSeverity.AWARENESS.rank) return false
+    }
     if (filters.attentionOnly && (severity.rank < FindingSeverity.AWARENESS.rank || ownership == Ownership.OWNED)) return false
     if (filters.liveOnly && freshness != FindingFreshness.LIVE) return false
     if (filters.categories.isNotEmpty() && category !in filters.categories) return false
@@ -206,6 +217,7 @@ private fun PrivacyFinding.matches(filters: PrivacyFilterState): Boolean {
         evidence,
         limitation,
         category.label,
+        beaconUuid,
         family?.label,
         family?.group?.label,
         source.userLabel(),

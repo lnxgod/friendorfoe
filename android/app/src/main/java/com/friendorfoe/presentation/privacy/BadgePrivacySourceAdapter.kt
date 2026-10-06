@@ -271,7 +271,8 @@ class BadgePrivacySourceAdapter internal constructor(
                 routableKey = provenEntityId?.let { key },
                 title = title,
                 evidence = evidence,
-                limitation = null,
+                limitation = if (category == PrivacyCategory.VOICE_RECORDER)
+                    "Bluetooth recorder signature; recording status is unknown." else null,
                 category = effectiveCategory,
                 severity = if (plainAppleActivity) {
                     FindingSeverity.INFO
@@ -306,6 +307,7 @@ class BadgePrivacySourceAdapter internal constructor(
                 "flock" in text || "alpr" in text -> PrivacyCategory.ALPR_CAMERA
                 "evil twin" in text || "wifi_anomaly" in text || "attack" in text ->
                     PrivacyCategory.ATTACK_TOOL
+                "ai recorder" in text || "voice recorder" in text -> PrivacyCategory.VOICE_RECORDER
                 "remote_listening" in text || "possible listening" in text ->
                     PrivacyCategory.REMOTE_LISTENING
                 "tracker" in text || "airtag" in text || "findmy" in text ->

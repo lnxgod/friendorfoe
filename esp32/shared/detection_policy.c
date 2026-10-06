@@ -232,6 +232,7 @@ bool fof_policy_is_priority_ble_fingerprint(const char *manufacturer)
            strcmp(mfr, "Mobile Key Lock") == 0 ||
            strcmp(mfr, "BLE HID") == 0 ||
            strcmp(mfr, "Auracast") == 0 ||
+           strcmp(mfr, "AI Voice Recorder") == 0 ||
            strcmp(mfr, "Camera") == 0 ||
            strcmp(mfr, "Hidden Camera (suspect)") == 0;
 }

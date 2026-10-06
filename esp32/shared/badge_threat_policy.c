@@ -1512,6 +1512,14 @@ bool badge_threat_classify_detection(const drone_detection_t *det,
         event->base_score = 68.0f;
         event->evidence_quality = 7;
         (void)weak_meta;
+    } else if (det->source == DETECTION_SRC_BLE_FINGERPRINT &&
+               contains_nocase(det->manufacturer, "AI Voice Recorder")) {
+        event->cls = BADGE_THREAT_OTHER;
+        event->category = BADGE_THREAT_CATEGORY_LISTENING;
+        copy_label(event->label, "AI Recorder");
+        copy_detail(event->detail, "recording unknown");
+        event->base_score = 44.0f;
+        event->evidence_quality = 5;
     } else if (apple_remote_listening) {
         event->cls = BADGE_THREAT_OTHER;
         event->category = BADGE_THREAT_CATEGORY_LISTENING;

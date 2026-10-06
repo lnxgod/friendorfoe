@@ -1227,6 +1227,8 @@ async def ingest_drone_detections(
             ble_svc_uuids=det.ble_svc_uuids,
             ble_apple_flags=ainfo,
             ble_activity=det.ble_activity,
+            ble_name=det.ble_name,
+            class_reason=det.class_reason,
         )
 
         alerts = _rf_anomaly_detector.process_event(
@@ -1918,6 +1920,8 @@ async def get_live_devices(
             ble_apple_type=entry.get("ble_apple_type"),
             ble_apple_flags=entry.get("ble_apple_flags"),
             ble_activity=entry.get("ble_activity"),
+            ble_name=entry.get("ble_name"),
+            class_reason=entry.get("class_reason"),
         )
         entry.update(_rf_meta_subset(rf_meta))
         privacy_fields = classify_privacy_device(entry)

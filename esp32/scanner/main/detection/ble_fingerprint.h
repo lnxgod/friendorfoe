@@ -62,6 +62,7 @@ typedef enum {
     BLE_DEV_DRONE_OTHER,        /* Parrot, Autel, Skydio (non-DJI drones) */
     BLE_DEV_PAIRING_SPAM,       /* Behavioral multi-identity pairing prompt flood */
     BLE_DEV_SERIAL_SKIMMER,     /* Behavioral serial-service skimmer candidate */
+    BLE_DEV_AI_RECORDER,        /* Personal AI recorder; recording state unknown */
     BLE_DEV_COUNT
 } ble_device_type_t;
 

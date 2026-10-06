@@ -309,7 +309,8 @@ class BackendPrivacySourceAdapter internal constructor(
                 routableKey = stableId?.let { key },
                 title = title,
                 evidence = evidence,
-                limitation = null,
+                limitation = if (category == PrivacyCategory.VOICE_RECORDER)
+                    "Bluetooth recorder signature; recording status is unknown." else null,
                 category = category,
                 severity = if (plainAppleActivity) {
                     FindingSeverity.INFO
@@ -340,6 +341,7 @@ class BackendPrivacySourceAdapter internal constructor(
                 "BLE_HID" -> PrivacyCategory.BLE_HID
                 "AURACAST" -> PrivacyCategory.AURACAST
                 "APPLE_CONTINUITY" -> PrivacyCategory.APPLE_CONTINUITY
+                "VOICE_RECORDER" -> PrivacyCategory.VOICE_RECORDER
                 "REMOTE_LISTENING" -> PrivacyCategory.REMOTE_LISTENING
                 "FLOCK_ALPR" -> PrivacyCategory.ALPR_CAMERA
                 "CAMERA_NEAR" -> PrivacyCategory.SURVEILLANCE_CAMERA

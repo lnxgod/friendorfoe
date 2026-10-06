@@ -7,6 +7,29 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class PrivacyDeviceGroupsTest {
+    @Test fun recorderAndQuietFiltersKeepWarningsAndCombineWithSearch() {
+        val recorder = finding(id = "plaud", title = "AI Voice Recorder", evidence = "Plaud", category = PrivacyCategory.VOICE_RECORDER, severity = FindingSeverity.AWARENESS)
+        val beacon = finding(id = "beacon", title = "iBeacon", category = PrivacyCategory.VENUE_BEACON)
+        val warning = beacon.copy(displayId = "warning", severity = FindingSeverity.CRITICAL)
+        val rows = current(listOf(recorder, beacon, warning))
+        assertEquals(listOf(recorder), projectPrivacyUiState(rows, PrivacyFilterState(focus = PrivacyFocus.RECORDERS, query = "Plaud")).visibleFindings)
+        assertEquals(listOf(recorder, warning), projectPrivacyUiState(rows, PrivacyFilterState(focus = PrivacyFocus.QUIET)).visibleFindings)
+        assertEquals(listOf(beacon, warning), projectPrivacyUiState(rows, PrivacyFilterState(focus = PrivacyFocus.BEACONS)).visibleFindings)
+        assertEquals(3, projectPrivacyUiState(rows).visibleFindings.size)
+    }
+
+    @Test fun iBeaconNetworksGroupByUuidWithoutMergingObservations() {
+        val uuid = "00112233-4455-6677-8899-AABBCCDDEEFF"
+        val a = finding(id = "a", title = "iBeacon", category = PrivacyCategory.VENUE_BEACON).copy(beaconUuid = uuid)
+        val b = a.copy(displayId = "b", observationKey = PrivacyFindingKey(a.source, "b"), beaconUuid = uuid.lowercase())
+        val unknown = a.copy(displayId = "unknown", beaconUuid = null)
+        val family = groupPrivacyDevices(listOf(a, b, unknown)).single().families.single()
+        assertEquals(2, family.networks.size)
+        assertEquals(listOf(a, b), family.networks.first().findings)
+        assertEquals(listOf(unknown), family.networks.last().findings)
+        assertEquals(listOf(a, b), projectPrivacyUiState(current(listOf(a, b, unknown)), PrivacyFilterState(query = uuid)).visibleFindings)
+    }
+
     @Test
     fun existingProtocolAndManufacturerLabelsSelectTheirFamilies() {
         val cases = listOf(

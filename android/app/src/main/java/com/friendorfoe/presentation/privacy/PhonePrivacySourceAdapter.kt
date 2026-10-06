@@ -658,7 +658,10 @@ class PhonePrivacySourceAdapter internal constructor(
                 routableKey = key.takeIf { canonical != null },
                 title = detection.deviceType.ifBlank { detection.deviceName ?: "Nearby BLE device" },
                 evidence = detection.details["evidence"] ?: knownEvidence,
-                limitation = detection.details["limitation"],
+                limitation = if (detection.category == PrivacyCategory.VOICE_RECORDER)
+                    "Detected by this phone over Bluetooth. Recording status is unknown."
+                    else detection.details["limitation"],
+                beaconUuid = detection.details["Beacon UUID"],
                 category = detection.category,
                 severity = severityFor(detection.category),
                 ownership = if (detection.isBonded ||
