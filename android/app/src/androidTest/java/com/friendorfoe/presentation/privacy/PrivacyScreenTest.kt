@@ -8,6 +8,8 @@ import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.test.platform.app.InstrumentationRegistry
 import java.io.File
 import androidx.compose.ui.test.assertHasClickAction
+import androidx.compose.ui.test.assertIsSelected
+import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.junit4.StateRestorationTester
@@ -35,15 +37,44 @@ class PrivacyScreenTest {
             finding(FindingSeverity.NEARBY, "beacon$index", category = PrivacyCategory.VENUE_BEACON).copy(
                 title = "iBeacon $index", beaconUuid = "00112233-4455-6677-8899-aabbccddeeff")
         }
-        val current = PrivacyCurrentState(emptyList(), listOf(recorder) + beacons, 1, emptyList(), true)
-        val filters = mutableStateOf(PrivacyFilterState())
+        val otherRecorders = listOf("Omi", "Bee").map { brand ->
+            finding(FindingSeverity.NEARBY, brand.lowercase(), category = PrivacyCategory.VOICE_RECORDER).copy(
+                title = "$brand AI Voice Recorder", evidence = "Phone Bluetooth • matching service",
+                limitation = "Recording status is unknown.")
+        }
+        val current = PrivacyCurrentState(emptyList(), listOf(recorder) + otherRecorders + beacons, 1, emptyList(), true)
+        val filters = mutableStateOf(restoredPrivacyFilters(null))
         compose.setContent {
             FriendOrFoeTheme { PrivacyContent(projectPrivacyUiState(current, filters.value), PrivacyActions(
-                onFocusChanged = { filters.value = filters.value.copy(focus = it) },
-                onClearFilters = { filters.value = PrivacyFilterState() },
+                onFocusChanged = { filters.value = PrivacyFilterState(focus = it) },
+                onQueryChanged = { filters.value = filters.value.copy(query = it) },
+                onToggleLiveOnly = { filters.value = filters.value.copy(liveOnly = !filters.value.liveOnly) },
+                onShowAttention = { filters.value = PrivacyFilterState(attentionOnly = true) },
+                onClearFilters = { filters.value = filters.value.clearRefinements() },
             )) }
         }
+        compose.onNodeWithTag("privacy_focus_RECORDERS").assertIsSelected()
+        compose.onNodeWithTag("finding_plaud").assertIsDisplayed()
+        saveBeaconScreenshot("recorders-first.png")
+        compose.onNodeWithTag("privacy_search").performTextInput("missing")
+        androidx.test.espresso.Espresso.closeSoftKeyboard()
+        compose.onNodeWithTag("finding_plaud").assertDoesNotExist()
+        compose.onNodeWithTag("privacy_clear_refinements").performClick()
+        compose.onNodeWithTag("privacy_focus_RECORDERS").assertIsSelected()
+        compose.onNodeWithTag("finding_plaud").assertIsDisplayed()
+        compose.onNodeWithTag("privacy_filters").performClick()
+        compose.onNodeWithText("Live only").performClick()
+        compose.onNodeWithTag("privacy_brand_Plaud").performClick()
+        compose.onNodeWithTag("finding_plaud").assertExists()
+        compose.runOnIdle { assertEquals("Plaud", filters.value.query) }
+        compose.onNodeWithTag("privacy_focus_RECORDERS").assertIsDisplayed()
+        saveBeaconScreenshot("recorders-filters.png")
+        compose.onNodeWithTag("privacy_clear_refinements").performClick()
+        compose.onNodeWithTag("privacy_filters").performClick()
+        compose.onNodeWithTag("privacy_attention").performClick()
+        compose.onNodeWithTag("privacy_focus_ALL").assertIsSelected()
         compose.onNodeWithTag("privacy_focus_RECORDERS").performClick()
+        compose.runOnIdle { assertEquals(0, filters.value.refinementCount) }
         compose.onNodeWithTag("finding_plaud").assertExists()
         compose.onNodeWithTag("privacy_tree_beacons").assertDoesNotExist()
         compose.onNodeWithTag("recorder_coverage").performClick()
@@ -65,6 +96,35 @@ class PrivacyScreenTest {
         compose.onNodeWithTag("privacy_content").performScrollToNode(hasTestTag("privacy_focus_QUIET"))
         compose.onNodeWithTag("privacy_focus_QUIET").performClick()
         compose.onNodeWithTag("privacy_tree_beacons").assertDoesNotExist()
+    }
+
+    @Test
+    fun emptyRecordersDoNotFallBackToBeaconNoise() {
+        val current = PrivacyCurrentState(emptyList(), listOf(
+            finding(FindingSeverity.NEARBY, "beacon", category = PrivacyCategory.VENUE_BEACON)), 0, emptyList(), true)
+        val filters = mutableStateOf(restoredPrivacyFilters(null))
+        compose.setContent {
+            FriendOrFoeTheme { PrivacyContent(projectPrivacyUiState(current, filters.value), PrivacyActions(
+                onFocusChanged = { filters.value = PrivacyFilterState(focus = it) },
+            )) }
+        }
+        compose.onNodeWithText("No personal recorders detected").assertIsDisplayed()
+        compose.onNodeWithTag("privacy_tree_beacons").assertDoesNotExist()
+        compose.onNodeWithText("View all observations").performClick()
+        compose.onNodeWithTag("privacy_focus_ALL").assertIsSelected()
+        compose.onNodeWithTag("privacy_tree_beacons").assertIsDisplayed()
+    }
+
+    @Test
+    fun recordersOfferDirectPhoneScanActivation() {
+        var activations = 0
+        val state = projectPrivacyUiState(PrivacyCurrentState(
+            listOf(health(PrivacySourceKind.PHONE_BLE, SourceHealthState.PAUSED)),
+            emptyList(), 0, emptyList(), true), restoredPrivacyFilters(null))
+        compose.setContent { FriendOrFoeTheme { PrivacyContent(state,
+            PrivacyActions(onEnablePhoneScan = { activations++ })) } }
+        compose.onNodeWithTag("privacy_start_recorder_scan").assertIsDisplayed().performClick()
+        compose.runOnIdle { assertEquals(1, activations) }
     }
 
     @get:Rule

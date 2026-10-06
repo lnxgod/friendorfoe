@@ -7,6 +7,29 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class PrivacyDeviceGroupsTest {
+    @Test fun recorderFirstDefaultAndSavedTabRestoreAreExplicit() {
+        assertEquals(PrivacyFocus.RECORDERS, restoredPrivacyFilters(null).focus)
+        assertEquals(PrivacyFocus.RECORDERS, restoredPrivacyFilters("invalid").focus)
+        assertEquals(PrivacyFocus.BEACONS, restoredPrivacyFilters("BEACONS").focus)
+    }
+
+    @Test fun clearingRefinementsKeepsTheSelectedTab() {
+        val filters = PrivacyFilterState(focus = PrivacyFocus.RECORDERS, query = "Plaud",
+            sources = setOf(PrivacySourceKind.PHONE_BLE), liveOnly = true)
+        assertEquals(3, filters.refinementCount)
+        assertEquals(PrivacyFilterState(focus = PrivacyFocus.RECORDERS), filters.clearRefinements())
+    }
+
+    @Test fun tabCountsStayVisibleWhenSearchHidesAllResults() {
+        val recorder = finding(id = "plaud", title = "Plaud", category = PrivacyCategory.VOICE_RECORDER)
+        val beacon = finding(id = "beacon", category = PrivacyCategory.VENUE_BEACON)
+        val projected = projectPrivacyUiState(current(listOf(recorder, beacon)),
+            PrivacyFilterState(focus = PrivacyFocus.RECORDERS, query = "missing"))
+        assertTrue(projected.visibleFindings.isEmpty())
+        assertEquals(mapOf(PrivacyFocus.RECORDERS to 1, PrivacyFocus.QUIET to 1,
+            PrivacyFocus.BEACONS to 1, PrivacyFocus.ALL to 2), projected.focusCounts)
+    }
+
     @Test fun recorderAndQuietFiltersKeepWarningsAndCombineWithSearch() {
         val recorder = finding(id = "plaud", title = "AI Voice Recorder", evidence = "Plaud", category = PrivacyCategory.VOICE_RECORDER, severity = FindingSeverity.AWARENESS)
         val beacon = finding(id = "beacon", title = "iBeacon", category = PrivacyCategory.VENUE_BEACON)

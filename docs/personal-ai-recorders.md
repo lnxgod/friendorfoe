@@ -29,9 +29,11 @@ Other candidates for future capture-based signatures include HiDock/HiNotes, iFL
 
 Keep `PersonalRecorderSignatures.kt`, `personal_recorders.py`, and the recorder helpers in `ble_fingerprint.c` aligned. Tests cover all six families, custom UUID byte order, complete/incomplete/service-data advertisements, truncation, close UUID mismatches, ambiguous names and services, backend presentation, and badge awareness. Hardware validation should capture advertisements in pairing, idle, recording, and connected states before claiming model-specific coverage.
 
-## Android browsing (v0.67.30)
+## Android browsing (v0.67.31)
 
-The Privacy screen has one-tap All, Recorders, Beacons, and Hide beacons filters. These combine with text search, categories, sources, live-only, and attention-only filters. Reset filters restores the full list. Hide beacons removes routine beacon observations from this view but keeps actionable beacon warnings; it does not disable scanning or change alert rules.
+The Privacy screen opens on Recorders, with persistent Recorders, Nearby, Beacons, and All tabs and observation counts. The selected tab survives saved-state recreation. Search, brand shortcuts (Plaud, Omi, Limitless, Bee, Friend, Fieldy), categories, sources, live-only, and attention-only filters refine that tab. Clearing filters stays in the tab; switching tabs clears refinements and returns to the top. Nearby hides routine beacon observations but keeps elevated beacon warnings. An alerts shortcut opens attention-only results across all categories. None of these controls disables scanning or changes alert rules.
+
+When no recorders match, the page explains the detection limits rather than substituting beacons. The Recorders tab offers one-tap phone scan activation when Phone Bluetooth scanning is paused. Brand shortcuts use the same plain-language search as the text field; they are identification hints, not authenticated manufacturer identities.
 
 Venue beacons expand into protocol families. Phone iBeacon detections retain their advertised UUID and group into network rows below the iBeacon family. Matching UUIDs label a broadcast network, not a unique physical device; expanding a network preserves each observation and its existing details/actions. Observations without UUID metadata remain accessible. Search includes UUIDs. Ordinary filter changes start collapsed; text searches expand matching branches.
 

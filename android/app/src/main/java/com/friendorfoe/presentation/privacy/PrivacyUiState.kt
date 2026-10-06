@@ -17,7 +17,7 @@ fun PrivacyFinding.section(): PrivacySection = when (severity) {
 }
 
 enum class PrivacyFocus(val label: String) {
-    ALL("All"), RECORDERS("Recorders"), BEACONS("Beacons"), QUIET("Hide beacons"),
+    RECORDERS("Recorders"), QUIET("Nearby"), BEACONS("Beacons"), ALL("All"),
 }
 
 data class PrivacyFilterState(
@@ -28,8 +28,13 @@ data class PrivacyFilterState(
     val attentionOnly: Boolean = false,
     val liveOnly: Boolean = false,
 ) {
+    fun clearRefinements() = PrivacyFilterState(focus = focus)
+
     val activeFilterCount: Int
-        get() = (if (focus == PrivacyFocus.ALL) 0 else 1) + (if (query.isBlank()) 0 else 1) +
+        get() = refinementCount + if (focus == PrivacyFocus.ALL) 0 else 1
+
+    val refinementCount: Int
+        get() = (if (query.isBlank()) 0 else 1) +
             (if (categories.isEmpty()) 0 else 1) +
             (if (sources.isEmpty()) 0 else 1) +
             (if (attentionOnly) 1 else 0) + (if (liveOnly) 1 else 0)
@@ -70,6 +75,7 @@ data class PrivacyUiState(
     val visibleFindings: List<PrivacyFinding> = emptyList(),
     val totalCurrentCount: Int = 0,
     val totalBeaconCount: Int = 0,
+    val focusCounts: Map<PrivacyFocus, Int> = emptyMap(),
     val threatCount: Int = 0,
     val filters: PrivacyFilterState = PrivacyFilterState(),
     val body: PrivacyBodyState = PrivacyBodyState.Loading,
@@ -112,6 +118,10 @@ fun projectPrivacyUiState(
             .sortedBy(PrivacySourceKind::preferenceId),
         visibleFindings = visible,
         totalCurrentCount = current.findings.size,
+        focusCounts = PrivacyFocus.entries.associateWith { focus ->
+            val tabFilter = PrivacyFilterState(focus = focus)
+            current.findings.count { it.matches(tabFilter) }
+        },
         totalBeaconCount = current.findings.count(PrivacyFinding::isRoutineBeacon),
         threatCount = current.threatCount,
         filters = filters,
@@ -307,3 +317,7 @@ private fun SourceHealthState.rollupPriority(): Int = when (this) {
     SourceHealthState.UNSUPPORTED -> 2
     SourceHealthState.PAUSED -> 1
 }
+
+internal fun restoredPrivacyFilters(savedFocus: String?): PrivacyFilterState = PrivacyFilterState(
+    focus = PrivacyFocus.entries.firstOrNull { it.name == savedFocus } ?: PrivacyFocus.RECORDERS,
+)

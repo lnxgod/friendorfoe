@@ -41,7 +41,7 @@ class PrivacyViewModel @Inject constructor(
     private val permissionStateSource: PermissionStateSource,
     private val savedStateHandle: SavedStateHandle,
 ) : ViewModel() {
-    private val filters = MutableStateFlow(PrivacyFilterState())
+    private val filters = MutableStateFlow(restoredPrivacyFilters(savedStateHandle["privacy_focus"]))
     private val directionController = RssiDirectionSweepController(
         sampleSource = phonePrivacySourceAdapter,
         scope = viewModelScope,
@@ -76,11 +76,17 @@ class PrivacyViewModel @Inject constructor(
     }.stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(5_000),
-        initialValue = projectPrivacyUiState(repository.currentState.value),
+        initialValue = projectPrivacyUiState(repository.currentState.value, filters.value),
     )
 
     fun setFocus(focus: PrivacyFocus) {
-        filters.value = filters.value.copy(focus = focus)
+        savedStateHandle["privacy_focus"] = focus.name
+        filters.value = PrivacyFilterState(focus = focus)
+    }
+
+    fun showAttention() {
+        setFocus(PrivacyFocus.ALL)
+        filters.value = filters.value.copy(attentionOnly = true)
     }
 
     fun updateQuery(query: String) {
@@ -108,7 +114,7 @@ class PrivacyViewModel @Inject constructor(
     }
 
     fun clearFilters() {
-        filters.value = PrivacyFilterState()
+        filters.value = filters.value.clearRefinements()
     }
 
     fun ignore(finding: PrivacyFinding) {
