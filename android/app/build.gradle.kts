@@ -23,8 +23,8 @@ android {
         applicationId = "com.friendorfoe"
         minSdk = 26
         targetSdk = 34
-        versionCode = 138
-        versionName = "0.67.30-android-privacy-recorders"
+        versionCode = 139
+        versionName = "0.67.31-android-recorder-first"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

@@ -7,6 +7,7 @@ import android.bluetooth.BluetoothAdapter
 import android.content.Intent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.background
@@ -26,6 +27,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Block
@@ -43,11 +45,14 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Tab
+import androidx.compose.material3.TabRow
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -56,6 +61,8 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -86,6 +93,7 @@ data class PrivacyActions(
     val onResolveSourcePermission: (PrivacySourceKind) -> Unit = {},
     val onTurnOnBluetooth: () -> Unit = {},
     val onQueryChanged: (String) -> Unit = {},
+    val onShowAttention: () -> Unit = {},
     val onFocusChanged: (PrivacyFocus) -> Unit = {},
     val onToggleCategory: (PrivacyCategory) -> Unit = {},
     val onToggleSource: (PrivacySourceKind) -> Unit = {},
@@ -145,6 +153,7 @@ fun PrivacyScreen(
             },
             onQueryChanged = viewModel::updateQuery,
             onFocusChanged = viewModel::setFocus,
+            onShowAttention = viewModel::showAttention,
             onToggleCategory = viewModel::toggleCategory,
             onToggleSource = viewModel::toggleSource,
             onClearFilters = viewModel::clearFilters,
@@ -245,12 +254,21 @@ fun PrivacyScreen(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun PrivacyContent(
     state: PrivacyUiState,
     actions: PrivacyActions,
     modifier: Modifier = Modifier,
 ) {
+    val listState = rememberLazyListState()
+    var lastFocus by rememberSaveable { mutableStateOf(state.filters.focus) }
+    LaunchedEffect(state.filters.focus) {
+        if (lastFocus != state.filters.focus) {
+            listState.scrollToItem(0)
+            lastFocus = state.filters.focus
+        }
+    }
     val groups = remember(state.visibleFindings) { groupPrivacyDevices(state.visibleFindings) }
     val branchKeys = groups.flatMap { branch -> listOf(branch.group.key) + branch.families.flatMap { listOf(it.family.key) + it.networks.map { network -> network.key } } }
     // Search/filter changes reveal matches; live scan updates keep the user's choices.
@@ -259,46 +277,37 @@ fun PrivacyContent(
     val expandedKeys = branchKeys.filter { expandByDefault != (it in toggledBranches) }.toSet()
     val individualFindings = remember(state.visibleFindings) { state.individualFindings }
     LazyColumn(
+        state = listState,
         modifier = modifier.fillMaxSize().testTag("privacy_content"),
         contentPadding = PaddingValues(bottom = 24.dp),
     ) {
+        item { PrivacyHeader(state, actions.onOpenIgnoredDevices, actions.onShowAttention) }
+        stickyHeader(key = "privacy_tabs") { PrivacyTabs(state, actions) }
         item {
-            PrivacyHeader(state, actions.onOpenIgnoredDevices)
-            actions.onOpenProbes?.let { open ->
-                TextButton(onClick = open, modifier = Modifier.padding(horizontal = 8.dp).testTag("privacy_probes")) {
-                    Text("Wi-Fi probes · what nearby devices request")
+            PrivacySearchAndFilters(state, actions)
+            PrivacyBrowseHeading(state)
+            if (state.filters.focus == PrivacyFocus.RECORDERS) {
+                if (state.sourceHealth.any { it.source == PrivacySourceKind.PHONE_BLE && it.state == SourceHealthState.PAUSED }) {
+                    TextButton(onClick = actions.onEnablePhoneScan,
+                        modifier = Modifier.padding(horizontal = 16.dp).testTag("privacy_start_recorder_scan")) {
+                        Text("Start phone Bluetooth scanning")
+                    }
                 }
+                RecorderCoverage()
             }
         }
         if (state.sourceSummaries.isNotEmpty()) {
-            item {
-                PrivacySourceHealthSummary(state.sourceSummaries, actions)
-            }
-        }
-        if (state.lastUpdatedWallMs != null) {
-            item {
-                Text(
-                    text = "Updated ${formatPrivacyWallTime(state.lastUpdatedWallMs)}",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-                )
-            }
-        }
-        item {
-            PrivacySearchAndFilters(state, actions)
-            RecorderCoverage()
+            item { PrivacySourceHealthSummary(state.sourceSummaries, actions) }
         }
 
         when (val body = state.body) {
             PrivacyBodyState.Loading -> item {
                 FofLoadingState("Checking Phone, Backend, Badge, and Wi-Fi sources")
             }
-            PrivacyBodyState.Empty -> item {
-                FofEmptyState("No current findings")
-            }
+            PrivacyBodyState.Empty -> item { PrivacyEmptyResults(state, actions) }
             is PrivacyBodyState.NoMatches -> item {
-                FofNoMatchesState(body.activeFilterCount, actions.onClearFilters)
+                if (state.filters.refinementCount == 0) PrivacyEmptyResults(state, actions)
+                else FofNoMatchesState(state.filters.refinementCount, actions.onClearFilters)
             }
             is PrivacyBodyState.RetryableFailure -> item {
                 FofErrorState(
@@ -372,6 +381,79 @@ fun PrivacyContent(
                 }
             }
         }
+        item {
+            Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp)) {
+                actions.onOpenEncounters?.let { open ->
+                    TextButton(onClick = open, modifier = Modifier.testTag("privacy_recent")) { Text("Recent encounters") }
+                }
+                actions.onOpenProbes?.let { open ->
+                    TextButton(onClick = open, modifier = Modifier.testTag("privacy_probes")) { Text("Wi-Fi probes") }
+                }
+            }
+            state.lastUpdatedWallMs?.let { updated ->
+                Text("Updated ${formatPrivacyWallTime(updated)}", style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(horizontal = 16.dp))
+            }
+        }
+    }
+}
+
+@Composable
+private fun PrivacyTabs(state: PrivacyUiState, actions: PrivacyActions) {
+    val focusManager = LocalFocusManager.current
+    val keyboard = LocalSoftwareKeyboardController.current
+    TabRow(selectedTabIndex = PrivacyFocus.entries.indexOf(state.filters.focus)) {
+        PrivacyFocus.entries.forEach { focus ->
+            Tab(selected = state.filters.focus == focus, onClick = {
+                focusManager.clearFocus()
+                keyboard?.hide()
+                actions.onFocusChanged(focus)
+            },
+                modifier = Modifier.testTag("privacy_focus_${focus.name}"),
+                text = {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(focus.label, style = MaterialTheme.typography.labelMedium, maxLines = 1)
+                        Text((state.focusCounts[focus] ?: 0).toString(), style = MaterialTheme.typography.labelSmall)
+                    }
+                })
+        }
+    }
+}
+
+@Composable
+private fun PrivacyBrowseHeading(state: PrivacyUiState) {
+    val (title, detail) = when (state.filters.focus) {
+        PrivacyFocus.RECORDERS -> "Personal recorders" to "Bluetooth presence only · recording status unknown"
+        PrivacyFocus.QUIET -> "Nearby devices" to "Routine beacons hidden. Elevated warnings stay visible."
+        PrivacyFocus.BEACONS -> "Beacons" to "Grouped by family and iBeacon UUID. Expand to inspect."
+        PrivacyFocus.ALL -> "All observations" to "Recorders, trackers, cameras and beacons from every source."
+    }
+    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
+        Text(title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+        Text(detail, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text("${state.visibleFindings.size} observation${if (state.visibleFindings.size == 1) "" else "s"} shown", style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+}
+
+@Composable
+private fun PrivacyEmptyResults(state: PrivacyUiState, actions: PrivacyActions) {
+    FofEmptyState(
+        modifier = Modifier.fillMaxWidth().padding(24.dp),
+        title = when (state.filters.focus) {
+            PrivacyFocus.RECORDERS -> "No personal recorders detected"
+            PrivacyFocus.BEACONS -> "No beacons detected"
+            PrivacyFocus.QUIET -> "No nearby observations"
+            PrivacyFocus.ALL -> "No current observations"
+        },
+        detail = if (state.filters.focus == PrivacyFocus.RECORDERS)
+            "Keep Phone scanning on. Silent devices or unrecognized Bluetooth names can be missed."
+            else "Results appear here as detection sources report them.",
+    )
+    if (state.filters.focus != PrivacyFocus.ALL) {
+        TextButton(onClick = { actions.onFocusChanged(PrivacyFocus.ALL) }, modifier = Modifier.padding(horizontal = 16.dp)) {
+            Text("View all observations")
+        }
     }
 }
 
@@ -379,6 +461,7 @@ fun PrivacyContent(
 private fun PrivacyHeader(
     state: PrivacyUiState,
     onOpenIgnoredDevices: (() -> Unit)?,
+    onShowAttention: () -> Unit,
 ) {
     Row(
         modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp, top = 16.dp, bottom = 12.dp),
@@ -387,18 +470,20 @@ private fun PrivacyHeader(
         Column(modifier = Modifier.weight(1f)) {
             Text("Privacy", style = MaterialTheme.typography.headlineSmall)
             Text(
-                text = state.findingCountLabel,
+                text = if (state.initialResolutionComplete) "Find personal recorders first" else state.findingCountLabel,
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
         if (state.threatCount > 0) {
             Surface(
+                onClick = onShowAttention,
+                modifier = Modifier.testTag("privacy_attention"),
                 shape = RoundedCornerShape(8.dp),
                 color = MaterialTheme.colorScheme.error.copy(alpha = 0.10f),
             ) {
                 Text(
-                    text = "${state.threatCount} need attention",
+                    text = "${state.threatCount} alert${if (state.threatCount == 1) "" else "s"}",
                     style = MaterialTheme.typography.labelMedium,
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.error,
@@ -519,9 +604,11 @@ private fun PrivacySearchAndFilters(
     state: PrivacyUiState,
     actions: PrivacyActions,
 ) {
+    val focusManager = LocalFocusManager.current
+    val keyboard = LocalSoftwareKeyboardController.current
     var categoriesOpen by remember { mutableStateOf(false) }
     var sourcesOpen by remember { mutableStateOf(false) }
-    var filtersOpen by remember { mutableStateOf(false) }
+    var filtersOpen by rememberSaveable(state.filters.focus) { mutableStateOf(false) }
     Column(
         modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -532,7 +619,7 @@ private fun PrivacySearchAndFilters(
                 onValueChange = actions.onQueryChanged,
                 modifier = Modifier.weight(1f).testTag("privacy_search"),
                 singleLine = true,
-                placeholder = { Text("Search findings", maxLines = 1) },
+                placeholder = { Text(if (state.filters.focus == PrivacyFocus.RECORDERS) "Search Plaud, Omi, Bee…" else "Search findings", maxLines = 1) },
                 leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
                 trailingIcon = if (state.filters.query.isNotEmpty()) {
                     {
@@ -547,107 +634,92 @@ private fun PrivacySearchAndFilters(
                     null
                 },
             )
-            IconButton(onClick = { filtersOpen = !filtersOpen }, modifier = Modifier.testTag("privacy_filters")) {
-                Icon(Icons.Default.FilterList, contentDescription =
-                    if (state.filters.activeFilterCount > 0) "Filters, ${state.filters.activeFilterCount} active" else "Filters")
+            TextButton(onClick = {
+                focusManager.clearFocus()
+                keyboard?.hide()
+                filtersOpen = !filtersOpen
+            }, modifier = Modifier.testTag("privacy_filters")) {
+                Icon(Icons.Default.FilterList, contentDescription = null, modifier = Modifier.size(18.dp))
+                Text(if (state.filters.refinementCount > 0) "Filters (${state.filters.refinementCount})" else "Filters")
             }
         }
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            FilterChip(
-                selected = state.filters.attentionOnly,
-                onClick = actions.onToggleAttentionOnly,
-                label = { Text("Needs attention") },
-            )
-            FilterChip(
-                selected = state.filters.liveOnly,
-                onClick = actions.onToggleLiveOnly,
-                label = { Text("Live only") },
-            )
-        }
-        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            PrivacyFocus.entries.forEach { focus ->
-                FilterChip(selected = state.filters.focus == focus,
-                    onClick = { actions.onFocusChanged(focus) },
-                    label = { Text(focus.label) }, modifier = Modifier.testTag("privacy_focus_${focus.name}"))
-            }
-        }
-        if (state.filters.activeFilterCount > 0) {
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Text("${state.visibleFindings.size} of ${state.totalCurrentCount} observations", Modifier.weight(1f),
-                    style = MaterialTheme.typography.labelSmall)
-                TextButton(onClick = actions.onClearFilters) { Text("Reset filters") }
-            }
-        }
-        actions.onOpenEncounters?.let { open ->
-            TextButton(onClick = open, modifier = Modifier.testTag("privacy_recent")) {
-                Text("Recent encounters")
-            }
+        if (state.filters.refinementCount > 0) {
+            TextButton(onClick = actions.onClearFilters, modifier = Modifier.testTag("privacy_clear_refinements")) { Text("Clear filters in this tab") }
         }
         AnimatedVisibility(filtersOpen) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Box {
-                    FilterChip(
-                        selected = state.filters.categories.isNotEmpty(),
-                        onClick = { categoriesOpen = true },
-                        label = {
-                            Text(filterLabel("Categories", state.filters.categories.size))
-                        },
-                        leadingIcon = { Icon(Icons.Default.FilterList, contentDescription = null) },
-                        modifier = Modifier.heightIn(min = 48.dp),
-                    )
-                    DropdownMenu(
-                        expanded = categoriesOpen,
-                        onDismissRequest = { categoriesOpen = false },
-                    ) {
-                        state.availableCategories.forEach { category ->
-                            DropdownMenuItem(
-                                text = { Text(category.label) },
-                                onClick = { actions.onToggleCategory(category) },
-                                leadingIcon = {
-                                    Checkbox(
-                                        checked = category in state.filters.categories,
-                                        onCheckedChange = null,
-                                    )
-                                },
-                            )
+            Column {
+                if (state.filters.focus == PrivacyFocus.RECORDERS) {
+                    Text("Recorder brand", style = MaterialTheme.typography.labelMedium)
+                    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        listOf("Plaud", "Omi", "Limitless", "Bee", "Friend", "Fieldy").forEach { brand ->
+                            val selected = state.filters.query.equals(brand, ignoreCase = true)
+                            FilterChip(selected = selected,
+                                onClick = { actions.onQueryChanged(if (selected) "" else brand) },
+                                label = { Text(brand) }, modifier = Modifier.testTag("privacy_brand_$brand"))
                         }
                     }
                 }
-                Box {
-                    FilterChip(
-                        selected = state.filters.sources.isNotEmpty(),
-                        onClick = { sourcesOpen = true },
-                        label = { Text(filterLabel("Sources", state.filters.sources.size)) },
-                        modifier = Modifier.heightIn(min = 48.dp),
-                    )
-                    DropdownMenu(
-                        expanded = sourcesOpen,
-                        onDismissRequest = { sourcesOpen = false },
-                    ) {
-                        state.availableSources.forEach { source ->
-                            DropdownMenuItem(
-                                text = { Text(source.userLabel()) },
-                                onClick = { actions.onToggleSource(source) },
-                                leadingIcon = {
-                                    Checkbox(
-                                        checked = source in state.filters.sources,
-                                        onCheckedChange = null,
-                                    )
-                                },
-                            )
+                Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilterChip(selected = state.filters.attentionOnly, onClick = actions.onToggleAttentionOnly, label = { Text("Needs attention") })
+                    FilterChip(selected = state.filters.liveOnly, onClick = actions.onToggleLiveOnly, label = { Text("Live only") })
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Box {
+                        FilterChip(
+                            selected = state.filters.categories.isNotEmpty(),
+                            onClick = { categoriesOpen = true },
+                            label = {
+                                Text(filterLabel("Categories", state.filters.categories.size))
+                            },
+                            leadingIcon = { Icon(Icons.Default.FilterList, contentDescription = null) },
+                            modifier = Modifier.heightIn(min = 48.dp),
+                        )
+                        DropdownMenu(
+                            expanded = categoriesOpen,
+                            onDismissRequest = { categoriesOpen = false },
+                        ) {
+                            state.availableCategories.forEach { category ->
+                                DropdownMenuItem(
+                                    text = { Text(category.label) },
+                                    onClick = { actions.onToggleCategory(category) },
+                                    leadingIcon = {
+                                        Checkbox(
+                                            checked = category in state.filters.categories,
+                                            onCheckedChange = null,
+                                        )
+                                    },
+                                )
+                            }
                         }
                     }
-                }
-                if (state.filters.activeFilterCount > 0) {
-                    TextButton(
-                        onClick = actions.onClearFilters,
-                        modifier = Modifier.heightIn(min = 48.dp),
-                    ) {
-                        Text("Clear")
+                    Box {
+                        FilterChip(
+                            selected = state.filters.sources.isNotEmpty(),
+                            onClick = { sourcesOpen = true },
+                            label = { Text(filterLabel("Sources", state.filters.sources.size)) },
+                            modifier = Modifier.heightIn(min = 48.dp),
+                        )
+                        DropdownMenu(
+                            expanded = sourcesOpen,
+                            onDismissRequest = { sourcesOpen = false },
+                        ) {
+                            state.availableSources.forEach { source ->
+                                DropdownMenuItem(
+                                    text = { Text(source.userLabel()) },
+                                    onClick = { actions.onToggleSource(source) },
+                                    leadingIcon = {
+                                        Checkbox(
+                                            checked = source in state.filters.sources,
+                                            onCheckedChange = null,
+                                        )
+                                    },
+                                )
+                            }
+                        }
                     }
                 }
             }
@@ -997,7 +1069,7 @@ private fun RecorderCoverage() {
     var expanded by rememberSaveable { mutableStateOf(false) }
     Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
         TextButton(onClick = { expanded = !expanded }, modifier = Modifier.testTag("recorder_coverage")) {
-            Text("Phone Bluetooth detects AI recorders")
+            Text("Supported recorders & scan setup")
         }
         if (expanded) {
             Text("This Android phone can detect Plaud, Omi, Limitless, Bee, Friend and Fieldy directly over Bluetooth. No badge is required.",
