@@ -943,14 +943,11 @@ static void copy_ble_detail(char *out, const drone_detection_t *det)
     } else if (det && contains_nocase(det->class_reason, "ble_audio")) {
         snprintf(detail, sizeof(detail), "broadcast audio");
     } else if (det && detection_is_apple_remote_listening(det)) {
-        if (apple_activity_is_audio_path(det->ble_apple_activity)) {
-            const char *activity = det->ble_apple_activity == 2 ? "phone" :
-                                   det->ble_apple_activity == 3 ? "video" :
-                                   "audio";
-            snprintf(detail, sizeof(detail), "AirPods %s", activity);
-        } else {
-            snprintf(detail, sizeof(detail), "AirPods nearby");
-        }
+        // The listening predicate already requires an active audio path.
+        const char *activity = det->ble_apple_activity == 2 ? "phone" :
+                               det->ble_apple_activity == 3 ? "video" :
+                               "audio";
+        snprintf(detail, sizeof(detail), "AirPods %s", activity);
     } else if (det && contains_nocase(det->class_reason, "strong BLE near")) {
         snprintf(detail, sizeof(detail), "strong BLE near");
     } else if (det && contains_nocase(det->class_reason, "structured BLE")) {
@@ -1312,6 +1309,8 @@ bool badge_threat_classify_detection(const drone_detection_t *det,
     const bool mfr_hid = detection_mentions_any(det, text_mentions_ble_hid);
     const bool mfr_auracast = detection_mentions_any(det, text_mentions_auracast);
     const bool apple_remote_listening = detection_is_apple_remote_listening(det);
+    const bool personal_recorder = det->source == DETECTION_SRC_BLE_FINGERPRINT &&
+        contains_nocase(det->manufacturer, "AI Voice Recorder");
     const bool mfr_security = text_mentions_security_device(det->manufacturer) ||
                               text_mentions_security_device(det->model) ||
                               text_mentions_security_device(det->ble_name) ||
@@ -1512,28 +1511,18 @@ bool badge_threat_classify_detection(const drone_detection_t *det,
         event->base_score = 68.0f;
         event->evidence_quality = 7;
         (void)weak_meta;
-    } else if (det->source == DETECTION_SRC_BLE_FINGERPRINT &&
-               contains_nocase(det->manufacturer, "AI Voice Recorder")) {
+    } else if (personal_recorder || apple_remote_listening) {
         event->cls = BADGE_THREAT_OTHER;
         event->category = BADGE_THREAT_CATEGORY_LISTENING;
-        copy_label(event->label, "AI Recorder");
-        copy_detail(event->detail, "recording unknown");
-        event->base_score = 44.0f;
-        event->evidence_quality = 5;
-    } else if (apple_remote_listening) {
-        event->cls = BADGE_THREAT_OTHER;
-        event->category = BADGE_THREAT_CATEGORY_LISTENING;
-        copy_label(event->label, "Possible Listening");
-        copy_ble_detail(event->detail, det);
-        if (event->detail[0] == '\0') {
-            copy_detail(event->detail, "AirPods signal");
+        if (personal_recorder) {
+            copy_label(event->label, "AI Recorder");
+            copy_detail(event->detail, "recording unknown");
+        } else {
+            copy_label(event->label, "Possible Listening");
+            copy_ble_detail(event->detail, det);
         }
-        event->base_score = apple_activity_is_audio_path(det->ble_apple_activity)
-            ? 56.0f
-            : 44.0f;
-        event->evidence_quality = apple_activity_is_audio_path(det->ble_apple_activity)
-            ? 6
-            : 5;
+        event->base_score = personal_recorder ? 44.0f : 56.0f;
+        event->evidence_quality = personal_recorder ? 5 : 6;
     } else if (det->source == DETECTION_SRC_BLE_FINGERPRINT &&
                (mfr_skimmer || mfr_camera || mfr_hidden_camera ||
                 mfr_event_badge || mfr_beacon || mfr_lock ||

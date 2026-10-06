@@ -1649,6 +1649,15 @@ void test_badge_apple_airpods_audio_promotes_listening_row(void)
     TEST_ASSERT_TRUE(badge_threat_format_top_detail(
         &snapshot, &snapshot.entities[0], detail, sizeof(detail)));
     TEST_ASSERT_EQUAL_STRING("AirPods audio -58dB", detail);
+
+    const char *audio_details[] = {"AirPods audio", "AirPods phone", "AirPods video"};
+    for (uint8_t activity = 1; activity <= 3; activity++) {
+        apple.ble_apple_activity = activity;
+        TEST_ASSERT_TRUE(badge_threat_classify_detection(&apple, &event));
+        TEST_ASSERT_EQUAL_STRING(audio_details[activity - 1], event.detail);
+        TEST_ASSERT_EQUAL_FLOAT(56.0f, event.base_score);
+        TEST_ASSERT_EQUAL_UINT8(6, event.evidence_quality);
+    }
 }
 
 void test_badge_apple_airpods_far_idle_stays_hidden(void)
@@ -3511,4 +3520,17 @@ void test_badge_personal_recorder_awareness(void)
     TEST_ASSERT_EQUAL(BADGE_THREAT_CATEGORY_LISTENING, event.category);
     TEST_ASSERT_EQUAL_STRING("AI Recorder", event.label);
     TEST_ASSERT_EQUAL_STRING("recording unknown", event.detail);
+    TEST_ASSERT_EQUAL_FLOAT(44.0f, event.base_score);
+    TEST_ASSERT_EQUAL_UINT8(5, event.evidence_quality);
+
+    // Apple audio metadata must not turn recorder presence into activity evidence.
+    det.ble_company_id = 0x004C;
+    det.ble_apple_type = 0x10;
+    det.ble_apple_flags = 0x01;
+    det.ble_apple_activity = 1;
+    TEST_ASSERT_TRUE(badge_threat_classify_detection(&det, &event));
+    TEST_ASSERT_EQUAL_STRING("AI Recorder", event.label);
+    TEST_ASSERT_EQUAL_STRING("recording unknown", event.detail);
+    TEST_ASSERT_EQUAL_FLOAT(44.0f, event.base_score);
+    TEST_ASSERT_EQUAL_UINT8(5, event.evidence_quality);
 }
