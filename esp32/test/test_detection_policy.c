@@ -1150,3 +1150,70 @@ void test_ble_meta_reacquire_requires_scan_sync_and_adv_delta(void)
     TEST_ASSERT_FALSE(fof_policy_ble_meta_should_reacquire(
         true, true, 60, 0, false, false));
 }
+
+void test_ble_personal_recorder_names(void)
+{
+    const char *names[] = {"PLAUDAB12", "PLAUD NOTE", "Plaud Note Pro", "NotePin_123", "omi",
+        "Limitless Pendant", "Bee_AB12", "friend_123", "Fieldy"};
+    for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
+        uint8_t adv[64] = {0};
+        size_t len = strlen(names[i]);
+        adv[0] = (uint8_t)(len + 1); adv[1] = 0x09;
+        memcpy(adv + 2, names[i], len);
+        ble_fingerprint_t fp;
+        ble_fingerprint_compute(adv, (int)len + 2, 1, 0, &fp);
+        TEST_ASSERT_EQUAL(BLE_DEV_AI_RECORDER, fp.device_type);
+        TEST_ASSERT_EQUAL_STRING("AI Voice Recorder", fp.type_name);
+        TEST_ASSERT_FALSE(fp.is_tracker);
+        TEST_ASSERT_EQUAL(0, strncmp(fp.class_reason, "recorder:name:", 14));
+    }
+    TEST_ASSERT_TRUE(fof_policy_is_priority_ble_fingerprint("AI Voice Recorder"));
+}
+
+void test_ble_personal_recorder_false_positives(void)
+{
+    const char *names[] = {"Pebblebee", "Beeline", "Beech", "Friend", "Friendly Speaker",
+        "Pendant", "Compass", "My PLAUD phone", "Plaudify", "Fieldyard", "OMIRON"};
+    for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
+        uint8_t adv[64] = {0};
+        size_t len = strlen(names[i]);
+        adv[0] = (uint8_t)(len + 1); adv[1] = 0x09;
+        memcpy(adv + 2, names[i], len);
+        ble_fingerprint_t fp;
+        ble_fingerprint_compute(adv, (int)len + 2, 1, 0, &fp);
+        TEST_ASSERT_NOT_EQUAL(BLE_DEV_AI_RECORDER, fp.device_type);
+    }
+    const uint8_t shared_service[] = {3, 0x03, 0x10, 0x19};
+    ble_fingerprint_t fp;
+    ble_fingerprint_compute(shared_service, sizeof(shared_service), 1, 0, &fp);
+    TEST_ASSERT_NOT_EQUAL(BLE_DEV_AI_RECORDER, fp.device_type);
+}
+
+void test_ble_personal_recorder_custom_services(void)
+{
+    const uint8_t uuids[][16] = {
+        {0x14, 0x12, 0x8a, 0x76, 0x04, 0xd1, 0x6c, 0x4f, 0x7e, 0x53, 0xf2, 0xe8, 0x00, 0x00, 0xb1, 0x19},
+        {0xfb, 0xf3, 0x50, 0xe9, 0x63, 0x79, 0x0f, 0xa8, 0x6b, 0x44, 0x4c, 0x60, 0x01, 0xe0, 0x2d, 0x63},
+        {0x7e, 0x9e, 0xa4, 0x89, 0x20, 0x8f, 0x89, 0x9d, 0xee, 0x11, 0x6c, 0xa8, 0xc4, 0xd5, 0xd5, 0x03},
+        {0xda, 0xf8, 0xc4, 0xb2, 0x47, 0xb6, 0x49, 0x2e, 0x9e, 0xac, 0xf3, 0xb1, 0xe7, 0xd0, 0x3f, 0x1a},
+    };
+    const uint8_t types[] = {0x06, 0x07, 0x21};
+    for (size_t u = 0; u < 4; u++) {
+        for (size_t t = 0; t < 3; t++) {
+            uint8_t adv[18] = {17, types[t]};
+            memcpy(adv + 2, uuids[u], 16);
+            ble_fingerprint_t fp;
+            ble_fingerprint_compute(adv, sizeof(adv), 1, 0, &fp);
+            TEST_ASSERT_EQUAL(BLE_DEV_AI_RECORDER, fp.device_type);
+            TEST_ASSERT_EQUAL(0, strncmp(fp.class_reason, "recorder:uuid:", 14));
+            TEST_ASSERT_EQUAL(1, fp.svc_uuid_128_count);
+            TEST_ASSERT_FALSE(fp.is_tracker);
+            // Truncated AD structures must not yield recorder evidence.
+            ble_fingerprint_compute(adv, sizeof(adv) - 1, 1, 0, &fp);
+            TEST_ASSERT_NOT_EQUAL(BLE_DEV_AI_RECORDER, fp.device_type);
+            adv[2] ^= 1;
+            ble_fingerprint_compute(adv, sizeof(adv), 1, 0, &fp);
+            TEST_ASSERT_NOT_EQUAL(BLE_DEV_AI_RECORDER, fp.device_type);
+        }
+    }
+}

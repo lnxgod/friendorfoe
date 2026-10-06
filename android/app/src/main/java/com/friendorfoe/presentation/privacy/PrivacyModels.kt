@@ -88,6 +88,7 @@ data class PrivacyFinding(
     val appleEvidence: PrivacyAppleListeningEvidence? = null,
     val capabilities: PrivacyCapabilities = PrivacyCapabilities(),
     val freshness: FindingFreshness = FindingFreshness.LIVE,
+    val beaconUuid: String? = null,
 ) {
     init {
         require(observationKey.source == source) {

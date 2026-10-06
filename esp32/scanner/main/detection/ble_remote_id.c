@@ -603,6 +603,7 @@ static bool badge_ble_should_emit_detection(const ble_fingerprint_t *fp,
         case BLE_DEV_CARD_SKIMMER:
         case BLE_DEV_SERIAL_SKIMMER:
             return BADGE_SKIMMER_DETECTION_ENABLED != 0;
+        case BLE_DEV_AI_RECORDER:
         case BLE_DEV_MOBILE_KEY_LOCK:
         case BLE_DEV_BLE_HID:
             return rssi >= -72;
@@ -1112,9 +1113,9 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg)
         bool badge_nearby_ble_diag = false;
 #endif
         bool privacy_candidate = behavioral_ble_threat || is_meta_device ||
-                                 fp.is_tracker || badge_nearby_ble_diag;
+                                 fp.is_tracker || fp.device_type == BLE_DEV_AI_RECORDER || badge_nearby_ble_diag;
         bool known_privacy_candidate = behavioral_ble_threat || is_meta_device ||
-                                       fp.is_tracker;
+                                       fp.is_tracker || fp.device_type == BLE_DEV_AI_RECORDER;
         if (ble_remote_id_fingerprint_is_strong_meta(&fp)) {
             badge_ble_note_meta(fp.hash, disc->rssi, fp.class_reason,
                                 "strong_fp", false);
@@ -1252,6 +1253,8 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg)
                 } else if (fp.device_type == BLE_DEV_DRONE_CONTROLLER ||
                            fp.device_type == BLE_DEV_DRONE_OTHER) {
                     det.confidence = 0.60f;
+                } else if (fp.device_type == BLE_DEV_AI_RECORDER) {
+                    det.confidence = strncmp(fp.class_reason, "recorder:uuid:", 14) == 0 ? 0.90f : 0.75f;
                 } else if (fp.device_type == BLE_DEV_FLIPPER_ZERO) {
                     det.confidence = 0.40f;
                 } else if (fp.device_type == BLE_DEV_META_GLASSES) {
@@ -1507,9 +1510,9 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg)
             bool badge_nearby_ble_diag = false;
 #endif
             bool privacy_candidate = behavioral_ble_threat || is_meta_device ||
-                                     fp.is_tracker || badge_nearby_ble_diag;
+                                     fp.is_tracker || fp.device_type == BLE_DEV_AI_RECORDER || badge_nearby_ble_diag;
             bool known_privacy_candidate = behavioral_ble_threat || is_meta_device ||
-                                           fp.is_tracker;
+                                           fp.is_tracker || fp.device_type == BLE_DEV_AI_RECORDER;
             if (ble_remote_id_fingerprint_is_strong_meta(&fp)) {
                 badge_ble_note_meta(fp.hash, ext->rssi, fp.class_reason,
                                     "strong_fp", false);
@@ -1625,6 +1628,8 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg)
                 } else if (fp.device_type == BLE_DEV_DRONE_CONTROLLER ||
                            fp.device_type == BLE_DEV_DRONE_OTHER) {
                     det.confidence = 0.60f;
+                } else if (fp.device_type == BLE_DEV_AI_RECORDER) {
+                    det.confidence = strncmp(fp.class_reason, "recorder:uuid:", 14) == 0 ? 0.90f : 0.75f;
                 } else if (fp.device_type == BLE_DEV_FLIPPER_ZERO) {
                     det.confidence = 0.40f;  /* Security tool: high interest */
                 } else if (fp.device_type == BLE_DEV_META_GLASSES) {

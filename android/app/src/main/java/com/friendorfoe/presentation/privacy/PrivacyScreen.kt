@@ -7,6 +7,8 @@ import android.bluetooth.BluetoothAdapter
 import android.content.Intent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -84,6 +86,7 @@ data class PrivacyActions(
     val onResolveSourcePermission: (PrivacySourceKind) -> Unit = {},
     val onTurnOnBluetooth: () -> Unit = {},
     val onQueryChanged: (String) -> Unit = {},
+    val onFocusChanged: (PrivacyFocus) -> Unit = {},
     val onToggleCategory: (PrivacyCategory) -> Unit = {},
     val onToggleSource: (PrivacySourceKind) -> Unit = {},
     val onClearFilters: () -> Unit = {},
@@ -141,6 +144,7 @@ fun PrivacyScreen(
                 bluetoothSettingsLauncher.launch(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE))
             },
             onQueryChanged = viewModel::updateQuery,
+            onFocusChanged = viewModel::setFocus,
             onToggleCategory = viewModel::toggleCategory,
             onToggleSource = viewModel::toggleSource,
             onClearFilters = viewModel::clearFilters,
@@ -248,9 +252,9 @@ fun PrivacyContent(
     modifier: Modifier = Modifier,
 ) {
     val groups = remember(state.visibleFindings) { groupPrivacyDevices(state.visibleFindings) }
-    val branchKeys = groups.flatMap { branch -> listOf(branch.group.key) + branch.families.map { it.family.key } }
+    val branchKeys = groups.flatMap { branch -> listOf(branch.group.key) + branch.families.flatMap { listOf(it.family.key) + it.networks.map { network -> network.key } } }
     // Search/filter changes reveal matches; live scan updates keep the user's choices.
-    var expandByDefault by rememberSaveable(state.filters) { mutableStateOf(state.filters.activeFilterCount > 0) }
+    var expandByDefault by rememberSaveable(state.filters) { mutableStateOf(state.filters.query.isNotBlank()) }
     var toggledBranches by rememberSaveable(state.filters) { mutableStateOf(emptyList<String>()) }
     val expandedKeys = branchKeys.filter { expandByDefault != (it in toggledBranches) }.toSet()
     val individualFindings = remember(state.visibleFindings) { state.individualFindings }
@@ -283,6 +287,7 @@ fun PrivacyContent(
         }
         item {
             PrivacySearchAndFilters(state, actions)
+            RecorderCoverage()
         }
 
         when (val body = state.body) {
@@ -558,6 +563,20 @@ private fun PrivacySearchAndFilters(
                 onClick = actions.onToggleLiveOnly,
                 label = { Text("Live only") },
             )
+        }
+        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            PrivacyFocus.entries.forEach { focus ->
+                FilterChip(selected = state.filters.focus == focus,
+                    onClick = { actions.onFocusChanged(focus) },
+                    label = { Text(focus.label) }, modifier = Modifier.testTag("privacy_focus_${focus.name}"))
+            }
+        }
+        if (state.filters.activeFilterCount > 0) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text("${state.visibleFindings.size} of ${state.totalCurrentCount} observations", Modifier.weight(1f),
+                    style = MaterialTheme.typography.labelSmall)
+                TextButton(onClick = actions.onClearFilters) { Text("Reset filters") }
+            }
         }
         actions.onOpenEncounters?.let { open ->
             TextButton(onClick = open, modifier = Modifier.testTag("privacy_recent")) {
@@ -972,3 +991,20 @@ private fun formatPrivacyWallTime(wallMs: Long): String = runCatching {
         .withZone(ZoneId.systemDefault())
         .format(Instant.ofEpochMilli(wallMs))
 }.getOrDefault("recently")
+
+@Composable
+private fun RecorderCoverage() {
+    var expanded by rememberSaveable { mutableStateOf(false) }
+    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
+        TextButton(onClick = { expanded = !expanded }, modifier = Modifier.testTag("recorder_coverage")) {
+            Text("Phone Bluetooth detects AI recorders")
+        }
+        if (expanded) {
+            Text("This Android phone can detect Plaud, Omi, Limitless, Bee, Friend and Fieldy directly over Bluetooth. No badge is required.",
+                style = MaterialTheme.typography.bodySmall)
+            Text("Enable Phone scanning and Nearby devices permission. Plaud and Fieldy require recognizable broadcast names; the others also support matching service identifiers. Silent or renamed devices can be missed. Detection does not prove recording.",
+                modifier = Modifier.padding(vertical = 8.dp), style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+}

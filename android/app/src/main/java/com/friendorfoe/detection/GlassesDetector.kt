@@ -1460,7 +1460,10 @@ class GlassesDetector @Inject constructor(
 
                 for ((address, device) in connectedDevices) {
                     val name = device.name ?: continue
-                    val nameMatch = nameDatabase.firstOrNull { entry ->
+                    val recorder = PersonalRecorderSignatures.match(name)
+                    val nameMatch = recorder?.let {
+                        NameEntry(name, it.manufacturer, "AI Voice Recorder", it.confidence, false, exact = true)
+                    } ?: nameDatabase.firstOrNull { entry ->
                         if (entry.exact) name.equals(entry.prefix, ignoreCase = true)
                         else name.contains(entry.prefix, ignoreCase = true)
                     }
@@ -1686,6 +1689,17 @@ class GlassesDetector @Inject constructor(
         // 3. Check device name (try scan record first, fall back to cached system name)
         @android.annotation.SuppressLint("MissingPermission")
         val deviceName = record.deviceName?.takeIf { it.isNotEmpty() } ?: result.device.name
+        PersonalRecorderSignatures.match(deviceName,
+            serviceUuids.orEmpty().map { it.uuid.toString() } +
+                serviceData.orEmpty().keys.map { it.uuid.toString() })?.let { match ->
+            if (match.confidence > bestConf) {
+                bestConf = match.confidence
+                bestMfr = match.manufacturer
+                bestType = "AI Voice Recorder"
+                bestCamera = false
+                bestReason = match.reason
+            }
+        }
         if (deviceName != null && deviceName.isNotEmpty()) {
             for (entry in nameDatabase) {
                 val matches = if (entry.exact) {

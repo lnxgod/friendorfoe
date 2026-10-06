@@ -22,7 +22,15 @@ enum class PrivacyDeviceFamily(val key: String, val label: String, val group: Pr
 data class PrivacyFamilyBranch(
     val family: PrivacyDeviceFamily,
     val findings: List<PrivacyFinding>,
-)
+) {
+    val networks: List<PrivacyBeaconNetwork>
+        get() = if (family != PrivacyDeviceFamily.IBEACON || findings.none { it.beaconUuid != null }) emptyList()
+        else findings.groupBy { it.beaconUuid?.lowercase() }.map { (uuid, rows) ->
+            PrivacyBeaconNetwork("ibeacon_uuid:${uuid ?: "unknown"}", uuid, rows)
+        }.sortedBy { it.uuid ?: "~" }
+}
+
+data class PrivacyBeaconNetwork(val key: String, val uuid: String?, val findings: List<PrivacyFinding>)
 
 data class PrivacyGroupBranch(
     val group: PrivacyDeviceGroup,

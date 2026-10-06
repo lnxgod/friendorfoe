@@ -3500,3 +3500,15 @@ void test_badge_drone_snapshot_preserves_drone_and_operator_coords(void)
     TEST_ASSERT_TRUE(badge_threat_snapshot_should_show_lower_drone_evidence(
         &snapshot, &snapshot.entities[0]));
 }
+
+void test_badge_personal_recorder_awareness(void)
+{
+    badge_threat_event_t event;
+    drone_detection_t det = make_detection(DETECTION_SRC_BLE_FINGERPRINT,
+        "BLE:RECORDER:1", "AI Voice Recorder", 0.75f, -58);
+    strncpy(det.class_reason, "recorder:name:Plaud", sizeof(det.class_reason) - 1);
+    TEST_ASSERT_TRUE(badge_threat_classify_detection(&det, &event));
+    TEST_ASSERT_EQUAL(BADGE_THREAT_CATEGORY_LISTENING, event.category);
+    TEST_ASSERT_EQUAL_STRING("AI Recorder", event.label);
+    TEST_ASSERT_EQUAL_STRING("recording unknown", event.detail);
+}

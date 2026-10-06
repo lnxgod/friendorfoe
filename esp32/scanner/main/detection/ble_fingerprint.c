@@ -173,6 +173,49 @@ static uint32_t fnv1a_u16(uint32_t h, uint16_t v)
 
 /* ── Device type names ──────────────────────────────────────────────────── */
 
+/* Recorder protocol/name hints; see docs/personal-ai-recorders.md.
+ * Names are mutable. Neither path establishes active recording. */
+static const char *recorder_uuid_brand(const uint8_t *uuid)
+{
+    static const uint8_t omi[16] = {0x14, 0x12, 0x8a, 0x76, 0x04, 0xd1, 0x6c, 0x4f, 0x7e, 0x53, 0xf2, 0xe8, 0x00, 0x00, 0xb1, 0x19};
+    if (memcmp(uuid, omi, 16) == 0) return "Omi";
+    static const uint8_t limitless[16] = {0xfb, 0xf3, 0x50, 0xe9, 0x63, 0x79, 0x0f, 0xa8, 0x6b, 0x44, 0x4c, 0x60, 0x01, 0xe0, 0x2d, 0x63};
+    if (memcmp(uuid, limitless, 16) == 0) return "Limitless";
+    static const uint8_t bee[16] = {0x7e, 0x9e, 0xa4, 0x89, 0x20, 0x8f, 0x89, 0x9d, 0xee, 0x11, 0x6c, 0xa8, 0xc4, 0xd5, 0xd5, 0x03};
+    if (memcmp(uuid, bee, 16) == 0) return "Bee";
+    static const uint8_t friend[16] = {0xda, 0xf8, 0xc4, 0xb2, 0x47, 0xb6, 0x49, 0x2e, 0x9e, 0xac, 0xf3, 0xb1, 0xe7, 0xd0, 0x3f, 0x1a};
+    if (memcmp(uuid, friend, 16) == 0) return "Friend";
+    return NULL;
+}
+
+static const char *recorder_name_brand(const char *name)
+{
+    static const struct { const char *prefix; const char *brand; } names[] = {
+        {"plaud", "Plaud"},
+        {"notepin", "Plaud"},
+        {"omi", "Omi"},
+        {"limitless", "Limitless"},
+        {"bee", "Bee"},
+        {"friend_", "Friend"},
+        {"fieldy", "Fieldy"},
+    };
+    while (*name == ' ') name++;
+    if (strlen(name) == 9 && strncasecmp(name, "plaud", 5) == 0 &&
+        isalnum((unsigned char)name[5]) && isalnum((unsigned char)name[6]) &&
+        isalnum((unsigned char)name[7]) && isalnum((unsigned char)name[8])) {
+        return "Plaud";
+    }
+    for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
+        size_t len = strlen(names[i].prefix);
+        if (strncasecmp(name, names[i].prefix, len) == 0 &&
+            (names[i].prefix[len - 1] == '_' || name[len] == '\0' ||
+             name[len] == ' ' || name[len] == '-' || name[len] == '_')) {
+            return names[i].brand;
+        }
+    }
+    return NULL;
+}
+
 static const char *s_type_names[] = {
     [BLE_DEV_UNKNOWN]          = "Unknown",
     [BLE_DEV_APPLE_IPHONE]     = "iPhone",
@@ -215,6 +258,7 @@ static const char *s_type_names[] = {
     [BLE_DEV_DRONE_OTHER]     = "Drone",
     [BLE_DEV_PAIRING_SPAM]    = "BLE Spam",
     [BLE_DEV_SERIAL_SKIMMER]  = "Possible Skimmer",
+    [BLE_DEV_AI_RECORDER]     = "AI Voice Recorder",
 };
 
 const char *ble_device_type_name(ble_device_type_t type)
@@ -492,6 +536,7 @@ void ble_fingerprint_compute(const uint8_t *data, int length,
     /* Local name capture for spooky-device pattern matching (v0.62+) */
     char    local_name[32]   = {0};
     int     local_name_len   = 0;
+    const char *recorder_brand = NULL;
 
     int pos = 0;
     while (pos + 1 < length) {
@@ -615,6 +660,10 @@ void ble_fingerprint_compute(const uint8_t *data, int length,
              * uart_tx reverses to the canonical big-endian hyphenated
              * string on emit. */
             {
+                for (int i = 0; i + 16 <= ad_data_len; i += 16) {
+                    const char *brand = recorder_uuid_brand(ad_data + i);
+                    if (brand) recorder_brand = brand;
+                }
                 int off = 0;
                 while (ad_data_len - off >= 16 &&
                        fp->svc_uuid_128_count < 2) {
@@ -628,6 +677,16 @@ void ble_fingerprint_compute(const uint8_t *data, int length,
                         hash = fnv1a_byte(hash, ad_data[off + b]);
                     }
                     off += 16;
+                }
+            }
+            break;
+
+        case 0x21:  /* Service Data - 128-bit UUID */
+            if (ad_data_len >= 16) {
+                const char *brand = recorder_uuid_brand(ad_data);
+                if (brand) recorder_brand = brand;
+                if (fp->svc_uuid_128_count < 2) {
+                    memcpy(fp->service_uuids_128[fp->svc_uuid_128_count++], ad_data, 16);
                 }
             }
             break;
@@ -948,5 +1007,13 @@ void ble_fingerprint_compute(const uint8_t *data, int length,
         }
     }
 
+    /* Do not replace tracker/drone/glasses evidence with a mutable name. */
+    const char *name_brand = recorder_name_brand(local_name);
+    if (recorder_brand || (name_brand && fp->device_type == BLE_DEV_UNKNOWN)) {
+        fp->device_type = BLE_DEV_AI_RECORDER;
+        fp->is_tracker = false;
+        snprintf(fp->class_reason, sizeof(fp->class_reason), "recorder:%s:%s",
+                 recorder_brand ? "uuid" : "name", recorder_brand ? recorder_brand : name_brand);
+    }
     fp->type_name = ble_device_type_name(fp->device_type);
 }

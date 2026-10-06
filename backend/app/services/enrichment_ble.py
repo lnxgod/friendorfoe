@@ -453,6 +453,8 @@ class EnrichedDevice:
     ble_ja3: str = ""               # BLE-JA3 structural profile hash
     ble_adv_interval: float = 0     # Advertisement interval in ms
     ble_apple_auth: str = ""        # Apple auth tag hex (entity linking)
+    ble_name: str = ""
+    class_reason: str = ""
     ble_svc_uuids: str = ""         # Comma-separated service UUIDs (hex)
     ble_apple_flags: int = 0        # Apple Nearby Info data-flags byte
     ble_activity: int = 0           # Apple activity code (0=idle, 1=audio, 2=phone, 3=video)
@@ -627,6 +629,10 @@ class BLEEnricher:
             dev.ble_adv_interval = adv_interval
 
         # Store service UUIDs and Apple data-flags byte
+        if kwargs.get("ble_name"):
+            dev.ble_name = kwargs["ble_name"]
+        if kwargs.get("class_reason"):
+            dev.class_reason = kwargs["class_reason"]
         svc = kwargs.get("ble_svc_uuids")
         if svc and not dev.ble_svc_uuids:
             dev.ble_svc_uuids = svc
@@ -1044,6 +1050,8 @@ class BLEEnricher:
                 "ble_company_id": dev.ble_company_id or None,
                 "ble_apple_type": dev.ble_apple_type or None,
                 "ble_addr_type": dev.ble_addr_type or None,
+                "ble_name": dev.ble_name or None,
+                "class_reason": dev.class_reason or None,
                 "ble_svc_uuids": dev.ble_svc_uuids or None,
                 "ble_apple_flags": dev.ble_apple_flags or None,
                 "ble_activity": dev.ble_activity or None,

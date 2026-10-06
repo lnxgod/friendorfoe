@@ -10,6 +10,7 @@ from __future__ import annotations
 from collections import Counter
 from typing import Any
 
+from app.services.personal_recorders import match_personal_recorder
 from app.services.privacy_ble_signatures import first_privacy_ble_service_match
 
 
@@ -90,6 +91,8 @@ def _risk_for_kind(kind: str, rssi: int | None) -> str:
         return "high" if close else "medium"
     if kind == "TRACKER_NEAR":
         return "high" if close else "medium"
+    if kind == "VOICE_RECORDER":
+        return "medium" if nearby else "low"
     if kind == "MOBILE_KEY_LOCK":
         return "medium" if nearby else "low"
     if kind in {"BLE_HID", "EVENT_BADGE"}:
@@ -105,6 +108,7 @@ def _risk_for_kind(kind: str, rssi: int | None) -> str:
 
 def _display_label_for_kind(kind: str) -> str:
     return {
+        "VOICE_RECORDER": "AI RECORDER",
         "META_GLASSES": "META GLASSES",
         TRACKER_KIND: "TRACKER NEAR",
         "SKIMMER": "SKIMMER",
@@ -327,6 +331,7 @@ def classify_privacy_device(entry: dict[str, Any]) -> dict[str, Any]:
     rssi = _current_rssi(entry)
     services = str(entry.get("ble_svc_uuids") or "").lower()
     service_match = first_privacy_ble_service_match(services)
+    recorder = match_personal_recorder(entry.get("ble_name"), services)
     is_tracker = bool(entry.get("is_tracker"))
     apple_subtypes = apple_continuity_subtypes(entry)
     has_apple = bool(entry.get("apple_continuity") or entry.get("ble_apple_type"))
@@ -346,6 +351,8 @@ def classify_privacy_device(entry: dict[str, Any]) -> dict[str, Any]:
         kind = "WIFI_ATTACK_TOOL"
     elif is_apple_ibeacon:
         kind = "VENUE_BEACON"
+    elif recorder or "ai voice recorder" in text:
+        kind = "VOICE_RECORDER"
     elif service_match:
         kind = str(service_match["privacy_kind"])
     elif any(token in text for token in (
@@ -395,7 +402,9 @@ def classify_privacy_device(entry: dict[str, Any]) -> dict[str, Any]:
     label = _display_label_for_kind(kind)
     detail_parts = []
     subtype_detail = ", ".join(apple_subtypes[:3])
-    if remote_listening and kind == REMOTE_LISTENING_KIND:
+    if kind == "VOICE_RECORDER":
+        detail_parts.append(f"{recorder['manufacturer'] if recorder else 'AI recorder'}; recording status unknown")
+    elif remote_listening and kind == REMOTE_LISTENING_KIND:
         detail_parts.append(str(remote_listening["display_detail"]))
     elif kind == "VENUE_BEACON":
         detail_parts.append(_venue_beacon_detail(entry, apple_subtypes, service_match, rssi))
@@ -414,8 +423,10 @@ def classify_privacy_device(entry: dict[str, Any]) -> dict[str, Any]:
     display_detail = " ".join(detail_parts).strip()
 
     evidence = []
+    if recorder:
+        evidence.append({"field": "personal_recorder_signature", "value": recorder})
     for key in (
-        "device_type", "manufacturer", "source", "ssid", "class_reason",
+        "device_type", "manufacturer", "source", "ssid", "class_reason", "ble_name",
         "ble_svc_uuids", "ble_apple_type", "ble_company_id", "ibeacon_uuid",
         "ibeacon_major", "ibeacon_minor", "beacon_uuid", "beacon_major",
         "beacon_minor", "eddystone_frame_type", "eddystone_url",
