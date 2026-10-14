@@ -1154,7 +1154,19 @@ void test_ble_meta_reacquire_requires_scan_sync_and_adv_delta(void)
 void test_ble_personal_recorder_names(void)
 {
     const char *names[] = {"PLAUDAB12", "PLAUD NOTE", "Plaud Note Pro", "NotePin_123", "omi",
-        "Limitless Pendant", "Bee_AB12", "friend_123", "Fieldy"};
+        "Limitless Pendant", "Bee_AB12", "friend_123", "Fieldy",
+        "viaim RecDot",
+        "VIAIM OpenNote",
+        "soundcore Work",
+        "soundcore Work_AB12",
+        "Notta Memo",
+        "Notta Memo Pro",
+        "Instamic BLE",
+        "Instamic 01",
+        "DJI-MIC2-123456",
+        "DJI-MIC3-1234",
+        "DJI Mic 2",
+        "DJI Mic 3"};
     for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
         uint8_t adv[64] = {0};
         size_t len = strlen(names[i]);
@@ -1167,13 +1179,56 @@ void test_ble_personal_recorder_names(void)
         TEST_ASSERT_FALSE(fp.is_tracker);
         TEST_ASSERT_EQUAL(0, strncmp(fp.class_reason, "recorder:name:", 14));
     }
+    /* Company-only DJI hints must not turn a microphone into a drone controller. */
+    const char *mic = "DJI-MIC2-123456";
+    const uint16_t companies[] = {0x08AA, 0x2CA5};
+    for (size_t i = 0; i < sizeof(companies) / sizeof(companies[0]); i++) {
+        uint8_t adv[64] = {5, 0xff, companies[i] & 0xff, companies[i] >> 8, 0, 0};
+        size_t len = strlen(mic);
+        adv[6] = (uint8_t)(len + 1);
+        adv[7] = 0x09;
+        memcpy(adv + 8, mic, len);
+        ble_fingerprint_t fp;
+        ble_fingerprint_compute(adv, (int)len + 8, 1, 0, &fp);
+        TEST_ASSERT_EQUAL(BLE_DEV_AI_RECORDER, fp.device_type);
+        TEST_ASSERT_EQUAL_STRING("recorder:name:DJI", fp.class_reason);
+        ble_fingerprint_compute(adv, 6, 1, 0, &fp);
+        TEST_ASSERT_NOT_EQUAL(BLE_DEV_AI_RECORDER, fp.device_type);
+        /* Explicit Find My service evidence remains a tracker, even with this name. */
+        adv[len + 8] = 3; adv[len + 9] = 0x03;
+        adv[len + 10] = 0x44; adv[len + 11] = 0xFD;
+        ble_fingerprint_compute(adv, (int)len + 12, 1, 0, &fp);
+        TEST_ASSERT_NOT_EQUAL(BLE_DEV_AI_RECORDER, fp.device_type);
+    }
     TEST_ASSERT_TRUE(fof_policy_is_priority_ble_fingerprint("AI Voice Recorder"));
 }
 
 void test_ble_personal_recorder_false_positives(void)
 {
     const char *names[] = {"Pebblebee", "Beeline", "Beech", "Friend", "Friendly Speaker",
-        "Pendant", "Compass", "My PLAUD phone", "Plaudify", "Fieldyard", "OMIRON"};
+        "Pendant", "Compass", "My PLAUD phone", "Plaudify", "Fieldyard", "OMIRON",
+        "viaim",
+        "viaim Air",
+        "viaim Nano+",
+        "viaim RecDotty",
+        "soundcore",
+        "soundcore Liberty 4",
+        "soundcore Workout",
+        "Anker",
+        "Notta",
+        "Notta Memories",
+        "Instamicrophone",
+        "DJI",
+        "DJI Mini 3",
+        "DJI-MIC20",
+        "DJI-MIC30",
+        "DJI-MICX-XXXX",
+        "DJI Mic Mini",
+        "Zoom",
+        "F2",
+        "F2(1)",
+        "Looki",
+        "Looki L1"};
     for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
         uint8_t adv[64] = {0};
         size_t len = strlen(names[i]);

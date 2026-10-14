@@ -1692,7 +1692,7 @@ class GlassesDetector @Inject constructor(
         PersonalRecorderSignatures.match(deviceName,
             serviceUuids.orEmpty().map { it.uuid.toString() } +
                 serviceData.orEmpty().keys.map { it.uuid.toString() })?.let { match ->
-            if (match.confidence > bestConf) {
+            if (PersonalRecorderSignatures.shouldReplace(match, bestConf, bestMfr, bestReason)) {
                 bestConf = match.confidence
                 bestMfr = match.manufacturer
                 bestType = "AI Voice Recorder"
