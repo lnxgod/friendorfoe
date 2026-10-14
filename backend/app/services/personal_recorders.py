@@ -13,6 +13,11 @@ _SIGNATURES = [
     ("Bee", ["bee"], "03d5d5c4-a86c-11ee-9d89-8f2089a49e7e"),
     ("Friend", ["friend_"], "1a3fd0e7-b1f3-ac9e-2e49-b647b2c4f8da"),
     ("Fieldy", ["fieldy"], None),
+    ("viaim", ["viaim recdot", "viaim opennote"], None),
+    ("soundcore", ["soundcore work"], None),
+    ("Notta", ["notta memo"], None),
+    ("Instamic", ["instamic"], None),
+    ("DJI", ["dji-mic2", "dji-mic3", "dji mic 2", "dji mic 3"], None),
 ]
 _UUID_RE = re.compile(r"(?<![0-9a-z])[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}(?![0-9a-z])", re.I)
 

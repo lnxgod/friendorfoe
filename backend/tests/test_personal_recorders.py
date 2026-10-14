@@ -10,6 +10,18 @@ from app.services.rf_identity import enrich_rf_evidence
     ("NotePin_123", "Plaud"), ("plaud-ab12", "Plaud"),
     ("omi", "Omi"), ("Limitless Pendant", "Limitless"),
     ("Bee_AB12", "Bee"), ("friend_1234", "Friend"), ("Fieldy", "Fieldy"),
+    ("viaim RecDot", "viaim"),
+    ("VIAIM OpenNote", "viaim"),
+    ("soundcore Work", "soundcore"),
+    ("soundcore Work_AB12", "soundcore"),
+    ("Notta Memo", "Notta"),
+    ("Notta Memo Pro", "Notta"),
+    ("Instamic BLE", "Instamic"),
+    ("Instamic 01", "Instamic"),
+    ("DJI-MIC2-123456", "DJI"),
+    ("DJI-MIC3-1234", "DJI"),
+    ("DJI Mic 2", "DJI"),
+    ("DJI Mic 3", "DJI"),
 ])
 def test_recorder_name_and_presentation(name, brand):
     match = match_personal_recorder(name)
@@ -22,6 +34,7 @@ def test_recorder_name_and_presentation(name, brand):
     rf = enrich_rf_evidence(source="ble_fingerprint", ble_name=name)
     assert rf["device_class"] == "voice_recorder"
     assert rf["device_family"] == "audio"
+    assert rf["brand"] == brand
 
 
 @pytest.mark.parametrize("uuid,brand", [
@@ -43,6 +56,28 @@ def test_custom_uuid_without_name_and_with_conflicting_name(uuid, brand):
 @pytest.mark.parametrize("name", [
     None, "", "Pebblebee", "Beech", "Beeline", "OMIRON", "Friend", "Friendly Speaker",
     "Pendant", "Compass", "My PLAUD phone", "Plaudify", "Fieldyard", "LimitlessTV",
+    "viaim",
+    "viaim Air",
+    "viaim Nano+",
+    "viaim RecDotty",
+    "soundcore",
+    "soundcore Liberty 4",
+    "soundcore Workout",
+    "Anker",
+    "Notta",
+    "Notta Memories",
+    "Instamicrophone",
+    "DJI",
+    "DJI Mini 3",
+    "DJI-MIC20",
+    "DJI-MIC30",
+    "DJI-MICX-XXXX",
+    "DJI Mic Mini",
+    "Zoom",
+    "F2",
+    "F2(1)",
+    "Looki",
+    "Looki L1",
 ])
 def test_unrelated_names_do_not_match(name):
     assert match_personal_recorder(name) is None

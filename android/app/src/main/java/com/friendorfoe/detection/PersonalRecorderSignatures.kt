@@ -13,7 +13,20 @@ internal object PersonalRecorderSignatures {
         Signature("Bee", listOf("bee"), "03d5d5c4-a86c-11ee-9d89-8f2089a49e7e"),
         Signature("Friend", listOf("friend_"), "1a3fd0e7-b1f3-ac9e-2e49-b647b2c4f8da"),
         Signature("Fieldy", listOf("fieldy"), null),
+        Signature("viaim", listOf("viaim recdot", "viaim opennote"), null),
+        Signature("soundcore", listOf("soundcore work"), null),
+        Signature("Notta", listOf("notta memo"), null),
+        Signature("Instamic", listOf("instamic"), null),
+        Signature("DJI", listOf("dji-mic2", "dji-mic3", "dji mic 2", "dji mic 3"), null),
     )
+
+    val brands: List<String> = signatures.map { it.brand }
+
+    // A model-specific microphone name is more useful than DJI's company-only hint.
+    // This exception only applies to company evidence; other matches retain confidence ordering.
+    fun shouldReplace(match: Match, confidence: Float, manufacturer: String, reason: String): Boolean =
+        match.confidence > confidence || (match.manufacturer == "DJI" &&
+            manufacturer == "DJI" && reason.startsWith("mfr_cid:"))
 
     fun match(name: String?, services: List<String> = emptyList()): Match? {
         for (signature in signatures) {

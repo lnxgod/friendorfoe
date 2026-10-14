@@ -10,8 +10,13 @@ Android BLE scanning, ESP32 fingerprinting/badge awareness, and backend RF ident
 | Bee | `Bee` | `03d5d5c4-a86c-11ee-9d89-8f2089a49e7e` |
 | Friend pendant | `friend_` | `1a3fd0e7-b1f3-ac9e-2e49-b647b2c4f8da` |
 | Fieldy | `Fieldy` | None used alone |
+| viaim RecDot / OpenNote | `viaim RecDot`, `viaim OpenNote` | Name hint only |
+| soundcore Work | `soundcore Work` | Name hint only |
+| Notta Memo / Memo Pro | `Notta Memo` (also covers the Pro suffix) | Name hint only |
+| Instamic | `Instamic` (including `Instamic BLE`, numbered devices) | Name hint only |
+| DJI Mic 2 / Mic 3 | `DJI-MIC2`, `DJI-MIC3`, `DJI Mic 2`, `DJI Mic 3` | Name hint only |
 
-Names must end after the listed token or continue with a space, hyphen, or underscore (the `friend_` prefix already includes its separator). `PLAUD` followed immediately by four alphanumeric serial-suffix characters is also recognized, consistent with the [Plaud interoperability protocol notes](https://github.com/naeemarsalan/opendict/blob/main/PLAUD_BLE_Protocol_Specification.md). Name-only evidence has confidence 0.75; custom service evidence has confidence 0.90. Service evidence wins over a conflicting recorder name. Firmware keeps existing tracker/drone/glasses classifications over name-only hints. These confidence scores are heuristic, not measured detection rates.
+Names must end after the listed token or continue with a space, hyphen, or underscore (the `friend_` prefix already includes its separator). `PLAUD` followed immediately by four alphanumeric serial-suffix characters is also recognized, consistent with the [Plaud interoperability protocol notes](https://github.com/naeemarsalan/opendict/blob/main/PLAUD_BLE_Protocol_Specification.md). Name-only evidence has confidence 0.75; custom service evidence has confidence 0.90. Service evidence wins over a conflicting recorder name. Firmware keeps existing tracker/drone/glasses classifications over name-only hints, except that a specific DJI microphone name replaces the generic DJI company-only controller guess. Android likewise prefers that model hint to its DJI company-only camera guess. These confidence scores are heuristic, not measured detection rates.
 
 ## Evidence and limits
 
@@ -23,15 +28,27 @@ Only advertised service lists or service-data UUIDs can be detected passively. A
 
 Presence does **not** establish active recording, audio content, uploading, wearer identity, or malicious intent. UI details explicitly leave recording status unknown. No connection, pairing, microphone access, or recording command is performed.
 
-Other candidates for future capture-based signatures include HiDock/HiNotes, iFLYTEK, Mobvoi TicNote, soundcore Work, and Senstone. They are not classified by guessed names or shared chipset identifiers.
+### Additional name rules (2026-10-13)
+
+These are conservative **name heuristics, not hardware-validated BLE signatures**. Documentation can show an app label or a classic Bluetooth pairing name without establishing the actual BLE local name. The rules only run if a matching name reaches the scanner; no new manufacturer IDs, service UUIDs, or claim of always-on discoverability is introduced.
+
+- viaim documents [RecDot/OpenNote connection names](https://store.viaim.ai/blogs/user-guide/how-to-connect-your-viaim-earbuds) and [onboard recording](https://store.viaim.ai/blogs/user-guide/recording-guide-to-viaim-earbuds). Only those model names match; bare viaim, Air and Nano+ do not.
+- soundcore's [Work connection guide](https://service.soundcore.com/article-description/How-do-I-connect-the-soundcore-Work-recorder-to-the-soundcore-app) shows the app discovery label. This is not a captured BLE advertising name. Ordinary soundcore headphones and Anker devices do not match.
+- Notta's [connection troubleshooting](https://support.notta.ai/hc/en-us/articles/37703235998235-Troubleshooting-Unable-to-find-Notta-Memo-in-the-Notta-App) documents the Memo system name; its [binding guide](https://support.notta.ai/hc/en-us/articles/38026112614683-Bind-and-Activate-an-AI-Voice-Recorder-Mobile-App) includes Memo Pro. A device connected to another phone may not appear.
+- Instamic's [configuration guide](https://zoomcorp.com/media/documents/Instamic_Configuration_Modes_and_Profiles_rev.202510.pdf) shows `Instamic BLE` and numbered names. Users can rename units. Bluetooth audio streaming and local recording are separate modes.
+- DJI's [Mic 2 manual](https://dl.djicdn.com/downloads/DJI_Mic_2/UM_/DJI_Mic_2__User_Manual_V1.0_EN.pdf) shows `DJI-MIC2-XXXXXX`; the [Mic 3 manual](https://dl.djicdn.com/downloads/DJI%20Mic%203/202604/DJI_MIC3_um_en.pdf) uses the schematic `DJI-MICX-XXXX`. We recognize model 2/3 name hints, not literal placeholder X or arbitrary DJI devices. Mic 3's on-air name still needs capture validation. These pairing examples do not prove passive BLE visibility. Mic 2 cannot internally record while connected to a smartphone over Bluetooth. DJI Mic Mini is excluded from the standalone-recorder rules.
+
+Looki L1 remains unsupported: no reliable passive identifier was established, and its [FAQ](https://support.looki.ai/hc/en-001/articles/49659915480217-General-FAQs) says paired units are undiscoverable to another phone. Zoom F2-BT also awaits a capture: its [control manual](https://zoomcorp.com/documents/1857/E_F2_Control_.pdf) shows generic `F2` / `F2(1)` labels that are not distinctive enough. Neither a marketing model name nor Bluetooth capability alone establishes a signature. Tascam DR-10L Pro (optional Bluetooth adapter), HiDock/HiNotes, iFLYTEK, Mobvoi TicNote and Senstone remain capture candidates.
+
+Before claiming physical-device coverage, capture BLE advertisements with units unpaired, paired, idle and recording. Include full/short local names, advertised services and manufacturer payloads, and document which modes expose no usable signal.
 
 ## Maintenance
 
-Keep `PersonalRecorderSignatures.kt`, `personal_recorders.py`, and the recorder helpers in `ble_fingerprint.c` aligned. Tests cover all six families, custom UUID byte order, complete/incomplete/service-data advertisements, truncation, close UUID mismatches, ambiguous names and services, backend presentation, and badge awareness. Hardware validation should capture advertisements in pairing, idle, recording, and connected states before claiming model-specific coverage.
+Keep `PersonalRecorderSignatures.kt`, `personal_recorders.py`, and the recorder helpers in `ble_fingerprint.c` aligned. Tests cover all eleven families, custom UUID byte order, complete/incomplete/service-data advertisements, truncation, close UUID mismatches, ambiguous names and services, backend presentation, and badge awareness. Hardware validation should capture advertisements in pairing, idle, recording, and connected states before claiming model-specific coverage.
 
 ## Android browsing (v0.67.31)
 
-The Privacy screen opens on Recorders, with persistent Recorders, Nearby, Beacons, and All tabs and observation counts. The selected tab survives saved-state recreation. Search, brand shortcuts (Plaud, Omi, Limitless, Bee, Friend, Fieldy), categories, sources, live-only, and attention-only filters refine that tab. Clearing filters stays in the tab; switching tabs clears refinements and returns to the top. Nearby hides routine beacon observations but keeps elevated beacon warnings. An alerts shortcut opens attention-only results across all categories. None of these controls disables scanning or changes alert rules.
+The Privacy screen opens on Recorders, with persistent Recorders, Nearby, Beacons, and All tabs and observation counts. The selected tab survives saved-state recreation. Search, brand shortcuts (generated from the recorder signature catalog), categories, sources, live-only, and attention-only filters refine that tab. Clearing filters stays in the tab; switching tabs clears refinements and returns to the top. Nearby hides routine beacon observations but keeps elevated beacon warnings. An alerts shortcut opens attention-only results across all categories. None of these controls disables scanning or changes alert rules.
 
 When no recorders match, the page explains the detection limits rather than substituting beacons. The Recorders tab offers one-tap phone scan activation when Phone Bluetooth scanning is paused. Brand shortcuts use the same plain-language search as the text field; they are identification hints, not authenticated manufacturer identities.
 
@@ -41,5 +58,6 @@ The on-screen “Phone Bluetooth detects AI recorders” explanation lists suppo
 
 Emulator screenshots use synthetic findings to demonstrate the UI, not physical-device detections:
 
+![Expanded recorder brand filter](screenshots/privacy-recorders/expanded-brand-filter.png)
 ![Phone recorder coverage and filter](screenshots/privacy-recorders/phone-coverage.png)
 ![Grouped iBeacon network](screenshots/privacy-recorders/ibeacon-networks.png)

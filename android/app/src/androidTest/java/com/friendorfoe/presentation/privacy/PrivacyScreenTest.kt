@@ -37,9 +37,9 @@ class PrivacyScreenTest {
             finding(FindingSeverity.NEARBY, "beacon$index", category = PrivacyCategory.VENUE_BEACON).copy(
                 title = "iBeacon $index", beaconUuid = "00112233-4455-6677-8899-aabbccddeeff")
         }
-        val otherRecorders = listOf("Omi", "Bee").map { brand ->
+        val otherRecorders = listOf("Omi", "Bee", "Instamic").map { brand ->
             finding(FindingSeverity.NEARBY, brand.lowercase(), category = PrivacyCategory.VOICE_RECORDER).copy(
-                title = "$brand AI Voice Recorder", evidence = "Phone Bluetooth • matching service",
+                title = "$brand Voice Recorder", evidence = "Phone Bluetooth • name hint",
                 limitation = "Recording status is unknown.")
         }
         val current = PrivacyCurrentState(emptyList(), listOf(recorder) + otherRecorders + beacons, 1, emptyList(), true)
@@ -64,7 +64,11 @@ class PrivacyScreenTest {
         compose.onNodeWithTag("finding_plaud").assertIsDisplayed()
         compose.onNodeWithTag("privacy_filters").performClick()
         compose.onNodeWithText("Live only").performClick()
-        compose.onNodeWithTag("privacy_brand_Plaud").performClick()
+        compose.onNodeWithTag("privacy_brand_Instamic").performScrollTo().performClick()
+        compose.runOnIdle { assertEquals("Instamic", filters.value.query) }
+        compose.onNodeWithTag("finding_instamic").assertExists()
+        saveBeaconScreenshot("recorders-new-brand-filter.png")
+        compose.onNodeWithTag("privacy_brand_Plaud").performScrollTo().performClick()
         compose.onNodeWithTag("finding_plaud").assertExists()
         compose.runOnIdle { assertEquals("Plaud", filters.value.query) }
         compose.onNodeWithTag("privacy_focus_RECORDERS").assertIsDisplayed()
@@ -78,8 +82,8 @@ class PrivacyScreenTest {
         compose.onNodeWithTag("finding_plaud").assertExists()
         compose.onNodeWithTag("privacy_tree_beacons").assertDoesNotExist()
         compose.onNodeWithTag("recorder_coverage").performClick()
-        compose.onNodeWithTag("privacy_content").performScrollToNode(hasText("This Android phone can detect", substring = true))
-        compose.onNodeWithText("This Android phone can detect", substring = true).assertIsDisplayed()
+        compose.onNodeWithTag("privacy_content").performScrollToNode(hasText("This Android phone can recognize", substring = true))
+        compose.onNodeWithText("This Android phone can recognize", substring = true).assertIsDisplayed()
         saveBeaconScreenshot("recorders-phone-coverage.png")
         compose.onNodeWithTag("privacy_content").performScrollToNode(hasTestTag("recorder_coverage"))
         compose.onNodeWithTag("recorder_coverage").performClick()

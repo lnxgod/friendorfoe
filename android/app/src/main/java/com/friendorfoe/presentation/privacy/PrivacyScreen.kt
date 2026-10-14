@@ -2,6 +2,7 @@ package com.friendorfoe.presentation.privacy
 
 import androidx.compose.animation.AnimatedVisibility
 import android.app.Activity
+import com.friendorfoe.detection.PersonalRecorderSignatures
 import com.friendorfoe.presentation.components.FofDisclosure
 import android.bluetooth.BluetoothAdapter
 import android.content.Intent
@@ -651,7 +652,7 @@ private fun PrivacySearchAndFilters(
                 if (state.filters.focus == PrivacyFocus.RECORDERS) {
                     Text("Recorder brand", style = MaterialTheme.typography.labelMedium)
                     Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        listOf("Plaud", "Omi", "Limitless", "Bee", "Friend", "Fieldy").forEach { brand ->
+                        PersonalRecorderSignatures.brands.forEach { brand ->
                             val selected = state.filters.query.equals(brand, ignoreCase = true)
                             FilterChip(selected = selected,
                                 onClick = { actions.onQueryChanged(if (selected) "" else brand) },
@@ -1072,9 +1073,9 @@ private fun RecorderCoverage() {
             Text("Supported recorders & scan setup")
         }
         if (expanded) {
-            Text("This Android phone can detect Plaud, Omi, Limitless, Bee, Friend and Fieldy directly over Bluetooth. No badge is required.",
+            Text("This Android phone can recognize recorder broadcasts directly over Bluetooth. No badge is required. Supported name hints include Plaud, Omi, Limitless, Bee, Friend, Fieldy, viaim RecDot/OpenNote, soundcore Work, Notta Memo/Memo Pro, Instamic and DJI Mic 2/3.",
                 style = MaterialTheme.typography.bodySmall)
-            Text("Enable Phone scanning and Nearby devices permission. Plaud and Fieldy require recognizable broadcast names; the others also support matching service identifiers. Silent or renamed devices can be missed. Detection does not prove recording.",
+            Text("Enable Phone scanning and Nearby devices permission. Omi, Limitless, Bee and Friend also have service-identifier rules; the other families require recognizable names. New name rules are not hardware-validated. Bluetooth capability alone does not guarantee a visible BLE broadcast, especially while paired. Silent or renamed devices can be missed. Recording status is unknown.",
                 modifier = Modifier.padding(vertical = 8.dp), style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
