@@ -281,10 +281,13 @@ fun PrivacyContent(
     }
     val groups = remember(state.visibleFindings) { groupPrivacyDevices(state.visibleFindings) }
     val branchKeys = groups.flatMap { branch -> listOf(branch.group.key) + branch.families.flatMap { listOf(it.family.key) + it.networks.map { network -> network.key } } }
-    // Search/filter changes reveal matches; live scan updates keep the user's choices.
-    var expandByDefault by rememberSaveable(state.filters) { mutableStateOf(state.filters.query.isNotBlank()) }
+    // Search reveals matching families, but the everyday rollup still needs a tap.
+    var expandAll by rememberSaveable(state.filters) { mutableStateOf<Boolean?>(null) }
     var toggledBranches by rememberSaveable(state.filters) { mutableStateOf(emptyList<String>()) }
-    val expandedKeys = branchKeys.filter { expandByDefault != (it in toggledBranches) }.toSet()
+    val expandedKeys = branchKeys.filter { key ->
+        val startsOpen = expandAll ?: (state.filters.query.isNotBlank() && key != PrivacyDeviceGroup.EVERYDAY.key)
+        startsOpen != (key in toggledBranches)
+    }.toSet()
     val individualFindings = remember(state.visibleFindings) { state.individualFindings }
     LazyColumn(
         state = listState,
@@ -377,7 +380,7 @@ fun PrivacyContent(
                                 Text("Browse nearby", modifier = Modifier.weight(1f), style = MaterialTheme.typography.titleSmall)
                                 val allExpanded = expandedKeys.size == branchKeys.size
                                 TextButton(
-                                    onClick = { expandByDefault = !allExpanded; toggledBranches = emptyList() },
+                                    onClick = { expandAll = !allExpanded; toggledBranches = emptyList() },
                                     modifier = Modifier.testTag("privacy_tree_toggle_all"),
                                 ) { Text(if (allExpanded) "Collapse all" else "Expand all") }
                             }

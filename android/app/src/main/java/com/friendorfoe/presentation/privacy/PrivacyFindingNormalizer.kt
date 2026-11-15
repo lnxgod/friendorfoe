@@ -5,7 +5,12 @@ import com.friendorfoe.detection.GlassesDetection
 import com.friendorfoe.detection.PrivacyCategory
 
 object PrivacyFindingNormalizer {
+    private val appleActivityCategories = setOf(
+        PrivacyCategory.APPLE_CONTINUITY, PrivacyCategory.REMOTE_LISTENING, PrivacyCategory.INFORMATIONAL,
+    )
+
     fun normalize(input: GlassesDetection): GlassesDetection {
+        if (input.category !in appleActivityCategories) return input
         val appleEvidence = input.bleCompanyId == 0x004C ||
             input.bleAppleType != null ||
             input.manufacturer.equals("Apple", ignoreCase = true) ||
@@ -58,6 +63,10 @@ object PrivacyFindingNormalizer {
         } else {
             input
         }
+        if (categorySafe.category !in appleActivityCategories) return categorySafe
+        if (categorySafe.category == PrivacyCategory.INFORMATIONAL &&
+            (categorySafe.wifiNetwork != null || categorySafe.source == PrivacySourceKind.WIFI_ANALYSIS)
+        ) return categorySafe
         val apple = mergeAppleEvidence(
             categorySafe.appleEvidence,
             inferredSameRowAppleEvidence(categorySafe),

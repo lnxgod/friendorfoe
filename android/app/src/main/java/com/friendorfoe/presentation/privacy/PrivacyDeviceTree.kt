@@ -39,7 +39,10 @@ internal fun LazyListScope.privacyDeviceTree(
     groups.forEach { branch ->
         val group = branch.group
         item(key = "tree_${group.key}", contentType = "device_group") {
-            PrivacyTreeBranch(group.key, group.label, group.description, branch.findings,
+            val description = if (group == PrivacyDeviceGroup.EVERYDAY) {
+                branch.families.joinToString(" · ", limit = 3, truncated = "…") { it.family.label }
+            } else group.description
+            PrivacyTreeBranch(group.key, group.label, description, branch.findings,
                 expanded = group.key in expandedKeys, nested = false, onToggle = { onToggle(group.key) })
         }
         if (group.key in expandedKeys) {

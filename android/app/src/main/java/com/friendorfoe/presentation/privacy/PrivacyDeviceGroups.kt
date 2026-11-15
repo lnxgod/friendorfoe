@@ -5,6 +5,7 @@ import com.friendorfoe.detection.PrivacyCategory
 enum class PrivacyDeviceGroup(val key: String, val label: String, val description: String) {
     TRACKERS("trackers", "Trackers", "Nearby tag and accessory broadcasts"),
     BEACONS("beacons", "Venue beacons", "Routine location broadcasts"),
+    EVERYDAY("everyday", "Everyday devices", "Audio, Apple activity and home accessories"),
 }
 
 enum class PrivacyDeviceFamily(val key: String, val label: String, val group: PrivacyDeviceGroup) {
@@ -17,6 +18,11 @@ enum class PrivacyDeviceFamily(val key: String, val label: String, val group: Pr
     IBEACON("ibeacon", "iBeacon", PrivacyDeviceGroup.BEACONS),
     EDDYSTONE("eddystone", "Eddystone", PrivacyDeviceGroup.BEACONS),
     OTHER_BEACONS("other_beacons", "Other beacons", PrivacyDeviceGroup.BEACONS),
+    AIRPODS("airpods", "AirPods activity", PrivacyDeviceGroup.EVERYDAY),
+    APPLE_ACTIVITY("apple_activity", "Apple Continuity activity", PrivacyDeviceGroup.EVERYDAY),
+    BLUETOOTH_AUDIO("bluetooth_audio", "Headphones & LE Audio", PrivacyDeviceGroup.EVERYDAY),
+    INPUT_DEVICES("input_devices", "Bluetooth input devices", PrivacyDeviceGroup.EVERYDAY),
+    SMART_HOME("smart_home", "Smart speakers, hubs & TVs", PrivacyDeviceGroup.EVERYDAY),
 }
 
 data class PrivacyFamilyBranch(
@@ -41,7 +47,7 @@ data class PrivacyGroupBranch(
 
 /** Presentation labels only: never merge identities or change severity/alert policy. */
 fun PrivacyFinding.deviceFamily(): PrivacyDeviceFamily? {
-    if (category !in GROUPABLE_CATEGORIES) return null
+    if (category !in TRACKER_AND_BEACON_CATEGORIES) return everydayFamily()
     val words = FAMILY_SEPARATORS.replace(listOfNotNull(title, evidence).joinToString(" ").lowercase(), " ")
     val tokens = words.split(' ').toSet()
     return when (category) {
@@ -59,6 +65,24 @@ fun PrivacyFinding.deviceFamily(): PrivacyDeviceFamily? {
             "chipolo" in tokens -> PrivacyDeviceFamily.CHIPOLO
             else -> PrivacyDeviceFamily.OTHER_TRACKERS
         }
+    }
+}
+
+private fun PrivacyFinding.everydayFamily(): PrivacyDeviceFamily? {
+    if (source == PrivacySourceKind.WIFI_ANALYSIS || wifiNetwork != null) return null
+    return when (category) {
+        PrivacyCategory.APPLE_CONTINUITY, PrivacyCategory.INFORMATIONAL -> when {
+            appleEvidence?.airPodsAssociationEvidence == true || AIRPODS_NAME.containsMatchIn(title) ->
+                PrivacyDeviceFamily.AIRPODS
+            category == PrivacyCategory.APPLE_CONTINUITY -> PrivacyDeviceFamily.APPLE_ACTIVITY
+            HEADPHONE_NAME.containsMatchIn(title) -> PrivacyDeviceFamily.BLUETOOTH_AUDIO
+            else -> null
+        }
+        PrivacyCategory.AURACAST -> PrivacyDeviceFamily.BLUETOOTH_AUDIO
+        PrivacyCategory.BLE_HID -> PrivacyDeviceFamily.INPUT_DEVICES
+        PrivacyCategory.SMART_SPEAKER, PrivacyCategory.SMART_HOME_HUB, PrivacyCategory.SMART_TV ->
+            PrivacyDeviceFamily.SMART_HOME
+        else -> null
     }
 }
 
@@ -80,4 +104,6 @@ fun groupPrivacyDevices(findings: List<PrivacyFinding>): List<PrivacyGroupBranch
 
 private val FAMILY_SEPARATORS = Regex("[^a-z0-9]+")
 private val FIND_MY_TOKENS = setOf("airtag", "airtags", "findmy")
-private val GROUPABLE_CATEGORIES = setOf(PrivacyCategory.VENUE_BEACON, PrivacyCategory.BLE_TRACKER, PrivacyCategory.FINDMY)
+private val TRACKER_AND_BEACON_CATEGORIES = setOf(PrivacyCategory.VENUE_BEACON, PrivacyCategory.BLE_TRACKER, PrivacyCategory.FINDMY)
+private val AIRPODS_NAME = Regex("""\bAirPods?\b""", RegexOption.IGNORE_CASE)
+private val HEADPHONE_NAME = Regex("""\b(headphones?|earbuds?|Galaxy Buds|Pixel Buds)\b""", RegexOption.IGNORE_CASE)

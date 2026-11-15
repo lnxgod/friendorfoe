@@ -28,7 +28,7 @@ English (US). Proposed category: Tools.
 
 Open Privacy to look for personal AI recorders first. Friend or Foe uses your Android phone to recognize nearby Bluetooth advertisements and Wi-Fi setup networks from supported devices. Explore recorder, camera, tracker and smart-glasses matches. Open a result to see the signal and name behind the match.
 
-Search by name and narrow the list by device family or detection source. Busy iBeacon networks appear in groups. Expand a group to inspect individual beacons. Recent encounters show when your phone saw a signal and how its strength changed.
+Search by name and narrow the list by device family or detection source. Open Everyday devices to inspect AirPods activity and other common Bluetooth signals. Busy iBeacon networks have their own groups. Wi-Fi findings show the network name when available and explain what triggered the match. Recent encounters show when your phone saw a signal and how its strength changed.
 
 See nearby aircraft and compatible drone broadcasts, explore a map, or start Nearby Watch for aircraft notifications. You can change detection sources and permissions in Settings. An optional scanner badge or a sensor server you configure can add observations from other radios.
 
@@ -36,7 +36,7 @@ Detection depends on what a device broadcasts and what Android makes available t
 
 **Release notes**
 
-Choose Light, Dark or System under App settings. Open Privacy to try a Bluetooth recorder name, filter nearby signals, and explore grouped iBeacons. Find GameChangers AI on Welcome and More, and read the privacy policy offline.
+Choose Light, Dark or System under App settings. Open Privacy to try a Bluetooth recorder name, inspect grouped everyday devices and iBeacons, or see why a Wi-Fi network was flagged. Find GameChangers AI on Welcome and More, and read the privacy policy offline.
 
 ## Images for Play Console
 

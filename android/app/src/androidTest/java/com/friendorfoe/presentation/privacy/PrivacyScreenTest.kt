@@ -221,8 +221,8 @@ class PrivacyScreenTest {
 
     @Test
     fun liveBluetoothUpdatesKeepRowPositionsAndTapTargetsStable() {
-        val first = finding(FindingSeverity.NEARBY, "a", category = PrivacyCategory.SMART_SPEAKER)
-        val second = finding(FindingSeverity.NEARBY, "b", category = PrivacyCategory.SMART_SPEAKER)
+        val first = finding(FindingSeverity.NEARBY, "a", category = PrivacyCategory.ACTION_CAMERA)
+        val second = finding(FindingSeverity.NEARBY, "b", category = PrivacyCategory.ACTION_CAMERA)
         fun project(rows: List<PrivacyFinding>) = projectPrivacyUiState(
             PrivacyCurrentReducer().reduce(
                 listOf(PrivacySourceSnapshot(
@@ -312,7 +312,7 @@ class PrivacyScreenTest {
                     health(PrivacySourceKind.BADGE_USB, SourceHealthState.LIVE),
                     health(PrivacySourceKind.WIFI_ANALYSIS, SourceHealthState.LIVE),
                 ),
-                findings = listOf(finding(FindingSeverity.NEARBY, "phone", category = PrivacyCategory.SMART_SPEAKER)),
+                findings = listOf(finding(FindingSeverity.NEARBY, "phone", category = PrivacyCategory.ACTION_CAMERA)),
                 threatCount = 0,
                 alertEligible = emptyList(),
                 initialResolutionComplete = true,
@@ -531,6 +531,56 @@ class PrivacyScreenTest {
     }
 
     @Test
+    fun everydayObservationsStayCollapsedUntilOpenedIncludingDuringSearch() {
+        val pods = (1..3).map { index ->
+            finding(FindingSeverity.INFO, "pods$index", category = PrivacyCategory.APPLE_CONTINUITY)
+        }
+        val speaker = finding(FindingSeverity.NEARBY, "speaker", category = PrivacyCategory.SMART_SPEAKER)
+        val recorder = finding(FindingSeverity.AWARENESS, "plaud", category = PrivacyCategory.VOICE_RECORDER)
+            .copy(title = "Plaud AI Voice Recorder", evidence = "Bluetooth name matches the Plaud recorder family",
+                limitation = "Recording status is unknown.")
+        val current = PrivacyCurrentState(emptyList(), pods + speaker + recorder, 1, emptyList(), true)
+        val query = mutableStateOf("")
+        var opened: PrivacyFindingKey? = null
+        compose.setContent {
+            FriendOrFoeTheme(darkTheme = false) {
+                Surface {
+                    val state = projectPrivacyUiState(current, PrivacyFilterState(query = query.value))
+                    PrivacyContent(state, PrivacyActions(onOpenDetails = { opened = it }))
+                }
+            }
+        }
+        val list = compose.onNodeWithTag("privacy_content")
+        val groupTag = "privacy_tree_everyday"
+        list.performScrollToNode(hasTestTag("finding_plaud"))
+        compose.onNodeWithText("Plaud AI Voice Recorder").assertIsDisplayed()
+        list.performScrollToNode(hasTestTag(groupTag))
+        compose.onNodeWithText("Everyday devices · 4").assertIsDisplayed()
+        compose.onNodeWithTag("privacy_tree_airpods").assertDoesNotExist()
+        compose.onNodeWithTag("finding_pods1").assertDoesNotExist()
+        savePrivacyScreenshot("privacy-everyday-rollup.png")
+
+        clickBranch("everyday")
+        list.performScrollToNode(hasTestTag("privacy_tree_airpods"))
+        compose.onNodeWithText("AirPods activity · 3").assertIsDisplayed()
+        compose.onNodeWithTag("finding_pods1").assertDoesNotExist()
+        clickBranch("airpods")
+        list.performScrollToNode(hasTestTag("finding_pods2_details"))
+        compose.onNodeWithTag("finding_pods2_details").performClick()
+        compose.runOnIdle {
+            assertEquals(pods[1].routableKey, opened)
+            query.value = "AirPods"
+        }
+        list.performScrollToNode(hasTestTag(groupTag))
+        compose.onNodeWithText("Everyday devices · 3").assertIsDisplayed()
+        compose.onNodeWithTag("finding_pods1").assertDoesNotExist()
+        clickBranch("everyday")
+        list.performScrollToNode(hasTestTag("finding_pods1"))
+        compose.onNodeWithTag("finding_pods1").assertIsDisplayed()
+        compose.onNodeWithTag("finding_speaker").assertDoesNotExist()
+    }
+
+    @Test
     fun venueBeaconsStartCollapsedAndExpandWithWorkingDeviceActions() {
         val beacon = finding(FindingSeverity.INFO, "beacon", fullActions = true, category = PrivacyCategory.VENUE_BEACON).copy(title = "iBeacon Lobby")
         val tracker = finding(FindingSeverity.NEARBY, "findhub").copy(
@@ -691,8 +741,8 @@ class PrivacyScreenTest {
         val rows = listOf(
             finding(FindingSeverity.CRITICAL, "critical", fullActions = true),
             finding(FindingSeverity.AWARENESS, "awareness"),
-            finding(FindingSeverity.NEARBY, "nearby", category = PrivacyCategory.SMART_SPEAKER),
-            finding(FindingSeverity.INFO, "info", category = PrivacyCategory.APPLE_CONTINUITY),
+            finding(FindingSeverity.NEARBY, "nearby", category = PrivacyCategory.ACTION_CAMERA),
+            finding(FindingSeverity.INFO, "info", category = PrivacyCategory.DRONE_CONTROLLER),
         )
         return projectPrivacyUiState(
             PrivacyCurrentState(
