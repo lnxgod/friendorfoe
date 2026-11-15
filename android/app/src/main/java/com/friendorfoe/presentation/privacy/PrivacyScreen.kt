@@ -10,6 +10,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -773,6 +774,9 @@ internal fun PrivacyFindingRow(
     showObservationId: Boolean = false,
 ) {
     val accent = sectionColor(finding.section())
+    val network = finding.wifiNetwork
+    val headline = network?.ssidLabel() ?: finding.title
+    val showFullEvidence = network == null || finding.routableKey == null
     val rowModifier = if (finding.routableKey != null) {
         Modifier.clickable { actions.onOpenDetails(requireNotNull(finding.routableKey)) }
     } else {
@@ -788,7 +792,8 @@ internal fun PrivacyFindingRow(
                     append(", ")
                     append(finding.source.userLabel())
                     append(", ")
-                    append(finding.title)
+                    append(headline)
+                    if (network != null) append(", ${network.reason}")
                 }
             },
     ) {
@@ -800,10 +805,13 @@ internal fun PrivacyFindingRow(
             Row(verticalAlignment = Alignment.Top) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = finding.title,
+                        text = headline,
                         style = MaterialTheme.typography.bodyLarge,
                         fontWeight = FontWeight.SemiBold,
                     )
+                    if (network != null) {
+                        Text(network.reason, style = MaterialTheme.typography.bodyMedium)
+                    }
                     Text(
                         text = buildFindingMetadata(finding),
                         style = MaterialTheme.typography.labelSmall,
@@ -829,14 +837,14 @@ internal fun PrivacyFindingRow(
                     )
                 }
             }
-            finding.evidence?.takeIf { it.isNotBlank() }?.let {
+            finding.evidence?.takeIf { showFullEvidence && it.isNotBlank() && it != network?.reason }?.let {
                 Text(
                     text = it,
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-            finding.limitation?.takeIf { it.isNotBlank() }?.let {
+            finding.limitation?.takeIf { showFullEvidence && it.isNotBlank() }?.let {
                 Text(
                     text = it,
                     style = MaterialTheme.typography.bodySmall,
@@ -913,14 +921,18 @@ private fun PrivacyFindingDetailDialog(
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text(finding?.title ?: "Item no longer current") },
+        title = { Text(finding?.wifiNetwork?.ssidLabel() ?: finding?.title ?: "Item no longer current") },
         text = {
             if (finding == null) {
                 Text("This exact finding is no longer in the current list.")
             } else {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Column(
+                    Modifier.verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    finding.wifiNetwork?.let { Text(it.reason) }
                     Text(buildFindingMetadata(finding), style = MaterialTheme.typography.labelMedium)
-                    finding.evidence?.let { Text(it) }
+                    finding.evidence?.takeUnless { it == finding.wifiNetwork?.reason }?.let { Text(it) }
                     finding.limitation?.let {
                         Text(it, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
@@ -1018,10 +1030,12 @@ private fun PrivacySignalSweepDialog(
 private fun filterLabel(label: String, selected: Int): String =
     if (selected == 0) label else "$label · $selected"
 
+internal fun WifiNetworkEvidence.ssidLabel(): String = ssid?.let { "SSID · $it" } ?: "SSID unavailable"
+
 private fun buildFindingMetadata(finding: PrivacyFinding): String = buildList {
     add(finding.severity.userLabel())
     add(finding.source.userLabel())
-    add(finding.category.label)
+    add(if (finding.wifiNetwork != null) finding.title else finding.category.label)
     add(
         when (finding.freshness) {
             FindingFreshness.LIVE -> "Live"

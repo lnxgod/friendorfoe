@@ -324,6 +324,16 @@ class WifiPrivacySourceAdapter internal constructor(
                 routableKey = key,
                 title = detection.deviceType.ifBlank { "Nearby Wi-Fi device" },
                 evidence = detection.details["evidence"] ?: evidence,
+                wifiNetwork = WifiNetworkEvidence(
+                    ssid = detection.deviceName.observedWifiSsid(),
+                    reason = detection.details["evidence"] ?: when {
+                        detection.matchReason.startsWith("wifi_oui:") ->
+                            "The access point address has a prefix registered to ${detection.manufacturer}."
+                        detection.matchReason.startsWith("wifi_ssid:") ->
+                            "The network name matches the ${detection.deviceType} naming pattern."
+                        else -> "The Wi-Fi broadcast matched a ${detection.deviceType} detection rule."
+                    },
+                ),
                 limitation = detection.details["limitation"],
                 category = detection.category,
                 severity = severityFor(detection.category.threatLevel),
@@ -353,11 +363,12 @@ class WifiPrivacySourceAdapter internal constructor(
                 title = when (anomaly.type.lowercase()) {
                     "weak_security" -> "Weak Wi-Fi security"
                     "evil_twin" -> "Wi-Fi name with mixed security"
-                    "karma_attack" -> "Possible Wi-Fi karma attack"
-                    "pwnagotchi" -> "Pwnagotchi pen-test device"
+                    "karma_attack" -> "One access point with multiple names"
+                    "pwnagotchi" -> "Pwnagotchi address match"
                     else -> "Suspicious Wi-Fi activity"
                 },
                 evidence = anomaly.details,
+                wifiNetwork = WifiNetworkEvidence(anomaly.ssid.observedWifiSsid(), anomaly.reason),
                 limitation = if (anomaly.type == "weak_security" || anomaly.type == "evil_twin") {
                     "Advertised settings only; this does not confirm an attack or your connection's security."
                 } else {

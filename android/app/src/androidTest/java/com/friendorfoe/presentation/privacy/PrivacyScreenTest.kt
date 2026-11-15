@@ -1,6 +1,7 @@
 package com.friendorfoe.presentation.privacy
 
 import android.graphics.Bitmap
+import androidx.compose.material3.Surface
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.onRoot
@@ -24,12 +25,59 @@ import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performClick
 import com.friendorfoe.presentation.components.LeaveBackendOnlyDialog
 import com.friendorfoe.detection.PrivacyCategory
+import com.friendorfoe.detection.WifiAnomalyDetector
+import com.friendorfoe.detection.WifiScanBatch
 import com.friendorfoe.presentation.theme.FriendOrFoeTheme
 import org.junit.Assert.assertEquals
 import org.junit.Rule
 import org.junit.Test
 
 class PrivacyScreenTest {
+    @Test
+    fun wifiAlertShowsSsidAndReasonWithRadioEvidenceInDetails() {
+        val inputs = listOf(
+            WifiAnomalyDetector.WifiNetwork("Demo guest", "02:00:00:00:00:01", "[ESS]", -61, 2412),
+            WifiAnomalyDetector.WifiNetwork("Demo guest", "02:00:00:00:00:02", "[WPA2-PSK-CCMP][ESS]", -65, 5180),
+            WifiAnomalyDetector.WifiNetwork("", "02:00:00:00:00:03", "[WEP][ESS]", -68, 2437),
+        )
+        val batch = WifiScanBatch(1L, emptyList(), 1_000L, 10_000L)
+        val findings = WifiAnomalyDetector.analyzeNetworksForTest(inputs).associate { anomaly ->
+            anomaly.type to WifiPrivacySourceAdapter.mapAnomaly(anomaly, batch)
+        }
+        val observation = findings.getValue("evil_twin")
+        val hidden = findings.getValue("weak_security")
+        val current = mutableStateOf(observation)
+        val detailsOpen = mutableStateOf(false)
+        compose.setContent {
+            FriendOrFoeTheme(darkTheme = false) {
+                Surface {
+                    if (detailsOpen.value) {
+                        PrivacyFindingDetailsContent(PrivacyFindingLookupState.Present(current.value), {}, {})
+                    } else {
+                        val state = projectPrivacyUiState(
+                            PrivacyCurrentState(emptyList(), listOf(current.value), 1, emptyList(), true),
+                            PrivacyFilterState(focus = PrivacyFocus.ALL),
+                        )
+                        PrivacyContent(state, PrivacyActions(onOpenDetails = { detailsOpen.value = true }))
+                    }
+                }
+            }
+        }
+        compose.onNodeWithTag("privacy_content").performScrollToNode(hasTestTag("finding_${observation.displayId}"))
+        compose.onNodeWithText("SSID · Demo guest").assertIsDisplayed()
+        compose.onNodeWithText(requireNotNull(observation.wifiNetwork).reason).assertIsDisplayed()
+        compose.onNodeWithText(requireNotNull(observation.evidence)).assertDoesNotExist()
+        savePrivacyScreenshot("wifi-alert-synthetic.png")
+        compose.runOnIdle { current.value = hidden }
+        compose.onNodeWithText("SSID unavailable").assertIsDisplayed()
+        compose.onNodeWithText(requireNotNull(hidden.wifiNetwork).reason).assertIsDisplayed()
+        compose.onNodeWithText("Details").performScrollTo().performClick()
+        compose.onNodeWithText("SSID unavailable").assertIsDisplayed()
+        compose.onNodeWithText(hidden.title).assertIsDisplayed()
+        compose.onNodeWithText(requireNotNull(hidden.wifiNetwork).reason).assertIsDisplayed()
+        compose.onNodeWithText(requireNotNull(hidden.evidence)).performScrollTo().assertIsDisplayed()
+    }
+
     @Test
     fun nameExampleUsesRecorderRulesAndResetsOnClose() {
         compose.setContent { FriendOrFoeTheme { RecorderNameExample() } }
@@ -91,7 +139,7 @@ class PrivacyScreenTest {
         }
         compose.onNodeWithTag("privacy_focus_RECORDERS").assertIsSelected()
         compose.onNodeWithTag("finding_plaud").assertIsDisplayed()
-        saveBeaconScreenshot("recorders-first.png")
+        savePrivacyScreenshot("recorders-first.png")
         compose.onNodeWithTag("privacy_search").performTextInput("missing")
         androidx.test.espresso.Espresso.closeSoftKeyboard()
         compose.onNodeWithTag("finding_plaud").assertDoesNotExist()
@@ -103,13 +151,13 @@ class PrivacyScreenTest {
         compose.onNodeWithTag("privacy_brand_Instamic").performScrollTo().performClick()
         compose.runOnIdle { assertEquals("Instamic", filters.value.query) }
         compose.onNodeWithTag("finding_instamic").assertExists()
-        saveBeaconScreenshot("recorders-new-brand-filter.png")
+        savePrivacyScreenshot("recorders-new-brand-filter.png")
         compose.onNodeWithTag("privacy_brand_Plaud").performScrollTo().performClick()
         compose.onNodeWithTag("finding_plaud").assertExists()
         compose.onNodeWithTag("privacy_focus_RECORDERS").performClick()
         compose.runOnIdle { assertEquals("Plaud", filters.value.query) }
         compose.onNodeWithTag("privacy_focus_RECORDERS").assertIsDisplayed()
-        saveBeaconScreenshot("recorders-filters.png")
+        savePrivacyScreenshot("recorders-filters.png")
         compose.onNodeWithTag("privacy_clear_refinements").performClick()
         compose.onNodeWithTag("privacy_filters").performClick()
         compose.onNodeWithTag("privacy_attention").performClick()
@@ -121,7 +169,7 @@ class PrivacyScreenTest {
         compose.onNodeWithTag("recorder_coverage").performClick()
         compose.onNodeWithTag("privacy_content").performScrollToNode(hasText("This Android phone can recognize", substring = true))
         compose.onNodeWithText("This Android phone can recognize", substring = true).assertIsDisplayed()
-        saveBeaconScreenshot("recorders-phone-coverage.png")
+        savePrivacyScreenshot("recorders-phone-coverage.png")
         compose.onNodeWithTag("privacy_content").performScrollToNode(hasTestTag("recorder_coverage"))
         compose.onNodeWithTag("recorder_coverage").performClick()
         compose.onNodeWithTag("privacy_content").performScrollToNode(hasTestTag("privacy_focus_BEACONS"))
@@ -130,7 +178,7 @@ class PrivacyScreenTest {
         clickBranch("beacons")
         clickBranch("ibeacon")
         compose.onNodeWithTag("privacy_content").performScrollToNode(hasTestTag("privacy_tree_ibeacon_uuid:00112233-4455-6677-8899-aabbccddeeff"))
-        saveBeaconScreenshot("ibeacons-grouped-network.png")
+        savePrivacyScreenshot("ibeacons-grouped-network.png")
         clickBranch("ibeacon_uuid:00112233-4455-6677-8899-aabbccddeeff")
         compose.onNodeWithTag("privacy_content").performScrollToNode(hasTestTag("finding_beacon1"))
         compose.onNodeWithTag("finding_beacon1").assertIsDisplayed()
@@ -513,7 +561,7 @@ class PrivacyScreenTest {
         compose.onNodeWithTag("privacy_content").performScrollToNode(hasTestTag("privacy_tree_beacons"))
         compose.onNodeWithText("Venue beacons · 1").assertIsDisplayed()
         compose.onNodeWithTag("finding_beacon").assertDoesNotExist()
-        saveBeaconScreenshot("beacons-collapsed.png")
+        savePrivacyScreenshot("beacons-collapsed.png")
         compose.onNodeWithTag("privacy_tree_beacons").performClick()
         compose.onNodeWithTag("finding_beacon").assertDoesNotExist()
         clickBranch("ibeacon")
@@ -531,7 +579,7 @@ class PrivacyScreenTest {
             state.value = initial.copy(visibleFindings = initial.visibleFindings.map { it.copy(signalDbm = -44) })
         }
         compose.onNodeWithTag("finding_beacon").assertIsDisplayed()
-        saveBeaconScreenshot("beacons-expanded.png")
+        savePrivacyScreenshot("beacons-expanded.png")
         compose.onNodeWithTag("privacy_content").performScrollToNode(hasTestTag("privacy_tree_beacons"))
         compose.onNodeWithTag("privacy_tree_beacons").performClick()
         compose.onNodeWithTag("finding_beacon").assertDoesNotExist()
@@ -563,11 +611,11 @@ class PrivacyScreenTest {
         compose.setContent { FriendOrFoeTheme { PrivacyContent(state, PrivacyActions()) } }
         compose.onNodeWithTag("finding_attention").assertIsDisplayed()
         compose.onNodeWithTag("finding_airtag").assertDoesNotExist()
-        saveBeaconScreenshot("device-tree-collapsed.png")
+        savePrivacyScreenshot("device-tree-collapsed.png")
         clickBranch("trackers")
         clickBranch("beacons")
         compose.onNodeWithTag("privacy_content").performScrollToNode(hasTestTag("privacy_tree_trackers"))
-        saveBeaconScreenshot("device-tree-families.png")
+        savePrivacyScreenshot("device-tree-families.png")
         compose.onNodeWithTag("finding_tile").assertDoesNotExist()
         clickBranch("find_my")
         compose.onNodeWithTag("privacy_content").performScrollToNode(hasTestTag("finding_airtag"))
@@ -633,7 +681,7 @@ class PrivacyScreenTest {
         compose.onNodeWithTag("privacy_tree_$key").performClick()
     }
 
-    private fun saveBeaconScreenshot(name: String) {
+    private fun savePrivacyScreenshot(name: String) {
         val image = compose.onRoot().captureToImage().asAndroidBitmap()
         File(InstrumentationRegistry.getInstrumentation().targetContext.filesDir, name)
             .outputStream().use { image.compress(Bitmap.CompressFormat.PNG, 100, it) }

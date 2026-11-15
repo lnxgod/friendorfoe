@@ -29,6 +29,21 @@ class PrivacyEncounterScreenTest {
             (0..11).map { PrivacySignalSample(it * 5_000L, now - 60_000 + it * 5_000L, -80 + it * 2) })
     }
 
+    @Test fun expiredWifiAlertKeepsObservedSsidAndReason() {
+        val wifiKey = PrivacyFindingKey(PrivacySourceKind.WIFI_ANALYSIS, "fixture-network")
+        val network = WifiNetworkEvidence("Demo venue", "This access point advertised WEP security.")
+        val wifi = finding.copy(observationKey = wifiKey, routableKey = wifiKey, source = wifiKey.source,
+            title = "Weak Wi-Fi security", category = PrivacyCategory.WIFI_SECURITY, wifiNetwork = network)
+        val saved = encounter().copy(key = wifiKey, finding = wifi)
+        compose.setContent {
+            FriendOrFoeTheme { PrivacyFindingDetailsContent(PrivacyFindingLookupState.Expired, {}, {}, saved) }
+        }
+        compose.onNodeWithText("SSID · Demo venue").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText(network.reason).performScrollTo().assertIsDisplayed()
+        assertTrue(encounterEvidenceText(saved).contains("SSID · Demo venue"))
+        assertTrue(encounterEvidenceText(saved).contains(network.reason))
+    }
+
     @Test fun expiredFindingRetainsClearlyLabeledSavedEvidenceAndSignalHistory() {
         compose.setContent {
             FriendOrFoeTheme { PrivacyFindingDetailsContent(PrivacyFindingLookupState.Expired, {}, {}, encounter()) }

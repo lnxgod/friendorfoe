@@ -33,15 +33,14 @@ class WifiAnomalyDetector @Inject constructor(
             if (networks.isEmpty()) return emptyList()
             val anomalies = mutableListOf<WifiAnomaly>()
 
-            // Pwnagotchi default BSSID — deliberately attention-getting. Marauder
-            // matches on this; any hit on our LAN is a deliberate pen-test beacon.
+            // Match the advertised default address. A broadcast cannot authenticate its sender.
             for (network in networks) {
                 if (network.bssid.equals(BleSignatures.PWNAGOTCHI_BSSID, ignoreCase = true)) {
                     anomalies.add(WifiAnomaly(
                         type = "pwnagotchi",
-                        ssid = network.ssid.ifBlank { "(hidden)" },
-                        details = "Pwnagotchi device detected — source MAC ${network.bssid} is the default " +
-                            "Pwnagotchi pen-test beacon. It attempts to capture WPA handshakes passively.",
+                        ssid = network.ssid,
+                        reason = "The access point uses the default Pwnagotchi Wi-Fi address.",
+                        details = "Observed access point address: ${network.bssid}. This address can be imitated.",
                         threatLevel = 3,
                         bssids = listOf(network.bssid),
                         evidence = listOf(network.toEvidence()),
@@ -57,8 +56,9 @@ class WifiAnomalyDetector @Inject constructor(
                 if (security.obsoleteModes.isEmpty()) continue
                 anomalies.add(WifiAnomaly(
                     type = "weak_security",
-                    ssid = network.ssid.ifBlank { "(hidden)" },
-                    details = "${network.ssid.ifBlank { "Hidden network" }} advertises obsolete " +
+                    ssid = network.ssid,
+                    reason = "This access point advertises obsolete ${security.obsoleteModes.joinToString(" + ")} security.",
+                    details = "The access point advertises obsolete " +
                         "${security.obsoleteModes.joinToString(" + ")} security. " +
                         "Prefer WPA2 with AES/CCMP or WPA3. AP: ${network.toEvidence().summary()}",
                     threatLevel = 2,
@@ -70,7 +70,7 @@ class WifiAnomalyDetector @Inject constructor(
 
             // Group by SSID
             val bySSID = networks
-                .filter { it.ssid.isNotBlank() }
+                .filter { it.ssid.isAdvertisedWifiName() }
                 .groupBy { it.ssid }
 
             for ((ssid, results) in bySSID) {
@@ -85,6 +85,7 @@ class WifiAnomalyDetector @Inject constructor(
                     anomalies.add(WifiAnomaly(
                         type = "evil_twin",
                         ssid = ssid,
+                        reason = "Access points using this name advertise both open and secured Wi-Fi (${securities.sorted().joinToString(", ")}).",
                         details = "Same SSID with mixed security: ${securities.joinToString(" + ")}. " +
                             "Check which AP you join; this can be a legitimate configuration or a spoofed network. " +
                             "Observed APs: ${evidence.joinToString("; ") { it.summary() }}",
@@ -99,7 +100,7 @@ class WifiAnomalyDetector @Inject constructor(
 
             // Check 3: Karma attack — single BSSID broadcasting many SSIDs
             for (network in networks) {
-                if (network.ssid.isBlank()) continue
+                if (!network.ssid.isAdvertisedWifiName()) continue
 
                 val history = bssidSsidHistory.getOrPut(network.bssid) { mutableSetOf() }
                 history.add(network.ssid)
@@ -107,10 +108,11 @@ class WifiAnomalyDetector @Inject constructor(
                 if (history.size >= 5) {
                     anomalies.add(WifiAnomaly(
                         type = "karma_attack",
-                        ssid = network.bssid,
+                        ssid = network.ssid,
+                        reason = "The same access point has advertised ${history.size} different network names.",
                         details = "Single AP (${network.bssid}) broadcasting ${history.size} different SSIDs: " +
                             "${history.take(5).joinToString(", ")}${if (history.size > 5) "..." else ""}. " +
-                            "This is characteristic of a WiFi Pineapple karma attack.",
+                            "Access points can advertise more than one name for legitimate networks.",
                         threatLevel = 3,
                         bssids = listOf(network.bssid),
                         evidence = listOf(network.toEvidence()),
@@ -168,7 +170,8 @@ class WifiAnomalyDetector @Inject constructor(
         val threatLevel: Int,   // 1=low, 2=medium, 3=high
         val bssids: List<String>,
         val evidence: List<WifiAnomalyEvidence> = emptyList(),
-        val timestamp: Instant
+        val timestamp: Instant,
+        val reason: String = details,
     )
 
     // Track BSSID → SSID history for karma detection

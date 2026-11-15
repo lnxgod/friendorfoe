@@ -272,6 +272,19 @@ class BadgePrivacySourceAdapter internal constructor(
                 routableKey = provenEntityId?.let { key },
                 title = title,
                 evidence = evidence,
+                wifiNetwork = reportedWifiRule(entity.source)?.let { fallback ->
+                    val ssid = entity.ssid.observedWifiSsid()
+                    val reason = entity.evidence.readableWifiReportReason(ssid) ?: when (
+                        entity.label.takeIf { entity.threatClass == "wifi_anomaly" }
+                    ) {
+                        "Deauth" -> "The badge observed Wi-Fi deauthentication frames."
+                        "Disassoc" -> "The badge observed Wi-Fi disassociation frames."
+                        "Beacon Spam" -> "The badge flagged a burst of Wi-Fi beacon traffic."
+                        "Evil Twin" -> "The badge flagged a possible network impersonation."
+                        else -> entity.detail.readableWifiReportReason(ssid) ?: fallback
+                    }
+                    WifiNetworkEvidence(ssid = ssid, reason = reason)
+                },
                 limitation = when (category) {
                     PrivacyCategory.VOICE_RECORDER -> "Bluetooth recorder signature; recording status is unknown."
                     PrivacyCategory.SECURITY_INFRASTRUCTURE -> "The Wi-Fi signal does not establish the model or camera capability."

@@ -25,6 +25,10 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 
+/** Android can redact a name even when it still reports the access point's radio settings. */
+internal fun String.isAdvertisedWifiName(): Boolean =
+    isNotBlank() && any { it != '\u0000' } && !equals("<unknown ssid>", ignoreCase = true)
+
 data class WifiScanNetwork(
     val ssid: String,
     val bssid: String,

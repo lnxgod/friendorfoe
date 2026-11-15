@@ -4,6 +4,7 @@ import com.friendorfoe.data.DetectionSettings
 import com.friendorfoe.data.repository.LocalDetectionPermissions
 import com.friendorfoe.data.time.MonotonicClock
 import com.friendorfoe.detection.GlassesDetection
+import com.friendorfoe.detection.GlassesDetector
 import com.friendorfoe.detection.PrivacyCategory
 import com.friendorfoe.detection.WifiAnomalyDetector
 import com.friendorfoe.detection.WifiScanBatch
@@ -19,6 +20,7 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -230,9 +232,72 @@ class WifiPrivacySourceAdapterTest {
         assertEquals(PrivacyCategory.WIFI_SECURITY, finding.category)
         assertEquals(FindingSeverity.AWARENESS, finding.severity)
         assertEquals(PrivacySourceKind.WIFI_ANALYSIS, finding.source)
+        val network = requireNotNull(finding.wifiNetwork)
+        assertEquals("Old router", network.ssid)
+        assertTrue(network.reason.contains("TKIP"))
         assertTrue(requireNotNull(finding.evidence).contains("TKIP"))
         assertTrue(requireNotNull(finding.limitation).contains("does not confirm an attack"))
         assertEquals(-51, finding.signalDbm)
+    }
+
+    @Test
+    fun mixedSecurityPreservesTheExactSharedSsidAndBothSecurityModes() {
+        val ssid = "Hall A · Guest"
+        val anomaly = WifiAnomalyDetector.analyzeNetworksForTest(listOf(
+            WifiAnomalyDetector.WifiNetwork(ssid, "02:00:00:00:00:01", "[ESS]", -48, 2412),
+            WifiAnomalyDetector.WifiNetwork(ssid, "02:00:00:00:00:02", "[WPA2-PSK-CCMP][ESS]", -60, 5180),
+        )).single()
+        val finding = WifiPrivacySourceAdapter.mapAnomaly(anomaly, batch(id = 1, elapsed = 1_000, wall = 10_000))
+        val network = requireNotNull(finding.wifiNetwork)
+        assertEquals(ssid, network.ssid)
+        assertTrue(network.reason.contains("open", ignoreCase = true))
+        assertTrue(network.reason.contains("WPA2", ignoreCase = true))
+        assertEquals(2, anomaly.bssids.size)
+    }
+
+    @Test
+    fun changingNetworkNamesShowTheObservedSsidAndKeepTheAccessPointIdentity() {
+        val bssid = "02:00:00:00:00:01"
+        val scans = (1..5).map { i ->
+            WifiAnomalyDetector.WifiNetwork("Guest $i", bssid, "[ESS]", -55, 2437)
+        }
+        val anomaly = WifiAnomalyDetector.analyzeNetworksForTest(scans).single { it.type == "karma_attack" }
+        val finding = WifiPrivacySourceAdapter.mapAnomaly(anomaly, batch(id = 1, elapsed = 1_000, wall = 10_000))
+        val network = requireNotNull(finding.wifiNetwork)
+        assertEquals("Guest 5", network.ssid)
+        assertTrue(network.reason.contains("5"))
+        assertTrue(finding.observationKey.sourceRecordId.contains(bssid))
+    }
+
+    @Test
+    fun hiddenAndUnavailableSsidsStillExplainTheAdvertisedSecurity() {
+        for (ssid in listOf("", "   ", "<unknown ssid>", "<UNKNOWN SSID>")) {
+            val anomaly = WifiAnomalyDetector.analyzeNetworksForTest(listOf(
+                WifiAnomalyDetector.WifiNetwork(ssid, "02:00:00:00:00:01", "[WEP][ESS]", -52, 2412),
+            )).single()
+            val finding = WifiPrivacySourceAdapter.mapAnomaly(anomaly, batch(id = 1, elapsed = 1_000, wall = 10_000))
+            val network = requireNotNull(finding.wifiNetwork)
+            assertNull(network.ssid)
+            assertTrue(network.reason.contains("WEP"))
+        }
+    }
+
+    @Test
+    fun ssidDisplayPreservesMeaningfulSpacesAndNeutralizesLineBreaks() {
+        val anomaly = anomaly().copy(ssid = " Gate\nA ")
+        val finding = WifiPrivacySourceAdapter.mapAnomaly(anomaly, batch(id = 1, elapsed = 1_000, wall = 10_000))
+        assertEquals(" Gate\uFFFDA ", requireNotNull(finding.wifiNetwork).ssid)
+    }
+
+    @Test
+    fun cameraSetupSignatureKeepsTheBroadcastNameAlongsideItsCustomEvidence() {
+        val ssid = "Tapo_Cam_Ab12"
+        val detection = requireNotNull(GlassesDetector.checkWifiSsid(ssid, "02:00:00:00:00:01", -55))
+        val finding = WifiPrivacySourceAdapter.mapSignature(detection, batch(id = 1, elapsed = 1_000, wall = 10_000))
+        val network = requireNotNull(finding.wifiNetwork)
+        assertEquals(ssid, network.ssid)
+        assertEquals(detection.details.getValue("evidence"), network.reason)
+        assertEquals(detection.details.getValue("limitation"), finding.limitation)
     }
 
     private fun kotlinx.coroutines.test.TestScope.adapter(

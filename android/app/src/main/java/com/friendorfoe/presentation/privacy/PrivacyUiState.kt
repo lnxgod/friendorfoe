@@ -226,6 +226,8 @@ private fun PrivacyFinding.matchesRefinements(filters: PrivacyFilterState): Bool
     val family = deviceFamily()
     return listOfNotNull(
         title,
+        wifiNetwork?.ssid,
+        wifiNetwork?.reason,
         evidence,
         limitation,
         category.label,

@@ -15,6 +15,26 @@ class PrivacyEncounterLogTest {
     )
     private fun state(vararg findings: PrivacyFinding) = PrivacyCurrentState(emptyList(), findings.toList(), 0, emptyList(), true)
 
+    @Test fun wifiNetworkNameAndReasonAreSearchableInLiveAndRecentResults() {
+        val row = finding(source = PrivacySourceKind.WIFI_ANALYSIS).copy(
+            title = "Weak Wi-Fi security",
+            category = PrivacyCategory.WIFI_SECURITY,
+            evidence = null,
+            wifiNetwork = WifiNetworkEvidence(ssid = "Lobby Guest", reason = "Advertises obsolete TKIP security."),
+        )
+        val rows = state(row)
+        val log = PrivacyEncounterLog()
+        log.update(rows, emptySet(), 1_000, 5_000)
+        val entry = log.entries.value.single()
+
+        for (query in listOf("lobby guest", "tkip")) {
+            val filters = PrivacyFilterState(focus = PrivacyFocus.ALL, query = query)
+            assertEquals(listOf(row), projectPrivacyUiState(rows, filters).visibleFindings)
+            assertEquals(listOf(entry), filterPrivacyEncounters(log.entries.value, query, false, false))
+        }
+        assertTrue(encounterEvidenceText(entry).contains("Lobby Guest"))
+    }
+
     @Test fun clockTicksCannotCreateFakeObservationsAndExpiredEvidenceIsRetained() {
         val log = PrivacyEncounterLog()
         val row = finding()

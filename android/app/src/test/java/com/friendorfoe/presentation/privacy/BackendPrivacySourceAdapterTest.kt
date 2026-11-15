@@ -299,6 +299,26 @@ class BackendPrivacySourceAdapterTest {
     }
 
     @Test
+    fun wifiEvidenceNeedsAnObservedNetworkNameAndWifiRadioSourceOnTheSameRow() {
+        val report = device(fingerprint = "scanner-observation").copy(
+            source = "wifi_ssid",
+            privacyEvidence = listOf(mapOf("field" to "ssid", "value" to "Example Lab")),
+        )
+        fun map(dto: LivePrivacyDeviceDto) = BackendPrivacySourceAdapter.mapDevice(dto, "backend", 1L, 0, FakeClock())
+        val finding = map(report)
+        assertEquals("Example Lab", finding.wifiNetwork?.ssid)
+        assertTrue(finding.wifiNetwork!!.reason.contains("network name"))
+        val specific = map(report.copy(evidence = listOf("Advertised name matches a camera setup pattern.")))
+        assertEquals("Advertised name matches a camera setup pattern.", specific.wifiNetwork?.reason)
+        assertEquals(finding.observationKey, specific.observationKey)
+        assertNull(map(report.copy(source = "ble_fingerprint")).wifiNetwork)
+        assertNull(map(report.copy(source = "wifi_probe_request")).wifiNetwork)
+        assertEquals(finding.wifiNetwork, map(report.copy(evidence = listOf("wifi_ssid:internal_rule"))).wifiNetwork)
+        assertNull(map(report.copy(privacyEvidence = emptyList(), lastBssid = "00:11:22:33:44:55")).wifiNetwork)
+        assertNull(map(report.copy(privacyEvidence = listOf(mapOf("field" to "ssid", "value" to 7)))).wifiNetwork)
+    }
+
+    @Test
     fun legacyBackendFlockOuiIsVendorOnlyAndProductEvidenceWins() {
         val legacy = LivePrivacyDeviceDto(
             privacyKind = "FLOCK_ALPR", displayLabel = "FLOCK CAM", riskLevel = "high",

@@ -317,6 +317,14 @@ class BackendPrivacySourceAdapter internal constructor(
                 routableKey = stableId?.let { key },
                 title = title,
                 evidence = evidence,
+                wifiNetwork = reportedWifiRule(dto.source)?.let { fallback ->
+                    dto.privacyEvidence.firstNotNullOfOrNull { entry ->
+                        if (entry["field"] == "ssid") (entry["value"] as? String).observedWifiSsid() else null
+                    }?.let { ssid ->
+                        val rule = dto.evidence.orEmpty().mapNotNull { it.readableWifiReportReason(ssid) }.joinToString(" • ")
+                        WifiNetworkEvidence(ssid = ssid, reason = rule.ifBlank { fallback })
+                    }
+                },
                 limitation = when (category) {
                     PrivacyCategory.VOICE_RECORDER -> "Bluetooth recorder signature; recording status is unknown."
                     PrivacyCategory.SECURITY_INFRASTRUCTURE -> "The Wi-Fi signal does not establish the model or camera capability."
