@@ -17,14 +17,14 @@ ksp {
 
 android {
     namespace = "com.friendorfoe"
-    compileSdk = 35
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "com.friendorfoe"
         minSdk = 26
-        targetSdk = 34
-        versionCode = 139
-        versionName = "0.67.31-android-recorder-first"
+        targetSdk = 36
+        versionCode = 140
+        versionName = "0.67.32-android-privacy"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -51,6 +51,14 @@ android {
                 "proguard-rules.pro"
             )
             buildConfigField("String", "BADGE_DEBUG_BRIDGE_BASE_URL", buildConfigString(""))
+        }
+        // Build a Play bundle without requiring signing secrets for CI validation.
+        create("play") {
+            initWith(getByName("release"))
+            matchingFallbacks += "release"
+            // Allow an unsigned, inspectable candidate when no upload key is configured.
+            signingConfig = if (System.getenv("KEYSTORE_PATH").isNullOrBlank()) null
+                else signingConfigs.getByName("release")
         }
         debug {
             isMinifyEnabled = false
@@ -92,6 +100,8 @@ android {
 }
 
 dependencies {
+    implementation("com.google.android.play:app-update:2.1.0")
+
     // AndroidX Core
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)

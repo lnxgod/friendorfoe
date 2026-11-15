@@ -32,7 +32,9 @@ import com.friendorfoe.presentation.about.AboutViewModel
 import com.friendorfoe.presentation.about.InfoUiState
 import com.friendorfoe.presentation.about.InfoSettingsScreen
 import com.friendorfoe.presentation.about.openUri
+import com.friendorfoe.presentation.about.openPlayStoreListing
 import com.friendorfoe.presentation.aircraft.AircraftReferenceScreen
+import com.friendorfoe.presentation.ar.ArServicesEntry
 import com.friendorfoe.presentation.ar.ArViewModel
 import com.friendorfoe.presentation.ar.ArViewScreen
 import com.friendorfoe.presentation.ar.PermissionHandler
@@ -120,29 +122,31 @@ private fun NavGraphBuilder.registerDestinations(
 ) {
     composable(Screen.ArView.route) {
         TopLevelRouteRoot(TopLevelDestination.AR) {
-            val arViewModel: ArViewModel = hiltViewModel()
-            val permissions = rememberPermissionBindings()
-            ArPermissionRoute(
-                cameraState = permissions.stateFor(AppFeature.AR_CAMERA),
-                locationState = permissions.stateFor(AppFeature.AR_MAP_LOCATION),
-                onRequestCamera = { permissions.request(AppFeature.AR_CAMERA) },
-                onOpenCameraSettings = { permissions.openSettings(AppFeature.AR_CAMERA) },
-            ) { locationState ->
-                PermissionHandler(
-                    viewModel = arViewModel,
-                    locationPermissionState = locationState,
-                    onRequestLocation = { permissions.request(AppFeature.AR_MAP_LOCATION) },
-                    onOpenLocationSettings = {
-                        permissions.openSettings(AppFeature.AR_MAP_LOCATION)
-                    },
-                ) {
-                    ArViewScreen(
-                        onObjectTapped = { objectId ->
-                            navController.navigate(Screen.Detail.createRoute(objectId))
-                        },
+            ArServicesEntry(onUseNearby = { navigateTopLevel(navController, TopLevelDestination.LIST) }) {
+                val arViewModel: ArViewModel = hiltViewModel()
+                val permissions = rememberPermissionBindings()
+                ArPermissionRoute(
+                    cameraState = permissions.stateFor(AppFeature.AR_CAMERA),
+                    locationState = permissions.stateFor(AppFeature.AR_MAP_LOCATION),
+                    onRequestCamera = { permissions.request(AppFeature.AR_CAMERA) },
+                    onOpenCameraSettings = { permissions.openSettings(AppFeature.AR_CAMERA) },
+                ) { locationState ->
+                    PermissionHandler(
                         viewModel = arViewModel,
                         locationPermissionState = locationState,
-                    )
+                        onRequestLocation = { permissions.request(AppFeature.AR_MAP_LOCATION) },
+                        onOpenLocationSettings = {
+                            permissions.openSettings(AppFeature.AR_MAP_LOCATION)
+                        },
+                    ) {
+                        ArViewScreen(
+                            onObjectTapped = { objectId ->
+                                navController.navigate(Screen.Detail.createRoute(objectId))
+                            },
+                            viewModel = arViewModel,
+                            locationPermissionState = locationState,
+                        )
+                    }
                 }
             }
         }
@@ -272,11 +276,11 @@ internal fun AboutTopLevelRoute(
     state: InfoUiState = InfoUiState(),
     onCheckForUpdates: () -> Unit = {},
     onCheckForUpdatesIfIdle: () -> Unit = {},
-    onOpenUpdate: ((String) -> Unit)? = null,
+    onOpenUpdate: (() -> Unit)? = null,
 ) {
     val context = LocalContext.current
     LaunchedEffect(Unit) { onCheckForUpdatesIfIdle() }
-    val openUpdate = onOpenUpdate ?: { url: String -> context.openUri(url) }
+    val openUpdate = onOpenUpdate ?: context::openPlayStoreListing
     TopLevelRouteRoot(TopLevelDestination.ABOUT) {
         AboutLandingScreen(
             installedVersionName = state.installedVersion.name
@@ -293,12 +297,7 @@ internal fun AboutTopLevelRoute(
                 onOpenReference = {
                     navController.navigate(REFERENCE_GUIDE_BASE_ROUTE) { launchSingleTop = true }
                 },
-                onContactSupport = {
-                    context.openUri("mailto:lnxgod@gmail.com?subject=Friend%20or%20Foe%20feedback")
-                },
-                onOpenGithub = {
-                    context.openUri("https://github.com/lnxgod/friendorfoe")
-                },
+                onOpenSource = context::openUri,
                 onCheckForUpdates = onCheckForUpdates,
                 onOpenUpdate = openUpdate,
             ),

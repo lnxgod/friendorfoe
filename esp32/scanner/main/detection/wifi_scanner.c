@@ -456,7 +456,8 @@ static bool emit_privacy_oui_detection(const oui_entry_t *oui,
                                        uint16_t channel,
                                        int64_t ts_ms)
 {
-    if (!oui || oui->role != OUI_ROLE_PRIVACY_INFRASTRUCTURE ||
+    if (!oui || (oui->role != OUI_ROLE_PRIVACY_INFRASTRUCTURE &&
+                 oui->role != OUI_ROLE_PRIVACY_FLOCK) ||
         !oui->manufacturer || !bssid) {
         return false;
     }
@@ -833,8 +834,7 @@ static void process_beacon_frame(const uint8_t *frame, int frame_len,
             return;
         }
         if (oui && !oui->high_false_positive &&
-            (oui->role == OUI_ROLE_DRONE ||
-             oui->role == OUI_ROLE_PRIVACY_FLOCK)) {
+            oui->role == OUI_ROLE_DRONE) {
             if (!beacon_rate_limit_allow(bssid, rssi, beacon_ts)) {
                 return;
             }
@@ -1723,8 +1723,7 @@ static void process_scan_results(void)
         const oui_entry_t *oui = wifi_oui_lookup_raw(bssid);
         bool strong_oui =
             oui && !oui->high_false_positive &&
-            (oui->role == OUI_ROLE_DRONE ||
-             oui->role == OUI_ROLE_PRIVACY_FLOCK);
+            oui->role == OUI_ROLE_DRONE;
 
 #ifdef FOF_BADGE_VARIANT
         fof_policy_evil_twin_alert_t evil_twin;

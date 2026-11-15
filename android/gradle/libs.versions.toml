@@ -1,6 +1,6 @@
 [versions]
 # Android & Kotlin
-agp = "8.2.2"
+agp = "8.13.0"
 kotlin = "1.9.22"
 ksp = "1.9.22-1.0.17"
 
@@ -17,10 +17,10 @@ compose-compiler = "1.5.9"
 navigation = "2.7.7"
 
 # CameraX
-camerax = "1.3.1"
+camerax = "1.4.2"
 
 # ARCore
-arcore = "1.41.0"
+arcore = "1.50.0"
 
 # ML Kit
 mlkit-object-detection = "17.0.1"

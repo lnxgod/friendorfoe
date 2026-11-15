@@ -547,7 +547,6 @@ class SkyObjectRepository @Inject constructor(
                         synchronized(wifiObjects) {
                             wifiObjects[drone.id] = drone
                         }
-                        Log.d(TAG, "WiFi updated: drone ${drone.ssid}")
                     }
                     rebuildMergedList()
                 }
@@ -803,14 +802,12 @@ class SkyObjectRepository @Inject constructor(
                     it.manufacturer?.equals(wifiDrone.manufacturer, ignoreCase = true) == true
                 }
                 if (sameManufacturerCount <= 1) {
-                    Log.d(TAG, "Dedup: WiFi '${wifiDrone.ssid}' matches RID '${ridDrone.droneId}' by manufacturer")
                     return true
                 }
             }
 
             // Check position-based matching (if WiFi drone has a valid position)
             if (matchesByPosition(wifiDrone, ridDrone)) {
-                Log.d(TAG, "Dedup: WiFi '${wifiDrone.ssid}' matches RID '${ridDrone.droneId}' by position")
                 return true
             }
         }

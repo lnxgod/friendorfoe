@@ -299,6 +299,23 @@ class BackendPrivacySourceAdapterTest {
     }
 
     @Test
+    fun legacyBackendFlockOuiIsVendorOnlyAndProductEvidenceWins() {
+        val legacy = LivePrivacyDeviceDto(
+            privacyKind = "FLOCK_ALPR", displayLabel = "FLOCK CAM", riskLevel = "high",
+            source = "wifi_oui", lastBssid = "B4:1E:52:AA:BB:CC",
+        )
+        fun map(dto: LivePrivacyDeviceDto) = BackendPrivacySourceAdapter.mapDevice(dto, "backend", 1L, 0, FakeClock())
+        assertEquals(PrivacyCategory.SECURITY_INFRASTRUCTURE, map(legacy).category)
+        assertEquals("Flock Safety device", map(legacy).title)
+        assertEquals(FindingSeverity.NEARBY, map(legacy).severity)
+        assertEquals(PrivacyCategory.SECURITY_INFRASTRUCTURE, map(legacy.copy(privacyKind = "SECURITY_INFRASTRUCTURE")).category)
+        val product = legacy.copy(source = "wifi_ap_inventory", privacyEvidence = listOf(
+            mapOf("field" to "class_reason", "value" to "privacy:alpr:elsag"),
+        ))
+        assertEquals(PrivacyCategory.ALPR_CAMERA, map(product).category)
+    }
+
+    @Test
     fun sameRowBackendAppleListeningEvidenceNormalizesWithoutCrossRowCorrelation() {
         val clock = FakeClock()
         val appleListening = BackendPrivacySourceAdapter.mapDevice(
@@ -442,7 +459,7 @@ class BackendPrivacySourceAdapterTest {
     }
 
     private fun enabledBackendSettings(
-        backendUrl: String = DetectionSettings.defaults().backendUrl,
+        backendUrl: String = "https://sensor.example/",
     ) = DetectionSettings.defaults().copy(
         sensorBackendEnabled = true,
         backendUrl = backendUrl,

@@ -7,6 +7,7 @@
  */
 
 #include "wifi_privacy_scanner.h"
+#include "privacy_rf_signatures.h"
 
 #include "esp_wifi.h"
 #include "esp_event.h"
@@ -26,6 +27,7 @@ typedef struct {
     const char *manufacturer;
     float       confidence;
     bool        has_camera;
+    bool        requires_hex4;
 } wifi_ssid_pattern_t;
 
 static const wifi_ssid_pattern_t s_patterns[] = {
@@ -46,14 +48,13 @@ static const wifi_ssid_pattern_t s_patterns[] = {
     { "JXLCAM",      "Spy Camera",     "Generic",    0.85f, true  },
     { "CareCam-",    "Hidden Camera",  "CareCam",    0.80f, true  },
     { "iCam-",       "Hidden Camera",  "iCam365",    0.80f, true  },
-    { "AI_",         "Hidden Camera",  "TinyCam",    0.80f, true  },
     { "WIFI-CAM",    "Hidden Camera",  "Generic",    0.75f, true  },
     { "DEPSTECH_",   "Endoscope",      "DEPSTECH",   0.85f, true  },
     { "Hik-",        "IP Camera",      "Hikvision",  0.85f, true  },
     { "HIKVISION_",  "IP Camera",      "Hikvision",  0.85f, true  },
     { "DH_",         "IP Camera",      "Dahua",      0.80f, true  },
-    { "Tapo_",       "IP Camera",      "TP-Link",    0.80f, true  },
-    { "TAPO-",       "IP Camera",      "TP-Link",    0.80f, true  },
+    { "Tapo_Cam_",   "IP Camera",      "TP-Link",    0.80f, true, true },
+    { "Kasa_Cam_",   "IP Camera",      "TP-Link",    0.80f, true, true },
     { "Reolink_",    "IP Camera",      "Reolink",    0.80f, true  },
     { "Wyze_",       "IP Camera",      "Wyze",       0.80f, true  },
     { "Amcrest_",    "IP Camera",      "Amcrest",    0.80f, true  },
@@ -155,7 +156,8 @@ int wifi_privacy_scan(wifi_privacy_result_t *results, int max_results)
         /* Check against SSID pattern database */
         for (int p = 0; p < (int)PATTERN_COUNT; p++) {
             int prefix_len = strlen(s_patterns[p].prefix);
-            if (strncasecmp(ssid, s_patterns[p].prefix, prefix_len) == 0) {
+            if (strncasecmp(ssid, s_patterns[p].prefix, prefix_len) == 0 &&
+                (!s_patterns[p].requires_hex4 || fof_privacy_is_hex4_suffix(ssid + prefix_len))) {
                 wifi_privacy_result_t *r = &results[match_count++];
                 strncpy(r->ssid, ssid, sizeof(r->ssid) - 1);
                 snprintf(r->bssid, sizeof(r->bssid), "%02x:%02x:%02x:%02x:%02x:%02x",

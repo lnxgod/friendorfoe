@@ -39,7 +39,9 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import com.friendorfoe.presentation.components.LeaveBackendOnlyDialog
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -65,6 +67,7 @@ import com.friendorfoe.presentation.permissions.permissionRecovery
 import com.friendorfoe.presentation.permissions.permissionTitle
 import com.friendorfoe.presentation.permissions.rememberPermissionBindings
 import kotlin.math.roundToInt
+import com.friendorfoe.presentation.ar.ArServicesDisclosure
 import com.friendorfoe.presentation.components.FofDisclosure
 
 val INFO_SECTION_TITLES = listOf(
@@ -72,7 +75,7 @@ val INFO_SECTION_TITLES = listOf(
     "Detection & connections",
     "Guide & category legend",
     "Privacy & Data",
-    "About, support, version & updates",
+    "About, version & updates",
     "Advanced",
 )
 
@@ -87,8 +90,7 @@ data class InfoActions(
     val onSaveBackendUrl: () -> Unit = {},
     val onTestConnection: () -> Unit = {},
     val onCheckForUpdates: () -> Unit = {},
-    val onOpenUpdate: (String) -> Unit = {},
-    val onContactSupport: () -> Unit = {},
+    val onOpenUpdate: () -> Unit = {},
     val onRefreshCalibration: () -> Unit = {},
     val onOpenReference: () -> Unit = {},
     val onOpenMagneticField: () -> Unit = {},
@@ -132,6 +134,16 @@ fun InfoSettingsScreen(
     } else {
         remember { androidx.compose.runtime.mutableStateOf(false) }
     }
+    var showLocalScanChoice by rememberSaveable { mutableStateOf(false) }
+    if (showLocalScanChoice) {
+        LeaveBackendOnlyDialog(
+            onConfirm = {
+                showLocalScanChoice = false
+                viewModel?.enablePhonePrivacyScan(allowBackendOnlyExit = true)
+            },
+            onDismiss = { showLocalScanChoice = false },
+        )
+    }
     val actions = InfoActions(
         onSetAircraftRangeMiles = { viewModel?.setAircraftRangeMiles(it) },
         onSetSetting = { key, enabled ->
@@ -158,19 +170,16 @@ fun InfoSettingsScreen(
         onSaveBackendUrl = { viewModel?.saveBackendUrl() },
         onTestConnection = { viewModel?.testConnection() },
         onCheckForUpdates = { viewModel?.checkForUpdates() },
-        onOpenUpdate = { url -> context.openUri(url) },
-        onContactSupport = {
-            context.openUri(
-                "mailto:lnxgod@gmail.com?subject=" +
-                    Uri.encode("Friend or Foe feedback"),
-            )
-        },
+        onOpenUpdate = context::openPlayStoreListing,
         onRefreshCalibration = { viewModel?.refreshCalibrationAvailability() },
         onOpenReference = { onNavigateToReference?.invoke() },
         onOpenMagneticField = { onNavigateToEmfSweep?.invoke() },
         onOpenIrLikeLight = { onNavigateToIrCameraScan?.invoke() },
         onOpenCalibration = { onNavigateToCalibrate?.invoke() },
-        onEnablePhonePrivacyScan = { viewModel?.enablePhonePrivacyScan() },
+        onEnablePhonePrivacyScan = {
+            if (state.settings.backendOnlyMode) showLocalScanChoice = true
+            else viewModel?.enablePhonePrivacyScan()
+        },
     )
     InfoContent(
         state = state,
@@ -433,7 +442,7 @@ private fun RuntimeSettingsRows(state: InfoUiState, actions: InfoActions) {
         key = InfoSettingKey.SENSOR_BACKEND,
         title = "Poll configured sensor backend",
         description = "Poll only the configured FoF/ESP32 sensor backend. " +
-            "This does not disable ADS-B, weather, map tiles, or GitHub updates.",
+            "ADS-B, weather, map tiles, and Google Play update checks have separate connections.",
         checked = state.settings.sensorBackendEnabled,
         actions = actions,
     )
@@ -643,7 +652,7 @@ private fun BackendEndpointEditor(state: InfoUiState, actions: InfoActions) {
             onValueChange = actions.onEditBackendUrl,
             modifier = Modifier.fillMaxWidth().testTag("backend_url"),
             label = { Text("Backend URL") },
-            placeholder = { Text("http://sensor-host:8000/") },
+            placeholder = { Text("https://sensor.example") },
             singleLine = true,
             isError = state.backendUrlError != null,
             textStyle = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
@@ -679,7 +688,9 @@ private fun ConnectionStatusRow(state: InfoUiState) {
     val (text, tone) = when (val connection = state.connection) {
         ConnectionTestState.Idle -> {
             val configured = state.settings.backendUrl
-            if (state.settings.sensorBackendEnabled) {
+            if (configured.isBlank()) {
+                "No sensor backend configured" to InfoTone.Muted
+            } else if (state.settings.sensorBackendEnabled) {
                 "Not tested · $configured" to InfoTone.Neutral
             } else {
                 "Backend connection is off · $configured" to InfoTone.Muted
@@ -770,6 +781,12 @@ private fun PrivacyDataCopy() {
         "A configured sensor backend exchanges detection data with this app.",
         "Calibration sends operator/session GPS to the configured backend when used.",
     ).forEach { fact -> FactRow(fact) }
+    Text("Sensor and data controls", style = MaterialTheme.typography.titleSmall)
+    FactRow("Manage phone scanning and optional ultrasonic microphone sampling in Detection & connections. Change camera, microphone and location access in Android app permissions.")
+    FactRow("Use Clear recent encounters in Privacy to clear its 30-minute session list. Saved flights, photos and records held by a sensor backend are separate.")
+    FactRow("Map tile requests reveal the viewed area to the map provider. Google ML Kit processes images on the device and sends installation identifiers, usage and diagnostics to Google.")
+    val context = LocalContext.current
+    ArServicesDisclosure(onOpenLink = context::openUri)
 }
 
 @Composable
@@ -800,13 +817,6 @@ private fun AboutAndUpdateRows(state: InfoUiState, actions: InfoActions) {
         style = MaterialTheme.typography.bodyMedium,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
         modifier = Modifier.padding(top = 2.dp),
-    )
-    FofActionRow(
-        title = "Contact & feedback",
-        description = "lnxgod@gmail.com",
-        trailingLabel = "Email",
-        onClick = actions.onContactSupport,
-        modifier = Modifier.testTag("info_contact_support"),
     )
     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
     Row(

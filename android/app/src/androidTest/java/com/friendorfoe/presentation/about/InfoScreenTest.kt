@@ -51,7 +51,7 @@ class InfoScreenTest {
                 "Detection & connections",
                 "Guide & category legend",
                 "Privacy & Data",
-                "About, support, version & updates",
+                "About, version & updates",
                 "Advanced",
             ),
             INFO_SECTION_TITLES,
@@ -185,7 +185,7 @@ class InfoScreenTest {
             "A configured sensor backend exchanges detection data with this app.",
             "Calibration sends operator/session GPS to the configured backend when used.",
         ).forEach { fact ->
-            compose.onNodeWithText(fact).assertIsDisplayed()
+            compose.onNodeWithText(fact).performScrollTo().assertIsDisplayed()
         }
         listOf(
             "No personal data is collected or transmitted",
@@ -254,7 +254,7 @@ class InfoScreenTest {
 
         scrollToSection(4)
         compose.onNodeWithText("Could not check for updates")
-            .assertIsDisplayed()
+            .performScrollTo().assertIsDisplayed()
         assertEquals(
             0,
             compose.onAllNodesWithText("Update available", substring = true)

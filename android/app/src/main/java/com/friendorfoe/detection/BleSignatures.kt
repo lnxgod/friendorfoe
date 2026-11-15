@@ -34,25 +34,15 @@ object BleSignatures {
     const val CID_LUXOTTICA         = 0x0D53
     const val CID_FLIPPER           = 0x0E29
     const val CID_BOSE              = 0x009E
-    const val CID_BOSE_ALT          = 0x009F
     const val CID_JBL               = 0x0057
     const val CID_SONY              = 0x012D
-    const val CID_FITBIT            = 0x0108
     const val CID_GARMIN            = 0x0087
     const val CID_XIAOMI            = 0x038F
     const val CID_HUAWEI            = 0x027D
     const val CID_AMAZON            = 0x0171
-    const val CID_SONOS             = 0x0236
-    const val CID_IKEA              = 0x0311
-    const val CID_TESLA             = 0x04F6
-    const val CID_GOPRO             = 0x02DF
-    const val CID_PARROT            = 0x0289
-    const val CID_NINTENDO          = 0x0578
     /** Axon body cameras. Real CID is 0x034D (TASER International); the previously
      *  listed 0x04D8 is FUJIFILM and was a mislabel. */
     const val CID_AXON              = 0x034D
-    const val CID_SEGWAY            = 0x06A1
-    const val CID_DEXCOM            = 0x0267
     const val CID_SNAP              = 0x03C2
     const val CID_VUZIX             = 0x060C
     const val CID_TCL               = 0x0BC6  // TCL — parent of RayNeo AR glasses

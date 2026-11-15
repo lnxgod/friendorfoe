@@ -8,7 +8,6 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import com.friendorfoe.data.AppVersion
-import com.friendorfoe.data.repository.AppUpdateMetadata
 import com.friendorfoe.presentation.theme.FriendOrFoeTheme
 import org.junit.Assert.assertEquals
 import org.junit.Rule
@@ -19,14 +18,16 @@ class AboutLandingScreenTest {
     val compose = createComposeRule()
 
     @Test
-    fun moreShowsDailyToolsBeforeSupportAndKeepsActions() {
+    fun moreShowsDailyToolsAndKeepsSettingsAction() {
         var settingsOpened = 0
+        var sourceUrl: String? = null
 
         compose.setContent {
             FriendOrFoeTheme {
                 AboutLandingScreen(
                     actions = AboutLandingActions(
                         onOpenSettings = { settingsOpened++ },
+                        onOpenSource = { sourceUrl = it },
                     ),
                 )
             }
@@ -39,69 +40,26 @@ class AboutLandingScreenTest {
         compose.onNodeWithTag("more_badge").assertIsDisplayed()
         compose.onNodeWithTag("about_reference").assertIsDisplayed()
         compose.onNodeWithTag("about_contact").assertDoesNotExist()
-        compose.onNodeWithTag("more_support").performScrollTo().performClick()
         compose.onNodeWithText("Observations are evidence, not proof of identity, intent, or ownership.")
             .performScrollTo().assertIsDisplayed()
-        compose.onNodeWithTag("about_contact").performScrollTo().assertIsDisplayed()
-        compose.onNodeWithTag("about_github").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithTag("about_github").performScrollTo().assertIsDisplayed().performClick()
+        compose.runOnIdle { assertEquals("https://github.com/lnxgod/friendorfoe", sourceUrl) }
         compose.runOnIdle { assertEquals(1, settingsOpened) }
     }
 
     @Test
-    fun landingShowsAndOpensAvailableGitHubUpdate() {
-        var opened: String? = null
-        val remote = AppUpdateMetadata(
-            AppVersion(null, "0.68.0"),
-            "https://github.com/lnxgod/friendorfoe/releases/tag/v0.68.0",
-        )
-
+    fun availableUpdateOpensThePlayListing() {
+        var opens = 0
         compose.setContent {
             FriendOrFoeTheme {
                 AboutLandingScreen(
-                    installedVersionName = "0.67.7-android-ar-overlay-range",
-                    updateState = UpdateUiState.Available(remote),
-                    actions = AboutLandingActions(onOpenUpdate = { opened = it }),
-                )
-            }
-        }
-
-        compose.onNodeWithText("Version 0.67.7-android-ar-overlay-range")
-            .performScrollTo().assertIsDisplayed()
-        compose.onNodeWithText("Version 0.68.0").performScrollTo().assertIsDisplayed()
-        compose.onNodeWithTag("about_open_update")
-            .performScrollTo().assertIsDisplayed().performClick()
-        compose.onNodeWithText("Update available").assertIsDisplayed()
-        compose.runOnIdle { assertEquals(remote.releaseUrl, opened) }
-    }
-
-    @Test
-    fun readyApkDownloadsDirectlyWithSeparateReleaseNotes() {
-        var opened: String? = null
-        val remote = AppUpdateMetadata(
-            AppVersion(null, "0.67.20"),
-            "https://github.com/lnxgod/friendorfoe/releases/tag/v0.67.20-android-review",
-            "https://github.com/lnxgod/friendorfoe/releases/download/v0.67.20-android-review/friendorfoe-v0.67.20-android-review.apk",
-        )
-        compose.setContent {
-            FriendOrFoeTheme {
-                AboutLandingScreen(
-                    updateState = UpdateUiState.Available(remote),
-                    actions = AboutLandingActions(onOpenUpdate = { opened = it }),
+                    updateState = UpdateUiState.Available,
+                    actions = AboutLandingActions(onOpenUpdate = { opens++ }),
                 )
             }
         }
         compose.onNodeWithTag("about_open_update").performScrollTo().performClick()
-        compose.onNodeWithText("Download APK").assertIsDisplayed()
-        compose.runOnIdle { assertEquals(remote.apkUrl, opened) }
-        compose.onNodeWithTag("about_release_notes").performScrollTo().performClick()
-        compose.runOnIdle { assertEquals(remote.releaseUrl, opened) }
-        compose.mainClock.advanceTimeBy(600)
-        compose.waitForIdle()
-        val screenshot = androidx.test.platform.app.InstrumentationRegistry.getInstrumentation().uiAutomation.takeScreenshot()
-        val context = androidx.test.platform.app.InstrumentationRegistry.getInstrumentation().targetContext
-        java.io.File(context.filesDir, "direct-update.png").outputStream().use {
-            screenshot.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it)
-        }
+        compose.runOnIdle { assertEquals(1, opens) }
     }
 
     @Test

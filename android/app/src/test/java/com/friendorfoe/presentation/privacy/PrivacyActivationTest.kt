@@ -10,14 +10,18 @@ import org.junit.Test
 
 class PrivacyActivationTest {
     @Test
-    fun leavingBackendOnlyUsesTheSettingsTransactionThatRestartsCollectors() {
+    fun backendOnlyModePreservesAllSettingsUntilUserChoosesPhoneScanning() {
+        val remoteOnly = DetectionSettings.defaults().copy(backendOnlyMode = true)
+        for (choice in listOf(BackendOnlyExit.NOT_REQUESTED, BackendOnlyExit.NEEDS_CONFIRMATION)) {
+            assertTrue(phonePrivacyEnableWrites(remoteOnly, choice).isEmpty())
+        }
         assertEquals(
             listOf(
                 InfoSettingKey.PHONE_PRIVACY_SCAN to true,
                 InfoSettingKey.BACKEND_ONLY to false,
             ),
             phonePrivacyEnableWrites(
-                DetectionSettings.defaults().copy(backendOnlyMode = true),
+                remoteOnly, BackendOnlyExit.CONFIRMED,
             ),
         )
         assertEquals(

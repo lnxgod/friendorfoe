@@ -82,7 +82,7 @@ class CalibrationViewModelTest {
             walkSensorsResult = Result.failure(IllegalStateException("HTTP 401: no token")),
         )
         val viewModel = CalibrationViewModel(
-            prefs = FakeCalibrationSettingsStore(calibrationToken = CalibrationApi.DEFAULT_TOKEN),
+            prefs = FakeCalibrationSettingsStore(calibrationToken = "test-calibration-token"),
             advertiser = FakeCalibrationAdvertiser(),
             api = backend,
             platform = FakeCalibrationPlatform(),
@@ -97,6 +97,8 @@ class CalibrationViewModelTest {
         assertEquals(CalibrationAuthState.Invalid, state.calibrationAuthState)
         assertEquals(SensorLoadState.Unknown, state.sensorLoadState)
         assertEquals("Calibration token rejected — update X-Cal-Token.", state.errorMessage)
+        assertTrue(backend.sensorTokens.isNotEmpty())
+        assertTrue(backend.sensorTokens.all { it == "test-calibration-token" })
     }
 
     @Test
@@ -634,8 +636,8 @@ private class RecordingRuntimePermissionChangeNotifier : RuntimePermissionChange
 }
 
 private class FakeCalibrationSettingsStore(
-    override var backendUrl: String = "http://fof-server.local:8000/",
-    override var calibrationToken: String = CalibrationApi.DEFAULT_TOKEN,
+    override var backendUrl: String = "https://sensor.example/",
+    override var calibrationToken: String = "test-calibration-token",
     override var operatorLabel: String = "Test phone",
 ) : CalibrationSettingsStore
 
@@ -668,6 +670,7 @@ private class FakeCalibrationBackend(
     var walkEndResult: Result<JsonObject> = Result.success(JsonObject()),
     var walkCheckpointResult: Result<JsonObject>? = null,
 ) : CalibrationBackend {
+    val sensorTokens = mutableListOf<String>()
     var abortCalls: Int = 0
     var checkpointCalls: Int = 0
     var lastAbortReason: String? = null
@@ -719,7 +722,10 @@ private class FakeCalibrationBackend(
         return Result.success(JsonObject())
     }
 
-    override suspend fun walkSensors(baseUrl: String, token: String): Result<JsonObject> = walkSensorsResult
+    override suspend fun walkSensors(baseUrl: String, token: String): Result<JsonObject> {
+        sensorTokens += token
+        return walkSensorsResult
+    }
 
     override suspend fun walkMyPosition(baseUrl: String, token: String, sessionId: String): Result<JsonObject> =
         walkMyPositionResult

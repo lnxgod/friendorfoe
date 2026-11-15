@@ -23,7 +23,7 @@ class ArBackendPollingTest {
     @Test
     fun endpointReplacementRejectsLateResultAndDisableClearsOnlyRemoteState() = runTest {
         val settings = MutableStateFlow(
-            DetectionSettings.defaults().copy(sensorBackendEnabled = true),
+            DetectionSettings.defaults().copy(sensorBackendEnabled = true, backendUrl = "https://sensor.example/"),
         )
         val state = ArBackendIntegrationState()
         val localObservation = VisualDetection(

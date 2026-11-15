@@ -160,7 +160,7 @@ static bool text_mentions_flock(const char *text)
            contains_nocase(text, "flock registered oui");
 }
 
-static bool source_can_carry_flock_wifi_oui(uint8_t source)
+static bool source_has_wifi_mac(uint8_t source)
 {
     return source == DETECTION_SRC_WIFI_OUI ||
            source == DETECTION_SRC_WIFI_SSID ||
@@ -204,7 +204,7 @@ static bool text_starts_with_flock_safety_oui(const char *text)
 
 static bool detection_has_flock_safety_wifi_oui(const drone_detection_t *det)
 {
-    if (!det || !source_can_carry_flock_wifi_oui(det->source)) {
+    if (!det || !source_has_wifi_mac(det->source)) {
         return false;
     }
     return text_starts_with_flock_safety_oui(det->bssid) ||
@@ -1376,15 +1376,13 @@ bool badge_threat_classify_detection(const drone_detection_t *det,
         copy_detail(event->detail, "privacy infrastructure OUI");
         event->base_score = 45.0f;
         event->evidence_quality = 6;
-    } else if ((det->source == DETECTION_SRC_WIFI_OUI ||
-         det->source == DETECTION_SRC_WIFI_SSID ||
-         det->source == DETECTION_SRC_WIFI_ASSOC ||
-         det->source == DETECTION_SRC_WIFI_AP_INVENTORY ||
-         det->source == DETECTION_SRC_WIFI_PROBE_REQUEST) &&
-        mfr_flock) {
-        event->cls = BADGE_THREAT_WIFI_ANOMALY;
-        event->category = BADGE_THREAT_CATEGORY_FLOCK;
-        copy_label(event->label, "FLOCK Camera");
+    } else if (mfr_flock &&
+               !(det->source == DETECTION_SRC_WIFI_AP_INVENTORY &&
+                 (contains_nocase(det->class_reason, "privacy:") ||
+                  contains_nocase(det->class_reason, "attack_tool:")))) {
+        event->cls = BADGE_THREAT_OTHER;
+        event->category = BADGE_THREAT_CATEGORY_PRIVACY;
+        copy_label(event->label, "Flock Safety Device");
         if (det->ssid[0] != '\0') {
             char detail[BADGE_THREAT_DETAIL_LEN] = {0};
             snprintf(detail, sizeof(detail), "ssid %.26s", det->ssid);
@@ -1398,8 +1396,8 @@ bool badge_threat_classify_detection(const drone_detection_t *det,
         } else {
             copy_detail(event->detail, "Flock WiFi signal");
         }
-        event->base_score = 78.0f;
-        event->evidence_quality = 8;
+        event->base_score = 45.0f;
+        event->evidence_quality = 6;
     } else if (source_is_drone_candidate(det->source) || mfr_drone) {
         if (!drone_detection_has_lift(det)) {
             return false;
@@ -1457,16 +1455,6 @@ bool badge_threat_classify_detection(const drone_detection_t *det,
         }
         event->base_score = 64.0f;
         event->evidence_quality = 6;
-    } else if (det->source == DETECTION_SRC_BLE_FINGERPRINT && mfr_flock) {
-        event->cls = BADGE_THREAT_OTHER;
-        event->category = BADGE_THREAT_CATEGORY_FLOCK;
-        copy_label(event->label, "FLOCK Camera");
-        copy_ble_detail(event->detail, det);
-        if (event->detail[0] == '\0') {
-            copy_detail(event->detail, "Flock evidence");
-        }
-        event->base_score = 74.0f;
-        event->evidence_quality = 8;
     } else if (det->source == DETECTION_SRC_BLE_FINGERPRINT && mfr_meta) {
         if (detection_is_status_meta_without_identity(det)) {
             return false;
@@ -3287,7 +3275,7 @@ static void badge_threat_snapshot_entity_view_title(
             badge_threat_format_meta_glasses_title(out, out_len);
             return;
         case BADGE_THREAT_CATEGORY_FLOCK:
-            snprintf(out, out_len, "FLOCK CAM");
+            snprintf(out, out_len, "ALPR CAM");
             return;
         case BADGE_THREAT_CATEGORY_SKIM:
             snprintf(out, out_len, "POSSIBLE SKIMMER");
@@ -3409,7 +3397,9 @@ badge_threat_display_lane_t badge_threat_snapshot_entity_display_lane(
     if (badge_threat_snapshot_entity_is_remote_id_drone(item)) {
         return BADGE_THREAT_DISPLAY_LANE_BLE;
     }
-    if (item->cls == BADGE_THREAT_WIFI_ANOMALY ||
+    if ((item->category == BADGE_THREAT_CATEGORY_PRIVACY &&
+         source_has_wifi_mac(item->source)) ||
+        item->cls == BADGE_THREAT_WIFI_ANOMALY ||
         item->category == BADGE_THREAT_CATEGORY_WIFI ||
         item->category == BADGE_THREAT_CATEGORY_SSID ||
         item->cls == BADGE_THREAT_DRONE) {

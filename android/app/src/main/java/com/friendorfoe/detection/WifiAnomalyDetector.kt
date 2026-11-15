@@ -1,6 +1,5 @@
 package com.friendorfoe.detection
 
-import android.util.Log
 import java.time.Instant
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -22,8 +21,6 @@ class WifiAnomalyDetector @Inject constructor(
     private val wifiScanCoordinator: WifiScanCoordinator
 ) {
     companion object {
-        private const val TAG = "WifiAnomalyDetector"
-
         internal fun analyzeNetworksForTest(networks: List<WifiNetwork>): List<WifiAnomaly> {
             return analyzeNetworks(networks, mutableMapOf(), Instant.now())
         }
@@ -50,7 +47,6 @@ class WifiAnomalyDetector @Inject constructor(
                         evidence = listOf(network.toEvidence()),
                         timestamp = now
                     ))
-                    safeLogWarning("PWNAGOTCHI: ${network.bssid} (ssid=${network.ssid})")
                 }
             }
 
@@ -97,7 +93,6 @@ class WifiAnomalyDetector @Inject constructor(
                         evidence = evidence,
                         timestamp = now
                     ))
-                    safeLogWarning("EVIL TWIN: '$ssid' has mixed security: $securities")
                     continue
                 }
             }
@@ -121,7 +116,6 @@ class WifiAnomalyDetector @Inject constructor(
                         evidence = listOf(network.toEvidence()),
                         timestamp = now
                     ))
-                    safeLogWarning("KARMA ATTACK: ${network.bssid} broadcasting ${history.size} SSIDs")
                 }
             }
 
@@ -145,14 +139,6 @@ class WifiAnomalyDetector @Inject constructor(
 
         private fun getSecurityType(capabilities: String?): String =
             WifiSecurityProfile.parse(capabilities).label
-
-        private fun safeLogWarning(message: String) {
-            try {
-                Log.w(TAG, message)
-            } catch (_: RuntimeException) {
-                // Android Log is not available in plain JVM unit tests.
-            }
-        }
     }
 
     data class WifiNetwork(

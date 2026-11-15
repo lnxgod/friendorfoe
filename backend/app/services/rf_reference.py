@@ -25,6 +25,7 @@ SOURCE_LABELS = {
     "ieee_ma_m": "IEEE RA MA-M",
     "ieee_ma_s": "IEEE RA MA-S",
     "ieee_cid": "IEEE RA CID",
+    "ieee_iab": "IEEE RA IAB",
     "wireshark_manuf": "Wireshark manuf",
     "nmap_mac_prefixes": "Nmap mac-prefixes",
     "bluetooth_company_ids": "Bluetooth SIG Assigned Numbers",
@@ -147,24 +148,17 @@ def reload_reference() -> None:
     _ssid_patterns = []
 
 
-def _hex_mac(mac: str | None) -> str | None:
-    text = str(mac or "").strip()
-    if not text:
-        return None
+_MAC_FORMAT = re.compile(
+    r"[0-9a-f]{12}|(?:[0-9a-f]{2}:){5}[0-9a-f]{2}|"
+    r"(?:[0-9a-f]{2}-){5}[0-9a-f]{2}|(?:[0-9a-f]{4}\.){2}[0-9a-f]{4}", re.I | re.ASCII
+)
 
-    hex_chars: list[str] = []
-    for ch in text:
-        if ch in ":-.":
-            if not hex_chars:
-                return None
-            continue
-        upper = ch.upper()
-        if upper not in "0123456789ABCDEF":
-            return None
-        hex_chars.append(upper)
-        if len(hex_chars) >= 12:
-            return "".join(hex_chars[:12])
-    return None
+
+def mac_hex(mac: str | None) -> str | None:
+    text = (mac or "").strip()
+    if not _MAC_FORMAT.fullmatch(text):
+        return None
+    return re.sub(r"[:.\-]", "", text).upper()
 
 
 def _prefix_for_bits(hex_mac: str, bits: int) -> str:
@@ -178,9 +172,9 @@ def _format_prefix(hex_mac: str, bits: int | None = 24) -> str | None:
     prefix = hex_mac[:nibbles]
     if len(prefix) < 6:
         return None
-    parts = [prefix[i:i + 2] for i in range(0, min(len(prefix), 6), 2)]
-    suffix = prefix[6:]
-    return ":".join(parts) + (f"/{bits}" if suffix or bits != 24 else "")
+    parts = [prefix[i:i + 2] for i in range(0, len(prefix), 2)]
+    # Pad only the low, unassigned nibble (e.g. 00:50:C2:F7:10/36).
+    return ":".join(part.ljust(2, "0") for part in parts) + (f"/{bits}" if bits != 24 else "")
 
 
 def _display_vendor(entry: dict[str, Any]) -> tuple[str | None, str | None]:
@@ -205,15 +199,18 @@ def _confidence(entry: dict[str, Any]) -> float:
 
 def resolve_mac(mac: str | None, *, source: str | None = None, ble_addr_type: int | None = None) -> MacResolution:
     _load()
-    hex_mac = _hex_mac(mac)
+    hex_mac = mac_hex(mac)
     source_l = (source or "").lower()
-    if not hex_mac:
+    # BLE addresses do not use the Wi-Fi local bit to distinguish public from
+    # random. Missing address-type evidence must not upgrade a MAC into a vendor.
+    unknown_ble_type = source_l.startswith("ble") and ble_addr_type not in (0, 1, 2, 3)
+    if not hex_mac or unknown_ble_type:
         return MacResolution(
             vendor_short=None, vendor_long=None, vendor_aliases=[], vendor_source=None,
             assignment_type=None, prefix_bits=None, oui_prefix=None, product_hint=None,
             device_family=None, device_class=None, vendor_confidence=0.0,
             reference_updated_at=_payload.get("generated_at") if _payload else None,
-            mac_is_randomized=False, mac_identity_kind="unknown", mac_reason="missing_mac",
+            mac_is_randomized=False, mac_identity_kind="unknown", mac_reason="unknown_ble_address_type" if hex_mac else "missing_mac",
         )
 
     if source_l.startswith("ble") and ble_addr_type == 2:
@@ -223,7 +220,9 @@ def resolve_mac(mac: str | None, *, source: str | None = None, ble_addr_type: in
     if _legacy_is_random_mac(mac):
         return _randomized_resolution(hex_mac, "randomized", "locally_administered_bit")
 
-    for bits in (36, 28, 24):
+    # Multicast/group and all-zero addresses do not identify a public transmitter.
+    public_unicast = not (int(hex_mac[:2], 16) & 1) and hex_mac != "000000000000"
+    for bits in ((36, 28, 24) if public_unicast else ()):
         hit = _mac_by_key.get((_prefix_for_bits(hex_mac, bits), bits))
         if hit:
             short, long = _display_vendor(hit)
@@ -248,7 +247,7 @@ def resolve_mac(mac: str | None, *, source: str | None = None, ble_addr_type: in
 
     return MacResolution(
         vendor_short=None, vendor_long=None, vendor_aliases=[], vendor_source=None,
-        assignment_type=None, prefix_bits=None, oui_prefix=_format_prefix(hex_mac, 24),
+        assignment_type=None, prefix_bits=None, oui_prefix=_format_prefix(hex_mac, 24) if public_unicast else None,
         product_hint=None, device_family=None, device_class=None, vendor_confidence=0.0,
         reference_updated_at=_payload.get("generated_at") if _payload else None,
         mac_is_randomized=False, mac_identity_kind="unknown", mac_reason="unassigned_or_unknown_prefix",
@@ -339,7 +338,7 @@ def ssid_pattern_hints(ssids: list[str] | None, ssid: str | None = None) -> list
                 continue
             hint = dict(spec)
             hint["matched_ssid"] = value
-            hint["source"] = "operator_ssid_override" if "TeamCharityCase" in label else "ssid_pattern"
+            hint["source"] = "operator_ssid_override" if hint.get("device_class") == "known_owned" else "ssid_pattern"
             hints.append(hint)
             seen.add(key)
     return hints

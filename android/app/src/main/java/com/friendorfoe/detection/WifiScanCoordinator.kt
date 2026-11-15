@@ -168,8 +168,9 @@ class WifiScanCoordinator internal constructor(
             lastPublishedBlockedState = null
         }
         try {
-            platform.registerResultsReceiver {
-                scope.launch { publishReceiverResultsIfReady() }
+            platform.registerResultsReceiver { updated ->
+                if (updated) scope.launch { publishReceiverResultsIfReady() }
+                else publishFailure("Wi-Fi scan did not update; previous observations retained")
             }
             receiverRegistered = true
             scanJob?.cancel()
@@ -317,8 +318,6 @@ class WifiScanCoordinator internal constructor(
         val message = when (state) {
             WifiScanReadiness.MISSING_FINE_LOCATION ->
                 "Location permission is required for Wi-Fi scan results"
-            WifiScanReadiness.MISSING_NEARBY_WIFI_DEVICES ->
-                "Nearby devices permission is required for Wi-Fi scan results"
             WifiScanReadiness.LOCATION_SERVICES_DISABLED ->
                 "Location services must be enabled for Wi-Fi scan results"
             WifiScanReadiness.WIFI_DISABLED ->

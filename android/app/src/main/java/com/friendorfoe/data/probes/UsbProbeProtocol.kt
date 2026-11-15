@@ -12,7 +12,6 @@ import java.util.Locale
 const val PROBE_USB_VENDOR = 0x303a
 const val PROBE_USB_PRODUCT = 0x4001
 const val PROBE_USB_NAME = "FoF WiFi Probe"
-const val PROBE_FLASHER_URL = "https://lnxgod.github.io/friendorfoe/#usb-probe"
 
 internal fun isUsbProbeProduct(vendor: Int, product: Int, name: String?): Boolean =
     vendor == PROBE_USB_VENDOR && product == PROBE_USB_PRODUCT && name == PROBE_USB_NAME

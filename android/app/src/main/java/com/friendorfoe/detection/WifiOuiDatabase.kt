@@ -75,7 +75,7 @@ object WifiOuiDatabase {
 
         // Privacy infrastructure. An OUI identifies a vendor, not a device's
         // purpose or current activity; routing code must not infer recording.
-        "B4:1E:52" to OuiEntry("Flock Safety", "Flock Safety ALPR/camera registered OUI", role = OuiRole.PRIVACY_FLOCK),
+        "B4:1E:52" to OuiEntry("Flock Safety", "Flock Safety registered OUI", role = OuiRole.PRIVACY_FLOCK),
         "E0:A7:00" to OuiEntry("Verkada", "Verkada Inc.", role = OuiRole.PRIVACY_INFRASTRUCTURE),
         "CC:47:BD" to OuiEntry("Rhombus", "Rhombus Systems", role = OuiRole.PRIVACY_INFRASTRUCTURE),
         "00:25:DF" to OuiEntry("Axon", "Axon Enterprise", role = OuiRole.PRIVACY_INFRASTRUCTURE),
@@ -85,6 +85,9 @@ object WifiOuiDatabase {
         "70:E4:6E" to OuiEntry("Lytx", "Lytx Inc.", role = OuiRole.PRIVACY_INFRASTRUCTURE),
         "C4:2F:90" to OuiEntry("Hikvision", "Hangzhou Hikvision (IP camera)", highFalsePositiveRisk = true, role = OuiRole.ENRICHMENT_ONLY),
         "E8:AB:FA" to OuiEntry("Reecam", "Shenzhen Reecam (IP camera)", highFalsePositiveRisk = true, role = OuiRole.ENRICHMENT_ONLY),
+
+        // IEEE MA-L registry, 2026-11-15. This identifies only the registrant.
+        "9C:06:CF" to OuiEntry("PLAUD", "PLAUD Inc.", highFalsePositiveRisk = true, role = OuiRole.ENRICHMENT_ONLY),
 
         // Generic module makers (seen on budget drones AND unrelated IoT).
         // B0:A7:32/CC:DB:A7 were mislabeled Potensic/Holy Stone (both Espressif);
@@ -132,10 +135,16 @@ object WifiOuiDatabase {
      * @param bssid Full MAC address
      * @return true if OUI matches a known drone vendor (excluding high-false-positive entries)
      */
-    fun isDroneOui(bssid: String): Boolean {
-        val entry = lookup(bssid) ?: return false
-        return entry.role == OuiRole.DRONE && !entry.highFalsePositiveRisk
+    fun isDroneOui(bssid: String): Boolean = lookupDroneVendor(bssid) != null
+
+    fun lookupDroneVendor(bssid: String): OuiEntry? = lookup(bssid)?.takeIf {
+        it.role == OuiRole.DRONE && !it.highFalsePositiveRisk
     }
+
+    private val macFormat = Regex(
+        "[0-9A-F]{12}|(?:[0-9A-F]{2}:){5}[0-9A-F]{2}|" +
+            "(?:[0-9A-F]{2}-){5}[0-9A-F]{2}|(?:[0-9A-F]{4}\\.){2}[0-9A-F]{4}"
+    )
 
     /**
      * Extract the OUI prefix (first 3 octets) from a MAC address.
@@ -145,20 +154,11 @@ object WifiOuiDatabase {
      * @return Uppercase colon-separated OUI (e.g., "60:60:1F") or null if invalid
      */
     private fun extractOui(bssid: String): String? {
-        val hexChars = mutableListOf<Char>()
-        for (ch in bssid.trim().uppercase()) {
-            if (ch == ':' || ch == '-' || ch == '.') {
-                if (hexChars.isEmpty()) return null
-                continue
-            }
-            if (ch !in '0'..'9' && ch !in 'A'..'F') return null
-            hexChars += ch
-            if (hexChars.size == 6) {
-                val hex = hexChars.joinToString("")
-                return "${hex.substring(0, 2)}:${hex.substring(2, 4)}:${hex.substring(4, 6)}"
-            }
-        }
-        return null
+        val address = bssid.trim().uppercase(java.util.Locale.ROOT)
+        if (!macFormat.matches(address)) return null
+        val hex = address.filter { it != ':' && it != '-' && it != '.' }
+        if (hex.take(2).toInt(16) and 3 != 0) return null // group or locally assigned
+        return "${hex.substring(0, 2)}:${hex.substring(2, 4)}:${hex.substring(4, 6)}"
     }
 }
 

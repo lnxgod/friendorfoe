@@ -290,7 +290,8 @@ fun CalibrateScreen(
                         value = state.backendUrl,
                         onValueChange = viewModel::setBackendUrl,
                         label = { Text("URL") },
-                        placeholder = { Text("http://fof-server.local:8000/") },
+                        placeholder = { Text("https://sensor.example") },
+                        supportingText = { Text("Use the final HTTPS address. Calibration sends your token and location to this backend.") },
                         singleLine = true,
                         enabled = !state.isWalking,
                         modifier = Modifier.fillMaxWidth(),
@@ -309,23 +310,16 @@ fun CalibrateScreen(
                         value = state.operatorLabel,
                         onValueChange = viewModel::setOperatorLabel,
                         label = { Text("Operator label") },
-                        placeholder = { Text("Bill's Pixel") },
+                        placeholder = { Text("Field phone") },
                         singleLine = true,
                         enabled = !state.isWalking,
                         modifier = Modifier.fillMaxWidth(),
                     )
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        TextButton(onClick = { viewModel.refreshConnectivity() }) {
-                            Text("Test connectivity")
-                        }
-                        Spacer(Modifier.width(4.dp))
-                        TextButton(onClick = { viewModel.resetTokenToDefault() }) {
-                            // Manual escape hatch when the auto-recovery
-                            // didn't fire (e.g. backend was briefly down
-                            // during screen entry so the 401 retry never
-                            // ran). Resets to `chompchomp` + re-tests.
-                            Text("Reset token")
-                        }
+                    TextButton(
+                        onClick = viewModel::refreshConnectivity,
+                        enabled = state.backendUrl.isNotBlank() && state.token.isNotBlank(),
+                    ) {
+                        Text("Test connectivity")
                     }
                     Text(
                         "Preflight checks `/health` first, then validates the calibration token and loads the walk sensor list.",

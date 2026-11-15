@@ -18,7 +18,7 @@ from app.services.oui_db import is_random_mac
 from app.services.privacy_ble_signatures import first_privacy_ble_service_match
 from app.services.personal_recorders import match_personal_recorder
 from app.services.privacy_signature_catalog import match_privacy_wifi_ssid
-from app.services.rf_reference import lookup_ble_company, resolve_mac, source_details, ssid_pattern_hints
+from app.services.rf_reference import lookup_ble_company, mac_hex, resolve_mac, source_details, ssid_pattern_hints
 from app.services.wifi_fingerprint import build_wifi_fingerprint_v2
 
 
@@ -44,34 +44,14 @@ _AMBIGUOUS_IOT_NAME_TOKENS = (
     "bt_bpm",
 )
 
-_KNOWN_NETWORK_PATTERNS = (
-    {
-        "pattern": "teamcharitycase*",
-        "label": "TeamCharityCase lab/property",
-        "device_class": "known_owned",
-        "confidence": 0.75,
-        "device_family": "operator_known_lab_device",
-    },
-)
-
 _FRIENDLY_OUI_HINTS = {
     # Product-specific labels where the IEEE registrant is too generic for
     # operator triage. These are still MAC/OUI evidence, not person identity.
-    "90:48:9A": {"brand": "Ring", "device_family": "camera_or_video", "device_class": "surveillance_camera"},
-    "00:40:40": {"brand": "Ring", "device_family": "camera_or_video", "device_class": "surveillance_camera"},
     "18:7F:88": {"brand": "Ring", "device_family": "camera_or_video", "device_class": "surveillance_camera"},
     "34:3E:A4": {"brand": "Ring", "device_family": "camera_or_video", "device_class": "surveillance_camera"},
     "54:E0:19": {"brand": "Ring", "device_family": "camera_or_video", "device_class": "surveillance_camera"},
-    "3C:E1:A1": {"brand": "Ring Camera", "device_family": "camera_or_video", "device_class": "surveillance_camera"},
-    "88:6A:B1": {"brand": "Ring Camera", "device_family": "camera_or_video", "device_class": "surveillance_camera"},
     "2C:AA:8E": {"brand": "Wyze", "device_family": "camera_or_video", "device_class": "surveillance_camera"},
-    "7C:78:3F": {"brand": "Wyze", "device_family": "camera_or_video", "device_class": "surveillance_camera"},
-    "D4:12:43": {"brand": "Wyze", "device_family": "camera_or_video", "device_class": "surveillance_camera"},
-    "40:5D:82": {"brand": "Arlo", "device_family": "camera_or_video", "device_class": "surveillance_camera"},
-    "A0:04:60": {"brand": "Arlo", "device_family": "camera_or_video", "device_class": "surveillance_camera"},
-    "CC:40:D0": {"brand": "Arlo", "device_family": "camera_or_video", "device_class": "surveillance_camera"},
     "EC:71:DB": {"brand": "Reolink", "device_family": "camera_or_video", "device_class": "surveillance_camera"},
-    "E0:E8:E6": {"brand": "Reolink", "device_family": "camera_or_video", "device_class": "surveillance_camera"},
     "38:AF:29": {"brand": "Dahua", "device_family": "camera_or_video", "device_class": "surveillance_camera"},
     "00:40:8C": {"brand": "Axis", "device_family": "camera_or_video", "device_class": "surveillance_camera"},
     "AC:CC:8E": {"brand": "Axis", "device_family": "camera_or_video", "device_class": "surveillance_camera"},
@@ -81,7 +61,7 @@ _FRIENDLY_OUI_HINTS = {
 
 _FRIENDLY_OUI_HINTS.setdefault(
     "B4:1E:52",
-    {"brand": "Flock Safety", "device_family": "camera_or_video", "device_class": "surveillance_camera"},
+    {"brand": "Flock Safety", "device_family": "security_infrastructure", "device_class": "security_infrastructure"},
 )
 
 for _brand, _device_class, _prefixes in (
@@ -172,6 +152,8 @@ def classify_mac_identity(
             return MacIdentity(True, "ble_rpa", "ble_addr_type_rpa")
         if ble_addr_type in (1, 3):
             return MacIdentity(True, "ble_random_static", "ble_random_address_type")
+        if mac and ble_addr_type != 0:
+            return MacIdentity(False, "unknown", "unknown_ble_address_type")
         if mac and is_random_mac(mac):
             return MacIdentity(True, "randomized", "locally_administered_bit")
         if mac:
@@ -196,26 +178,10 @@ def _best_mac(*, bssid: str | None, drone_id: str | None) -> str | None:
 
 
 def _oui_prefix(mac: str | None) -> str | None:
-    text = str(mac or "").strip()
-    if not text:
+    raw = mac_hex(mac)
+    if not raw or int(raw[:2], 16) & 3 or raw == "000000000000":
         return None
-
-    hex_chars: list[str] = []
-    for ch in text:
-        if ch in ":-.":
-            if not hex_chars:
-                return None
-            continue
-        upper = ch.upper()
-        if upper not in "0123456789ABCDEF":
-            return None
-        hex_chars.append(upper)
-        if len(hex_chars) == 6:
-            return ":".join(
-                "".join(hex_chars)[i:i + 2]
-                for i in range(0, 6, 2)
-            )
-    return None
+    return ":".join(raw[i:i + 2] for i in range(0, 6, 2))
 
 
 def _public_oui_detail(mac: str | None, *, source: str | None = None, ble_addr_type: int | None = None) -> dict[str, Any]:
@@ -260,7 +226,6 @@ def _scanner_label_is_class(label: str) -> bool:
 
 
 def _known_network_labels(ssids: list[str] | None, ssid: str | None = None) -> list[dict[str, Any]]:
-    values = [s for s in [ssid, *(ssids or [])] if s]
     labels: list[dict[str, Any]] = []
     seen: set[str] = set()
     for hint in ssid_pattern_hints(ssids, ssid):
@@ -270,14 +235,6 @@ def _known_network_labels(ssids: list[str] | None, ssid: str | None = None) -> l
         if label and label not in seen:
             labels.append(hint)
             seen.add(label)
-    for value in values:
-        value_l = value.lower()
-        for spec in _KNOWN_NETWORK_PATTERNS:
-            if fnmatchcase(value_l, str(spec["pattern"])):
-                label = str(spec["label"])
-                if label not in seen:
-                    labels.append(dict(spec))
-                    seen.add(label)
     return labels
 
 
@@ -469,8 +426,9 @@ def enrich_rf_evidence(
     source_l = (source or "").lower()
     evidence: list[str] = []
     mac_oui = _public_oui_detail(mac, source=source, ble_addr_type=ble_addr_type)
-    friendly_oui = _friendly_oui_hint(mac)
-    group_rollup = _mac_oui_rollup(macs)
+    friendly_oui = _friendly_oui_hint(mac) if mac_meta.mac_identity_kind == "public_oui" else None
+    # BLE group members do not carry individual public/random address types.
+    group_rollup = _mac_oui_rollup(None if source_l.startswith("ble") else macs)
     known_networks = _known_network_labels(probed_ssids, ssid)
     ssid_hint = _ssid_family_hint(probed_ssids, ssid)
     ble_service_hint = first_privacy_ble_service_match(ble_svc_uuids)
@@ -714,7 +672,7 @@ def enrich_rf_evidence(
         device_family = "drone_or_controller"
         family_source = "drone_signature_reference"
         family_confidence = float(drone_ssid_match.get("confidence") or 0.50)
-    elif friendly_oui:
+    elif friendly_oui and device_class == friendly_oui["device_class"]:
         device_family = str(friendly_oui["device_family"])
         family_source = "friendly_oui"
         family_confidence = 0.78

@@ -4510,7 +4510,8 @@ static badge_display_policy_class_t badge_display_policy_status_class(
     if (strstr(label, "META")) return BADGE_DISPLAY_CLASS_META;
     if (strstr(label, "TAG") || strstr(label, "TRACKER")) return BADGE_DISPLAY_CLASS_TRACKER;
     if (strstr(label, "SKIM")) return BADGE_DISPLAY_CLASS_SKIMMER;
-    if (strstr(label, "FLOCK")) return BADGE_DISPLAY_CLASS_FLOCK;
+    if (strstr(label, "ALPR")) return BADGE_DISPLAY_CLASS_FLOCK;
+    if (strstr(label, "FLOCK")) return BADGE_DISPLAY_CLASS_SCANNER_STATUS;
     if (strstr(label, "CAM")) return BADGE_DISPLAY_CLASS_CAMERA;
     if (strstr(label, "LOCK")) return BADGE_DISPLAY_CLASS_LOCK;
     if (strstr(label, "HID")) return BADGE_DISPLAY_CLASS_HID;
@@ -5044,7 +5045,7 @@ static void format_badge_title_for_snapshot(
             badge_threat_format_meta_glasses_title(out, out_len);
             return;
         case BADGE_THREAT_CATEGORY_FLOCK:
-            snprintf(out, out_len, "FLOCK CAM");
+            snprintf(out, out_len, "ALPR CAM");
             return;
         case BADGE_THREAT_CATEGORY_SKIM:
             snprintf(out, out_len, "POSSIBLE SKIMMER");

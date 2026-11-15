@@ -252,6 +252,14 @@ void test_privacy_wifi_signature_catalog_matches_key_ssids(void)
     TEST_ASSERT_EQUAL_STRING("TP-Link", tapo->manufacturer);
     TEST_ASSERT_EQUAL_STRING("privacy:camera:tapo", tapo->class_reason);
     TEST_ASSERT_FALSE(tapo->attack_tool);
+    const fof_privacy_wifi_signature_t *kasa = fof_privacy_match_wifi_ssid("Kasa_Cam_01af");
+    TEST_ASSERT_NOT_NULL(kasa);
+    TEST_ASSERT_EQUAL_STRING("privacy:camera:kasa", kasa->class_reason);
+    const char *unrelated[] = {"Tapo_Plug_AB12", "TAPO-Hub", "SmartLife-ABCD", "Tuya-Plug",
+                               "Tapo_Cam_", "Tapo_Cam_12345", "Kasa_Cam_ABCG"};
+    for (size_t i = 0; i < sizeof(unrelated) / sizeof(unrelated[0]); ++i) {
+        TEST_ASSERT_NULL(fof_privacy_match_wifi_ssid(unrelated[i]));
+    }
 
     const fof_privacy_wifi_signature_t *ring =
         fof_privacy_match_wifi_ssid("Ring Setup 12");

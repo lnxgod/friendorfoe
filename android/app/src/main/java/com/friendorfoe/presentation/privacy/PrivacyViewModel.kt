@@ -136,13 +136,6 @@ class PrivacyViewModel @Inject constructor(
         }
     }
 
-    fun enablePhonePrivacyScanning() {
-        phonePrivacyEnableWrites(settingsStore.settings.value).forEach { (key, enabled) ->
-            settingsStore.set(key, enabled)
-        }
-        recover(PrivacySourceKind.PHONE_BLE)
-    }
-
     fun beginPermissionRecovery(source: PrivacySourceKind) {
         val feature = permissionFeatureForPrivacySource(source)
         if (feature == null) {
@@ -173,12 +166,12 @@ class PrivacyViewModel @Inject constructor(
 
     fun cancelPendingPermissionAction() = persistPendingPermissionAction(null)
 
-    fun onPrivacyPermissionResolved(source: PrivacySourceKind) {
-        if (source == PrivacySourceKind.PHONE_BLE) {
-            enablePhonePrivacyScanning()
-        } else {
-            recover(source)
-        }
+    fun confirmLeaveBackendOnly() {
+        val pending = _pendingPermissionAction.value ?: return
+        if (pending.source != PrivacySourceKind.PHONE_BLE ||
+            pending.backendOnlyExit != BackendOnlyExit.NEEDS_CONFIRMATION) return
+        persistPendingPermissionAction(pending.copy(backendOnlyExit = BackendOnlyExit.CONFIRMED))
+        completePendingPermissionAction(permissionStateSource.states.value)
     }
 
     fun startDirectionSweep(finding: PrivacyFinding): Boolean {
@@ -222,10 +215,19 @@ class PrivacyViewModel @Inject constructor(
     ) {
         val pending = _pendingPermissionAction.value ?: return
         val feature = permissionFeatureForPrivacySource(pending.source) ?: return
+        // Check the global mode before requesting permissions and again when Android returns.
+        val writes = if (pending.source == PrivacySourceKind.PHONE_BLE) {
+            phonePrivacyEnableWrites(settingsStore.settings.value, pending.backendOnlyExit)
+        } else emptyList()
+        if (pending.source == PrivacySourceKind.PHONE_BLE && writes.isEmpty()) {
+            persistPendingPermissionAction(pending.copy(backendOnlyExit = BackendOnlyExit.NEEDS_CONFIRMATION))
+            return
+        }
         val state = states[feature] ?: return
         if (!state.isUsableFor(feature)) return
         persistPendingPermissionAction(null)
-        onPrivacyPermissionResolved(pending.source)
+        writes.forEach { (key, enabled) -> settingsStore.set(key, enabled) }
+        recover(pending.source)
     }
 
     private fun readPendingPermissionAction(): PrivacyPermissionAction? {
@@ -235,6 +237,9 @@ class PrivacyViewModel @Inject constructor(
             source = source,
             requestLaunched = savedStateHandle[PENDING_PERMISSION_REQUEST_LAUNCHED_KEY] ?: false,
             settingsLaunchFailed = savedStateHandle[PENDING_PERMISSION_SETTINGS_FAILED_KEY] ?: false,
+            backendOnlyExit = BackendOnlyExit.entries.firstOrNull {
+                it.name == savedStateHandle.get<String>(PENDING_BACKEND_ONLY_EXIT_KEY)
+            } ?: BackendOnlyExit.NOT_REQUESTED,
         )
     }
 
@@ -242,6 +247,7 @@ class PrivacyViewModel @Inject constructor(
         savedStateHandle[PENDING_PERMISSION_SOURCE_KEY] = action?.source?.name
         savedStateHandle[PENDING_PERMISSION_REQUEST_LAUNCHED_KEY] = action?.requestLaunched ?: false
         savedStateHandle[PENDING_PERMISSION_SETTINGS_FAILED_KEY] = action?.settingsLaunchFailed ?: false
+        savedStateHandle[PENDING_BACKEND_ONLY_EXIT_KEY] = action?.backendOnlyExit?.name
         _pendingPermissionAction.value = action
     }
 
@@ -249,6 +255,7 @@ class PrivacyViewModel @Inject constructor(
         if (value in this) this - value else this + value
 }
 
+private const val PENDING_BACKEND_ONLY_EXIT_KEY = "pending_privacy_backend_only_exit"
 private const val PENDING_PERMISSION_SOURCE_KEY = "pending_privacy_permission_source"
 private const val PENDING_PERMISSION_REQUEST_LAUNCHED_KEY =
     "pending_privacy_permission_request_launched"
@@ -257,7 +264,9 @@ private const val PENDING_PERMISSION_SETTINGS_FAILED_KEY =
 
 internal fun phonePrivacyEnableWrites(
     settings: DetectionSettings,
+    exitChoice: BackendOnlyExit = BackendOnlyExit.NOT_REQUESTED,
 ): List<Pair<InfoSettingKey, Boolean>> = buildList {
+    if (settings.backendOnlyMode && exitChoice != BackendOnlyExit.CONFIRMED) return@buildList
     add(InfoSettingKey.PHONE_PRIVACY_SCAN to true)
     if (settings.backendOnlyMode) add(InfoSettingKey.BACKEND_ONLY to false)
 }

@@ -4,15 +4,27 @@
   "wifi": [
     {
       "pattern": "Tapo_Cam_",
-      "match_type": "prefix",
+      "match_type": "prefix_hex4",
       "manufacturer": "TP-Link",
       "device_type": "IP Camera",
       "privacy_kind": "CAMERA_NEAR",
-      "confidence": 0.88,
+      "confidence": 0.80,
       "has_camera": true,
       "class_reason": "privacy:camera:tapo",
-      "source_note": "TP-Link support documents Tapo_Cam_XXXX setup networks.",
-      "false_positive_policy": "specific_setup_prefix"
+      "source_note": "TP-Link support documents Tapo_Cam_XXXX setup networks: https://www.tp-link.com/us/support/faq/2747/",
+      "false_positive_policy": "camera_setup_with_four_hex_suffix"
+    },
+    {
+      "pattern": "Kasa_Cam_",
+      "match_type": "prefix_hex4",
+      "manufacturer": "TP-Link",
+      "device_type": "IP Camera",
+      "privacy_kind": "CAMERA_NEAR",
+      "confidence": 0.80,
+      "has_camera": true,
+      "class_reason": "privacy:camera:kasa",
+      "source_note": "TP-Link support documents Kasa_Cam_XXXX setup networks: https://www.tp-link.com/us/support/faq/2663/",
+      "false_positive_policy": "camera_setup_with_four_hex_suffix"
     },
     {
       "pattern": "Ring Setup",

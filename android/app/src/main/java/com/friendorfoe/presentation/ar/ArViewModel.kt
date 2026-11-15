@@ -1036,7 +1036,6 @@ class ArViewModel @Inject constructor(
                 location.validatedLocationAccuracyMeters(),
             )
 
-            Log.d(TAG, "Location updated: (${location.latitude}, ${location.longitude}), alt=${location.altitude}m")
         }
 
         @Deprecated("Deprecated in API level 29")

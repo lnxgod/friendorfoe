@@ -436,9 +436,12 @@ badge_display_policy_class_t badge_display_policy_class_for_detection(
         contains_nocase(reason, "marauder")) {
         return BADGE_DISPLAY_CLASS_WIFI_ATTACK;
     }
+    if (contains_nocase(reason, "privacy:alpr:")) {
+        return BADGE_DISPLAY_CLASS_FLOCK;
+    }
     if (contains_nocase(reason, "flock") || contains_nocase(model, "flock") ||
         contains_nocase(mfr, "flock")) {
-        return BADGE_DISPLAY_CLASS_FLOCK;
+        return BADGE_DISPLAY_CLASS_SCANNER_STATUS;
     }
     if (contains_nocase(reason, "meta") || contains_nocase(reason, "ray-ban") ||
         contains_nocase(reason, "rayban") || contains_nocase(reason, "oakley") ||

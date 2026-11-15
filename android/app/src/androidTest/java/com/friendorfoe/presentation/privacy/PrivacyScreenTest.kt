@@ -21,6 +21,7 @@ import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performClick
+import com.friendorfoe.presentation.components.LeaveBackendOnlyDialog
 import com.friendorfoe.detection.PrivacyCategory
 import com.friendorfoe.presentation.theme.FriendOrFoeTheme
 import org.junit.Assert.assertEquals
@@ -28,6 +29,27 @@ import org.junit.Rule
 import org.junit.Test
 
 class PrivacyScreenTest {
+    @Test
+    fun backendOnlyModeDialogOffersDistinctKeepAndResumeChoices() {
+        var resumes = 0
+        var dismissals = 0
+        val visible = mutableStateOf(true)
+        compose.setContent {
+            FriendOrFoeTheme {
+                if (visible.value) LeaveBackendOnlyDialog(
+                    onConfirm = { resumes++; visible.value = false },
+                    onDismiss = { dismissals++; visible.value = false },
+                )
+            }
+        }
+        compose.onNodeWithText("Other enabled phone sensors can resume", substring = true).assertIsDisplayed()
+        compose.onNodeWithText("Keep backend-only mode").performClick()
+        compose.onNodeWithText("Leave backend-only mode?").assertDoesNotExist()
+        compose.runOnIdle { assertEquals(0, resumes); assertEquals(1, dismissals); visible.value = true }
+        compose.onNodeWithText("Use phone scanning").performClick()
+        compose.runOnIdle { assertEquals(1, resumes); assertEquals(1, dismissals) }
+    }
+
     @Test
     fun recorderFiltersCoverageAndIBeaconNetworksAreUsable() {
         val recorder = finding(FindingSeverity.AWARENESS, "plaud", category = PrivacyCategory.VOICE_RECORDER).copy(
@@ -70,6 +92,7 @@ class PrivacyScreenTest {
         saveBeaconScreenshot("recorders-new-brand-filter.png")
         compose.onNodeWithTag("privacy_brand_Plaud").performScrollTo().performClick()
         compose.onNodeWithTag("finding_plaud").assertExists()
+        compose.onNodeWithTag("privacy_focus_RECORDERS").performClick()
         compose.runOnIdle { assertEquals("Plaud", filters.value.query) }
         compose.onNodeWithTag("privacy_focus_RECORDERS").assertIsDisplayed()
         saveBeaconScreenshot("recorders-filters.png")

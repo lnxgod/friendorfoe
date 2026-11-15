@@ -20,6 +20,60 @@ def test_rf_reference_resolves_longest_public_prefix():
     assert hit.vendor_confidence > 0.8
 
 
+def test_refreshed_registries_keep_device_identity_separate_from_vendor():
+    plaud = resolve_mac("9C:06:CF:12:34:56", source="wifi_ap_inventory")
+    assert plaud.vendor_long == "PLAUD Inc."
+    assert plaud.device_class is None
+    assert plaud.product_hint is None
+    iab = resolve_mac("00:50:C2:F7:1A:BC")
+    assert iab.assignment_type == "IAB" and iab.prefix_bits == 36
+    assert iab.oui_prefix == "00:50:C2:F7:10/36"
+    assert iab.vendor_long == "RF Code"
+
+
+@pytest.mark.parametrize("bssid", ["9C:06:CF:12:34:56:FF", "9C:06::CF:12:34:56", "01:00:5E:00:00:01", "00:00:00:00:00:00"])
+def test_invalid_or_group_address_does_not_receive_a_vendor(bssid):
+    assert resolve_mac(bssid).vendor_short is None
+    assert resolve_mac(bssid).oui_prefix is None
+
+
+def test_ble_public_address_type_is_required_for_vendor_lookup():
+    from app.services.enrichment_ble import BLEEnricher
+
+    mac = "9C:06:CF:12:34:56"
+    assert resolve_mac(mac, source="ble_fingerprint").vendor_short is None
+    assert resolve_mac(mac, source="ble_fingerprint", ble_addr_type=0).vendor_short == "PLAUD"
+    # Type zero must survive live presentation; a later record without an address
+    # type cannot use that previous evidence for a different random address.
+    enricher = BLEEnricher()
+    args = dict(drone_id="BLE:AA:Unknown", source="ble_fingerprint", confidence=0.2, rssi=-66,
+                manufacturer="Unknown", model="FP:000000AA", device_id="example-node", received_at=0)
+    enricher.ingest(**args, bssid=mac, ble_addr_type=0)
+    assert enricher.get_live_devices()[0]["ble_addr_type"] == 0
+    enricher.ingest(**args, bssid="B4:1E:52:00:00:01")
+    assert enricher.get_live_devices()[0]["ble_addr_type"] is None
+
+
+def test_random_ble_address_does_not_recover_a_curated_vendor_guess():
+    meta = enrich_rf_evidence(source="ble_fingerprint", bssid="B4:1E:52:AA:BB:CC", ble_addr_type=1)
+    assert meta["mac_is_randomized"]
+    assert meta["brand"] != "Flock Safety"
+    assert meta["device_class"] != "surveillance_camera"
+
+
+@pytest.mark.parametrize("prefix,wrong_brand", [
+    ("90:48:9A", "Ring"), ("00:40:40", "Ring"), ("88:6A:B1", "Ring Camera"),
+    ("40:5D:82", "Arlo"), ("D4:12:43", "Wyze"), ("E0:E8:E6", "Reolink"),
+])
+def test_shared_and_unrelated_prefixes_do_not_imply_camera(prefix, wrong_brand):
+    from app.services.enrichment_ble import oui_lookup
+    mac = prefix + ":12:34:56"
+    assert oui_lookup(mac) != wrong_brand
+    meta = enrich_rf_evidence(source="wifi_ap_inventory", bssid=mac, classification="wifi_device")
+    assert meta["brand"] != wrong_brand
+    assert meta["device_class"] != "surveillance_camera"
+
+
 def test_rf_reference_never_assigns_vendor_from_randomized_mac_alone():
     hit = resolve_mac("3A:11:22:33:44:55")
 
@@ -29,7 +83,7 @@ def test_rf_reference_never_assigns_vendor_from_randomized_mac_alone():
     assert hit.oui_prefix is None
 
 
-def test_enrichment_keeps_randomized_mac_truth_but_uses_group_evidence():
+def test_enrichment_keeps_randomized_mac_truth_but_uses_group_evidence(configured_test_network):
     meta = enrich_rf_evidence(
         source="wifi_probe_request",
         bssid="3A:11:22:33:44:55",
@@ -38,7 +92,7 @@ def test_enrichment_keeps_randomized_mac_truth_but_uses_group_evidence():
             "F4:65:0B:AA:BB:CC",
             "00:70:07:AA:BB:CC",
         ],
-        probed_ssids=["TeamCharityCase-Lab"],
+        probed_ssids=["Example-Fixture-SSID-Lab"],
         ie_hash="AABBCCDD",
         classification="wifi_device",
     )
@@ -46,7 +100,7 @@ def test_enrichment_keeps_randomized_mac_truth_but_uses_group_evidence():
     assert meta["mac_is_randomized"] is True
     assert meta["brand"] == "Espressif"
     assert meta["brand_source"] == "group_oui_majority"
-    assert meta["known_network_label"] == "TeamCharityCase lab/property"
+    assert meta["known_network_label"] == "Example test network"
     assert meta["vendor_source"] == "randomized_mac"
     assert meta["representative_oui_prefix"] == "F4:65:0B"
     assert meta["wifi_fingerprint_v2"]["stable_id"] == "IEH:AABBCCDD"
@@ -103,14 +157,14 @@ def test_wifi_fingerprint_v2_is_stable_from_probe_ie_hash():
     fp1 = build_wifi_fingerprint_v2(
         source="wifi_probe_request",
         ie_hash="11223344",
-        probed_ssids=["Home", "TeamCharityCase"],
+        probed_ssids=["Home", "Example-Fixture-SSID"],
         channel=6,
         auth_m=3,
     )
     fp2 = build_wifi_fingerprint_v2(
         source="wifi_probe_request",
         ie_hash="11223344",
-        probed_ssids=["Home", "TeamCharityCase"],
+        probed_ssids=["Home", "Example-Fixture-SSID"],
         channel=6,
         auth_m=3,
     )
@@ -166,3 +220,10 @@ async def test_rf_reference_status_endpoint_reports_artifact_and_coverage():
         assert data["recent_mac_enriched"] == 1
     finally:
         detections._recent_detections = old_recent
+
+
+def test_distribution_has_no_preconfigured_owned_ssid():
+    import json
+    from app.services.rf_reference import REFERENCE_PATH
+    rules = json.loads(REFERENCE_PATH.read_bytes())["ssid_patterns"]
+    assert all(rule.get("device_class") != "known_owned" for rule in rules)

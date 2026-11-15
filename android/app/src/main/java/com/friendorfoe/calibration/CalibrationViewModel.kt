@@ -755,33 +755,7 @@ class CalibrationViewModel @Inject constructor(
         )
     }
 
-    /** Reset the saved token back to the backend's default (`chompchomp`).
-     *  Manual escape hatch if auto-recovery doesn't fire for some reason
-     *  (e.g., backend briefly unreachable when auto-recovery tried). */
-    fun resetTokenToDefault() {
-        val default = CalibrationApi.DEFAULT_TOKEN
-        prefs.calibrationToken = default
-        _state.value = _state.value.copy(
-            token = default,
-            backendStatus = BackendStatus.Unknown,
-            backendReachability = BackendReachabilityState.Unknown,
-            calibrationAuthState = CalibrationAuthState.Unknown,
-            sensorLoadState = SensorLoadState.Unknown,
-            lastPreflightFailurePhase = null,
-            lastPreflightFailureDetail = null,
-            infoMessage = "Token reset to default. Testing…",
-        )
-        refreshConnectivity()
-    }
-
-    /** Preflight + sensor list load. Called on screen entry and after
-     *  the operator edits backend URL/token. Distinguishes auth failure
-     *  (red dot, "check token") from unreachable backend (gray dot).
-     *
-     *  Auto-recovery: if the saved token 401s but isn't the default, try
-     *  the default silently and persist it on success. Covers the "old
-     *  APK had a random dev token in prefs that's now stale" upgrade
-     *  path where SharedPreferences survive across installs. */
+    /** Check the configured server using only the token supplied by the operator. */
     fun refreshConnectivity() {
         refreshNetworkState()
         val s = _state.value
@@ -830,22 +804,7 @@ class CalibrationViewModel @Inject constructor(
                 lastPreflightFailureDetail = null,
             )
 
-            var sensorsRes = api.walkSensors(live.backendUrl, live.token)
-            if (sensorsRes.isFailure) {
-                val firstMsg = sensorsRes.exceptionOrNull()?.message.orEmpty()
-                val is401 = "401" in firstMsg
-                if (is401 && live.token != CalibrationApi.DEFAULT_TOKEN) {
-                    val recovered = api.walkSensors(live.backendUrl, CalibrationApi.DEFAULT_TOKEN)
-                    if (recovered.isSuccess) {
-                        prefs.calibrationToken = CalibrationApi.DEFAULT_TOKEN
-                        _state.value = _state.value.copy(
-                            token = CalibrationApi.DEFAULT_TOKEN,
-                            infoMessage = "Stored token was stale — reset to default.",
-                        )
-                        sensorsRes = recovered
-                    }
-                }
-            }
+            val sensorsRes = api.walkSensors(live.backendUrl, live.token)
             if (sensorsRes.isFailure) {
                 val msg = sensorsRes.exceptionOrNull()?.message.orEmpty()
                 val is401 = "401" in msg

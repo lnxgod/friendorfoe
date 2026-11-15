@@ -16,7 +16,7 @@ Android BLE scanning, ESP32 fingerprinting/badge awareness, and backend RF ident
 | Instamic | `Instamic` (including `Instamic BLE`, numbered devices) | Name hint only |
 | DJI Mic 2 / Mic 3 | `DJI-MIC2`, `DJI-MIC3`, `DJI Mic 2`, `DJI Mic 3` | Name hint only |
 
-Names must end after the listed token or continue with a space, hyphen, or underscore (the `friend_` prefix already includes its separator). `PLAUD` followed immediately by four alphanumeric serial-suffix characters is also recognized, consistent with the [Plaud interoperability protocol notes](https://github.com/naeemarsalan/opendict/blob/main/PLAUD_BLE_Protocol_Specification.md). Name-only evidence has confidence 0.75; custom service evidence has confidence 0.90. Service evidence wins over a conflicting recorder name. Firmware keeps existing tracker/drone/glasses classifications over name-only hints, except that a specific DJI microphone name replaces the generic DJI company-only controller guess. Android likewise prefers that model hint to its DJI company-only camera guess. These confidence scores are heuristic, not measured detection rates.
+Names must end after the listed token or continue with a space, hyphen, or underscore (the `friend_` prefix already includes its separator). `PLAUD` followed immediately by four alphanumeric serial-suffix characters is also recognized, consistent with the [Plaud interoperability protocol notes](https://github.com/naeemarsalan/opendict/blob/main/PLAUD_BLE_Protocol_Specification.md). Name-only evidence has confidence 0.75; custom service evidence has confidence 0.90. Service evidence wins over a conflicting recorder name. Firmware keeps existing tracker/drone/glasses classifications over name-only hints, except that a specific DJI microphone name replaces the generic DJI company-only controller guess. Android does not infer a DJI camera from a company ID. These confidence scores are heuristic, not measured detection rates.
 
 ## Evidence and limits
 
@@ -61,3 +61,17 @@ Emulator screenshots use synthetic findings to demonstrate the UI, not physical-
 ![Expanded recorder brand filter](screenshots/privacy-recorders/expanded-brand-filter.png)
 ![Phone recorder coverage and filter](screenshots/privacy-recorders/phone-coverage.png)
 ![Grouped iBeacon network](screenshots/privacy-recorders/ibeacon-networks.png)
+
+## Additional camera coverage and controls
+
+| Broadcast visible to Android | What the app shows | When it can disappear |
+| --- | --- | --- |
+| RICOH THETA advertising service UUID | THETA 360° camera family, under action cameras | Bluetooth advertising can be disabled. The broadcast does not identify the exact model. |
+| THETA A1, X or Z1 direct-mode Wi-Fi name | THETA camera's direct network | Client mode or a changed SSID can remove the match. |
+| Tapo or Kasa camera setup SSID with the documented suffix | Possible TP-Link camera in setup mode | After setup the camera generally joins an existing network. |
+
+The phone inspects BLE advertisements and access-point scan results. It does not enumerate clients behind an access point. A manufacturer's Wi-Fi prefix alone supplies vendor context. No phone connects to the suspected camera to make these matches. [THETA Bluetooth API](https://docs-theta-api.ricoh360.com/bluetooth-api/) · [THETA direct Wi-Fi](https://docs-theta-api.ricoh360.com/web-api/main.html) · [Kasa setup](https://www.tp-link.com/us/support/faq/2663/) · [Tapo setup](https://www.tp-link.com/us/support/faq/2747/)
+
+If Android rejects a new Wi-Fi scan, previously cached networks retain their original freshness. The source status shows the location permission or device setting required to recover scanning. Phone scans ask for confirmation before leaving backend-only mode. Category/source chips reflect the selected tab and keep a selected filter available when its last live result expires. [Android Wi-Fi scanning](https://developer.android.com/develop/connectivity/wifi/wifi-scan)
+
+For the next coverage pass, prioritize physical captures of Plaud NotePin, soundcore Work and Notta Memo in pairing, connected, idle and recording states. Those name-based families would benefit most from knowing when a second Android phone can actually see them. Looki L1 and Zoom F2-BT still need distinctive passive identifiers before enabling a default alert. Use operator-owned test units and synthetic identifiers for published fixtures.

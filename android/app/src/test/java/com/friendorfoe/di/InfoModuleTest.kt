@@ -10,18 +10,9 @@ import okhttp3.Protocol
 import okhttp3.Response
 import okhttp3.ResponseBody.Companion.toResponseBody
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNotNull
 import org.junit.Test
 
 class InfoModuleTest {
-    @Test
-    fun updateApiUsesTheGitHubApiOrigin() {
-        val retrofit = InfoModule.provideAppUpdateRetrofit(OkHttpClient())
-
-        assertEquals("https://api.github.com/", retrofit.baseUrl().toString())
-        assertNotNull(InfoModule.provideAppUpdateApi(retrofit))
-    }
-
     @Test
     fun backendHealthUsesThePassedBaseClientWithoutBackendUrlRewriting() = runTest {
         var requestedUrl: String? = null

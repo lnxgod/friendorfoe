@@ -59,15 +59,6 @@ class PersonalRecorderSignaturesTest {
         }
     }
 
-    @Test fun `microphone model overrides only DJI company evidence`() {
-        val mic = PersonalRecorderSignatures.match("DJI-MIC2-123456")!!
-        assertTrue(PersonalRecorderSignatures.shouldReplace(mic, 0.80f, "DJI", "mfr_cid:0x0413"))
-        assertFalse(PersonalRecorderSignatures.shouldReplace(mic, 0.90f, "DJI", "name:DJI-Mavic"))
-        assertFalse(PersonalRecorderSignatures.shouldReplace(mic, 0.90f, "Apple", "airtag_separated"))
-        assertFalse(PersonalRecorderSignatures.shouldReplace(mic, 0.90f, "Meta", "uuid16:0xFEAA"))
-        assertTrue(PersonalRecorderSignatures.shouldReplace(mic, 0f, "", ""))
-    }
-
     @Test fun `custom services detect unnamed devices and beat mutable names`() {
         val examples = mapOf(
             "19b10000-e8f2-537e-4f6c-d104768a1214" to "Omi",

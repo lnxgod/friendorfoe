@@ -9,6 +9,7 @@ enum class AppFeature {
     AR_MAP_LOCATION,
     LOCAL_RADIO_DISCOVERY,
     PHONE_PRIVACY_SCAN,
+    WIFI_PRIVACY_SCAN,
     PRIVACY_ALERTS,
     SKY_ALERTS,
     ULTRASONIC,
@@ -46,9 +47,12 @@ fun requiredPermissions(feature: AppFeature, sdk: Int): Set<String> = when (feat
         Manifest.permission.ACCESS_COARSE_LOCATION,
     )
 
-    AppFeature.LOCAL_RADIO_DISCOVERY,
-    AppFeature.PHONE_PRIVACY_SCAN,
-    -> when {
+    AppFeature.WIFI_PRIVACY_SCAN -> setOf(Manifest.permission.ACCESS_FINE_LOCATION)
+
+    AppFeature.PHONE_PRIVACY_SCAN -> requiredPermissions(AppFeature.LOCAL_RADIO_DISCOVERY, sdk) -
+        Manifest.permission.NEARBY_WIFI_DEVICES // Privacy uses WifiManager; only Wi-Fi Aware needs Nearby Wi-Fi.
+
+    AppFeature.LOCAL_RADIO_DISCOVERY -> when {
         sdk >= 33 -> setOf(
             Manifest.permission.BLUETOOTH_SCAN,
             Manifest.permission.BLUETOOTH_CONNECT,
@@ -172,6 +176,7 @@ fun permissionTitle(feature: AppFeature): String = when (feature) {
     AppFeature.AR_MAP_LOCATION -> "Location for nearby results"
     AppFeature.LOCAL_RADIO_DISCOVERY -> "Nearby radio access"
     AppFeature.PHONE_PRIVACY_SCAN -> "Nearby-device access"
+    AppFeature.WIFI_PRIVACY_SCAN -> "Location for Wi-Fi scan results"
     AppFeature.PRIVACY_ALERTS,
     AppFeature.SKY_ALERTS,
     -> "Notifications"
@@ -193,6 +198,9 @@ fun permissionExplanation(feature: AppFeature): String = when (feature) {
 
     AppFeature.LOCAL_RADIO_DISCOVERY ->
         "Bluetooth and Wi-Fi access lets this phone look for nearby broadcast signals. Android also requires fine location for Wi-Fi scan results because they can reveal nearby location."
+
+    AppFeature.WIFI_PRIVACY_SCAN ->
+        "Android requires precise location to show nearby Wi-Fi access points. This scan does not join their networks."
 
     AppFeature.PHONE_PRIVACY_SCAN ->
         "The phone privacy scan uses Bluetooth and Wi-Fi observations. Android also requires fine location for Wi-Fi scan results because they can reveal nearby location."

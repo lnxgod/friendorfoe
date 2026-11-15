@@ -10,21 +10,21 @@ import com.friendorfoe.presentation.components.FofActionRow
 internal fun AppUpdateRow(
     update: UpdateUiState,
     onCheck: () -> Unit,
-    onOpen: (String) -> Unit,
+    onOpen: () -> Unit,
     testTagPrefix: String,
 ) {
     val checkTag = "${testTagPrefix}_check_updates"
     when (update) {
         UpdateUiState.Idle -> FofActionRow(
             title = "App updates",
-            description = "Check for a newer Android release",
+            description = "Check Google Play for an update",
             trailingLabel = "Check",
             onClick = onCheck,
             modifier = Modifier.testTag(checkTag),
         )
         UpdateUiState.Checking -> FofActionRow(
             title = "Checking for updates",
-            description = "Checking GitHub releases",
+            description = "Contacting Google Play",
             trailingLabel = "Checking…",
             enabled = false,
             onClick = onCheck,
@@ -32,33 +32,33 @@ internal fun AppUpdateRow(
         )
         is UpdateUiState.UpToDate -> FofActionRow(
             title = "Up to date",
-            description = "No newer release available",
+            description = "Google Play has no update for this installation",
             trailingLabel = "Check again",
             onClick = onCheck,
             modifier = Modifier.testTag(checkTag),
         )
-        is UpdateUiState.Available -> Column {
+        UpdateUiState.Available -> FofActionRow(
+            title = "Update available",
+            description = "Open Friend or Foe in Google Play to update",
+            trailingLabel = "Update",
+            onClick = onOpen,
+            modifier = Modifier.testTag("${testTagPrefix}_open_update"),
+        )
+        is UpdateUiState.Failed -> Column {
             FofActionRow(
-                title = "Update available",
-                description = "Version ${update.remote.version.name}",
-                trailingLabel = if (update.remote.apkUrl != null) "Download APK" else "Open",
-                onClick = { onOpen(update.remote.apkUrl ?: update.remote.releaseUrl) },
-                modifier = Modifier.testTag("${testTagPrefix}_open_update"),
+                title = update.message,
+                description = "Google Play could not check this installation.",
+                trailingLabel = "Retry",
+                onClick = onCheck,
+                modifier = Modifier.testTag(checkTag),
             )
-            if (update.remote.apkUrl != null) FofActionRow(
-                title = "Release notes",
-                description = "See changes and installation information",
-                trailingLabel = "View",
-                onClick = { onOpen(update.remote.releaseUrl) },
-                modifier = Modifier.testTag("${testTagPrefix}_release_notes"),
+            FofActionRow(
+                title = "View in Google Play",
+                description = "Open the official store listing",
+                trailingLabel = "Open",
+                onClick = onOpen,
+                modifier = Modifier.testTag("${testTagPrefix}_play_listing"),
             )
         }
-        is UpdateUiState.Failed -> FofActionRow(
-            title = update.message,
-            description = "Try again in a moment.",
-            trailingLabel = "Retry",
-            onClick = onCheck,
-            modifier = Modifier.testTag(checkTag),
-        )
     }
 }

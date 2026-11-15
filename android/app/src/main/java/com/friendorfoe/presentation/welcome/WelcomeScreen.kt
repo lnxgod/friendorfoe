@@ -8,8 +8,6 @@ import androidx.compose.material.icons.filled.Map
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.ui.graphics.vector.ImageVector
 import com.friendorfoe.presentation.components.FofDisclosure
-import android.content.Intent
-import android.net.Uri
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.defaultMinSize
@@ -24,32 +22,18 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 
-private const val GAMECHANGERS_URL = "https://gamechangersai.org"
-private const val REPOSITORY_URL = "https://github.com/lnxgod/friendorfoe"
 
 data class WelcomeActions(
     val onGetStarted: () -> Unit = {},
-    val onOpenLink: (String) -> Unit = {},
 )
 
 @Composable
 fun WelcomeScreen(onGetStarted: () -> Unit) {
-    val context = LocalContext.current
-    WelcomeContent(
-        actions = WelcomeActions(
-            onGetStarted = onGetStarted,
-            onOpenLink = { url ->
-                runCatching {
-                    context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
-                }
-            },
-        ),
-    )
+    WelcomeContent(WelcomeActions(onGetStarted))
 }
 
 @Composable
@@ -73,8 +57,6 @@ fun WelcomeContent(actions: WelcomeActions) {
                 WelcomeFact("Network features may exchange location or detection data with the service you use.")
                 WelcomeFact("Android asks for access when a feature needs it.")
                 WelcomeFact("Coverage depends on nearby signals, permissions and configured services.")
-                WelcomeLinkRow("GameChangers") { actions.onOpenLink(GAMECHANGERS_URL) }
-                WelcomeLinkRow("GitHub Repository") { actions.onOpenLink(REPOSITORY_URL) }
             }
         }
         Text("Permissions are requested when you use a feature.",
@@ -102,9 +84,4 @@ private fun WelcomeFeature(icon: ImageVector, title: String, detail: String) {
 private fun WelcomeFact(text: String) {
     Text(text, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
         modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp))
-}
-
-@Composable
-private fun WelcomeLinkRow(label: String, onClick: () -> Unit) {
-    androidx.compose.material3.TextButton(onClick = onClick) { Text(label) }
 }

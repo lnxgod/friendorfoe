@@ -38,7 +38,7 @@ class ProbeViewModelTest {
         val vm = ProbeViewModel(settings, api, clock)
         vm.setActive(true); runCurrent()
         assertTrue(requested.isEmpty())
-        settings.value = settings.value.copy(sensorBackendEnabled = true); runCurrent()
+        settings.value = settings.value.copy(sensorBackendEnabled = true, backendUrl = "https://sensor.example/"); runCurrent()
         assertEquals(listOf<String?>(null), requested)
         vm.selectSensor("old"); runCurrent()
         vm.selectSensor("new"); runCurrent()

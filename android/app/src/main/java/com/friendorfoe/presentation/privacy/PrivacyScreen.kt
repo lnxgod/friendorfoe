@@ -75,6 +75,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.friendorfoe.detection.PrivacyCategory
 import com.friendorfoe.presentation.components.FofEmptyState
 import com.friendorfoe.presentation.components.FofErrorState
+import com.friendorfoe.presentation.components.LeaveBackendOnlyDialog
 import com.friendorfoe.presentation.components.FofLoadingState
 import com.friendorfoe.presentation.components.FofNoMatchesState
 import com.friendorfoe.presentation.permissions.PermissionSettingsLaunchResult
@@ -177,8 +178,15 @@ fun PrivacyScreen(
         ),
     )
 
+    if (pendingPermissionAction?.backendOnlyExit == BackendOnlyExit.NEEDS_CONFIRMATION) {
+        LeaveBackendOnlyDialog(
+            onConfirm = viewModel::confirmLeaveBackendOnly,
+            onDismiss = viewModel::cancelPendingPermissionAction,
+        )
+    }
     pendingPermissionAction?.takeIf {
-        !it.requestLaunched || it.settingsLaunchFailed
+        it.backendOnlyExit != BackendOnlyExit.NEEDS_CONFIRMATION &&
+            (!it.requestLaunched || it.settingsLaunchFailed)
     }?.let { pending ->
         val source = pending.source
         val feature = requireNotNull(permissionFeatureForPrivacySource(source))
@@ -408,7 +416,7 @@ private fun PrivacyTabs(state: PrivacyUiState, actions: PrivacyActions) {
             Tab(selected = state.filters.focus == focus, onClick = {
                 focusManager.clearFocus()
                 keyboard?.hide()
-                actions.onFocusChanged(focus)
+                if (focus != state.filters.focus) actions.onFocusChanged(focus)
             },
                 modifier = Modifier.testTag("privacy_focus_${focus.name}"),
                 text = {
@@ -672,6 +680,7 @@ private fun PrivacySearchAndFilters(
                     Box {
                         FilterChip(
                             selected = state.filters.categories.isNotEmpty(),
+                            enabled = state.availableCategories.isNotEmpty(),
                             onClick = { categoriesOpen = true },
                             label = {
                                 Text(filterLabel("Categories", state.filters.categories.size))
@@ -700,6 +709,7 @@ private fun PrivacySearchAndFilters(
                     Box {
                         FilterChip(
                             selected = state.filters.sources.isNotEmpty(),
+                            enabled = state.availableSources.isNotEmpty(),
                             onClick = { sourcesOpen = true },
                             label = { Text(filterLabel("Sources", state.filters.sources.size)) },
                             modifier = Modifier.heightIn(min = 48.dp),

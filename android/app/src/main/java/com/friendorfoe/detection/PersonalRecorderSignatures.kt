@@ -20,13 +20,9 @@ internal object PersonalRecorderSignatures {
         Signature("DJI", listOf("dji-mic2", "dji-mic3", "dji mic 2", "dji mic 3"), null),
     )
 
-    val brands: List<String> = signatures.map { it.brand }
+    private val plaudSerialName = Regex("plaud[a-z0-9]{4}", RegexOption.IGNORE_CASE)
 
-    // A model-specific microphone name is more useful than DJI's company-only hint.
-    // This exception only applies to company evidence; other matches retain confidence ordering.
-    fun shouldReplace(match: Match, confidence: Float, manufacturer: String, reason: String): Boolean =
-        match.confidence > confidence || (match.manufacturer == "DJI" &&
-            manufacturer == "DJI" && reason.startsWith("mfr_cid:"))
+    val brands: List<String> = signatures.map { it.brand }
 
     fun match(name: String?, services: List<String> = emptyList()): Match? {
         for (signature in signatures) {
@@ -35,7 +31,7 @@ internal object PersonalRecorderSignatures {
             }
         }
         val localName = name.orEmpty().trim()
-        if (Regex("plaud[a-z0-9]{4}", RegexOption.IGNORE_CASE).matches(localName)) {
+        if (plaudSerialName.matches(localName)) {
             return Match("Plaud", 0.75f, "recorder:name:plaud_serial")
         }
         for (signature in signatures) {

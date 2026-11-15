@@ -222,7 +222,8 @@ class BadgePrivacySourceAdapter internal constructor(
             val record = provenEntityId?.let { "entity:$it" } ?: ephemeralRecordId
             val key = PrivacyFindingKey(source, record)
             val category = categoryFor(entity)
-            val title = entity.label.takeIf { it.isNotBlank() }
+            val title = if (category == PrivacyCategory.SECURITY_INFRASTRUCTURE) "Flock Safety device"
+                else entity.label.takeIf { it.isNotBlank() }
                 ?: entity.detail.takeIf { it.isNotBlank() }
                 ?: "Badge privacy finding"
             val rowText = listOf(
@@ -271,8 +272,11 @@ class BadgePrivacySourceAdapter internal constructor(
                 routableKey = provenEntityId?.let { key },
                 title = title,
                 evidence = evidence,
-                limitation = if (category == PrivacyCategory.VOICE_RECORDER)
-                    "Bluetooth recorder signature; recording status is unknown." else null,
+                limitation = when (category) {
+                    PrivacyCategory.VOICE_RECORDER -> "Bluetooth recorder signature; recording status is unknown."
+                    PrivacyCategory.SECURITY_INFRASTRUCTURE -> "The Wi-Fi signal does not establish the model or camera capability."
+                    else -> null
+                },
                 category = effectiveCategory,
                 severity = if (plainAppleActivity) {
                     FindingSeverity.INFO
@@ -304,7 +308,10 @@ class BadgePrivacySourceAdapter internal constructor(
                 entity.detail,
             ).joinToString(" ").lowercase()
             return when {
-                "flock" in text || "alpr" in text -> PrivacyCategory.ALPR_CAMERA
+                "alpr" in entity.label.lowercase() ||
+                    entity.evidence.contains("privacy:alpr:", ignoreCase = true) -> PrivacyCategory.ALPR_CAMERA
+                "flock" in text -> PrivacyCategory.SECURITY_INFRASTRUCTURE
+                "alpr" in text -> PrivacyCategory.ALPR_CAMERA
                 "evil twin" in text || "wifi_anomaly" in text || "attack" in text ->
                     PrivacyCategory.ATTACK_TOOL
                 "ai recorder" in text || "voice recorder" in text -> PrivacyCategory.VOICE_RECORDER
@@ -321,6 +328,7 @@ class BadgePrivacySourceAdapter internal constructor(
 
         private fun severityFor(category: PrivacyCategory, score: Int): FindingSeverity =
             when {
+                category == PrivacyCategory.SECURITY_INFRASTRUCTURE -> FindingSeverity.NEARBY
                 category.threatLevel >= 3 || score >= 85 -> FindingSeverity.CRITICAL
                 category.threatLevel == 2 || score >= 60 -> FindingSeverity.AWARENESS
                 category.threatLevel == 1 || score > 0 -> FindingSeverity.NEARBY

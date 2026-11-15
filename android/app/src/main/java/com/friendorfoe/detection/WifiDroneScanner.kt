@@ -389,10 +389,6 @@ class WifiDroneScanner @Inject constructor(
                 seenRadios.add(radioKey)
                 val serial = droneIdData.serialPrefix ?: ssid.ifBlank { bssid ?: radioKey }
 
-                Log.i(TAG, "DJI DroneID IE: BSSID=$bssid, lat=${droneIdData.latitude}, " +
-                        "lon=${droneIdData.longitude}, alt=${droneIdData.altitudeMeters}m, " +
-                        "speed=${droneIdData.speedMps}m/s, serial=$serial")
-
                 drones.add(Drone(
                     id = WifiTransmitterIdentity.detectionId("wifi_dji", ssid, bssid),
                     position = Position(
@@ -469,7 +465,6 @@ class WifiDroneScanner @Inject constructor(
                 val matchedPattern = matchDronePattern(ssid)
                 if (matchedPattern != null) {
                     seenRadios.add(radioKey)
-                    Log.d(TAG, "Drone WiFi SSID: $ssid, RSSI=$rssi dBm, ~${estimatedDistance.toInt()}m")
 
                     drones.add(Drone(
                         id = WifiTransmitterIdentity.detectionId("wifi", ssid, bssid),
@@ -495,13 +490,9 @@ class WifiDroneScanner @Inject constructor(
 
             // --- Priority 3: OUI prefix matching (catches hidden/generic SSIDs) ---
             if (radioKey !in seenRadios) {
-                val ouiEntry = bssid?.let { WifiOuiDatabase.lookup(it) }
-                if (ouiEntry != null && !ouiEntry.highFalsePositiveRisk) {
+                val ouiEntry = bssid?.let(WifiOuiDatabase::lookupDroneVendor)
+                if (ouiEntry != null) {
                     seenRadios.add(radioKey)
-                    val displaySsid = ssid.ifBlank { "(hidden)" }
-                    Log.d(TAG, "Drone WiFi OUI: BSSID=$bssid (${ouiEntry.manufacturer}), " +
-                            "SSID=$displaySsid, RSSI=$rssi dBm, ~${estimatedDistance.toInt()}m")
-
                     drones.add(Drone(
                         id = WifiTransmitterIdentity.detectionId("wifi_oui", ssid, bssid),
                         position = Position(0.0, 0.0, 0.0),
@@ -525,7 +516,6 @@ class WifiDroneScanner @Inject constructor(
             // --- Priority 4: Soft SSID match (cheap drone-like generic WiFi) ---
             if (ssid.isNotBlank() && radioKey !in seenRadios && isSoftDroneMatch(ssid)) {
                 seenRadios.add(radioKey)
-                Log.d(TAG, "Soft drone match: $ssid, RSSI=$rssi dBm, ~${estimatedDistance.toInt()}m")
 
                 drones.add(Drone(
                     id = WifiTransmitterIdentity.detectionId("wifi_soft", ssid, bssid),
@@ -554,9 +544,7 @@ class WifiDroneScanner @Inject constructor(
                     "$beaconRidCount BeaconRID/FrenchDRI, " +
                     "${drones.count { it.confidence == 0.4f }} OUI, " +
                     "${drones.count { it.confidence == 0.3f }} SSID)")
-        } else if (scanResults.isNotEmpty()) {
-            val ssids = scanResults.mapNotNull { it.SSID }.filter { it.isNotBlank() }
-            Log.d(TAG, "No drone SSIDs/OUIs matched. Visible networks (${ssids.size}): ${ssids.take(10)}")
+
         }
 
         return drones

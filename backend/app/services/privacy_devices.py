@@ -10,6 +10,7 @@ from __future__ import annotations
 from collections import Counter
 from typing import Any
 
+from app.services.rf_reference import mac_hex
 from app.services.personal_recorders import match_personal_recorder
 from app.services.privacy_ble_signatures import first_privacy_ble_service_match
 
@@ -43,40 +44,14 @@ def _current_rssi(entry: dict[str, Any]) -> int | None:
     return None
 
 
-def _field_starts_with_flock_oui(value: Any) -> bool:
-    text = str(value or "").strip()
-    if not text:
+def _has_flock_wifi_oui(entry: dict[str, Any]) -> bool:
+    if not str(entry.get("source") or "").lower().startswith("wifi"):
         return False
-
-    hex_chars: list[str] = []
-    for ch in text:
-        if ch in ":-.":
-            if not hex_chars:
-                return False
-            continue
-        upper = ch.upper()
-        if upper not in "0123456789ABCDEF":
-            return False
-        hex_chars.append(upper)
-        if len(hex_chars) == 6:
-            return "".join(hex_chars) == "B41E52"
-    return False
-
-
-def _has_supported_alpr_evidence(entry: dict[str, Any]) -> bool:
-    source_l = str(entry.get("source") or "").lower()
-    if not source_l.startswith("wifi"):
-        return False
-
-    reason_l = str(entry.get("class_reason") or "").lower()
-    if "privacy:alpr:" in reason_l:
+    if str(entry.get("class_reason") or "").lower() == "wifi_oui:flock:b4:1e:52":
         return True
-    if "wifi_oui:flock:b4:1e:52" in reason_l:
-        return True
-
     return any(
-        _field_starts_with_flock_oui(entry.get(field))
-        for field in ("bssid", "mac", "drone_id", "display_id")
+        (mac_hex(str(entry.get(field) or "")) or "").startswith("B41E52")
+        for field in ("bssid", "last_bssid", "mac", "drone_id", "display_id")
     )
 
 
@@ -113,7 +88,8 @@ def _display_label_for_kind(kind: str) -> str:
         TRACKER_KIND: "TRACKER NEAR",
         "SKIMMER": "SKIMMER",
         "CAMERA_NEAR": "CAMERA NEAR",
-        "FLOCK_ALPR": "FLOCK CAM",
+        "FLOCK_ALPR": "ALPR CAMERA",
+        "SECURITY_INFRASTRUCTURE": "FLOCK DEVICE",
         "VENUE_BEACON": "BEACON AREA",
         "EVENT_BADGE": "EVENT BADGE",
         "MOBILE_KEY_LOCK": "LOCK NEAR",
@@ -338,7 +314,8 @@ def classify_privacy_device(entry: dict[str, Any]) -> dict[str, Any]:
     is_apple_ibeacon = _is_apple_ibeacon(entry, apple_subtypes)
     remote_listening = apple_remote_listening_hint(entry, rssi)
 
-    if _has_supported_alpr_evidence(entry):
+    reason = str(entry.get("class_reason") or "").lower()
+    if str(entry.get("source") or "").lower().startswith("wifi") and reason.startswith("privacy:alpr:"):
         kind = "FLOCK_ALPR"
     elif any(token in text for token in (
         "skimmer", "hc-05", "hc-06", "hm-10", "jdy", "bt05", "free2move"
@@ -355,6 +332,8 @@ def classify_privacy_device(entry: dict[str, Any]) -> dict[str, Any]:
         kind = "VOICE_RECORDER"
     elif service_match:
         kind = str(service_match["privacy_kind"])
+    elif _has_flock_wifi_oui(entry) and not reason.startswith("privacy:"):
+        kind = "SECURITY_INFRASTRUCTURE"
     elif any(token in text for token in (
         "hidden camera", "spy cam", "camera", "body cam", "dashcam",
         "dash cam", "fleet cam", "conference cam", "axon", "samsara",
@@ -404,6 +383,8 @@ def classify_privacy_device(entry: dict[str, Any]) -> dict[str, Any]:
     subtype_detail = ", ".join(apple_subtypes[:3])
     if kind == "VOICE_RECORDER":
         detail_parts.append(f"{recorder['manufacturer'] if recorder else 'AI recorder'}; recording status unknown")
+    elif kind == "SECURITY_INFRASTRUCTURE":
+        detail_parts.append("Flock Safety Wi-Fi address registration. Model and recording capability unknown.")
     elif remote_listening and kind == REMOTE_LISTENING_KIND:
         detail_parts.append(str(remote_listening["display_detail"]))
     elif kind == "VENUE_BEACON":

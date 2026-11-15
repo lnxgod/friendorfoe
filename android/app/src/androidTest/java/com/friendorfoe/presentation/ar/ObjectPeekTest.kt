@@ -47,12 +47,10 @@ class ObjectPeekTest {
         val review = CaptureReviewViewModel(writer, RecordingShareFactory())
         compose.setContent {
             var peek by remember { mutableStateOf<ObjectPeekState?>(null) }
-            val interactions = remember {
-                ArCaptureInteractions(
-                    reviewViewModel = review,
-                    onObjectPeekRequested = { peek = peekState() },
-                )
-            }
+            val interactions = ArCaptureInteractions(
+                reviewViewModel = review,
+                onObjectPeekRequested = { peek = peekState() },
+            )
             FriendOrFoeTheme {
                 Box {
                     ArOverlay(
@@ -89,12 +87,10 @@ class ObjectPeekTest {
         val review = CaptureReviewViewModel(writer, RecordingShareFactory())
         compose.setContent {
             var peek by remember { mutableStateOf<ObjectPeekState?>(null) }
-            val interactions = remember {
-                ArCaptureInteractions(
-                    reviewViewModel = review,
-                    onObjectPeekRequested = { peek = peekState() },
-                )
-            }
+            val interactions = ArCaptureInteractions(
+                reviewViewModel = review,
+                onObjectPeekRequested = { peek = peekState() },
+            )
             FriendOrFoeTheme {
                 Box {
                     ArOverlay(

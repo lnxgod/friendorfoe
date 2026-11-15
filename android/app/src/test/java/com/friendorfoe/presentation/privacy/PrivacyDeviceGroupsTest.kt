@@ -30,6 +30,24 @@ class PrivacyDeviceGroupsTest {
             PrivacyFocus.BEACONS to 1, PrivacyFocus.ALL to 2), projected.focusCounts)
     }
 
+    @Test fun tabFilterChoicesExcludeUnrelatedSignalsAndRetainExpiredSelections() {
+        val recorder = finding(id = "rec", category = PrivacyCategory.VOICE_RECORDER)
+        val beaconKey = PrivacyFindingKey(PrivacySourceKind.WIFI_ANALYSIS, "beacon")
+        val beacon = finding(id = "beacon", category = PrivacyCategory.VENUE_BEACON)
+            .copy(source = beaconKey.source, observationKey = beaconKey, routableKey = beaconKey)
+        val rows = current(listOf(recorder, beacon))
+        val filters = PrivacyFilterState(focus = PrivacyFocus.RECORDERS, query = "no match",
+            sources = setOf(PrivacySourceKind.BADGE))
+        val filtered = projectPrivacyUiState(rows, filters)
+        assertTrue(filtered.visibleFindings.isEmpty())
+        assertEquals(listOf(PrivacyCategory.VOICE_RECORDER), filtered.availableCategories)
+        assertEquals(setOf(PrivacySourceKind.PHONE_BLE, PrivacySourceKind.BADGE), filtered.availableSources.toSet())
+        val expired = projectPrivacyUiState(current(listOf(beacon)), filters.copy(
+            categories = setOf(PrivacyCategory.VOICE_RECORDER)))
+        assertEquals(listOf(PrivacySourceKind.BADGE), expired.availableSources)
+        assertEquals(listOf(PrivacyCategory.VOICE_RECORDER), expired.availableCategories)
+    }
+
     @Test fun recorderAndQuietFiltersKeepWarningsAndCombineWithSearch() {
         val recorder = finding(id = "plaud", title = "AI Voice Recorder", evidence = "Plaud", category = PrivacyCategory.VOICE_RECORDER, severity = FindingSeverity.AWARENESS)
         val beacon = finding(id = "beacon", title = "iBeacon", category = PrivacyCategory.VENUE_BEACON)

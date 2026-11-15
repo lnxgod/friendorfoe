@@ -81,15 +81,12 @@ static const fof_privacy_wifi_signature_t WIFI_SIGNATURES[] = {
     { "GW_IPC", FOF_PRIVACY_MATCH_PREFIX, "Yoosee", "Hidden Camera", "CAMERA_NEAR", "privacy:camera:yoosee", 0.80f, true, false },
     { "DGK-", FOF_PRIVACY_MATCH_PREFIX, "LookCamPro", "Spy Camera", "CAMERA_NEAR", "privacy:camera:lookcam", 0.85f, true, false },
     { "Techmaster-", FOF_PRIVACY_MATCH_PREFIX, "Generic", "Spy Camera", "CAMERA_NEAR", "privacy:camera:a9clone", 0.80f, true, false },
-    { "SmartLife-", FOF_PRIVACY_MATCH_PREFIX, "Tuya", "IP Camera", "CAMERA_NEAR", "privacy:camera:tuya", 0.75f, true, false },
-    { "Tuya-", FOF_PRIVACY_MATCH_PREFIX, "Tuya", "IP Camera", "CAMERA_NEAR", "privacy:camera:tuya", 0.75f, true, false },
     { "IPC_AP_", FOF_PRIVACY_MATCH_PREFIX, "Zosi", "IP Camera", "CAMERA_NEAR", "privacy:camera:zosi", 0.80f, true, false },
     { "wyze_bind_", FOF_PRIVACY_MATCH_PREFIX, "Wyze", "IP Camera", "CAMERA_NEAR", "privacy:camera:wyze", 0.85f, true, false },
 
     /* Surveillance, doorbell, body, dash, action, and baby cameras */
-    { "Tapo_Cam_", FOF_PRIVACY_MATCH_PREFIX, "TP-Link", "IP Camera", "CAMERA_NEAR", "privacy:camera:tapo", 0.88f, true, false },
-    { "Tapo_", FOF_PRIVACY_MATCH_PREFIX, "TP-Link", "IP Camera", "CAMERA_NEAR", "privacy:camera:tapo", 0.80f, true, false },
-    { "TAPO-", FOF_PRIVACY_MATCH_PREFIX, "TP-Link", "IP Camera", "CAMERA_NEAR", "privacy:camera:tapo", 0.80f, true, false },
+    { "Tapo_Cam_", FOF_PRIVACY_MATCH_PREFIX_HEX4, "TP-Link", "IP Camera", "CAMERA_NEAR", "privacy:camera:tapo", 0.80f, true, false },
+    { "Kasa_Cam_", FOF_PRIVACY_MATCH_PREFIX_HEX4, "TP-Link", "IP Camera", "CAMERA_NEAR", "privacy:camera:kasa", 0.80f, true, false },
     { "Reolink_", FOF_PRIVACY_MATCH_PREFIX, "Reolink", "IP Camera", "CAMERA_NEAR", "privacy:camera:reolink", 0.80f, true, false },
     { "Wyze_", FOF_PRIVACY_MATCH_PREFIX, "Wyze", "IP Camera", "CAMERA_NEAR", "privacy:camera:wyze", 0.80f, true, false },
     { "Amcrest_", FOF_PRIVACY_MATCH_PREFIX, "Amcrest", "IP Camera", "CAMERA_NEAR", "privacy:camera:amcrest", 0.80f, true, false },
@@ -192,6 +189,12 @@ const fof_privacy_wifi_signature_t *fof_privacy_match_wifi_ssid(const char *ssid
                 break;
             case FOF_PRIVACY_MATCH_CONTAINS:
                 if (ascii_contains_nocase(ssid, sig->pattern)) {
+                    return sig;
+                }
+                break;
+            case FOF_PRIVACY_MATCH_PREFIX_HEX4:
+                if (ascii_starts_nocase(ssid, sig->pattern) &&
+                    fof_privacy_is_hex4_suffix(ssid + strlen(sig->pattern))) {
                     return sig;
                 }
                 break;

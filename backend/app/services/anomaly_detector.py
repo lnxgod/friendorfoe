@@ -95,7 +95,7 @@ class AnomalyDetector:
         # Hostile / pentest tools
         "Flipper", "Flipper Zero", "Pwnagotchi", "Marauder",
         # Spooky-device classes (v0.62, name-pattern detection on scanner)
-        "Card Skimmer", "Hidden Camera", "Flock Safety",
+        "Card Skimmer", "Hidden Camera", "ALPR Camera",
         "Camera Near", "Body Camera", "Fleet Camera", "Surveillance Camera",
         "Venue Beacon", "Event Badge", "Mobile Key Lock", "BLE HID",
         "Auracast",

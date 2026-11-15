@@ -19,7 +19,7 @@ import javax.inject.Singleton
 /** Narrow Android boundary used by the recoverable Wi-Fi scan coordinator. */
 internal interface WifiScanPlatform {
     fun readiness(): WifiScanReadiness
-    fun registerResultsReceiver(onResultsAvailable: () -> Unit)
+    fun registerResultsReceiver(onScanCompleted: (resultsUpdated: Boolean) -> Unit)
     fun unregisterResultsReceiver()
     fun startScan(): Boolean
     fun cachedResults(): List<ScanResult>
@@ -34,20 +34,17 @@ class AndroidWifiScanPlatform @Inject constructor(
     private var resultsReceiver: BroadcastReceiver? = null
 
     override fun readiness(): WifiScanReadiness = WifiScanAccessSnapshot(
-        sdkInt = Build.VERSION.SDK_INT,
         fineLocationGranted = hasPermission(Manifest.permission.ACCESS_FINE_LOCATION),
-        nearbyWifiGranted = Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
-            hasPermission(Manifest.permission.NEARBY_WIFI_DEVICES),
         locationServicesEnabled = locationServicesEnabled(),
         wifiEnabled = wifiManager.isWifiEnabled,
     ).evaluate()
 
-    override fun registerResultsReceiver(onResultsAvailable: () -> Unit) {
+    override fun registerResultsReceiver(onScanCompleted: (resultsUpdated: Boolean) -> Unit) {
         if (resultsReceiver != null) return
         val receiver = object : BroadcastReceiver() {
             override fun onReceive(receiverContext: Context, intent: Intent) {
                 if (intent.action == WifiManager.SCAN_RESULTS_AVAILABLE_ACTION) {
-                    onResultsAvailable()
+                    onScanCompleted(intent.getBooleanExtra(WifiManager.EXTRA_RESULTS_UPDATED, false))
                 }
             }
         }

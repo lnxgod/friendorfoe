@@ -11,16 +11,14 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.friendorfoe.BuildConfig
 import com.friendorfoe.presentation.components.FofActionRow
-import com.friendorfoe.presentation.components.FofDisclosure
 import com.friendorfoe.presentation.components.FofSection
 
 data class AboutLandingActions(
     val onOpenSettings: () -> Unit = {},
     val onOpenReference: () -> Unit = {},
-    val onContactSupport: () -> Unit = {},
-    val onOpenGithub: () -> Unit = {},
+    val onOpenSource: (String) -> Unit = {},
     val onCheckForUpdates: () -> Unit = {},
-    val onOpenUpdate: (String) -> Unit = {},
+    val onOpenUpdate: () -> Unit = {},
     val onOpenProbes: () -> Unit = {},
     val onOpenSavedFlights: () -> Unit = {},
     val onOpenHistory: () -> Unit = {},
@@ -65,13 +63,13 @@ fun AboutLandingScreen(
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
             AppUpdateRow(updateState, actions.onCheckForUpdates, actions.onOpenUpdate, testTagPrefix = "about")
         }
-        FofDisclosure("About & support", tag = "more_support") {
-            FofActionRow("Contact & feedback", "lnxgod@gmail.com", trailingLabel = "Email",
-                onClick = actions.onContactSupport, modifier = Modifier.testTag("about_contact"))
-            FofActionRow("GitHub repository", "Source code and releases", onClick = actions.onOpenGithub,
-                modifier = Modifier.testTag("about_github"))
-            Text("Observations are evidence, not proof of identity, intent, or ownership.",
-                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        }
+        FofActionRow(
+            title = "Source code on GitHub",
+            description = "Browse the Friend or Foe project",
+            onClick = { actions.onOpenSource("https://github.com/lnxgod/friendorfoe") },
+            modifier = Modifier.testTag("about_github"),
+        )
+        Text("Observations are evidence, not proof of identity, intent, or ownership.",
+            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }

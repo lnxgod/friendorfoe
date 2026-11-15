@@ -6,7 +6,7 @@ import com.friendorfoe.data.BackendEndpoint
 import com.friendorfoe.data.DetectionSettings
 import com.friendorfoe.data.remote.BackendHealthClient
 import com.friendorfoe.data.remote.BackendHealthResponse
-import com.friendorfoe.data.repository.AppUpdateMetadata
+import com.friendorfoe.data.repository.PlayUpdateStatus
 import com.friendorfoe.data.repository.AppUpdateRepository
 import com.friendorfoe.data.repository.BackendSessionHealthRepository
 import com.friendorfoe.data.repository.SessionHealth
@@ -112,10 +112,7 @@ class AboutViewModelTest {
     @Test
     fun updateStateOnlyAnnouncesAGenuinelyNewerRelease() = runTest {
         val settings = FakeInfoSettingsStore(DetectionSettings.defaults())
-        val sameVersion = AppUpdateMetadata(
-            AppVersion(null, "0.64.65"),
-            "https://github.com/lnxgod/friendorfoe/releases/tag/0.64.65",
-        )
+        val sameVersion = PlayUpdateStatus.CURRENT
         val viewModel = viewModel(
             settings = settings,
             session = sessionRepository(),
@@ -152,10 +149,7 @@ class AboutViewModelTest {
     @Test
     fun idleUpdateCheckRunsOnlyOnceForTheViewModelLifecycle() = runTest {
         val repository = CountingUpdateRepository(Result.success(
-            AppUpdateMetadata(
-                AppVersion(null, "0.67.7"),
-                "https://github.com/lnxgod/friendorfoe/releases/tag/v0.67.7",
-            ),
+            PlayUpdateStatus.CURRENT,
         ))
         val viewModel = viewModel(
             settings = FakeInfoSettingsStore(DetectionSettings.defaults()),
@@ -174,11 +168,8 @@ class AboutViewModelTest {
     }
 
     @Test
-    fun genuinelyNewerGitHubReleaseBecomesAvailable() = runTest {
-        val remote = AppUpdateMetadata(
-            AppVersion(null, "0.68.0"),
-            "https://github.com/lnxgod/friendorfoe/releases/tag/v0.68.0",
-        )
+    fun playCanOfferAnEligibleUpdate() = runTest {
+        val remote = PlayUpdateStatus.AVAILABLE
         val viewModel = viewModel(
             settings = FakeInfoSettingsStore(DetectionSettings.defaults()),
             session = sessionRepository(),
@@ -189,7 +180,7 @@ class AboutViewModelTest {
         viewModel.checkForUpdatesIfIdle()
         advanceUntilIdle()
 
-        assertEquals(UpdateUiState.Available(remote), viewModel.uiState.value.updateState)
+        assertEquals(UpdateUiState.Available, viewModel.uiState.value.updateState)
     }
 
     @Test
@@ -210,7 +201,7 @@ class AboutViewModelTest {
                 phonePrivacyScanEnabled = true,
                 privacyNotificationsEnabled = true,
             ),
-            endpoint = endpoint("http://fof-server.local:8000/"),
+            endpoint = endpoint("https://sensor.example/"),
             health = SessionHealth.Untested,
             permissionStates = mapOf(
                 AppFeature.LOCAL_RADIO_DISCOVERY to PermissionUiState.Granted,
@@ -363,6 +354,17 @@ class AboutViewModelTest {
     }
 
     @Test
+    fun phoneScanShortcutNeedsExplicitBackendExitEvenWithPermission() = runTest {
+        val settings = FakeInfoSettingsStore(DetectionSettings.defaults().copy(backendOnlyMode = true))
+        val model = viewModel(settings = settings, session = sessionRepository())
+        model.enablePhonePrivacyScan()
+        assertTrue(settings.writes.isEmpty())
+        model.enablePhonePrivacyScan(allowBackendOnlyExit = true)
+        assertEquals(listOf(InfoSettingKey.PHONE_PRIVACY_SCAN to true, InfoSettingKey.BACKEND_ONLY to false),
+            settings.writes)
+    }
+
+    @Test
     fun pendingPermissionEnableSurvivesRecreationAndCommitsAfterGrant() = runTest {
         val settings = FakeInfoSettingsStore(
             DetectionSettings.defaults().copy(phonePrivacyScanEnabled = false)
@@ -496,17 +498,17 @@ private class FakeInfoSettingsStore(initial: DetectionSettings) : InfoSettingsSt
 }
 
 private class FixedUpdateRepository(
-    private val result: Result<AppUpdateMetadata>,
+    private val result: Result<PlayUpdateStatus>,
 ) : AppUpdateRepository {
-    override suspend fun latest(): Result<AppUpdateMetadata> = result
+    override suspend fun latest(): Result<PlayUpdateStatus> = result
 }
 
 private class CountingUpdateRepository(
-    private val result: Result<AppUpdateMetadata>,
+    private val result: Result<PlayUpdateStatus>,
 ) : AppUpdateRepository {
     var calls = 0
 
-    override suspend fun latest(): Result<AppUpdateMetadata> {
+    override suspend fun latest(): Result<PlayUpdateStatus> {
         calls++
         return result
     }

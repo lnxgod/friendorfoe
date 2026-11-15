@@ -77,14 +77,7 @@ static const mfr_cid_entry_t s_mfr_cid_db[] = {
     { 0x03C2, "Snap",           "Smart Glasses", 0.85f, true  }, /* Snapchat Inc. */
     /* Google CID 0x00E0 removed — too broad, matches Nest/Chromecast/Pixel */
     { 0x060C, "Vuzix",          "Smart Glasses", 0.85f, true  }, /* Vuzix Corporation */
-    { 0x009E, "Bose",           "Audio Glasses", 0.75f, false }, /* Bose Corporation */
-    { 0x009F, "Bose",           "Audio Glasses", 0.75f, false }, /* Bose Corporation (alt) */
     { 0x034D, "Axon",           "Body Camera",   0.85f, true  }, /* TASER/Axon Enterprise */
-
-    /* MEDIUM confidence */
-    { 0x09B1, "Brilliant Labs", "Smart Glasses", 0.80f, true  }, /* Brilliant Labs Ltd. */
-    { 0x0BC6, "TCL",            "Smart Glasses", 0.70f, true  }, /* TCL Communication */
-    { 0x0962, "Rokid",          "Smart Glasses", 0.75f, true  }, /* Shanghai Lingban Tech */
 
     /* LOW confidence — too broad, many non-glasses devices */
     /* Amazon CID 0x0171 removed — too broad, matches Echo/Fire/Kindle/Ring */

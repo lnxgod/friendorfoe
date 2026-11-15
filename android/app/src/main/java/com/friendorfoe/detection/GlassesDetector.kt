@@ -361,18 +361,12 @@ class GlassesDetector @Inject constructor(
             WifiPattern("BVCAM-", "BVCAM", "Hidden Camera", 0.80f, true),
             WifiPattern("P2PCam-", "P2PCam", "Hidden Camera", 0.80f, true),
             WifiPattern("TUTK-", "ThroughTek", "IP Camera", 0.75f, true),
-            WifiPattern("SmartLife-", "Tuya", "IoT Camera", 0.70f, true),
-            WifiPattern("TuyaSmart-", "Tuya", "IoT Camera", 0.70f, true),
-            WifiPattern("AI_", "TinyCam", "Hidden Camera", 0.80f, true),
-            WifiPattern("AIS", "TinyCam", "Hidden Camera", 0.75f, true),
             WifiPattern("DGK-", "SpyGear", "Hidden Camera", 0.80f, true),
             WifiPattern("WIFI-CAM", "Generic", "Hidden Camera", 0.75f, true),
             // "Cam-" removed — too generic
             // Smart home cameras (WiFi setup/AP mode)
             WifiPattern("Wyze_", "Wyze", "IP Camera", 0.80f, true),
             WifiPattern("Reolink_", "Reolink", "IP Camera", 0.80f, true),
-            WifiPattern("Tapo_", "TP-Link", "IP Camera", 0.80f, true),
-            WifiPattern("TAPO-", "TP-Link", "IP Camera", 0.80f, true),
             WifiPattern("Amcrest_", "Amcrest", "IP Camera", 0.80f, true),
             WifiPattern("Hik-", "Hikvision", "IP Camera", 0.85f, true),
             WifiPattern("HIKVISION_", "Hikvision", "IP Camera", 0.85f, true),
@@ -383,10 +377,6 @@ class GlassesDetector @Inject constructor(
             WifiPattern("Furbo_", "Furbo", "Pet Camera", 0.80f, true),
             WifiPattern("Petcube", "Petcube", "Pet Camera", 0.80f, true),
             WifiPattern("Nanit_", "Nanit", "Baby Monitor", 0.75f, true),
-            // Espressif-based DIY / cheap spy cameras
-            WifiPattern("ESP-", "Espressif", "Possible Camera", 0.55f, true),
-            WifiPattern("ESP32-", "Espressif", "Possible Camera", 0.55f, true),
-            WifiPattern("AI-THINKER_", "AI-Thinker", "Possible Camera", 0.65f, true),
             // Endoscope / borescope cameras (peeping tools)
             WifiPattern("DEPSTECH_", "DEPSTECH", "Endoscope Camera", 0.85f, true),
             WifiPattern("Jetion_", "Jetion", "Endoscope Camera", 0.80f, true),
@@ -570,6 +560,16 @@ class GlassesDetector @Inject constructor(
          * @return GlassesDetection if match, null otherwise.
          */
         fun checkWifiSsid(ssid: String, bssid: String, rssi: Int): GlassesDetection? {
+            CameraBroadcastSignatures.wifiSsid(ssid)?.let { match ->
+                val now = Instant.now()
+                return GlassesDetection(
+                    mac = bssid, deviceName = ssid, deviceType = match.deviceType,
+                    manufacturer = match.brand, hasCamera = true, rssi = rssi,
+                    confidence = match.confidence, matchReason = match.reason,
+                    firstSeen = now, lastSeen = now, category = match.category,
+                    details = mapOf("evidence" to match.evidence, "limitation" to CameraBroadcastSignatures.LIMITATION),
+                )
+            }
             checkWifiBssid(ssid, bssid, rssi)?.let { return it }
             for (pattern in wifiSsidPatterns) {
                 if (ssid.startsWith(pattern.prefix, ignoreCase = true)) {
@@ -598,15 +598,19 @@ class GlassesDetector @Inject constructor(
                 OuiRole.PRIVACY_FLOCK -> GlassesDetection(
                     mac = bssid,
                     deviceName = ssid.ifBlank { null },
-                    deviceType = "ALPR Camera",
+                    deviceType = "Privacy Infrastructure",
                     manufacturer = entry.manufacturer,
-                    hasCamera = true,
+                    hasCamera = false,
                     rssi = rssi,
-                    confidence = 0.95f,
+                    confidence = 0.62f,
                     matchReason = "wifi_oui:flock:$ouiPrefix",
                     firstSeen = Instant.now(),
                     lastSeen = Instant.now(),
-                    category = PrivacyCategory.ALPR_CAMERA,
+                    category = PrivacyCategory.SECURITY_INFRASTRUCTURE,
+                    details = mapOf(
+                        "evidence" to "Wi-Fi address prefix registered to Flock Safety",
+                        "limitation" to "An address prefix does not identify the model, a camera, or plate reading.",
+                    ),
                     fingerprintKey = "wifi_oui:flock:${bssid.uppercase()}"
                 )
                 OuiRole.PRIVACY_INFRASTRUCTURE -> GlassesDetection(
@@ -739,12 +743,7 @@ class GlassesDetector @Inject constructor(
         MfrEntry(BleSignatures.CID_SNAP, "Snap", "Smart Glasses", 0.85f, true),
         // Google CID 0x00E0 removed — too broad, matches Nest/Chromecast/Pixel
         MfrEntry(0x060C, "Vuzix", "Smart Glasses", 0.85f, true),
-        MfrEntry(0x009E, "Bose", "Audio Glasses", 0.75f, false),
-        MfrEntry(0x009F, "Bose", "Audio Glasses", 0.75f, false),
         MfrEntry(0x034D, "Axon", "Body Camera", 0.85f, true),
-        MfrEntry(0x09B1, "Brilliant Labs", "Smart Glasses", 0.80f, true),
-        MfrEntry(0x0BC6, "TCL", "Smart Glasses", 0.70f, true),
-        MfrEntry(0x0962, "Rokid", "Smart Glasses", 0.75f, true),
         // Amazon CID 0x0171 removed — too broad, matches Echo/Fire/Kindle/Ring
         // Trackers / Stalkerware. Keep these to current SIG company IDs;
         // tracker-chip vendors like Nordic/TI are too broad to classify.
@@ -752,13 +751,6 @@ class GlassesDetector @Inject constructor(
         MfrEntry(BleSignatures.CID_CHIPOLO, "Chipolo", "BLE Tracker", 0.85f, false),
         // Samsung CID 0x0075 removed — matches ALL Samsung devices (phones, watches, buds)
         // SmartTag detected by UUID 0xFD5A/0xFD59 instead (much more specific)
-        // Wearables with cameras/sensors
-        MfrEntry(0x0B1A, "Humane", "AI Pin", 0.85f, true),
-        MfrEntry(0x0E3C, "Rabbit", "AI Device", 0.70f, false),
-        MfrEntry(0x0B14, "XREAL", "Smart Glasses", 0.85f, true),
-        // Action cameras
-        MfrEntry(0x0413, "DJI", "Action Camera", 0.80f, true),
-        MfrEntry(0x08A9, "Insta360", "Action Camera", 0.85f, true),
         // IoT / Camera ecosystems
         MfrEntry(0x0870, "Wyze", "Surveillance Camera", 0.80f, true),
         MfrEntry(0x0C19, "Arlo", "Surveillance Camera", 0.80f, true),
@@ -767,8 +759,6 @@ class GlassesDetector @Inject constructor(
         MfrEntry(0x0A65, "Lytx", "Fleet Dashcam", 0.80f, true),
         MfrEntry(0x0B6B, "Samsara", "Fleet Dashcam", 0.80f, true),
         MfrEntry(0x0909, "70mai", "Dash Camera", 0.80f, true),
-        MfrEntry(0x07D0, "Tuya", "IoT Camera", 0.65f, true),
-        MfrEntry(0x02D3, "Ring", "Doorbell Camera", 0.75f, true),
     )
 
     // ── 16-bit Service UUID database ──
@@ -1487,9 +1477,6 @@ class GlassesDetector @Inject constructor(
                         )
                         detectedDevices[key] = detection
                         trySend(GlassesScanEvent.Observation(detection))
-                        if (existing == null) {
-                            Log.i(TAG, "Connected device detected: $name (${nameMatch.deviceType})")
-                        }
                     }
                 }
 
@@ -1501,7 +1488,6 @@ class GlassesDetector @Inject constructor(
                         val age = det?.let { java.time.Duration.between(it.lastSeen, java.time.Instant.now()).seconds } ?: 999
                         if (age > 30) {
                             detectedDevices.remove(key)
-                            Log.d(TAG, "Connected device gone: ${det?.deviceName}")
                         }
                     }
             } catch (e: SecurityException) {
@@ -1692,13 +1678,23 @@ class GlassesDetector @Inject constructor(
         PersonalRecorderSignatures.match(deviceName,
             serviceUuids.orEmpty().map { it.uuid.toString() } +
                 serviceData.orEmpty().keys.map { it.uuid.toString() })?.let { match ->
-            if (PersonalRecorderSignatures.shouldReplace(match, bestConf, bestMfr, bestReason)) {
+            if (match.confidence > bestConf) {
                 bestConf = match.confidence
                 bestMfr = match.manufacturer
                 bestType = "AI Voice Recorder"
                 bestCamera = false
                 bestReason = match.reason
             }
+        }
+        val cameraService = serviceUuids?.firstNotNullOfOrNull {
+            CameraBroadcastSignatures.advertisedService(it.uuid)
+        }
+        if (cameraService != null && cameraService.confidence > bestConf) {
+            bestConf = cameraService.confidence
+            bestMfr = cameraService.brand
+            bestType = cameraService.deviceType
+            bestCamera = true
+            bestReason = cameraService.reason
         }
         if (deviceName != null && deviceName.isNotEmpty()) {
             for (entry in nameDatabase) {
@@ -1769,6 +1765,10 @@ class GlassesDetector @Inject constructor(
         // Parse rich details from the raw packet.
         val parsedDetails = BlePacketParser.parseAllDetails(result).toMutableMap()
 
+        if (cameraService != null && bestReason == cameraService.reason) {
+            parsedDetails["evidence"] = cameraService.evidence
+            parsedDetails["limitation"] = CameraBroadcastSignatures.LIMITATION
+        }
         if (feaaMatch != null && bestReason == feaaMatch.reason) {
             parsedDetails["evidence"] = feaaMatch.evidence
             parsedDetails["limitation"] = feaaMatch.limitation
@@ -1797,6 +1797,7 @@ class GlassesDetector @Inject constructor(
 
         // Assign category based on device type
         val category = when {
+            cameraService != null && bestReason == cameraService.reason -> cameraService.category
             bestReason == "apple_activity" -> PrivacyCategory.APPLE_CONTINUITY
             else -> categorize(bestType)
         }
@@ -1831,10 +1832,6 @@ class GlassesDetector @Inject constructor(
 
         val existing = detectedDevices[fingerprintKey]
         val mergedMacs = (existing?.seenMacs ?: emptySet()) + mac
-        if (existing != null && mac !in existing.seenMacs) {
-            Log.i(TAG, "RPA rotation: $bestMfr $bestType added MAC $mac " +
-                "(now ${mergedMacs.size} MACs, fp=$fingerprintKey)")
-        }
 
         val detection = GlassesDetection(
             mac = mac,
@@ -1875,7 +1872,6 @@ class GlassesDetector @Inject constructor(
         }
         detectedDevices[fingerprintKey] = detection
 
-        Log.i(TAG, "Detected $bestType ($bestMfr) RSSI=$rssi conf=$bestConf [$bestReason] cam=$bestCamera details=$parsedDetails")
         return detection
     }
 

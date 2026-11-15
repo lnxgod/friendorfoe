@@ -919,8 +919,8 @@ void test_badge_notable_ssid_ranks_above_flock_and_glasses(void)
     TEST_ASSERT_TRUE(snapshot.entity_count >= 3);
     TEST_ASSERT_EQUAL(BADGE_THREAT_CATEGORY_SSID, snapshot.entities[0].category);
     TEST_ASSERT_EQUAL_STRING("DEFCON-FPV-WATCH", snapshot.entities[0].label);
-    TEST_ASSERT_EQUAL(BADGE_THREAT_CATEGORY_FLOCK, snapshot.entities[1].category);
-    TEST_ASSERT_EQUAL(BADGE_THREAT_CATEGORY_GLASS, snapshot.entities[2].category);
+    TEST_ASSERT_EQUAL(BADGE_THREAT_CATEGORY_GLASS, snapshot.entities[1].category);
+    TEST_ASSERT_EQUAL(BADGE_THREAT_CATEGORY_PRIVACY, snapshot.entities[2].category);
 }
 
 void test_badge_notable_ssid_suffixes_group_for_readability(void)
@@ -1051,7 +1051,7 @@ void test_badge_flock_ble_name_does_not_produce_flock_camera(void)
     }
 }
 
-void test_badge_flock_wifi_oui_produces_flock_camera_not_drone(void)
+void test_badge_flock_wifi_oui_produces_vendor_evidence(void)
 {
     badge_threat_event_t event;
     drone_detection_t flock = make_detection(
@@ -1066,9 +1066,9 @@ void test_badge_flock_wifi_oui_produces_flock_camera_not_drone(void)
             sizeof(flock.class_reason) - 1);
 
     TEST_ASSERT_TRUE(badge_threat_classify_detection(&flock, &event));
-    TEST_ASSERT_EQUAL(BADGE_THREAT_WIFI_ANOMALY, event.cls);
-    TEST_ASSERT_EQUAL(BADGE_THREAT_CATEGORY_FLOCK, event.category);
-    TEST_ASSERT_EQUAL_STRING("FLOCK Camera", event.label);
+    TEST_ASSERT_EQUAL(BADGE_THREAT_OTHER, event.cls);
+    TEST_ASSERT_EQUAL(BADGE_THREAT_CATEGORY_PRIVACY, event.category);
+    TEST_ASSERT_EQUAL_STRING("Flock Safety Device", event.label);
     TEST_ASSERT_TRUE(strstr(event.detail, "B4:1E:52") != NULL);
     TEST_ASSERT_EQUAL(DETECTION_SRC_WIFI_OUI, event.source);
     TEST_ASSERT_TRUE(strstr(event.evidence, "Flock") != NULL);
@@ -1078,9 +1078,16 @@ void test_badge_flock_wifi_oui_produces_flock_camera_not_drone(void)
         .active = true,
         .cls = event.cls,
         .category = event.category,
+        .source = event.source,
     };
     TEST_ASSERT_EQUAL(BADGE_THREAT_DISPLAY_LANE_WIFI,
                       badge_threat_snapshot_entity_display_lane(&item));
+
+    flock.source = DETECTION_SRC_WIFI_AP_INVENTORY;
+    strcpy(flock.class_reason, "privacy:alpr:elsag");
+    TEST_ASSERT_TRUE(badge_threat_classify_detection(&flock, &event));
+    TEST_ASSERT_EQUAL(BADGE_THREAT_CATEGORY_FLOCK, event.category);
+    TEST_ASSERT_EQUAL_STRING("ALPR Camera", event.label);
 }
 
 void test_badge_privacy_infrastructure_oui_uses_vendor_device_wording(void)
@@ -1164,8 +1171,8 @@ void test_badge_flock_wifi_oui_normalizes_common_mac_formats(void)
         strncpy(flock.bssid, valid_bssids[i], sizeof(flock.bssid) - 1);
 
         TEST_ASSERT_TRUE(badge_threat_classify_detection(&flock, &event));
-        TEST_ASSERT_EQUAL(BADGE_THREAT_CATEGORY_FLOCK, event.category);
-        TEST_ASSERT_EQUAL_STRING("FLOCK Camera", event.label);
+        TEST_ASSERT_EQUAL(BADGE_THREAT_CATEGORY_PRIVACY, event.category);
+        TEST_ASSERT_EQUAL_STRING("Flock Safety Device", event.label);
     }
 }
 
@@ -1215,7 +1222,7 @@ void test_badge_privacy_evidence_survives_snapshot(void)
     badge_threat_state_snapshot(&state, 1200, &snapshot);
 
     TEST_ASSERT_EQUAL_INT(1, snapshot.entity_count);
-    TEST_ASSERT_EQUAL(BADGE_THREAT_CATEGORY_FLOCK, snapshot.entities[0].category);
+    TEST_ASSERT_EQUAL(BADGE_THREAT_CATEGORY_PRIVACY, snapshot.entities[0].category);
     TEST_ASSERT_EQUAL(DETECTION_SRC_WIFI_OUI, snapshot.entities[0].source);
     TEST_ASSERT_EQUAL_INT(82, snapshot.entities[0].confidence_pct);
     TEST_ASSERT_TRUE(strstr(snapshot.entities[0].evidence, "Flock") != NULL);
