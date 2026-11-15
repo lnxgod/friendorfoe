@@ -600,6 +600,19 @@ static void copy_detail(char *out, const char *detail)
     out[BADGE_THREAT_DETAIL_LEN - 1] = '\0';
 }
 
+static void format_wifi_detail(badge_threat_event_t *event,
+                               const drone_detection_t *det,
+                               const char *fallback)
+{
+    if (det->ssid[0]) {
+        snprintf(event->detail, sizeof(event->detail), "ssid %.26s", det->ssid);
+    } else if (det->bssid[0]) {
+        snprintf(event->detail, sizeof(event->detail), "bssid %.24s", det->bssid);
+    } else {
+        copy_detail(event->detail, fallback);
+    }
+}
+
 static void copy_evidence(char *out, const char *evidence)
 {
     if (!out) {
@@ -1352,18 +1365,7 @@ bool badge_threat_classify_detection(const drone_detection_t *det,
         event->cls = BADGE_THREAT_WIFI_ANOMALY;
         event->category = BADGE_THREAT_CATEGORY_WIFI;
         copy_label(event->label, "Evil Twin");
-        if (det->ssid[0] != '\0') {
-            char detail[BADGE_THREAT_DETAIL_LEN] = {0};
-            snprintf(detail, sizeof(detail), "ssid %.26s", det->ssid);
-            copy_detail(event->detail, detail);
-        } else if (det->bssid[0] != '\0') {
-            char detail[BADGE_THREAT_DETAIL_LEN] = {0};
-            snprintf(detail, sizeof(detail), "bssid %.24s", det->bssid);
-            copy_detail(event->detail, detail);
-        }
-        if (event->detail[0] == '\0') {
-            copy_detail(event->detail, "evil twin evidence");
-        }
+        format_wifi_detail(event, det, "evil twin evidence");
         event->base_score = det->confidence >= 0.70f ? 75.0f : 60.0f;
         event->evidence_quality = 6;
     } else if (det->source == DETECTION_SRC_WIFI_AP_INVENTORY &&
@@ -1383,19 +1385,8 @@ bool badge_threat_classify_detection(const drone_detection_t *det,
         event->cls = BADGE_THREAT_OTHER;
         event->category = BADGE_THREAT_CATEGORY_PRIVACY;
         copy_label(event->label, "Flock Safety Device");
-        if (det->ssid[0] != '\0') {
-            char detail[BADGE_THREAT_DETAIL_LEN] = {0};
-            snprintf(detail, sizeof(detail), "ssid %.26s", det->ssid);
-            copy_detail(event->detail, detail);
-        } else if (det->bssid[0] != '\0') {
-            char detail[BADGE_THREAT_DETAIL_LEN] = {0};
-            snprintf(detail, sizeof(detail), "bssid %.24s", det->bssid);
-            copy_detail(event->detail, detail);
-        } else if (det->class_reason[0] != '\0') {
-            copy_detail(event->detail, "Flock WiFi evidence");
-        } else {
-            copy_detail(event->detail, "Flock WiFi signal");
-        }
+        format_wifi_detail(event, det, det->class_reason[0]
+            ? "Flock WiFi evidence" : "Flock WiFi signal");
         event->base_score = 45.0f;
         event->evidence_quality = 6;
     } else if (source_is_drone_candidate(det->source) || mfr_drone) {
@@ -1446,9 +1437,7 @@ bool badge_threat_classify_detection(const drone_detection_t *det,
         if (contains_nocase(ssid_kind, "flock")) {
             event->category = BADGE_THREAT_CATEGORY_FLOCK;
             copy_label(event->label, "FLOCK Camera");
-            char detail[BADGE_THREAT_DETAIL_LEN] = {0};
-            snprintf(detail, sizeof(detail), "ssid %.26s", ssid_text);
-            copy_detail(event->detail, detail);
+            snprintf(event->detail, sizeof(event->detail), "ssid %.26s", ssid_text);
         } else {
             copy_label(event->label, ssid_family[0] ? ssid_family : "Notable SSID");
             copy_detail(event->detail, ssid_kind);
@@ -1601,15 +1590,7 @@ bool badge_threat_classify_detection(const drone_detection_t *det,
             event->evidence_quality = 5;
         } else if (mfr_evil_twin) {
             copy_label(event->label, "Evil Twin");
-            if (det->ssid[0] != '\0') {
-                char detail[BADGE_THREAT_DETAIL_LEN] = {0};
-                snprintf(detail, sizeof(detail), "ssid %.26s", det->ssid);
-                copy_detail(event->detail, detail);
-            } else if (det->bssid[0] != '\0') {
-                char detail[BADGE_THREAT_DETAIL_LEN] = {0};
-                snprintf(detail, sizeof(detail), "bssid %.24s", det->bssid);
-                copy_detail(event->detail, detail);
-            }
+            format_wifi_detail(event, det, NULL);
             event->base_score = det->confidence >= 0.70f ? 75.0f : 60.0f;
             event->evidence_quality = 6;
         } else if (contains_nocase(det->manufacturer, "beacon spam") ||
@@ -1678,19 +1659,8 @@ bool badge_threat_classify_detection(const drone_detection_t *det,
                 event->evidence_quality = 6;
             }
         }
-        if (det->ssid[0] != '\0') {
-            char detail[BADGE_THREAT_DETAIL_LEN] = {0};
-            snprintf(detail, sizeof(detail), "ssid %.26s", det->ssid);
-            copy_detail(event->detail, detail);
-        } else if (det->bssid[0] != '\0') {
-            char detail[BADGE_THREAT_DETAIL_LEN] = {0};
-            snprintf(detail, sizeof(detail), "bssid %.24s", det->bssid);
-            copy_detail(event->detail, detail);
-        } else {
-            copy_detail(event->detail, det->manufacturer[0]
-                ? det->manufacturer
-                : "WiFi privacy AP");
-        }
+        format_wifi_detail(event, det, det->manufacturer[0]
+            ? det->manufacturer : "WiFi privacy AP");
     } else if (det->source == DETECTION_SRC_WIFI_AP_INVENTORY) {
         return false;
     } else {
