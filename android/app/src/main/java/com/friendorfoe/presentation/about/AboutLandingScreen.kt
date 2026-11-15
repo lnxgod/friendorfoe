@@ -12,6 +12,7 @@ import androidx.compose.ui.unit.dp
 import com.friendorfoe.BuildConfig
 import com.friendorfoe.presentation.components.FofActionRow
 import com.friendorfoe.presentation.components.FofSection
+import com.friendorfoe.presentation.components.PublisherCredit
 
 data class AboutLandingActions(
     val onOpenSettings: () -> Unit = {},
@@ -23,6 +24,7 @@ data class AboutLandingActions(
     val onOpenSavedFlights: () -> Unit = {},
     val onOpenHistory: () -> Unit = {},
     val onOpenBadge: () -> Unit = {},
+    val onOpenPublisher: (String) -> Unit = {},
 )
 
 @Composable
@@ -39,7 +41,9 @@ fun AboutLandingScreen(
         Text("More", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold)
         Text("Friend or Foe", style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Spacer(Modifier.height(20.dp))
+        Spacer(Modifier.height(8.dp))
+        PublisherCredit(actions.onOpenPublisher)
+        Spacer(Modifier.height(12.dp))
         FofActionRow("App settings", "Alerts, detection and connections", onClick = actions.onOpenSettings,
             modifier = Modifier.testTag("about_app_settings"))
         HorizontalDivider()

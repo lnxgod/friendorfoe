@@ -2,7 +2,6 @@ package com.friendorfoe.presentation.privacy
 
 import androidx.compose.animation.AnimatedVisibility
 import android.app.Activity
-import com.friendorfoe.detection.PersonalRecorderSignatures
 import com.friendorfoe.presentation.components.FofDisclosure
 import android.bluetooth.BluetoothAdapter
 import android.content.Intent
@@ -72,6 +71,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.friendorfoe.detection.PersonalRecorderSignatures
 import com.friendorfoe.detection.PrivacyCategory
 import com.friendorfoe.presentation.components.FofEmptyState
 import com.friendorfoe.presentation.components.FofErrorState
@@ -1058,7 +1058,7 @@ private fun sourceHealthColor(state: SourceHealthState): Color = when (state) {
     SourceHealthState.PAUSED -> MaterialTheme.colorScheme.tertiary
     SourceHealthState.PERMISSION_BLOCKED,
     SourceHealthState.FAILED -> MaterialTheme.colorScheme.error
-    SourceHealthState.UNSUPPORTED -> MaterialTheme.colorScheme.outline
+    SourceHealthState.UNSUPPORTED -> MaterialTheme.colorScheme.onSurfaceVariant
 }
 
 @Composable
@@ -1066,7 +1066,7 @@ private fun sectionColor(section: PrivacySection): Color = when (section) {
     PrivacySection.THREATS -> MaterialTheme.colorScheme.error
     PrivacySection.AWARENESS -> MaterialTheme.colorScheme.tertiary
     PrivacySection.NEARBY -> MaterialTheme.colorScheme.primary
-    PrivacySection.INFO -> MaterialTheme.colorScheme.outline
+    PrivacySection.INFO -> MaterialTheme.colorScheme.onSurfaceVariant
 }
 
 private fun formatPrivacyWallTime(wallMs: Long): String = runCatching {
@@ -1088,6 +1088,41 @@ private fun RecorderCoverage() {
             Text("Enable Phone scanning and Nearby devices permission. Omi, Limitless, Bee and Friend also have service-identifier rules; the other families require recognizable names. New name rules are not hardware-validated. Bluetooth capability alone does not guarantee a visible BLE broadcast, especially while paired. Silent or renamed devices can be missed. Recording status is unknown.",
                 modifier = Modifier.padding(vertical = 8.dp), style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
+            RecorderNameExample()
         }
     }
+}
+
+@Composable
+internal fun RecorderNameExample() {
+    var open by rememberSaveable { mutableStateOf(false) }
+    TextButton(onClick = { open = true }) { Text("Try a Bluetooth name") }
+    if (!open) return
+
+    var name by remember { mutableStateOf("PLAUDAB12") }
+    val match = remember(name) { PersonalRecorderSignatures.match(name) }
+    AlertDialog(
+        onDismissRequest = { open = false },
+        title = { Text("Try a Bluetooth name") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text("Edit the example to see how recorder names are matched. This runs on your phone without starting a scan.")
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it.take(248) },
+                    label = { Text("Bluetooth name") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth().testTag("example_bluetooth_name"),
+                )
+                if (name.isNotBlank()) {
+                    Text(
+                        match?.let { "Name matches the ${it.manufacturer} recorder family." }
+                            ?: "No supported recorder name matches.",
+                        style = MaterialTheme.typography.titleSmall,
+                    )
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = { open = false }) { Text("Done") } },
+    )
 }

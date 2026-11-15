@@ -1,6 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
-<resources>
-    <style name="Theme.FriendOrFoe" parent="android:Theme.Material.Light.NoActionBar">
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <color name="app_window_surface">#F8FAF7</color>
+    <bool name="app_light_system_bars">true</bool>
+    <bool name="app_disable_legacy_launch_preview">true</bool>
+    <style name="FofPlatformTheme" parent="android:Theme.Material.Light.NoActionBar" />
+
+    <style name="Theme.FriendOrFoe" parent="FofPlatformTheme">
+        <item name="android:windowDisablePreview">@bool/app_disable_legacy_launch_preview</item>
+        <item name="android:windowBackground">@color/app_window_surface</item>
+        <item name="android:colorBackground">@color/app_window_surface</item>
+        <item name="android:windowLightStatusBar">@bool/app_light_system_bars</item>
+        <item name="android:windowLightNavigationBar" tools:targetApi="o_mr1">@bool/app_light_system_bars</item>
         <item name="android:statusBarColor">@android:color/transparent</item>
         <item name="android:navigationBarColor">@android:color/transparent</item>
     </style>

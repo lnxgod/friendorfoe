@@ -103,6 +103,7 @@
 
         <activity
             android:name=".presentation.MainActivity"
+            android:configChanges="uiMode"
             android:exported="true"
             android:theme="@style/Theme.FriendOrFoe">
             <intent-filter>

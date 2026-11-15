@@ -34,6 +34,7 @@ import org.osmdroid.config.Configuration
 import org.osmdroid.tileprovider.tilesource.TileSourceFactory
 import org.osmdroid.util.BoundingBox
 import org.osmdroid.util.GeoPoint
+import com.friendorfoe.presentation.map.ApplyMapAppearance
 import org.osmdroid.views.MapView
 import org.osmdroid.views.overlay.Marker
 import java.time.Instant
@@ -229,6 +230,7 @@ private fun FlightPathMap(
             controller.setZoom(11.0)
         }
     }
+    ApplyMapAppearance(map)
     val paths = remember(map) { AircraftTrailOverlay(map) }
     fun pointMarker(label: String, color: Int) = Marker(map).apply {
         title = label

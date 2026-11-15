@@ -298,6 +298,7 @@ internal fun AboutTopLevelRoute(
                     navController.navigate(REFERENCE_GUIDE_BASE_ROUTE) { launchSingleTop = true }
                 },
                 onOpenSource = context::openUri,
+                onOpenPublisher = context::openUri,
                 onCheckForUpdates = onCheckForUpdates,
                 onOpenUpdate = openUpdate,
             ),

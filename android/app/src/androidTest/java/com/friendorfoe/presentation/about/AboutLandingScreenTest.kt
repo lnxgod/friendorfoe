@@ -21,6 +21,7 @@ class AboutLandingScreenTest {
     fun moreShowsDailyToolsAndKeepsSettingsAction() {
         var settingsOpened = 0
         var sourceUrl: String? = null
+        var publisherUrl: String? = null
 
         compose.setContent {
             FriendOrFoeTheme {
@@ -28,6 +29,7 @@ class AboutLandingScreenTest {
                     actions = AboutLandingActions(
                         onOpenSettings = { settingsOpened++ },
                         onOpenSource = { sourceUrl = it },
+                        onOpenPublisher = { publisherUrl = it },
                     ),
                 )
             }
@@ -35,6 +37,12 @@ class AboutLandingScreenTest {
 
         compose.onNodeWithTag("about_landing").assertIsDisplayed()
         compose.onNodeWithText("Friend or Foe").assertIsDisplayed()
+        compose.onNodeWithText("Published by GameChangers AI").assertIsDisplayed()
+        compose.onNodeWithText("gamechangersai.org").performClick()
+        compose.runOnIdle {
+            assertEquals("https://gamechangersai.org/", publisherUrl)
+            assertEquals(null, sourceUrl)
+        }
         compose.onNodeWithTag("about_app_settings").assertIsDisplayed().performClick()
         compose.onNodeWithTag("more_history").assertIsDisplayed()
         compose.onNodeWithTag("more_badge").assertIsDisplayed()

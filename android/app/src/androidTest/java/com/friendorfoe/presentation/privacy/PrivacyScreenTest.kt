@@ -9,6 +9,7 @@ import androidx.test.platform.app.InstrumentationRegistry
 import java.io.File
 import androidx.compose.ui.test.assertHasClickAction
 import androidx.compose.ui.test.assertIsSelected
+import androidx.compose.ui.test.performTextReplacement
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
@@ -29,6 +30,19 @@ import org.junit.Rule
 import org.junit.Test
 
 class PrivacyScreenTest {
+    @Test
+    fun nameExampleUsesRecorderRulesAndResetsOnClose() {
+        compose.setContent { FriendOrFoeTheme { RecorderNameExample() } }
+        compose.onNodeWithText("Try a Bluetooth name").performClick()
+        compose.onNodeWithText("Name matches the Plaud recorder family.").assertIsDisplayed()
+        compose.onNodeWithTag("example_bluetooth_name").performTextReplacement("headphones")
+        compose.onNodeWithText("No supported recorder name matches.").assertIsDisplayed()
+        compose.onNodeWithText("Done").performClick()
+        compose.onNodeWithTag("example_bluetooth_name").assertDoesNotExist()
+        compose.onNodeWithText("Try a Bluetooth name").performClick()
+        compose.onNodeWithText("Name matches the Plaud recorder family.").assertIsDisplayed()
+    }
+
     @Test
     fun backendOnlyModeDialogOffersDistinctKeepAndResumeChoices() {
         var resumes = 0

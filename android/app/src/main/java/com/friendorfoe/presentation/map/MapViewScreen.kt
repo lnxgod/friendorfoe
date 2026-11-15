@@ -259,7 +259,6 @@ fun MapViewScreen(
         selectedObjectId?.let { detailViewModel.loadDetail(it) }
     }
 
-    val isDarkTheme = androidx.compose.foundation.isSystemInDarkTheme()
 
     val mapView = remember {
         MapView(context).apply {
@@ -359,24 +358,7 @@ fun MapViewScreen(
         }
     }
 
-    // Neutral luminance keeps labels readable without inverting parks and water into neon hues.
-    LaunchedEffect(isDarkTheme) {
-        if (isDarkTheme) {
-            mapView.overlayManager.tilesOverlay.setColorFilter(
-                android.graphics.ColorMatrixColorFilter(
-                    android.graphics.ColorMatrix(floatArrayOf(
-                        -0.128f, -0.429f, -0.043f, 0f, 170f,
-                        -0.128f, -0.429f, -0.043f, 0f, 179f,
-                        -0.128f, -0.429f, -0.043f, 0f, 181f,
-                         0f,      0f,      0f,     1f,   0f
-                    ))
-                )
-            )
-        } else {
-            mapView.overlayManager.tilesOverlay.setColorFilter(null)
-        }
-        mapView.invalidate()
-    }
+    ApplyMapAppearance(mapView)
 
     androidx.compose.foundation.layout.Column(Modifier.fillMaxSize()) {
         // Live filters and recorded paths share the same controls and filter policy.

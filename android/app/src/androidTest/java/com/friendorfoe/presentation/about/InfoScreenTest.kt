@@ -175,6 +175,18 @@ class InfoScreenTest {
     }
 
     @Test
+    fun opensAndClosesTheBundledPrivacyPolicy() {
+        setInfoContent()
+        scrollToSection(3)
+        compose.onNodeWithTag("open_privacy_policy").performScrollTo().performClick()
+        compose.onNodeWithText("Friend or Foe Privacy Policy").assertIsDisplayed()
+        compose.onNodeWithText("Retention and deletion").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("Contact GameChangers AI").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("Close").performClick()
+        compose.onNodeWithText("Friend or Foe Privacy Policy").assertDoesNotExist()
+    }
+
+    @Test
     fun privacyDataCopyMatchesActualAndroidBehavior() {
         setInfoContent()
 
@@ -242,6 +254,15 @@ class InfoScreenTest {
             .assertIsEnabled()
             .performClick()
         compose.runOnIdle { assertEquals(1, opened) }
+    }
+
+    @Test
+    fun aboutPublisherGoesToTheOrganizationWebsite() {
+        var destination: String? = null
+        setInfoContent(actions = InfoActions(onOpenPublisher = { destination = it }))
+        scrollToSection(4)
+        compose.onNodeWithText("Published by GameChangers AI").performScrollTo().performClick()
+        compose.runOnIdle { assertEquals("https://gamechangersai.org/", destination) }
     }
 
     @Test

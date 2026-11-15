@@ -41,6 +41,8 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import com.friendorfoe.presentation.theme.AppThemePicker
+import com.friendorfoe.presentation.components.PublisherCredit
 import com.friendorfoe.presentation.components.LeaveBackendOnlyDialog
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -91,6 +93,7 @@ data class InfoActions(
     val onTestConnection: () -> Unit = {},
     val onCheckForUpdates: () -> Unit = {},
     val onOpenUpdate: () -> Unit = {},
+    val onOpenPublisher: (String) -> Unit = {},
     val onRefreshCalibration: () -> Unit = {},
     val onOpenReference: () -> Unit = {},
     val onOpenMagneticField: () -> Unit = {},
@@ -171,6 +174,7 @@ fun InfoSettingsScreen(
         onTestConnection = { viewModel?.testConnection() },
         onCheckForUpdates = { viewModel?.checkForUpdates() },
         onOpenUpdate = context::openPlayStoreListing,
+        onOpenPublisher = context::openUri,
         onRefreshCalibration = { viewModel?.refreshCalibrationAvailability() },
         onOpenReference = { onNavigateToReference?.invoke() },
         onOpenMagneticField = { onNavigateToEmfSweep?.invoke() },
@@ -281,6 +285,7 @@ fun InfoContent(
                 FofScreenHeader("App settings")
             }
         }
+        item(key = "info_appearance") { AppThemePicker() }
         item(key = "info_alerts") {
             FofSection("Alerts") { AlertSettingsRows(state, actions) }
         }
@@ -775,6 +780,7 @@ private fun LegendRow(spec: LegendSpec) {
 
 @Composable
 private fun PrivacyDataCopy() {
+    PrivacyPolicyRow()
     listOf(
         "History may store observations and phone coordinates locally.",
         "ADS-B and weather services may receive location when those features are used.",
@@ -818,6 +824,7 @@ private fun AboutAndUpdateRows(state: InfoUiState, actions: InfoActions) {
         color = MaterialTheme.colorScheme.onSurfaceVariant,
         modifier = Modifier.padding(top = 2.dp),
     )
+    PublisherCredit(actions.onOpenPublisher)
     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
     Row(
         modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp),
@@ -951,7 +958,7 @@ private fun StatusPill(
 ) {
     val foreground = when (tone) {
         InfoTone.Neutral -> MaterialTheme.colorScheme.primary
-        InfoTone.Success -> Color(0xFF2E7D32)
+        InfoTone.Success -> MaterialTheme.colorScheme.primary
         InfoTone.Warning -> MaterialTheme.colorScheme.error
         InfoTone.Muted -> MaterialTheme.colorScheme.onSurfaceVariant
     }

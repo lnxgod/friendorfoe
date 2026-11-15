@@ -174,3 +174,15 @@ def test_source_only_tags_skip_unrelated_release_work():
     assert "contains(github.ref_name, 'android')" not in esp32_build
     assert "Attach firmware to release" in esp32_build
     assert "needs.build.result == 'success'" in esp32_deploy
+
+def test_main_dispatch_can_prepare_a_signed_play_bundle_without_publishing():
+    workflow = ANDROID_WORKFLOW.read_text()
+    signing = _job(workflow, "sign-release", "publish-release")
+    publish = _job(workflow, "publish-release")
+    assert "workflow_dispatch:" in workflow
+    assert "(github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')" in signing
+    assert "Build signed Play upload candidate" in signing and "./gradlew bundlePlay" in signing
+    assert 'jarsigner -verify "$AAB"' in signing and "keytool -printcert -rfc -jarfile" in signing
+    assert f"{SIGNER_SHA256}  -" in signing and "friendorfoe-play.aab.sha256" in signing
+    assert "github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')" in publish
+    assert ".aab" not in publish

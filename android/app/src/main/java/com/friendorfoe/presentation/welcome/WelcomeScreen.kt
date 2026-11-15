@@ -7,7 +7,9 @@ import androidx.compose.material.icons.filled.Flight
 import androidx.compose.material.icons.filled.Map
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.ui.graphics.vector.ImageVector
+import com.friendorfoe.presentation.about.openUri
 import com.friendorfoe.presentation.components.FofDisclosure
+import com.friendorfoe.presentation.components.PublisherCredit
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.defaultMinSize
@@ -22,6 +24,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -29,11 +32,13 @@ import androidx.compose.ui.unit.dp
 
 data class WelcomeActions(
     val onGetStarted: () -> Unit = {},
+    val onOpenPublisher: (String) -> Unit = {},
 )
 
 @Composable
 fun WelcomeScreen(onGetStarted: () -> Unit) {
-    WelcomeContent(WelcomeActions(onGetStarted))
+    val context = LocalContext.current
+    WelcomeContent(WelcomeActions(onGetStarted = onGetStarted, onOpenPublisher = context::openUri))
 }
 
 @Composable
@@ -46,6 +51,7 @@ fun WelcomeContent(actions: WelcomeActions) {
             Text("Friend or Foe", style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold)
             Text("Aircraft, drones and nearby signals", style = MaterialTheme.typography.titleMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
+            PublisherCredit(actions.onOpenPublisher)
             WelcomeFeature(Icons.Default.Flight, "Nearby", "See what is close, with distance first.")
             WelcomeFeature(Icons.Default.Map, "Map & trails", "Follow received positions and review flight paths.")
             WelcomeFeature(Icons.Default.Shield, "Privacy", "Inspect nearby signals and their evidence.")

@@ -51,7 +51,7 @@ import com.friendorfoe.domain.model.ObjectCategory
 import com.friendorfoe.presentation.util.DroneDatabase
 import com.friendorfoe.presentation.util.IcaoCountryLookup
 import com.friendorfoe.presentation.util.RiskLevel
-import com.friendorfoe.presentation.util.categoryColor
+import com.friendorfoe.presentation.util.categoryColorThemed
 import java.time.Duration
 import java.time.Instant
 import java.time.ZoneId
@@ -785,7 +785,7 @@ private fun AircraftHeader(aircraft: Aircraft, detail: AircraftDetailDto?) {
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(
-            containerColor = categoryColor(aircraft.category).copy(alpha = 0.15f)
+            containerColor = categoryColorThemed(aircraft.category).copy(alpha = 0.15f)
         ),
         shape = RoundedCornerShape(12.dp)
     ) {
@@ -800,7 +800,7 @@ private fun AircraftHeader(aircraft: Aircraft, detail: AircraftDetailDto?) {
                 modifier = Modifier
                     .size(16.dp)
                     .clip(CircleShape)
-                    .background(categoryColor(aircraft.category))
+                    .background(categoryColorThemed(aircraft.category))
             )
 
             Spacer(modifier = Modifier.width(12.dp))

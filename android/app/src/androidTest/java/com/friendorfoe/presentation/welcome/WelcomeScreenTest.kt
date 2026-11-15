@@ -47,6 +47,21 @@ class WelcomeScreenTest {
     }
 
     @Test
+    fun welcomePublisherOpensTheOfficialWebsiteWithoutStartingOnboarding() {
+        var destination: String? = null
+        var continued = 0
+        setWelcome(onContinue = { continued++ }, onOpenPublisher = { destination = it })
+
+        compose.onNodeWithText("Published by GameChangers AI").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("gamechangersai.org").performClick()
+        compose.runOnIdle {
+            assertEquals("https://gamechangersai.org/", destination)
+            assertEquals(0, continued)
+        }
+        compose.onNodeWithTag("welcome_get_started").assertIsDisplayed()
+    }
+
+    @Test
     fun scopeDataAndPermissionTimingCopyStayTruthful() {
         setWelcome()
         compose.onNodeWithTag("welcome_data").performScrollTo().performClick()
@@ -99,12 +114,14 @@ class WelcomeScreenTest {
 
     private fun setWelcome(
         onContinue: () -> Unit = {},
+        onOpenPublisher: (String) -> Unit = {},
     ) {
         compose.setContent {
             FriendOrFoeTheme {
                 WelcomeContent(
                     WelcomeActions(
                         onGetStarted = onContinue,
+                        onOpenPublisher = onOpenPublisher,
                     ),
                 )
             }
