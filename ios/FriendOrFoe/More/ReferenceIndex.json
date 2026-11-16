@@ -1,0 +1,3138 @@
+[
+  {
+    "id": "Aircraft/eh10",
+    "kind": "Aircraft",
+    "name": "AgustaWestland EH101 Merlin",
+    "manufacturer": "AgustaWestland",
+    "group": "Helicopter",
+    "codes": [
+      "EH10"
+    ]
+  },
+  {
+    "id": "Aircraft/a220",
+    "kind": "Aircraft",
+    "name": "Airbus A220",
+    "manufacturer": "Airbus (Bombardier)",
+    "group": "Narrowbody",
+    "codes": [
+      "A220",
+      "BCS1",
+      "BCS3"
+    ],
+    "photo": "aircraft/A220.jpg"
+  },
+  {
+    "id": "Aircraft/a300_a310",
+    "kind": "Aircraft",
+    "name": "Airbus A300/A310",
+    "manufacturer": "Airbus",
+    "group": "Widebody",
+    "codes": [
+      "A306",
+      "A30B",
+      "A310"
+    ],
+    "photo": "aircraft/A306.jpg"
+  },
+  {
+    "id": "Aircraft/a318",
+    "kind": "Aircraft",
+    "name": "Airbus A318",
+    "manufacturer": "Airbus",
+    "group": "Narrowbody",
+    "codes": [
+      "A318"
+    ],
+    "photo": "aircraft/A318.jpg"
+  },
+  {
+    "id": "Aircraft/a319",
+    "kind": "Aircraft",
+    "name": "Airbus A319",
+    "manufacturer": "Airbus",
+    "group": "Narrowbody",
+    "codes": [
+      "A319"
+    ],
+    "photo": "aircraft/A319.jpg"
+  },
+  {
+    "id": "Aircraft/a320",
+    "kind": "Aircraft",
+    "name": "Airbus A320",
+    "manufacturer": "Airbus",
+    "group": "Narrowbody",
+    "codes": [
+      "A320"
+    ],
+    "photo": "aircraft/A320.jpg"
+  },
+  {
+    "id": "Aircraft/a320neo",
+    "kind": "Aircraft",
+    "name": "Airbus A320neo",
+    "manufacturer": "Airbus",
+    "group": "Narrowbody",
+    "codes": [
+      "A20N"
+    ],
+    "photo": "aircraft/A20N.jpg"
+  },
+  {
+    "id": "Aircraft/a321",
+    "kind": "Aircraft",
+    "name": "Airbus A321",
+    "manufacturer": "Airbus",
+    "group": "Narrowbody",
+    "codes": [
+      "A321"
+    ],
+    "photo": "aircraft/A321.jpg"
+  },
+  {
+    "id": "Aircraft/a321neo",
+    "kind": "Aircraft",
+    "name": "Airbus A321neo",
+    "manufacturer": "Airbus",
+    "group": "Narrowbody",
+    "codes": [
+      "A21N"
+    ],
+    "photo": "aircraft/A21N.jpg"
+  },
+  {
+    "id": "Aircraft/a330",
+    "kind": "Aircraft",
+    "name": "Airbus A330-200/300",
+    "manufacturer": "Airbus",
+    "group": "Widebody",
+    "codes": [
+      "A332",
+      "A333"
+    ],
+    "photo": "aircraft/A332.jpg"
+  },
+  {
+    "id": "Aircraft/a330neo",
+    "kind": "Aircraft",
+    "name": "Airbus A330-900neo",
+    "manufacturer": "Airbus",
+    "group": "Widebody",
+    "codes": [
+      "A339"
+    ],
+    "photo": "aircraft/A339.jpg"
+  },
+  {
+    "id": "Aircraft/a340",
+    "kind": "Aircraft",
+    "name": "Airbus A340",
+    "manufacturer": "Airbus",
+    "group": "Widebody",
+    "codes": [
+      "A342",
+      "A343",
+      "A345",
+      "A346"
+    ],
+    "photo": "aircraft/A343.jpg"
+  },
+  {
+    "id": "Aircraft/a350",
+    "kind": "Aircraft",
+    "name": "Airbus A350 XWB",
+    "manufacturer": "Airbus",
+    "group": "Widebody",
+    "codes": [
+      "A359",
+      "A35K"
+    ],
+    "photo": "aircraft/A359.jpg"
+  },
+  {
+    "id": "Aircraft/a380",
+    "kind": "Aircraft",
+    "name": "Airbus A380",
+    "manufacturer": "Airbus",
+    "group": "Widebody",
+    "codes": [
+      "A388"
+    ],
+    "photo": "aircraft/A388.jpg"
+  },
+  {
+    "id": "Aircraft/a400m",
+    "kind": "Aircraft",
+    "name": "Airbus A400M Atlas",
+    "manufacturer": "Airbus",
+    "group": "Cargo / Transport",
+    "codes": [
+      "A400",
+      "A400M"
+    ],
+    "photo": "aircraft/A400.jpg"
+  },
+  {
+    "id": "Aircraft/as32",
+    "kind": "Aircraft",
+    "name": "Airbus AS332 Super Puma",
+    "manufacturer": "Airbus Helicopters",
+    "group": "Helicopter",
+    "codes": [
+      "AS32"
+    ]
+  },
+  {
+    "id": "Aircraft/c295",
+    "kind": "Aircraft",
+    "name": "Airbus C-295",
+    "manufacturer": "Airbus",
+    "group": "Cargo / Transport",
+    "codes": [
+      "C295",
+      "C295W"
+    ],
+    "photo": "aircraft/C295.jpg"
+  },
+  {
+    "id": "Aircraft/ec55",
+    "kind": "Aircraft",
+    "name": "Airbus EC155 / AS365 Dauphin",
+    "manufacturer": "Airbus Helicopters",
+    "group": "Helicopter",
+    "codes": [
+      "EC55"
+    ]
+  },
+  {
+    "id": "Aircraft/as350",
+    "kind": "Aircraft",
+    "name": "Airbus H125 (AS350 Ecureuil)",
+    "manufacturer": "Airbus Helicopters",
+    "group": "Helicopter",
+    "codes": [
+      "AS50"
+    ],
+    "photo": "aircraft/AS50.jpg"
+  },
+  {
+    "id": "Aircraft/ec130",
+    "kind": "Aircraft",
+    "name": "Airbus H130 (EC130)",
+    "manufacturer": "Airbus Helicopters",
+    "group": "Helicopter",
+    "codes": [
+      "EC30"
+    ],
+    "photo": "aircraft/EC30.jpg"
+  },
+  {
+    "id": "Aircraft/ec135",
+    "kind": "Aircraft",
+    "name": "Airbus H135 (EC135)",
+    "manufacturer": "Airbus Helicopters",
+    "group": "Helicopter",
+    "codes": [
+      "EC35"
+    ]
+  },
+  {
+    "id": "Aircraft/ec145",
+    "kind": "Aircraft",
+    "name": "Airbus H145 (EC145)",
+    "manufacturer": "Airbus Helicopters",
+    "group": "Helicopter",
+    "codes": [
+      "EC45"
+    ],
+    "photo": "aircraft/EC45.jpg"
+  },
+  {
+    "id": "Aircraft/bk117",
+    "kind": "Aircraft",
+    "name": "Airbus/Kawasaki BK117",
+    "manufacturer": "Airbus/Kawasaki",
+    "group": "Helicopter",
+    "codes": [
+      "BK17"
+    ],
+    "photo": "aircraft/BK17.jpg"
+  },
+  {
+    "id": "Aircraft/an124",
+    "kind": "Aircraft",
+    "name": "Antonov An-124 Ruslan",
+    "manufacturer": "Antonov (Ukraine)",
+    "group": "Cargo / Transport",
+    "codes": [
+      "AN124"
+    ],
+    "photo": "aircraft/AN124.jpg"
+  },
+  {
+    "id": "Aircraft/an72",
+    "kind": "Aircraft",
+    "name": "Antonov An-72",
+    "manufacturer": "Antonov",
+    "group": "Cargo / Transport",
+    "codes": [
+      "AN72"
+    ]
+  },
+  {
+    "id": "Aircraft/atr42",
+    "kind": "Aircraft",
+    "name": "ATR 42",
+    "manufacturer": "ATR (Airbus/Leonardo)",
+    "group": "Turboprop",
+    "codes": [
+      "AT43"
+    ],
+    "photo": "aircraft/AT43.jpg"
+  },
+  {
+    "id": "Aircraft/atr72",
+    "kind": "Aircraft",
+    "name": "ATR 72",
+    "manufacturer": "ATR (Airbus/Leonardo)",
+    "group": "Turboprop",
+    "codes": [
+      "AT72",
+      "AT76"
+    ],
+    "photo": "aircraft/AT72.jpg"
+  },
+  {
+    "id": "Aircraft/bae146",
+    "kind": "Aircraft",
+    "name": "BAe 146 / Avro RJ",
+    "manufacturer": "British Aerospace",
+    "group": "Regional Jet",
+    "codes": [
+      "RJ85",
+      "RJ1H"
+    ],
+    "photo": "aircraft/RJ85.jpg"
+  },
+  {
+    "id": "Aircraft/beechjet400",
+    "kind": "Aircraft",
+    "name": "Beechcraft 400A/Hawker 400XP",
+    "manufacturer": "Beechcraft/Raytheon",
+    "group": "Business Jet",
+    "codes": [
+      "BE40"
+    ],
+    "photo": "aircraft/BE40.jpg"
+  },
+  {
+    "id": "Aircraft/baron",
+    "kind": "Aircraft",
+    "name": "Beechcraft Baron",
+    "manufacturer": "Beechcraft/Textron",
+    "group": "Light Aircraft",
+    "codes": [
+      "BE55",
+      "BE58"
+    ],
+    "photo": "aircraft/BE58.jpg"
+  },
+  {
+    "id": "Aircraft/bonanza",
+    "kind": "Aircraft",
+    "name": "Beechcraft Bonanza",
+    "manufacturer": "Beechcraft/Textron",
+    "group": "Light Aircraft",
+    "codes": [
+      "BE36"
+    ],
+    "photo": "aircraft/BE36.jpg"
+  },
+  {
+    "id": "Aircraft/c12",
+    "kind": "Aircraft",
+    "name": "Beechcraft C-12 Huron",
+    "manufacturer": "Beechcraft/Textron",
+    "group": "Fighter / Military",
+    "codes": [
+      "C12"
+    ],
+    "photo": "aircraft/C12.jpg"
+  },
+  {
+    "id": "Aircraft/be76",
+    "kind": "Aircraft",
+    "name": "Beechcraft Duchess",
+    "manufacturer": "Beechcraft",
+    "group": "Light Aircraft",
+    "codes": [
+      "BE76"
+    ],
+    "photo": "aircraft/BE76.jpg"
+  },
+  {
+    "id": "Aircraft/king_air",
+    "kind": "Aircraft",
+    "name": "Beechcraft King Air",
+    "manufacturer": "Beechcraft/Textron",
+    "group": "Turboprop",
+    "codes": [
+      "BE20",
+      "BE30",
+      "B200",
+      "B300",
+      "B350",
+      "BE9L",
+      "BE99",
+      "B190"
+    ],
+    "photo": "aircraft/BE20.jpg"
+  },
+  {
+    "id": "Aircraft/t6",
+    "kind": "Aircraft",
+    "name": "Beechcraft T-6 Texan II",
+    "manufacturer": "Beechcraft/Textron",
+    "group": "Trainer",
+    "codes": [
+      "T6"
+    ],
+    "photo": "aircraft/T6.jpg"
+  },
+  {
+    "id": "Aircraft/bell206",
+    "kind": "Aircraft",
+    "name": "Bell 206 JetRanger",
+    "manufacturer": "Bell",
+    "group": "Helicopter",
+    "codes": [
+      "B06"
+    ],
+    "photo": "aircraft/B06.jpg"
+  },
+  {
+    "id": "Aircraft/bell407",
+    "kind": "Aircraft",
+    "name": "Bell 407",
+    "manufacturer": "Bell",
+    "group": "Helicopter",
+    "codes": [
+      "B407"
+    ],
+    "photo": "aircraft/B407.jpg"
+  },
+  {
+    "id": "Aircraft/b412",
+    "kind": "Aircraft",
+    "name": "Bell 412",
+    "manufacturer": "Bell Helicopter",
+    "group": "Helicopter",
+    "codes": [
+      "B412"
+    ]
+  },
+  {
+    "id": "Aircraft/bell429",
+    "kind": "Aircraft",
+    "name": "Bell 429 GlobalRanger",
+    "manufacturer": "Bell",
+    "group": "Helicopter",
+    "codes": [
+      "B429"
+    ],
+    "photo": "aircraft/B429.jpg"
+  },
+  {
+    "id": "Aircraft/b505",
+    "kind": "Aircraft",
+    "name": "Bell 505 Jet Ranger X",
+    "manufacturer": "Bell Helicopter",
+    "group": "Helicopter",
+    "codes": [
+      "B505"
+    ]
+  },
+  {
+    "id": "Aircraft/ah1z",
+    "kind": "Aircraft",
+    "name": "Bell AH-1Z Viper",
+    "manufacturer": "Bell Helicopter",
+    "group": "Helicopter",
+    "codes": [
+      "AH1Z"
+    ]
+  },
+  {
+    "id": "Aircraft/v22",
+    "kind": "Aircraft",
+    "name": "Bell Boeing V-22 Osprey",
+    "manufacturer": "Bell/Boeing",
+    "group": "Helicopter",
+    "codes": [
+      "V22",
+      "MV22",
+      "CV22"
+    ],
+    "photo": "aircraft/V22.jpg"
+  },
+  {
+    "id": "Aircraft/uh1",
+    "kind": "Aircraft",
+    "name": "Bell UH-1 Iroquois (Huey)",
+    "manufacturer": "Bell",
+    "group": "Helicopter",
+    "codes": [
+      "UH1"
+    ],
+    "photo": "aircraft/UH1.jpg"
+  },
+  {
+    "id": "Aircraft/b707",
+    "kind": "Aircraft",
+    "name": "Boeing 707",
+    "manufacturer": "Boeing",
+    "group": "Narrowbody",
+    "codes": [
+      "B703"
+    ],
+    "photo": "aircraft/B703.jpg"
+  },
+  {
+    "id": "Aircraft/b717",
+    "kind": "Aircraft",
+    "name": "Boeing 717",
+    "manufacturer": "Boeing (McDonnell Douglas)",
+    "group": "Narrowbody",
+    "codes": [
+      "B712"
+    ],
+    "photo": "aircraft/B712.jpg"
+  },
+  {
+    "id": "Aircraft/b737_classic",
+    "kind": "Aircraft",
+    "name": "Boeing 737 Classic",
+    "manufacturer": "Boeing",
+    "group": "Narrowbody",
+    "codes": [
+      "B734",
+      "B735"
+    ],
+    "photo": "aircraft/B734.jpg"
+  },
+  {
+    "id": "Aircraft/b737_max",
+    "kind": "Aircraft",
+    "name": "Boeing 737 MAX",
+    "manufacturer": "Boeing",
+    "group": "Narrowbody",
+    "codes": [
+      "B38M",
+      "B39M"
+    ],
+    "photo": "aircraft/B38M.jpg"
+  },
+  {
+    "id": "Aircraft/b37m",
+    "kind": "Aircraft",
+    "name": "Boeing 737 MAX 7",
+    "manufacturer": "Boeing",
+    "group": "Narrowbody",
+    "codes": [
+      "B37M"
+    ],
+    "photo": "aircraft/B38M.jpg"
+  },
+  {
+    "id": "Aircraft/b737_ng",
+    "kind": "Aircraft",
+    "name": "Boeing 737 NG",
+    "manufacturer": "Boeing",
+    "group": "Narrowbody",
+    "codes": [
+      "B737",
+      "B738",
+      "B739"
+    ],
+    "photo": "aircraft/B738.jpg"
+  },
+  {
+    "id": "Aircraft/b736",
+    "kind": "Aircraft",
+    "name": "Boeing 737-600",
+    "manufacturer": "Boeing",
+    "group": "Narrowbody",
+    "codes": [
+      "B736"
+    ],
+    "photo": "aircraft/B737.jpg"
+  },
+  {
+    "id": "Aircraft/b747",
+    "kind": "Aircraft",
+    "name": "Boeing 747",
+    "manufacturer": "Boeing",
+    "group": "Widebody",
+    "codes": [
+      "B744",
+      "B748"
+    ],
+    "photo": "aircraft/B744.jpg"
+  },
+  {
+    "id": "Aircraft/b757",
+    "kind": "Aircraft",
+    "name": "Boeing 757",
+    "manufacturer": "Boeing",
+    "group": "Narrowbody",
+    "codes": [
+      "B752",
+      "B753"
+    ],
+    "photo": "aircraft/B752.jpg"
+  },
+  {
+    "id": "Aircraft/b767",
+    "kind": "Aircraft",
+    "name": "Boeing 767",
+    "manufacturer": "Boeing",
+    "group": "Widebody",
+    "codes": [
+      "B763",
+      "B764"
+    ],
+    "photo": "aircraft/B763.jpg"
+  },
+  {
+    "id": "Aircraft/b77f",
+    "kind": "Aircraft",
+    "name": "Boeing 777 Freighter",
+    "manufacturer": "Boeing",
+    "group": "Cargo / Transport",
+    "codes": [
+      "B77F"
+    ],
+    "photo": "aircraft/B77W.jpg"
+  },
+  {
+    "id": "Aircraft/b777",
+    "kind": "Aircraft",
+    "name": "Boeing 777-200/300ER",
+    "manufacturer": "Boeing",
+    "group": "Widebody",
+    "codes": [
+      "B772",
+      "B77W",
+      "B77L"
+    ],
+    "photo": "aircraft/B77W.jpg"
+  },
+  {
+    "id": "Aircraft/b787",
+    "kind": "Aircraft",
+    "name": "Boeing 787 Dreamliner",
+    "manufacturer": "Boeing",
+    "group": "Widebody",
+    "codes": [
+      "B788",
+      "B789",
+      "B78X"
+    ],
+    "photo": "aircraft/B788.jpg"
+  },
+  {
+    "id": "Aircraft/ah64",
+    "kind": "Aircraft",
+    "name": "Boeing AH-64 Apache",
+    "manufacturer": "Boeing",
+    "group": "Helicopter",
+    "codes": [
+      "AH64"
+    ],
+    "photo": "aircraft/AH64.jpg"
+  },
+  {
+    "id": "Aircraft/b52",
+    "kind": "Aircraft",
+    "name": "Boeing B-52 Stratofortress",
+    "manufacturer": "Boeing",
+    "group": "Fighter / Military",
+    "codes": [
+      "B52"
+    ],
+    "photo": "aircraft/B52.jpg"
+  },
+  {
+    "id": "Aircraft/b52h",
+    "kind": "Aircraft",
+    "name": "Boeing B-52H Stratofortress",
+    "manufacturer": "Boeing",
+    "group": "Fighter / Military",
+    "codes": [
+      "B52H"
+    ],
+    "photo": "aircraft/B52.jpg"
+  },
+  {
+    "id": "Aircraft/c17",
+    "kind": "Aircraft",
+    "name": "Boeing C-17 Globemaster III",
+    "manufacturer": "Boeing",
+    "group": "Cargo / Transport",
+    "codes": [
+      "C17",
+      "C17A"
+    ],
+    "photo": "aircraft/C17.jpg"
+  },
+  {
+    "id": "Aircraft/ch46",
+    "kind": "Aircraft",
+    "name": "Boeing CH-46 Sea Knight",
+    "manufacturer": "Boeing Vertol",
+    "group": "Helicopter",
+    "codes": [
+      "CH46"
+    ],
+    "photo": "aircraft/CH46.jpg"
+  },
+  {
+    "id": "Aircraft/ch47",
+    "kind": "Aircraft",
+    "name": "Boeing CH-47 Chinook",
+    "manufacturer": "Boeing",
+    "group": "Helicopter",
+    "codes": [
+      "CH47",
+      "H47"
+    ],
+    "photo": "aircraft/CH47.jpg"
+  },
+  {
+    "id": "Aircraft/e3",
+    "kind": "Aircraft",
+    "name": "Boeing E-3 Sentry (AWACS)",
+    "manufacturer": "Boeing",
+    "group": "Fighter / Military",
+    "codes": [
+      "E3CF"
+    ],
+    "photo": "aircraft/E3CF.jpg"
+  },
+  {
+    "id": "Aircraft/e6b",
+    "kind": "Aircraft",
+    "name": "Boeing E-6B Mercury",
+    "manufacturer": "Boeing",
+    "group": "Fighter / Military",
+    "codes": [
+      "E6B"
+    ],
+    "photo": "aircraft/E6B.jpg"
+  },
+  {
+    "id": "Aircraft/fa18",
+    "kind": "Aircraft",
+    "name": "Boeing F/A-18 Hornet/Super Hornet",
+    "manufacturer": "Boeing",
+    "group": "Fighter / Military",
+    "codes": [
+      "F18",
+      "FA18",
+      "EA18"
+    ],
+    "photo": "aircraft/F18.jpg"
+  },
+  {
+    "id": "Aircraft/kc135",
+    "kind": "Aircraft",
+    "name": "Boeing KC-135 Stratotanker",
+    "manufacturer": "Boeing",
+    "group": "Fighter / Military",
+    "codes": [
+      "KC135"
+    ],
+    "photo": "aircraft/KC135.jpg"
+  },
+  {
+    "id": "Aircraft/kc46",
+    "kind": "Aircraft",
+    "name": "Boeing KC-46 Pegasus",
+    "manufacturer": "Boeing",
+    "group": "Fighter / Military",
+    "codes": [
+      "KC46"
+    ],
+    "photo": "aircraft/KC46.jpg"
+  },
+  {
+    "id": "Aircraft/p8",
+    "kind": "Aircraft",
+    "name": "Boeing P-8 Poseidon",
+    "manufacturer": "Boeing",
+    "group": "Fighter / Military",
+    "codes": [
+      "P8",
+      "P8A"
+    ],
+    "photo": "aircraft/P8.jpg"
+  },
+  {
+    "id": "Aircraft/t45",
+    "kind": "Aircraft",
+    "name": "Boeing T-45 Goshawk",
+    "manufacturer": "Boeing/BAE",
+    "group": "Trainer",
+    "codes": [
+      "T45"
+    ],
+    "photo": "aircraft/T45.jpg"
+  },
+  {
+    "id": "Aircraft/challenger",
+    "kind": "Aircraft",
+    "name": "Bombardier Challenger 300/350/600/650",
+    "manufacturer": "Bombardier",
+    "group": "Business Jet",
+    "codes": [
+      "CL30",
+      "CL35",
+      "CL60"
+    ],
+    "photo": "aircraft/CL35.jpg"
+  },
+  {
+    "id": "Aircraft/crj200",
+    "kind": "Aircraft",
+    "name": "Bombardier CRJ-200",
+    "manufacturer": "Bombardier",
+    "group": "Regional Jet",
+    "codes": [
+      "CRJ2"
+    ],
+    "photo": "aircraft/CRJ2.jpg"
+  },
+  {
+    "id": "Aircraft/crj700_900",
+    "kind": "Aircraft",
+    "name": "Bombardier CRJ-700/900/1000",
+    "manufacturer": "Bombardier",
+    "group": "Regional Jet",
+    "codes": [
+      "CRJ7",
+      "CRJ9",
+      "CRJX"
+    ],
+    "photo": "aircraft/CRJ9.jpg"
+  },
+  {
+    "id": "Aircraft/jf17",
+    "kind": "Aircraft",
+    "name": "CAC/PAC JF-17 Thunder",
+    "manufacturer": "Chengdu/PAC (China/Pakistan)",
+    "group": "Fighter / Military",
+    "codes": [
+      "JF17"
+    ],
+    "photo": "aircraft/JF17.jpg"
+  },
+  {
+    "id": "Aircraft/c150",
+    "kind": "Aircraft",
+    "name": "Cessna 150",
+    "manufacturer": "Cessna",
+    "group": "Light Aircraft",
+    "codes": [
+      "C150"
+    ],
+    "photo": "aircraft/C150.jpg"
+  },
+  {
+    "id": "Aircraft/c152",
+    "kind": "Aircraft",
+    "name": "Cessna 152",
+    "manufacturer": "Cessna",
+    "group": "Light Aircraft",
+    "codes": [
+      "C152"
+    ],
+    "photo": "aircraft/C152.jpg"
+  },
+  {
+    "id": "Aircraft/c172",
+    "kind": "Aircraft",
+    "name": "Cessna 172 Skyhawk",
+    "manufacturer": "Cessna/Textron",
+    "group": "Light Aircraft",
+    "codes": [
+      "C172"
+    ],
+    "photo": "aircraft/C172.jpg"
+  },
+  {
+    "id": "Aircraft/c182",
+    "kind": "Aircraft",
+    "name": "Cessna 182 Skylane",
+    "manufacturer": "Cessna/Textron",
+    "group": "Light Aircraft",
+    "codes": [
+      "C182"
+    ],
+    "photo": "aircraft/C182.jpg"
+  },
+  {
+    "id": "Aircraft/c206",
+    "kind": "Aircraft",
+    "name": "Cessna 206 Stationair",
+    "manufacturer": "Cessna/Textron",
+    "group": "Light Aircraft",
+    "codes": [
+      "C206"
+    ],
+    "photo": "aircraft/C206.jpg"
+  },
+  {
+    "id": "Aircraft/c208",
+    "kind": "Aircraft",
+    "name": "Cessna 208 Caravan",
+    "manufacturer": "Cessna/Textron",
+    "group": "Turboprop",
+    "codes": [
+      "C208"
+    ],
+    "photo": "aircraft/C208.jpg"
+  },
+  {
+    "id": "Aircraft/c210",
+    "kind": "Aircraft",
+    "name": "Cessna 210 Centurion",
+    "manufacturer": "Cessna",
+    "group": "Light Aircraft",
+    "codes": [
+      "C210"
+    ],
+    "photo": "aircraft/C210.jpg"
+  },
+  {
+    "id": "Aircraft/c310",
+    "kind": "Aircraft",
+    "name": "Cessna 310",
+    "manufacturer": "Cessna",
+    "group": "Light Aircraft",
+    "codes": [
+      "C310"
+    ],
+    "photo": "aircraft/C310.jpg"
+  },
+  {
+    "id": "Aircraft/c340",
+    "kind": "Aircraft",
+    "name": "Cessna 340/340A",
+    "manufacturer": "Cessna",
+    "group": "Light Aircraft",
+    "codes": [
+      "C340"
+    ],
+    "photo": "aircraft/C340.jpg"
+  },
+  {
+    "id": "Aircraft/c414",
+    "kind": "Aircraft",
+    "name": "Cessna 414/421 Chancellor/Golden Eagle",
+    "manufacturer": "Cessna",
+    "group": "Light Aircraft",
+    "codes": [
+      "C414",
+      "C421"
+    ],
+    "photo": "aircraft/C421.jpg"
+  },
+  {
+    "id": "Aircraft/citation_cj",
+    "kind": "Aircraft",
+    "name": "Cessna Citation CJ1/CJ2/CJ3/CJ4",
+    "manufacturer": "Cessna/Textron",
+    "group": "Business Jet",
+    "codes": [
+      "C525",
+      "C25A",
+      "C25B"
+    ],
+    "photo": "aircraft/C525.jpg"
+  },
+  {
+    "id": "Aircraft/citation_mustang",
+    "kind": "Aircraft",
+    "name": "Cessna Citation Mustang",
+    "manufacturer": "Cessna/Textron",
+    "group": "Business Jet",
+    "codes": [
+      "C510"
+    ],
+    "photo": "aircraft/C510.jpg"
+  },
+  {
+    "id": "Aircraft/citation_large",
+    "kind": "Aircraft",
+    "name": "Cessna Citation Sovereign/Latitude/Longitude",
+    "manufacturer": "Cessna/Textron",
+    "group": "Business Jet",
+    "codes": [
+      "C56X",
+      "C560",
+      "C680",
+      "C700"
+    ],
+    "photo": "aircraft/C680.jpg"
+  },
+  {
+    "id": "Aircraft/wz10",
+    "kind": "Aircraft",
+    "name": "Changhe Z-10",
+    "manufacturer": "CAIC",
+    "group": "Helicopter",
+    "codes": [
+      "WZ10"
+    ]
+  },
+  {
+    "id": "Aircraft/j10",
+    "kind": "Aircraft",
+    "name": "Chengdu J-10 Vigorous Dragon",
+    "manufacturer": "Chengdu (China)",
+    "group": "Fighter / Military",
+    "codes": [
+      "J10"
+    ],
+    "photo": "aircraft/J10.jpg"
+  },
+  {
+    "id": "Aircraft/j20",
+    "kind": "Aircraft",
+    "name": "Chengdu J-20 Mighty Dragon",
+    "manufacturer": "Chengdu (China)",
+    "group": "Fighter / Military",
+    "codes": [
+      "J20"
+    ],
+    "photo": "aircraft/J20.jpg"
+  },
+  {
+    "id": "Aircraft/sr20",
+    "kind": "Aircraft",
+    "name": "Cirrus SR20",
+    "manufacturer": "Cirrus Aircraft",
+    "group": "Light Aircraft",
+    "codes": [
+      "SR20"
+    ],
+    "photo": "aircraft/SR20.jpg"
+  },
+  {
+    "id": "Aircraft/sr22",
+    "kind": "Aircraft",
+    "name": "Cirrus SR22/SR22T",
+    "manufacturer": "Cirrus Aircraft",
+    "group": "Light Aircraft",
+    "codes": [
+      "SR22"
+    ],
+    "photo": "aircraft/SR22.jpg"
+  },
+  {
+    "id": "Aircraft/sf50",
+    "kind": "Aircraft",
+    "name": "Cirrus Vision Jet SF50",
+    "manufacturer": "Cirrus Aircraft",
+    "group": "Business Jet",
+    "codes": [
+      "SF50"
+    ],
+    "photo": "aircraft/SF50.jpg"
+  },
+  {
+    "id": "Aircraft/tbm",
+    "kind": "Aircraft",
+    "name": "Daher TBM 700/850/900/960",
+    "manufacturer": "Daher",
+    "group": "Turboprop",
+    "codes": [
+      "TBM7",
+      "TBM8",
+      "TBM9"
+    ],
+    "photo": "aircraft/TBM9.jpg"
+  },
+  {
+    "id": "Aircraft/falcon_large",
+    "kind": "Aircraft",
+    "name": "Dassault Falcon 7X/8X/900/2000",
+    "manufacturer": "Dassault",
+    "group": "Business Jet",
+    "codes": [
+      "FA7X",
+      "FA8X",
+      "F900",
+      "F2TH"
+    ],
+    "photo": "aircraft/FA8X.jpg"
+  },
+  {
+    "id": "Aircraft/mirage2000",
+    "kind": "Aircraft",
+    "name": "Dassault Mirage 2000",
+    "manufacturer": "Dassault (France)",
+    "group": "Fighter / Military",
+    "codes": [
+      "MIRA",
+      "MIR2"
+    ],
+    "photo": "aircraft/MIR2.jpg"
+  },
+  {
+    "id": "Aircraft/rafale",
+    "kind": "Aircraft",
+    "name": "Dassault Rafale",
+    "manufacturer": "Dassault",
+    "group": "Fighter / Military",
+    "codes": [
+      "RFAL"
+    ],
+    "photo": "aircraft/RFAL.jpg"
+  },
+  {
+    "id": "Aircraft/dash8_100_200",
+    "kind": "Aircraft",
+    "name": "De Havilland Dash 8-100/200",
+    "manufacturer": "De Havilland Canada",
+    "group": "Turboprop",
+    "codes": [
+      "DH8A",
+      "DH8B"
+    ],
+    "photo": "aircraft/DH8A.jpg"
+  },
+  {
+    "id": "Aircraft/dash8_300_400",
+    "kind": "Aircraft",
+    "name": "De Havilland Dash 8-300/400 (Q400)",
+    "manufacturer": "De Havilland Canada",
+    "group": "Turboprop",
+    "codes": [
+      "DH8C",
+      "DH8D"
+    ],
+    "photo": "aircraft/DH8D.jpg"
+  },
+  {
+    "id": "Aircraft/da40",
+    "kind": "Aircraft",
+    "name": "Diamond DA40 Diamond Star",
+    "manufacturer": "Diamond Aircraft",
+    "group": "Light Aircraft",
+    "codes": [
+      "DA40"
+    ],
+    "photo": "aircraft/DA40.jpg"
+  },
+  {
+    "id": "Aircraft/da42",
+    "kind": "Aircraft",
+    "name": "Diamond DA42 Twin Star",
+    "manufacturer": "Diamond Aircraft",
+    "group": "Light Aircraft",
+    "codes": [
+      "DA42"
+    ],
+    "photo": "aircraft/DA42.jpg"
+  },
+  {
+    "id": "Aircraft/e170",
+    "kind": "Aircraft",
+    "name": "Embraer E170",
+    "manufacturer": "Embraer",
+    "group": "Regional Jet",
+    "codes": [
+      "E170"
+    ],
+    "photo": "aircraft/E170.jpg"
+  },
+  {
+    "id": "Aircraft/e175",
+    "kind": "Aircraft",
+    "name": "Embraer E175",
+    "manufacturer": "Embraer",
+    "group": "Regional Jet",
+    "codes": [
+      "E75L",
+      "E75S"
+    ],
+    "photo": "aircraft/E75L.jpg"
+  },
+  {
+    "id": "Aircraft/e2",
+    "kind": "Aircraft",
+    "name": "Embraer E190-E2/E195-E2",
+    "manufacturer": "Embraer",
+    "group": "Regional Jet",
+    "codes": [
+      "E290",
+      "E295"
+    ],
+    "photo": "aircraft/E290.jpg"
+  },
+  {
+    "id": "Aircraft/e190_195",
+    "kind": "Aircraft",
+    "name": "Embraer E190/E195",
+    "manufacturer": "Embraer",
+    "group": "Regional Jet",
+    "codes": [
+      "E190",
+      "E195"
+    ],
+    "photo": "aircraft/E190.jpg"
+  },
+  {
+    "id": "Aircraft/erj",
+    "kind": "Aircraft",
+    "name": "Embraer ERJ-135/145",
+    "manufacturer": "Embraer",
+    "group": "Regional Jet",
+    "codes": [
+      "E135",
+      "E145"
+    ],
+    "photo": "aircraft/E145.jpg"
+  },
+  {
+    "id": "Aircraft/legacy450",
+    "kind": "Aircraft",
+    "name": "Embraer Legacy 450/500 (Praetor 500/600)",
+    "manufacturer": "Embraer",
+    "group": "Business Jet",
+    "codes": [
+      "E545"
+    ],
+    "photo": "aircraft/E545.jpg"
+  },
+  {
+    "id": "Aircraft/phenom300",
+    "kind": "Aircraft",
+    "name": "Embraer Phenom 300/300E",
+    "manufacturer": "Embraer",
+    "group": "Business Jet",
+    "codes": [
+      "E55P"
+    ],
+    "photo": "aircraft/E55P.jpg"
+  },
+  {
+    "id": "Aircraft/e550",
+    "kind": "Aircraft",
+    "name": "Embraer Praetor 500",
+    "manufacturer": "Embraer",
+    "group": "Business Jet",
+    "codes": [
+      "E550"
+    ]
+  },
+  {
+    "id": "Aircraft/eurofighter",
+    "kind": "Aircraft",
+    "name": "Eurofighter Typhoon",
+    "manufacturer": "Eurofighter (BAE/Airbus/Leonardo)",
+    "group": "Fighter / Military",
+    "codes": [
+      "EUFI"
+    ],
+    "photo": "aircraft/EUFI.jpg"
+  },
+  {
+    "id": "Aircraft/sw4",
+    "kind": "Aircraft",
+    "name": "Fairchild Metroliner/Merlin",
+    "manufacturer": "Fairchild/Swearingen",
+    "group": "Turboprop",
+    "codes": [
+      "SW4"
+    ],
+    "photo": "aircraft/SW4.jpg"
+  },
+  {
+    "id": "Aircraft/a10",
+    "kind": "Aircraft",
+    "name": "Fairchild Republic A-10 Thunderbolt II",
+    "manufacturer": "Fairchild Republic",
+    "group": "Fighter / Military",
+    "codes": [
+      "A10"
+    ],
+    "photo": "aircraft/A10.jpg"
+  },
+  {
+    "id": "Aircraft/mq1",
+    "kind": "Aircraft",
+    "name": "General Atomics MQ-1 Predator",
+    "manufacturer": "General Atomics",
+    "group": "Fighter / Military",
+    "codes": [
+      "MQ1"
+    ],
+    "photo": "aircraft/MQ1.jpg"
+  },
+  {
+    "id": "Aircraft/mq9",
+    "kind": "Aircraft",
+    "name": "General Atomics MQ-9 Reaper",
+    "manufacturer": "General Atomics",
+    "group": "Fighter / Military",
+    "codes": [
+      "MQ9"
+    ],
+    "photo": "aircraft/MQ9.jpg"
+  },
+  {
+    "id": "Aircraft/f16",
+    "kind": "Aircraft",
+    "name": "General Dynamics F-16 Fighting Falcon",
+    "manufacturer": "Lockheed Martin",
+    "group": "Fighter / Military",
+    "codes": [
+      "F16"
+    ],
+    "photo": "aircraft/F16.jpg"
+  },
+  {
+    "id": "Aircraft/f14",
+    "kind": "Aircraft",
+    "name": "Grumman F-14 Tomcat",
+    "manufacturer": "Grumman",
+    "group": "Fighter / Military",
+    "codes": [
+      "F14"
+    ],
+    "photo": "aircraft/F14.jpg"
+  },
+  {
+    "id": "Aircraft/g280",
+    "kind": "Aircraft",
+    "name": "Gulfstream G280",
+    "manufacturer": "Gulfstream (IAI)",
+    "group": "Business Jet",
+    "codes": [
+      "G280"
+    ],
+    "photo": "aircraft/G280.jpg"
+  },
+  {
+    "id": "Aircraft/gulfstream_large",
+    "kind": "Aircraft",
+    "name": "Gulfstream G450/G500/G550/G600/G650/G700",
+    "manufacturer": "Gulfstream",
+    "group": "Business Jet",
+    "codes": [
+      "GLF4",
+      "GLF5",
+      "GLF6",
+      "GLEX",
+      "GA5C",
+      "GA6C"
+    ],
+    "photo": "aircraft/GLF6.jpg"
+  },
+  {
+    "id": "Aircraft/hawker800",
+    "kind": "Aircraft",
+    "name": "Hawker 800/900XP",
+    "manufacturer": "Hawker Beechcraft",
+    "group": "Business Jet",
+    "codes": [
+      "H25B"
+    ],
+    "photo": "aircraft/H25B.jpg"
+  },
+  {
+    "id": "Aircraft/hondajet",
+    "kind": "Aircraft",
+    "name": "Honda HA-420 HondaJet",
+    "manufacturer": "Honda Aircraft",
+    "group": "Business Jet",
+    "codes": [
+      "HDJT"
+    ],
+    "photo": "aircraft/HDJT.jpg"
+  },
+  {
+    "id": "Aircraft/kfir",
+    "kind": "Aircraft",
+    "name": "IAI Kfir",
+    "manufacturer": "Israel Aerospace Industries",
+    "group": "Fighter / Military",
+    "codes": [
+      "KFIR"
+    ],
+    "photo": "aircraft/KFIR.jpg"
+  },
+  {
+    "id": "Aircraft/il76",
+    "kind": "Aircraft",
+    "name": "Ilyushin Il-76",
+    "manufacturer": "Ilyushin (Russia)",
+    "group": "Cargo / Transport",
+    "codes": [
+      "IL76"
+    ],
+    "photo": "aircraft/IL76.jpg"
+  },
+  {
+    "id": "Aircraft/ka52",
+    "kind": "Aircraft",
+    "name": "Kamov Ka-52 Alligator",
+    "manufacturer": "Kamov (Russia)",
+    "group": "Helicopter",
+    "codes": [
+      "KA52"
+    ],
+    "photo": "aircraft/KA52.jpg"
+  },
+  {
+    "id": "Aircraft/learjet",
+    "kind": "Aircraft",
+    "name": "Learjet 35/45/60/75",
+    "manufacturer": "Bombardier (Learjet)",
+    "group": "Business Jet",
+    "codes": [
+      "LJ35",
+      "LJ45",
+      "LJ60"
+    ],
+    "photo": "aircraft/LJ45.jpg"
+  },
+  {
+    "id": "Aircraft/aw109",
+    "kind": "Aircraft",
+    "name": "Leonardo AW109",
+    "manufacturer": "Leonardo (Agusta)",
+    "group": "Helicopter",
+    "codes": [
+      "A109"
+    ],
+    "photo": "aircraft/A109.jpg"
+  },
+  {
+    "id": "Aircraft/aw139",
+    "kind": "Aircraft",
+    "name": "Leonardo AW139",
+    "manufacturer": "Leonardo",
+    "group": "Helicopter",
+    "codes": [
+      "A139"
+    ],
+    "photo": "aircraft/A139.jpg"
+  },
+  {
+    "id": "Aircraft/a169",
+    "kind": "Aircraft",
+    "name": "Leonardo AW169",
+    "manufacturer": "Leonardo S.p.A.",
+    "group": "Helicopter",
+    "codes": [
+      "A169"
+    ]
+  },
+  {
+    "id": "Aircraft/ac130",
+    "kind": "Aircraft",
+    "name": "Lockheed AC-130 Spectre/Ghostrider",
+    "manufacturer": "Lockheed Martin",
+    "group": "Fighter / Military",
+    "codes": [
+      "AC130"
+    ],
+    "photo": "aircraft/AC130.jpg"
+  },
+  {
+    "id": "Aircraft/c130",
+    "kind": "Aircraft",
+    "name": "Lockheed C-130 Hercules/Super Hercules",
+    "manufacturer": "Lockheed Martin",
+    "group": "Cargo / Transport",
+    "codes": [
+      "C130",
+      "C130H",
+      "C30J"
+    ],
+    "photo": "aircraft/C130.jpg"
+  },
+  {
+    "id": "Aircraft/c5",
+    "kind": "Aircraft",
+    "name": "Lockheed C-5 Galaxy",
+    "manufacturer": "Lockheed Martin",
+    "group": "Cargo / Transport",
+    "codes": [
+      "C5",
+      "C5M"
+    ],
+    "photo": "aircraft/C5.jpg"
+  },
+  {
+    "id": "Aircraft/f117",
+    "kind": "Aircraft",
+    "name": "Lockheed F-117 Nighthawk",
+    "manufacturer": "Lockheed (Skunk Works)",
+    "group": "Fighter / Military",
+    "codes": [
+      "F117"
+    ],
+    "photo": "aircraft/F117.jpg"
+  },
+  {
+    "id": "Aircraft/f22",
+    "kind": "Aircraft",
+    "name": "Lockheed Martin F-22 Raptor",
+    "manufacturer": "Lockheed Martin",
+    "group": "Fighter / Military",
+    "codes": [
+      "F22"
+    ],
+    "photo": "aircraft/F22.jpg"
+  },
+  {
+    "id": "Aircraft/f35",
+    "kind": "Aircraft",
+    "name": "Lockheed Martin F-35 Lightning II",
+    "manufacturer": "Lockheed Martin",
+    "group": "Fighter / Military",
+    "codes": [
+      "F35"
+    ],
+    "photo": "aircraft/F35.jpg"
+  },
+  {
+    "id": "Aircraft/sr71",
+    "kind": "Aircraft",
+    "name": "Lockheed SR-71 Blackbird",
+    "manufacturer": "Lockheed (Skunk Works)",
+    "group": "Fighter / Military",
+    "codes": [
+      "SR71"
+    ],
+    "photo": "aircraft/SR71.jpg"
+  },
+  {
+    "id": "Aircraft/u2",
+    "kind": "Aircraft",
+    "name": "Lockheed U-2 Dragon Lady",
+    "manufacturer": "Lockheed (Skunk Works)",
+    "group": "Fighter / Military",
+    "codes": [
+      "U2"
+    ],
+    "photo": "aircraft/U2.jpg"
+  },
+  {
+    "id": "Aircraft/av8b",
+    "kind": "Aircraft",
+    "name": "McDonnell Douglas AV-8B Harrier II",
+    "manufacturer": "McDonnell Douglas/BAE",
+    "group": "Fighter / Military",
+    "codes": [
+      "AV8B"
+    ],
+    "photo": "aircraft/AV8B.jpg"
+  },
+  {
+    "id": "Aircraft/dc10",
+    "kind": "Aircraft",
+    "name": "McDonnell Douglas DC-10",
+    "manufacturer": "McDonnell Douglas",
+    "group": "Widebody",
+    "codes": [
+      "DC10"
+    ],
+    "photo": "aircraft/DC10.jpg"
+  },
+  {
+    "id": "Aircraft/f15",
+    "kind": "Aircraft",
+    "name": "McDonnell Douglas F-15 Eagle/Strike Eagle",
+    "manufacturer": "Boeing",
+    "group": "Fighter / Military",
+    "codes": [
+      "F15"
+    ],
+    "photo": "aircraft/F15.jpg"
+  },
+  {
+    "id": "Aircraft/f4",
+    "kind": "Aircraft",
+    "name": "McDonnell Douglas F-4 Phantom II",
+    "manufacturer": "McDonnell Douglas",
+    "group": "Fighter / Military",
+    "codes": [
+      "F4"
+    ],
+    "photo": "aircraft/F4.jpg"
+  },
+  {
+    "id": "Aircraft/kc10",
+    "kind": "Aircraft",
+    "name": "McDonnell Douglas KC-10 Extender",
+    "manufacturer": "McDonnell Douglas",
+    "group": "Fighter / Military",
+    "codes": [
+      "KC10"
+    ],
+    "photo": "aircraft/KC10.jpg"
+  },
+  {
+    "id": "Aircraft/md11",
+    "kind": "Aircraft",
+    "name": "McDonnell Douglas MD-11",
+    "manufacturer": "McDonnell Douglas",
+    "group": "Widebody",
+    "codes": [
+      "MD11"
+    ],
+    "photo": "aircraft/MD11.jpg"
+  },
+  {
+    "id": "Aircraft/md80",
+    "kind": "Aircraft",
+    "name": "McDonnell Douglas MD-80",
+    "manufacturer": "McDonnell Douglas",
+    "group": "Narrowbody",
+    "codes": [
+      "MD80"
+    ],
+    "photo": "aircraft/MD80.jpg"
+  },
+  {
+    "id": "Aircraft/mig29",
+    "kind": "Aircraft",
+    "name": "Mikoyan MiG-29 Fulcrum",
+    "manufacturer": "Mikoyan (Russia)",
+    "group": "Fighter / Military",
+    "codes": [
+      "MIG29"
+    ],
+    "photo": "aircraft/MIG29.jpg"
+  },
+  {
+    "id": "Aircraft/mig31",
+    "kind": "Aircraft",
+    "name": "Mikoyan MiG-31 Foxhound",
+    "manufacturer": "Mikoyan (Russia)",
+    "group": "Fighter / Military",
+    "codes": [
+      "MIG31"
+    ],
+    "photo": "aircraft/MIG31.jpg"
+  },
+  {
+    "id": "Aircraft/mi24",
+    "kind": "Aircraft",
+    "name": "Mil Mi-24/35 Hind",
+    "manufacturer": "Mil (Russia)",
+    "group": "Helicopter",
+    "codes": [
+      "MI24"
+    ],
+    "photo": "aircraft/MI24.jpg"
+  },
+  {
+    "id": "Aircraft/mi26",
+    "kind": "Aircraft",
+    "name": "Mil Mi-26 Halo",
+    "manufacturer": "Mil",
+    "group": "Helicopter",
+    "codes": [
+      "MI26"
+    ],
+    "photo": "aircraft/MI26.jpg"
+  },
+  {
+    "id": "Aircraft/mi28",
+    "kind": "Aircraft",
+    "name": "Mil Mi-28 Havoc",
+    "manufacturer": "Mil (Russia)",
+    "group": "Helicopter",
+    "codes": [
+      "MI28"
+    ],
+    "photo": "aircraft/MI28.jpg"
+  },
+  {
+    "id": "Aircraft/mi8",
+    "kind": "Aircraft",
+    "name": "Mil Mi-8/17 Hip",
+    "manufacturer": "Mil (Russia)",
+    "group": "Helicopter",
+    "codes": [
+      "MI8",
+      "MI17"
+    ],
+    "photo": "aircraft/MI8.jpg"
+  },
+  {
+    "id": "Aircraft/mooney",
+    "kind": "Aircraft",
+    "name": "Mooney M20 (Ovation/Acclaim)",
+    "manufacturer": "Mooney",
+    "group": "Light Aircraft",
+    "codes": [
+      "M20P",
+      "M20T"
+    ],
+    "photo": "aircraft/M20P.jpg"
+  },
+  {
+    "id": "Aircraft/nh90",
+    "kind": "Aircraft",
+    "name": "NHIndustries NH90",
+    "manufacturer": "NHIndustries",
+    "group": "Helicopter",
+    "codes": [
+      "NH90"
+    ],
+    "photo": "aircraft/NH90.jpg"
+  },
+  {
+    "id": "Aircraft/f5",
+    "kind": "Aircraft",
+    "name": "Northrop F-5 Tiger II",
+    "manufacturer": "Northrop",
+    "group": "Fighter / Military",
+    "codes": [
+      "F5"
+    ],
+    "photo": "aircraft/F5.jpg"
+  },
+  {
+    "id": "Aircraft/b2",
+    "kind": "Aircraft",
+    "name": "Northrop Grumman B-2 Spirit",
+    "manufacturer": "Northrop Grumman",
+    "group": "Fighter / Military",
+    "codes": [
+      "B2"
+    ],
+    "photo": "aircraft/B2.jpg"
+  },
+  {
+    "id": "Aircraft/e2c",
+    "kind": "Aircraft",
+    "name": "Northrop Grumman E-2 Hawkeye",
+    "manufacturer": "Northrop Grumman",
+    "group": "Fighter / Military",
+    "codes": [
+      "E2C"
+    ],
+    "photo": "aircraft/E2C.jpg"
+  },
+  {
+    "id": "Aircraft/rq4",
+    "kind": "Aircraft",
+    "name": "Northrop Grumman RQ-4 Global Hawk",
+    "manufacturer": "Northrop Grumman",
+    "group": "Fighter / Military",
+    "codes": [
+      "RQ4"
+    ],
+    "photo": "aircraft/RQ4.jpg"
+  },
+  {
+    "id": "Aircraft/t38",
+    "kind": "Aircraft",
+    "name": "Northrop T-38 Talon",
+    "manufacturer": "Northrop",
+    "group": "Trainer",
+    "codes": [
+      "T38"
+    ],
+    "photo": "aircraft/T38.jpg"
+  },
+  {
+    "id": "Aircraft/tornado",
+    "kind": "Aircraft",
+    "name": "Panavia Tornado",
+    "manufacturer": "Panavia (UK/Germany/Italy)",
+    "group": "Fighter / Military",
+    "codes": [
+      "GR4"
+    ],
+    "photo": "aircraft/GR4.jpg"
+  },
+  {
+    "id": "Aircraft/pc12",
+    "kind": "Aircraft",
+    "name": "Pilatus PC-12",
+    "manufacturer": "Pilatus",
+    "group": "Turboprop",
+    "codes": [
+      "PC12"
+    ],
+    "photo": "aircraft/PC12.jpg"
+  },
+  {
+    "id": "Aircraft/pc24",
+    "kind": "Aircraft",
+    "name": "Pilatus PC-24",
+    "manufacturer": "Pilatus Aircraft",
+    "group": "Business Jet",
+    "codes": [
+      "PC24"
+    ],
+    "photo": "aircraft/PC24.jpg"
+  },
+  {
+    "id": "Aircraft/pc6",
+    "kind": "Aircraft",
+    "name": "Pilatus PC-6 Porter",
+    "manufacturer": "Pilatus",
+    "group": "Turboprop",
+    "codes": [
+      "PC6"
+    ],
+    "photo": "aircraft/PC6.jpg"
+  },
+  {
+    "id": "Aircraft/pa32",
+    "kind": "Aircraft",
+    "name": "Piper Cherokee Six/Saratoga/Lance",
+    "manufacturer": "Piper",
+    "group": "Light Aircraft",
+    "codes": [
+      "PA32"
+    ],
+    "photo": "aircraft/PA32.jpg"
+  },
+  {
+    "id": "Aircraft/pa28",
+    "kind": "Aircraft",
+    "name": "Piper Cherokee/Warrior/Archer",
+    "manufacturer": "Piper",
+    "group": "Light Aircraft",
+    "codes": [
+      "P28A",
+      "PA28"
+    ],
+    "photo": "aircraft/PA28.jpg"
+  },
+  {
+    "id": "Aircraft/p46t",
+    "kind": "Aircraft",
+    "name": "Piper Malibu Meridian/M500/M600",
+    "manufacturer": "Piper",
+    "group": "Turboprop",
+    "codes": [
+      "P46T"
+    ],
+    "photo": "aircraft/P46T.jpg"
+  },
+  {
+    "id": "Aircraft/pa18",
+    "kind": "Aircraft",
+    "name": "Piper PA-18 Super Cub",
+    "manufacturer": "Piper",
+    "group": "Light Aircraft",
+    "codes": [
+      "PA18"
+    ],
+    "photo": "aircraft/PA18.jpg"
+  },
+  {
+    "id": "Aircraft/pa44",
+    "kind": "Aircraft",
+    "name": "Piper Seminole",
+    "manufacturer": "Piper",
+    "group": "Light Aircraft",
+    "codes": [
+      "PA44"
+    ],
+    "photo": "aircraft/PA44.jpg"
+  },
+  {
+    "id": "Aircraft/pa34",
+    "kind": "Aircraft",
+    "name": "Piper Seneca",
+    "manufacturer": "Piper",
+    "group": "Light Aircraft",
+    "codes": [
+      "PA34"
+    ],
+    "photo": "aircraft/PA34.jpg"
+  },
+  {
+    "id": "Aircraft/prm1",
+    "kind": "Aircraft",
+    "name": "Raytheon/Beechcraft Premier I",
+    "manufacturer": "Beechcraft/Raytheon",
+    "group": "Business Jet",
+    "codes": [
+      "PRM1"
+    ],
+    "photo": "aircraft/PRM1.jpg"
+  },
+  {
+    "id": "Aircraft/r22",
+    "kind": "Aircraft",
+    "name": "Robinson R22",
+    "manufacturer": "Robinson",
+    "group": "Helicopter",
+    "codes": [
+      "R22"
+    ],
+    "photo": "aircraft/R22.jpg"
+  },
+  {
+    "id": "Aircraft/r44",
+    "kind": "Aircraft",
+    "name": "Robinson R44",
+    "manufacturer": "Robinson",
+    "group": "Helicopter",
+    "codes": [
+      "R44"
+    ],
+    "photo": "aircraft/R44.jpg"
+  },
+  {
+    "id": "Aircraft/b1",
+    "kind": "Aircraft",
+    "name": "Rockwell B-1B Lancer",
+    "manufacturer": "Rockwell/Boeing",
+    "group": "Fighter / Military",
+    "codes": [
+      "B1"
+    ],
+    "photo": "aircraft/B1.jpg"
+  },
+  {
+    "id": "Aircraft/b1b",
+    "kind": "Aircraft",
+    "name": "Rockwell B-1B Lancer",
+    "manufacturer": "Rockwell International",
+    "group": "Fighter / Military",
+    "codes": [
+      "B1B"
+    ],
+    "photo": "aircraft/B1.jpg"
+  },
+  {
+    "id": "Aircraft/saab_340",
+    "kind": "Aircraft",
+    "name": "Saab 340/2000",
+    "manufacturer": "Saab",
+    "group": "Regional Jet",
+    "codes": [
+      "SF34",
+      "SB20"
+    ],
+    "photo": "aircraft/SF34.jpg"
+  },
+  {
+    "id": "Aircraft/gripen",
+    "kind": "Aircraft",
+    "name": "Saab Gripen",
+    "manufacturer": "Saab (Sweden)",
+    "group": "Fighter / Military",
+    "codes": [
+      "GRF4"
+    ],
+    "photo": "aircraft/GRF4.jpg"
+  },
+  {
+    "id": "Aircraft/fc31",
+    "kind": "Aircraft",
+    "name": "Shenyang FC-31 Gyrfalcon",
+    "manufacturer": "Shenyang Aircraft Corp",
+    "group": "Fighter / Military",
+    "codes": [
+      "FC31"
+    ]
+  },
+  {
+    "id": "Aircraft/ch53",
+    "kind": "Aircraft",
+    "name": "Sikorsky CH-53 Sea Stallion",
+    "manufacturer": "Sikorsky",
+    "group": "Helicopter",
+    "codes": [
+      "CH53"
+    ],
+    "photo": "aircraft/CH53.jpg"
+  },
+  {
+    "id": "Aircraft/hh60",
+    "kind": "Aircraft",
+    "name": "Sikorsky HH-60 Pave Hawk",
+    "manufacturer": "Sikorsky",
+    "group": "Helicopter",
+    "codes": [
+      "HH60"
+    ]
+  },
+  {
+    "id": "Aircraft/mh60",
+    "kind": "Aircraft",
+    "name": "Sikorsky MH-60 Seahawk",
+    "manufacturer": "Sikorsky",
+    "group": "Helicopter",
+    "codes": [
+      "MH60"
+    ]
+  },
+  {
+    "id": "Aircraft/s70",
+    "kind": "Aircraft",
+    "name": "Sikorsky S-70 Black Hawk (Export)",
+    "manufacturer": "Sikorsky",
+    "group": "Helicopter",
+    "codes": [
+      "S70"
+    ],
+    "photo": "aircraft/UH60.jpg"
+  },
+  {
+    "id": "Aircraft/s76",
+    "kind": "Aircraft",
+    "name": "Sikorsky S-76",
+    "manufacturer": "Sikorsky/Lockheed Martin",
+    "group": "Helicopter",
+    "codes": [
+      "S76"
+    ],
+    "photo": "aircraft/S76.jpg"
+  },
+  {
+    "id": "Aircraft/s92",
+    "kind": "Aircraft",
+    "name": "Sikorsky S-92",
+    "manufacturer": "Sikorsky/Lockheed Martin",
+    "group": "Helicopter",
+    "codes": [
+      "S92"
+    ],
+    "photo": "aircraft/S92.jpg"
+  },
+  {
+    "id": "Aircraft/sh60",
+    "kind": "Aircraft",
+    "name": "Sikorsky SH-60 Seahawk",
+    "manufacturer": "Sikorsky",
+    "group": "Helicopter",
+    "codes": [
+      "SH60"
+    ]
+  },
+  {
+    "id": "Aircraft/uh60",
+    "kind": "Aircraft",
+    "name": "Sikorsky UH-60 Black Hawk",
+    "manufacturer": "Sikorsky/Lockheed Martin",
+    "group": "Helicopter",
+    "codes": [
+      "UH60",
+      "H60"
+    ],
+    "photo": "aircraft/UH60.jpg"
+  },
+  {
+    "id": "Aircraft/su25",
+    "kind": "Aircraft",
+    "name": "Sukhoi Su-25 Frogfoot",
+    "manufacturer": "Sukhoi",
+    "group": "Fighter / Military",
+    "codes": [
+      "SU25"
+    ],
+    "photo": "aircraft/SU25.jpg"
+  },
+  {
+    "id": "Aircraft/su27",
+    "kind": "Aircraft",
+    "name": "Sukhoi Su-27 Flanker",
+    "manufacturer": "Sukhoi (Russia)",
+    "group": "Fighter / Military",
+    "codes": [
+      "SU27"
+    ],
+    "photo": "aircraft/SU27.jpg"
+  },
+  {
+    "id": "Aircraft/su30",
+    "kind": "Aircraft",
+    "name": "Sukhoi Su-30 Flanker-C",
+    "manufacturer": "Sukhoi (Russia)",
+    "group": "Fighter / Military",
+    "codes": [
+      "SU30"
+    ],
+    "photo": "aircraft/SU30.jpg"
+  },
+  {
+    "id": "Aircraft/su34",
+    "kind": "Aircraft",
+    "name": "Sukhoi Su-34 Fullback",
+    "manufacturer": "Sukhoi (Russia)",
+    "group": "Fighter / Military",
+    "codes": [
+      "SU34"
+    ],
+    "photo": "aircraft/SU34.jpg"
+  },
+  {
+    "id": "Aircraft/su35",
+    "kind": "Aircraft",
+    "name": "Sukhoi Su-35 Flanker-E",
+    "manufacturer": "Sukhoi (Russia)",
+    "group": "Fighter / Military",
+    "codes": [
+      "SU35"
+    ],
+    "photo": "aircraft/SU35.jpg"
+  },
+  {
+    "id": "Aircraft/su57",
+    "kind": "Aircraft",
+    "name": "Sukhoi Su-57 Felon",
+    "manufacturer": "Sukhoi",
+    "group": "Fighter / Military",
+    "codes": [
+      "SU57"
+    ],
+    "photo": "aircraft/SU57.jpg"
+  },
+  {
+    "id": "Aircraft/su95",
+    "kind": "Aircraft",
+    "name": "Sukhoi Superjet 100",
+    "manufacturer": "Sukhoi (Russia)",
+    "group": "Regional Jet",
+    "codes": [
+      "SU95"
+    ],
+    "photo": "aircraft/SU95.jpg"
+  },
+  {
+    "id": "Aircraft/tu160",
+    "kind": "Aircraft",
+    "name": "Tupolev Tu-160 Blackjack",
+    "manufacturer": "Tupolev (Russia)",
+    "group": "Fighter / Military",
+    "codes": [
+      "TU160"
+    ],
+    "photo": "aircraft/TU160.jpg"
+  },
+  {
+    "id": "Aircraft/tu22m",
+    "kind": "Aircraft",
+    "name": "Tupolev Tu-22M Backfire",
+    "manufacturer": "Tupolev (Russia)",
+    "group": "Fighter / Military",
+    "codes": [
+      "TU22"
+    ],
+    "photo": "aircraft/TU22.jpg"
+  },
+  {
+    "id": "Aircraft/tu95",
+    "kind": "Aircraft",
+    "name": "Tupolev Tu-95 Bear",
+    "manufacturer": "Tupolev (Russia)",
+    "group": "Fighter / Military",
+    "codes": [
+      "TU95"
+    ],
+    "photo": "aircraft/TU95.jpg"
+  },
+  {
+    "id": "Aircraft/tu16",
+    "kind": "Aircraft",
+    "name": "Xian H-6",
+    "manufacturer": "Xi'an Aircraft Industrial Corp",
+    "group": "Fighter / Military",
+    "codes": [
+      "TU16"
+    ]
+  },
+  {
+    "id": "Aircraft/y20",
+    "kind": "Aircraft",
+    "name": "Xian Y-20 Kunpeng",
+    "manufacturer": "Xi'an Aircraft Industrial Corp",
+    "group": "Cargo / Transport",
+    "codes": [
+      "Y20"
+    ]
+  },
+  {
+    "id": "Drone/4drc_f13",
+    "kind": "Drone",
+    "name": "4DRC F13",
+    "manufacturer": "4DRC",
+    "group": "Consumer"
+  },
+  {
+    "id": "Drone/4drc_v2",
+    "kind": "Drone",
+    "name": "4DRC V2 Mini",
+    "manufacturer": "4DRC",
+    "group": "Consumer"
+  },
+  {
+    "id": "Drone/switchblade",
+    "kind": "Drone",
+    "name": "AeroVironment Switchblade 600",
+    "manufacturer": "AeroVironment (USA)",
+    "group": "Loitering Munition",
+    "photo": "drones/switchblade.jpg"
+  },
+  {
+    "id": "Drone/amazon_mk30",
+    "kind": "Drone",
+    "name": "Amazon MK30",
+    "manufacturer": "Amazon Prime Air",
+    "group": "Enterprise"
+  },
+  {
+    "id": "Drone/altius_600",
+    "kind": "Drone",
+    "name": "Anduril ALTIUS-600",
+    "manufacturer": "Anduril",
+    "group": "Loitering Munition"
+  },
+  {
+    "id": "Drone/ghost_mkii",
+    "kind": "Drone",
+    "name": "Anduril Ghost MkII",
+    "manufacturer": "Anduril",
+    "group": "Military Recon"
+  },
+  {
+    "id": "Drone/aovo_v3",
+    "kind": "Drone",
+    "name": "AOVO V3",
+    "manufacturer": "AOVO",
+    "group": "Consumer"
+  },
+  {
+    "id": "Drone/autel_dragonfish",
+    "kind": "Drone",
+    "name": "Autel Dragonfish",
+    "manufacturer": "Autel",
+    "group": "Enterprise",
+    "photo": "drones/autel_dragonfish.jpg"
+  },
+  {
+    "id": "Drone/autel_evo2",
+    "kind": "Drone",
+    "name": "Autel EVO II Pro",
+    "manufacturer": "Autel",
+    "group": "Consumer",
+    "photo": "drones/autel_evo2.jpg"
+  },
+  {
+    "id": "Drone/autel_evo3_pro",
+    "kind": "Drone",
+    "name": "Autel EVO III Pro",
+    "manufacturer": "Autel",
+    "group": "Consumer"
+  },
+  {
+    "id": "Drone/autel_lite_plus",
+    "kind": "Drone",
+    "name": "Autel EVO Lite+",
+    "manufacturer": "Autel",
+    "group": "Consumer"
+  },
+  {
+    "id": "Drone/autel_evo_max4t",
+    "kind": "Drone",
+    "name": "Autel EVO Max 4T",
+    "manufacturer": "Autel",
+    "group": "Enterprise"
+  },
+  {
+    "id": "Drone/autel_evo_nano",
+    "kind": "Drone",
+    "name": "Autel EVO Nano+",
+    "manufacturer": "Autel",
+    "group": "Consumer"
+  },
+  {
+    "id": "Drone/baba_yaga",
+    "kind": "Drone",
+    "name": "Baba Yaga (Heavy Bomber Drone)",
+    "manufacturer": "Ukrainian Volunteer Groups",
+    "group": "FPV Combat"
+  },
+  {
+    "id": "Drone/bayraktar_akinci",
+    "kind": "Drone",
+    "name": "Bayraktar Akinci",
+    "manufacturer": "Baykar (Turkey)",
+    "group": "Military Strike",
+    "photo": "drones/bayraktar_akinci.jpg"
+  },
+  {
+    "id": "Drone/bayraktar_tb2",
+    "kind": "Drone",
+    "name": "Bayraktar TB2",
+    "manufacturer": "Baykar (Turkey)",
+    "group": "Military Strike",
+    "photo": "drones/bayraktar_tb2.jpg"
+  },
+  {
+    "id": "Drone/bayraktar_tb3",
+    "kind": "Drone",
+    "name": "Bayraktar TB3",
+    "manufacturer": "Baykar (Turkey)",
+    "group": "Military Strike",
+    "photo": "drones/bayraktar_tb3.jpg"
+  },
+  {
+    "id": "Drone/betafpv_cetus_pro",
+    "kind": "Drone",
+    "name": "BetaFPV Cetus Pro",
+    "manufacturer": "BetaFPV",
+    "group": "Racing / FPV"
+  },
+  {
+    "id": "Drone/blade_inductrix_fpv",
+    "kind": "Drone",
+    "name": "Blade Inductrix FPV+",
+    "manufacturer": "Blade",
+    "group": "Racing / FPV"
+  },
+  {
+    "id": "Drone/ch4",
+    "kind": "Drone",
+    "name": "CASC CH-4 Rainbow",
+    "manufacturer": "CASC (China)",
+    "group": "Military Recon",
+    "photo": "drones/ch4.jpg"
+  },
+  {
+    "id": "Drone/ch5",
+    "kind": "Drone",
+    "name": "CASC CH-5 Rainbow",
+    "manufacturer": "CASC (China)",
+    "group": "Military Strike"
+  },
+  {
+    "id": "Drone/dji_agras_t40",
+    "kind": "Drone",
+    "name": "DJI Agras T40",
+    "manufacturer": "DJI",
+    "group": "Enterprise"
+  },
+  {
+    "id": "Drone/dji_air2",
+    "kind": "Drone",
+    "name": "DJI Air 2",
+    "manufacturer": "DJI",
+    "group": "Consumer",
+    "photo": "drones/dji_air2.jpg"
+  },
+  {
+    "id": "Drone/dji_air",
+    "kind": "Drone",
+    "name": "DJI Air 3",
+    "manufacturer": "DJI",
+    "group": "Consumer",
+    "photo": "drones/dji_air.jpg"
+  },
+  {
+    "id": "Drone/dji_air3s",
+    "kind": "Drone",
+    "name": "DJI Air 3S",
+    "manufacturer": "DJI",
+    "group": "Consumer",
+    "photo": "drones/dji_air3s.jpg"
+  },
+  {
+    "id": "Drone/dji_avata2",
+    "kind": "Drone",
+    "name": "DJI Avata 2",
+    "manufacturer": "DJI",
+    "group": "Consumer"
+  },
+  {
+    "id": "Drone/dji_dock2",
+    "kind": "Drone",
+    "name": "DJI Dock 2 / Matrice 3TD",
+    "manufacturer": "DJI",
+    "group": "Enterprise"
+  },
+  {
+    "id": "Drone/dji_flip",
+    "kind": "Drone",
+    "name": "DJI Flip",
+    "manufacturer": "DJI",
+    "group": "Consumer"
+  },
+  {
+    "id": "Drone/dji_flycart30",
+    "kind": "Drone",
+    "name": "DJI FlyCart 30",
+    "manufacturer": "DJI",
+    "group": "Enterprise"
+  },
+  {
+    "id": "Drone/dji_fpv",
+    "kind": "Drone",
+    "name": "DJI FPV / Avata",
+    "manufacturer": "DJI",
+    "group": "Racing / FPV",
+    "photo": "drones/dji_fpv.jpg"
+  },
+  {
+    "id": "Drone/dji_inspire3",
+    "kind": "Drone",
+    "name": "DJI Inspire 3",
+    "manufacturer": "DJI",
+    "group": "Enterprise"
+  },
+  {
+    "id": "Drone/dji_matrice",
+    "kind": "Drone",
+    "name": "DJI Matrice 300/350 RTK",
+    "manufacturer": "DJI",
+    "group": "Enterprise",
+    "photo": "drones/dji_matrice.jpg"
+  },
+  {
+    "id": "Drone/dji_matrice30t",
+    "kind": "Drone",
+    "name": "DJI Matrice 30T",
+    "manufacturer": "DJI",
+    "group": "Enterprise"
+  },
+  {
+    "id": "Drone/dji_mavic3",
+    "kind": "Drone",
+    "name": "DJI Mavic 3",
+    "manufacturer": "DJI",
+    "group": "Consumer",
+    "photo": "drones/dji_mavic3.jpg"
+  },
+  {
+    "id": "Drone/dji_mavic3_classic",
+    "kind": "Drone",
+    "name": "DJI Mavic 3 Classic",
+    "manufacturer": "DJI",
+    "group": "Consumer"
+  },
+  {
+    "id": "Drone/dji_mavic3e",
+    "kind": "Drone",
+    "name": "DJI Mavic 3 Enterprise",
+    "manufacturer": "DJI",
+    "group": "Enterprise"
+  },
+  {
+    "id": "Drone/dji_mavic_air2s",
+    "kind": "Drone",
+    "name": "DJI Mavic Air 2S",
+    "manufacturer": "DJI",
+    "group": "Consumer"
+  },
+  {
+    "id": "Drone/dji_mini3",
+    "kind": "Drone",
+    "name": "DJI Mini 3",
+    "manufacturer": "DJI",
+    "group": "Consumer",
+    "photo": "drones/dji_mini3.jpg"
+  },
+  {
+    "id": "Drone/dji_mini4",
+    "kind": "Drone",
+    "name": "DJI Mini 4 Pro",
+    "manufacturer": "DJI",
+    "group": "Consumer",
+    "photo": "drones/dji_mini4.jpg"
+  },
+  {
+    "id": "Drone/dji_mini4k",
+    "kind": "Drone",
+    "name": "DJI Mini 4K",
+    "manufacturer": "DJI",
+    "group": "Consumer"
+  },
+  {
+    "id": "Drone/dji_neo",
+    "kind": "Drone",
+    "name": "DJI Neo",
+    "manufacturer": "DJI",
+    "group": "Consumer",
+    "photo": "drones/dji_neo.jpg"
+  },
+  {
+    "id": "Drone/dji_phantom4",
+    "kind": "Drone",
+    "name": "DJI Phantom 4 Pro",
+    "manufacturer": "DJI",
+    "group": "Consumer",
+    "photo": "drones/dji_phantom4.jpg"
+  },
+  {
+    "id": "Drone/eachine_e520s",
+    "kind": "Drone",
+    "name": "Eachine E520S",
+    "manufacturer": "Eachine",
+    "group": "Consumer"
+  },
+  {
+    "id": "Drone/emax_tinyhawk3",
+    "kind": "Drone",
+    "name": "EMAX Tinyhawk III",
+    "manufacturer": "EMAX",
+    "group": "Racing / FPV"
+  },
+  {
+    "id": "Drone/fimi_x8",
+    "kind": "Drone",
+    "name": "FIMI X8 Mini",
+    "manufacturer": "FIMI/Xiaomi",
+    "group": "Consumer",
+    "photo": "drones/fimi_x8.jpg"
+  },
+  {
+    "id": "Drone/flyability_elios3",
+    "kind": "Drone",
+    "name": "Flyability Elios 3",
+    "manufacturer": "Flyability",
+    "group": "Enterprise"
+  },
+  {
+    "id": "Drone/flywoo_explorer_lr",
+    "kind": "Drone",
+    "name": "Flywoo Explorer LR",
+    "manufacturer": "Flywoo",
+    "group": "Racing / FPV"
+  },
+  {
+    "id": "Drone/forpost_r",
+    "kind": "Drone",
+    "name": "Forpost-R",
+    "manufacturer": "Ural Works (Russia)",
+    "group": "Military Recon",
+    "photo": "drones/forpost_r.jpg"
+  },
+  {
+    "id": "Drone/fpv_generic",
+    "kind": "Drone",
+    "name": "FPV Combat Drone (Generic)",
+    "manufacturer": "Various / Custom-built",
+    "group": "FPV Combat"
+  },
+  {
+    "id": "Drone/freefly_astro",
+    "kind": "Drone",
+    "name": "Freefly Astro",
+    "manufacturer": "Freefly Systems",
+    "group": "Enterprise",
+    "photo": "drones/freefly_astro.jpg"
+  },
+  {
+    "id": "Drone/geprc_cinelog35",
+    "kind": "Drone",
+    "name": "GEPRC CineLog35",
+    "manufacturer": "GEPRC",
+    "group": "Racing / FPV"
+  },
+  {
+    "id": "Drone/holy_stone_hs175d",
+    "kind": "Drone",
+    "name": "Holy Stone HS175D",
+    "manufacturer": "Holy Stone",
+    "group": "Consumer"
+  },
+  {
+    "id": "Drone/holy_stone_hs440",
+    "kind": "Drone",
+    "name": "Holy Stone HS440",
+    "manufacturer": "Holy Stone",
+    "group": "Consumer"
+  },
+  {
+    "id": "Drone/holy_stone",
+    "kind": "Drone",
+    "name": "Holy Stone HS720",
+    "manufacturer": "Holy Stone",
+    "group": "Consumer"
+  },
+  {
+    "id": "Drone/hoverair_x1",
+    "kind": "Drone",
+    "name": "HOVERAir X1",
+    "manufacturer": "Zero Zero Robotics",
+    "group": "Consumer",
+    "photo": "drones/hoverair_x1.jpg"
+  },
+  {
+    "id": "Drone/hoverair_x1_pro",
+    "kind": "Drone",
+    "name": "HOVERAir X1 Pro",
+    "manufacturer": "Zero Zero Robotics",
+    "group": "Consumer"
+  },
+  {
+    "id": "Drone/hoverair_x1_promax",
+    "kind": "Drone",
+    "name": "HOVERAir X1 Pro Max",
+    "manufacturer": "Zero Zero",
+    "group": "Consumer"
+  },
+  {
+    "id": "Drone/hubsan",
+    "kind": "Drone",
+    "name": "Hubsan Zino Mini Pro",
+    "manufacturer": "Hubsan",
+    "group": "Consumer"
+  },
+  {
+    "id": "Drone/harop",
+    "kind": "Drone",
+    "name": "IAI Harop",
+    "manufacturer": "Israel Aerospace Industries",
+    "group": "Loitering Munition",
+    "photo": "drones/harop.jpg"
+  },
+  {
+    "id": "Drone/harop_ng",
+    "kind": "Drone",
+    "name": "IAI Harop NG",
+    "manufacturer": "IAI",
+    "group": "Loitering Munition"
+  },
+  {
+    "id": "Drone/harpy",
+    "kind": "Drone",
+    "name": "IAI Harpy",
+    "manufacturer": "Israel Aerospace Industries",
+    "group": "Loitering Munition",
+    "photo": "drones/harpy.jpg"
+  },
+  {
+    "id": "Drone/heron",
+    "kind": "Drone",
+    "name": "IAI Heron",
+    "manufacturer": "Israel Aerospace Industries",
+    "group": "Military Recon",
+    "photo": "drones/heron.jpg"
+  },
+  {
+    "id": "Drone/iflight_nazgul5_v3",
+    "kind": "Drone",
+    "name": "iFlight Nazgul5 V3",
+    "manufacturer": "iFlight",
+    "group": "Racing / FPV"
+  },
+  {
+    "id": "Drone/impossible_us1",
+    "kind": "Drone",
+    "name": "Impossible Aerospace US-1",
+    "manufacturer": "Impossible Aerospace",
+    "group": "Enterprise"
+  },
+  {
+    "id": "Drone/jjrc_x20",
+    "kind": "Drone",
+    "name": "JJRC X20",
+    "manufacturer": "JJRC",
+    "group": "Consumer"
+  },
+  {
+    "id": "Drone/joby_s4",
+    "kind": "Drone",
+    "name": "Joby S4 eVTOL",
+    "manufacturer": "Joby Aviation",
+    "group": "Enterprise",
+    "photo": "drones/joby_s4.jpg"
+  },
+  {
+    "id": "Drone/kratos_xq67a",
+    "kind": "Drone",
+    "name": "Kratos XQ-67A",
+    "manufacturer": "Kratos",
+    "group": "Military Strike"
+  },
+  {
+    "id": "Drone/mjx_bugs_16_pro",
+    "kind": "Drone",
+    "name": "MJX Bugs 16 Pro",
+    "manufacturer": "MJX",
+    "group": "Consumer"
+  },
+  {
+    "id": "Drone/mohajer_6",
+    "kind": "Drone",
+    "name": "Mohajer-6",
+    "manufacturer": "Qods Aviation (Iran)",
+    "group": "Military Recon",
+    "photo": "drones/mohajer_6.jpg"
+  },
+  {
+    "id": "Drone/mq1_predator",
+    "kind": "Drone",
+    "name": "MQ-1 Predator",
+    "manufacturer": "General Atomics (USA)",
+    "group": "Military Recon",
+    "photo": "drones/mq1_predator.jpg"
+  },
+  {
+    "id": "Drone/mq1c_gray_eagle",
+    "kind": "Drone",
+    "name": "MQ-1C Gray Eagle",
+    "manufacturer": "General Atomics (USA)",
+    "group": "Military Recon"
+  },
+  {
+    "id": "Drone/mq25_stingray",
+    "kind": "Drone",
+    "name": "MQ-25 Stingray",
+    "manufacturer": "Boeing (USA)",
+    "group": "Military Recon",
+    "photo": "drones/mq25_stingray.jpg"
+  },
+  {
+    "id": "Drone/mq28_ghost_bat",
+    "kind": "Drone",
+    "name": "MQ-28 Ghost Bat",
+    "manufacturer": "Boeing Australia",
+    "group": "Military Strike",
+    "photo": "drones/mq28_ghost_bat.jpg"
+  },
+  {
+    "id": "Drone/mq4c_triton",
+    "kind": "Drone",
+    "name": "MQ-4C Triton",
+    "manufacturer": "Northrop Grumman (USA)",
+    "group": "Military Recon",
+    "photo": "drones/mq4c_triton.jpg"
+  },
+  {
+    "id": "Drone/mq9_reaper",
+    "kind": "Drone",
+    "name": "MQ-9 Reaper",
+    "manufacturer": "General Atomics (USA)",
+    "group": "Military Strike",
+    "photo": "drones/mq9_reaper.jpg"
+  },
+  {
+    "id": "Drone/neheme_nh525",
+    "kind": "Drone",
+    "name": "Neheme NH525",
+    "manufacturer": "Neheme",
+    "group": "Consumer"
+  },
+  {
+    "id": "Drone/orion_uav",
+    "kind": "Drone",
+    "name": "Orion (Pacer)",
+    "manufacturer": "Kronshtadt (Russia)",
+    "group": "Military Recon",
+    "photo": "drones/orion_uav.jpg"
+  },
+  {
+    "id": "Drone/orlan10",
+    "kind": "Drone",
+    "name": "Orlan-10",
+    "manufacturer": "Special Technology Center (Russia)",
+    "group": "Military Recon",
+    "photo": "drones/orlan10.jpg"
+  },
+  {
+    "id": "Drone/parrot_anafi",
+    "kind": "Drone",
+    "name": "Parrot Anafi",
+    "manufacturer": "Parrot",
+    "group": "Consumer"
+  },
+  {
+    "id": "Drone/parrot_anafi_ai",
+    "kind": "Drone",
+    "name": "Parrot Anafi AI",
+    "manufacturer": "Parrot",
+    "group": "Consumer"
+  },
+  {
+    "id": "Drone/parrot_bebop2",
+    "kind": "Drone",
+    "name": "Parrot Bebop 2",
+    "manufacturer": "Parrot",
+    "group": "Consumer",
+    "photo": "drones/parrot_bebop2.jpg"
+  },
+  {
+    "id": "Drone/phoenix_ghost",
+    "kind": "Drone",
+    "name": "Phoenix Ghost",
+    "manufacturer": "Aevex Aerospace",
+    "group": "Loitering Munition"
+  },
+  {
+    "id": "Drone/potensic_atom_se",
+    "kind": "Drone",
+    "name": "Potensic ATOM SE",
+    "manufacturer": "Potensic",
+    "group": "Consumer"
+  },
+  {
+    "id": "Drone/potensic_dreamer_pro",
+    "kind": "Drone",
+    "name": "Potensic Dreamer Pro",
+    "manufacturer": "Potensic",
+    "group": "Consumer"
+  },
+  {
+    "id": "Drone/potensic_p5",
+    "kind": "Drone",
+    "name": "Potensic P5",
+    "manufacturer": "Potensic",
+    "group": "Consumer"
+  },
+  {
+    "id": "Drone/r18",
+    "kind": "Drone",
+    "name": "R18 Octocopter",
+    "manufacturer": "Aerorozvidka (Ukraine)",
+    "group": "FPV Combat"
+  },
+  {
+    "id": "Drone/coyote_block3",
+    "kind": "Drone",
+    "name": "Raytheon Coyote Block 3+",
+    "manufacturer": "Raytheon",
+    "group": "Military Strike"
+  },
+  {
+    "id": "Drone/rq170_sentinel",
+    "kind": "Drone",
+    "name": "RQ-170 Sentinel",
+    "manufacturer": "Lockheed Martin (USA)",
+    "group": "Military Recon"
+  },
+  {
+    "id": "Drone/puma_ae",
+    "kind": "Drone",
+    "name": "RQ-20B Puma AE",
+    "manufacturer": "AeroVironment",
+    "group": "Military Recon",
+    "photo": "drones/puma_ae.jpg"
+  },
+  {
+    "id": "Drone/rq21_blackjack",
+    "kind": "Drone",
+    "name": "RQ-21A Blackjack",
+    "manufacturer": "Insitu/Boeing",
+    "group": "Military Recon",
+    "photo": "drones/rq21_blackjack.jpg"
+  },
+  {
+    "id": "Drone/rq4_global_hawk",
+    "kind": "Drone",
+    "name": "RQ-4 Global Hawk",
+    "manufacturer": "Northrop Grumman (USA)",
+    "group": "Military Recon",
+    "photo": "drones/rq4_global_hawk.jpg"
+  },
+  {
+    "id": "Drone/rq7_shadow",
+    "kind": "Drone",
+    "name": "RQ-7 Shadow",
+    "manufacturer": "Textron",
+    "group": "Military Recon",
+    "photo": "drones/rq7_shadow.jpg"
+  },
+  {
+    "id": "Drone/ruko_f11_gim2",
+    "kind": "Drone",
+    "name": "Ruko F11 GIM2",
+    "manufacturer": "Ruko",
+    "group": "Consumer"
+  },
+  {
+    "id": "Drone/ruko_u11_pro",
+    "kind": "Drone",
+    "name": "Ruko U11 Pro",
+    "manufacturer": "Ruko",
+    "group": "Consumer"
+  },
+  {
+    "id": "Drone/ryze_tello2",
+    "kind": "Drone",
+    "name": "Ryze Tello II",
+    "manufacturer": "Ryze/DJI",
+    "group": "Consumer",
+    "photo": "drones/ryze_tello2.jpg"
+  },
+  {
+    "id": "Drone/tello",
+    "kind": "Drone",
+    "name": "Ryze/DJI Tello",
+    "manufacturer": "Ryze/DJI",
+    "group": "Consumer",
+    "photo": "drones/tello.jpg"
+  },
+  {
+    "id": "Drone/scan_eagle",
+    "kind": "Drone",
+    "name": "ScanEagle",
+    "manufacturer": "Insitu/Boeing",
+    "group": "Military Recon",
+    "photo": "drones/scan_eagle.jpg"
+  },
+  {
+    "id": "Drone/sensefly_ebee_x",
+    "kind": "Drone",
+    "name": "senseFly eBee X",
+    "manufacturer": "senseFly",
+    "group": "Enterprise"
+  },
+  {
+    "id": "Drone/shahed_129",
+    "kind": "Drone",
+    "name": "Shahed-129",
+    "manufacturer": "HESA (Iran)",
+    "group": "Military Recon"
+  },
+  {
+    "id": "Drone/shahed_136",
+    "kind": "Drone",
+    "name": "Shahed-136 / Geran-2",
+    "manufacturer": "HESA (Iran)",
+    "group": "Loitering Munition",
+    "photo": "drones/shahed_136.jpg"
+  },
+  {
+    "id": "Drone/shahed_238",
+    "kind": "Drone",
+    "name": "Shahed-238",
+    "manufacturer": "HESA (Iran)",
+    "group": "Loitering Munition"
+  },
+  {
+    "id": "Drone/shield_ai_vbat",
+    "kind": "Drone",
+    "name": "Shield AI V-BAT",
+    "manufacturer": "Shield AI",
+    "group": "Military Recon"
+  },
+  {
+    "id": "Drone/simrex_x500",
+    "kind": "Drone",
+    "name": "SIMREX X500",
+    "manufacturer": "SIMREX",
+    "group": "Consumer"
+  },
+  {
+    "id": "Drone/simrex_x900",
+    "kind": "Drone",
+    "name": "SIMREX X900",
+    "manufacturer": "SIMREX",
+    "group": "Consumer"
+  },
+  {
+    "id": "Drone/sjrc_f22s_4k_pro",
+    "kind": "Drone",
+    "name": "SJRC F22S 4K Pro",
+    "manufacturer": "SJRC",
+    "group": "Consumer"
+  },
+  {
+    "id": "Drone/skydio2",
+    "kind": "Drone",
+    "name": "Skydio 2+",
+    "manufacturer": "Skydio",
+    "group": "Consumer"
+  },
+  {
+    "id": "Drone/skydio_dock",
+    "kind": "Drone",
+    "name": "Skydio Dock",
+    "manufacturer": "Skydio",
+    "group": "Enterprise"
+  },
+  {
+    "id": "Drone/skydio_s1",
+    "kind": "Drone",
+    "name": "Skydio S1",
+    "manufacturer": "Skydio",
+    "group": "Consumer",
+    "photo": "drones/skydio_s1.jpg"
+  },
+  {
+    "id": "Drone/skydio_x10",
+    "kind": "Drone",
+    "name": "Skydio X10",
+    "manufacturer": "Skydio",
+    "group": "Enterprise"
+  },
+  {
+    "id": "Drone/skydio_x2",
+    "kind": "Drone",
+    "name": "Skydio X2",
+    "manufacturer": "Skydio",
+    "group": "Enterprise",
+    "photo": "drones/skydio_x2.jpg"
+  },
+  {
+    "id": "Drone/snaptain_sp510",
+    "kind": "Drone",
+    "name": "Snaptain SP510",
+    "manufacturer": "Snaptain",
+    "group": "Consumer",
+    "photo": "drones/snaptain_sp510.jpg"
+  },
+  {
+    "id": "Drone/snaptain_sp7100",
+    "kind": "Drone",
+    "name": "Snaptain SP7100",
+    "manufacturer": "Snaptain",
+    "group": "Consumer"
+  },
+  {
+    "id": "Drone/kargu2",
+    "kind": "Drone",
+    "name": "STM Kargu-2",
+    "manufacturer": "STM (Turkey)",
+    "group": "Military Strike"
+  },
+  {
+    "id": "Drone/switchblade_300",
+    "kind": "Drone",
+    "name": "Switchblade 300",
+    "manufacturer": "AeroVironment",
+    "group": "Loitering Munition",
+    "photo": "drones/switchblade_300.jpg"
+  },
+  {
+    "id": "Drone/syma_x500",
+    "kind": "Drone",
+    "name": "Syma X500",
+    "manufacturer": "Syma",
+    "group": "Consumer"
+  },
+  {
+    "id": "Drone/anka_s",
+    "kind": "Drone",
+    "name": "TAI Anka-S",
+    "manufacturer": "Turkish Aerospace (Turkey)",
+    "group": "Military Strike",
+    "photo": "drones/anka_s.jpg"
+  },
+  {
+    "id": "Drone/tenssenx_t80",
+    "kind": "Drone",
+    "name": "TENSSENX T80",
+    "manufacturer": "TENSSENX",
+    "group": "Consumer"
+  },
+  {
+    "id": "Drone/hero_family",
+    "kind": "Drone",
+    "name": "UVision Hero-30/120/400",
+    "manufacturer": "UVision (Israel)",
+    "group": "Loitering Munition",
+    "photo": "drones/hero_family.jpg"
+  },
+  {
+    "id": "Drone/visuo_xs816",
+    "kind": "Drone",
+    "name": "Visuo XS816",
+    "manufacturer": "Visuo",
+    "group": "Consumer"
+  },
+  {
+    "id": "Drone/walkera_vitus_320",
+    "kind": "Drone",
+    "name": "Walkera Vitus 320",
+    "manufacturer": "Walkera",
+    "group": "Consumer"
+  },
+  {
+    "id": "Drone/warmate",
+    "kind": "Drone",
+    "name": "WB Electronics Warmate",
+    "manufacturer": "WB Electronics (Poland)",
+    "group": "Loitering Munition",
+    "photo": "drones/warmate.jpg"
+  },
+  {
+    "id": "Drone/wing_delivery",
+    "kind": "Drone",
+    "name": "Wing (Alphabet) Delivery Drone",
+    "manufacturer": "Wing (Alphabet/Google)",
+    "group": "Enterprise"
+  },
+  {
+    "id": "Drone/wing_loong",
+    "kind": "Drone",
+    "name": "Wing Loong II",
+    "manufacturer": "CASC/Chengdu (China)",
+    "group": "Military Strike",
+    "photo": "drones/wing_loong.jpg"
+  },
+  {
+    "id": "Drone/wingcopter_198",
+    "kind": "Drone",
+    "name": "Wingcopter 198",
+    "manufacturer": "Wingcopter",
+    "group": "Enterprise",
+    "photo": "drones/wingcopter_198.jpg"
+  },
+  {
+    "id": "Drone/wingsland_s6",
+    "kind": "Drone",
+    "name": "Wingsland S6",
+    "manufacturer": "Wingsland",
+    "group": "Consumer"
+  },
+  {
+    "id": "Drone/wingtraone",
+    "kind": "Drone",
+    "name": "WingtraOne",
+    "manufacturer": "Wingtra",
+    "group": "Enterprise",
+    "photo": "drones/wingtraone.jpg"
+  },
+  {
+    "id": "Drone/xq58_valkyrie",
+    "kind": "Drone",
+    "name": "XQ-58 Valkyrie",
+    "manufacturer": "Kratos (USA)",
+    "group": "Military Strike",
+    "photo": "drones/xq58_valkyrie.jpg"
+  },
+  {
+    "id": "Drone/yuneec_typhoon",
+    "kind": "Drone",
+    "name": "Yuneec Typhoon H Plus",
+    "manufacturer": "Yuneec",
+    "group": "Consumer",
+    "photo": "drones/yuneec_typhoon.jpg"
+  },
+  {
+    "id": "Drone/lancet",
+    "kind": "Drone",
+    "name": "ZALA Lancet",
+    "manufacturer": "ZALA Aero (Russia)",
+    "group": "Loitering Munition",
+    "photo": "drones/lancet.jpg"
+  },
+  {
+    "id": "Drone/zipline_p2",
+    "kind": "Drone",
+    "name": "Zipline P2 Zip",
+    "manufacturer": "Zipline",
+    "group": "Enterprise"
+  }
+]

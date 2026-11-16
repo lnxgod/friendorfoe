@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light dark">
+    <title>Friend or Foe for iPhone · Privacy Policy</title>
+    <style>
+        :root {
+            color-scheme: light dark;
+            --paper: #faf9f6;
+            --ink: #20231f;
+            --secondary: #4a514d;
+            --rule: #bcc3bc;
+            --link: #235d49;
+        }
+        @media (prefers-color-scheme: dark) {
+            :root {
+                --paper: #171b19;
+                --ink: #f2f3ee;
+                --secondary: #b9c4bc;
+                --rule: #525c55;
+                --link: #a3ddbd;
+            }
+        }
+        * { box-sizing: border-box; }
+        html { background: var(--paper); color: var(--ink); }
+        body {
+            margin: 0 auto;
+            max-width: 48rem;
+            padding: clamp(1.25rem, 5vw, 3.75rem);
+            font: 1.0625rem/1.65 system-ui, sans-serif;
+            overflow-wrap: break-word;
+        }
+        header { border-bottom: 1px solid var(--rule); padding-bottom: 1.25rem; }
+        h1, h2 { line-height: 1.2; text-wrap: balance; }
+        h1 { font-size: clamp(2.2rem, 8vw, 3.5rem); margin: .2em 0 .35em; }
+        h2 { font-size: 1.5rem; margin: 2rem 0 .55rem; }
+        p { margin: .5rem 0 .9rem; }
+        header p { margin: 0; color: var(--secondary); }
+        a { color: var(--link); text-underline-offset: .15em; }
+        a:focus-visible { outline: 3px solid currentColor; outline-offset: 3px; }
+    </style>
+</head>
+<body>
+    <header>
+        <p>GameChangers AI · Friend or Foe for iPhone</p>
+        <h1>Privacy policy</h1>
+        <p>Last updated <time datetime="2026-11-16">November 16, 2026</time></p>
+    </header>
+    <main>
+        <p>Friend or Foe works without an account. Nearby Bluetooth observations and camera, microphone and magnetic-field measurements are processed on your iPhone. The app has no advertising or analytics SDK and does not sell your personal data or track you across apps or websites.</p>
+
+        <h2>Nearby devices and beacons</h2>
+        <p>When you start a Bluetooth scan, the app uses available broadcast names, services, manufacturer data, signal strength, the iPhone-assigned device identifier and observation times to recognize supported devices. Matching a recorder broadcast cannot determine whether it is recording. To range iBeacons, you can enter a known beacon network UUID and grant location access. Ranging reads matching beacon identifiers, including their major and minor values.</p>
+        <p>Live observations stay in memory. Observations you choose to save, identifiers you ignore and beacon networks you add are stored on this iPhone. The app does not send these observations to GameChangers AI or a scanner station. The phone stops scanning when the app enters the background.</p>
+
+        <h2>Camera, microphone and magnetic field</h2>
+        <p>Lens inspection uses live camera frames to help you look for reflections. Sound check uses microphone samples to measure sound levels and high-frequency energy. When you start the magnetic-field check, the app uses calibrated magnetic-field readings from the phone’s motion sensors. These tools process their inputs on the phone while in use. They do not store or transmit frames, images, audio samples or magnetic readings.</p>
+
+        <h2>Aircraft and Apple Maps</h2>
+        <p>If you choose to look up aircraft, your iPhone obtains a location and rounds latitude and longitude to the nearest tenth of a degree. It sends that search center and your selected range to adsb.lol, which also receives your IP address. Optional automatic refresh repeats this request while you use the aircraft screens. Live results and recent trails stay in memory. Saving a flight stores the selected aircraft snapshot and its available trail on this iPhone. <a href="https://www.adsb.lol/docs/open-data/api/">About the aircraft data service</a>.</p>
+        <p>When you open an Apple map, Apple receives requests for the viewed area and can see your IP address. You can browse a map without granting the app access to your location. <a href="https://www.apple.com/legal/privacy/data/en/apple-maps/">Apple Maps and privacy</a>.</p>
+
+        <h2>Scanner stations and badges</h2>
+        <p>If you enter an HTTPS scanner server and connect or refresh, the app requests privacy-device and Wi-Fi reports from that server. Its operator can see your IP address and request time. Reports can contain information about the station’s surroundings, such as a Wi-Fi network name or a recorder sighting. Reports stay in memory and the server address is saved on the phone. Opening badge diagnostics sends your browser to the badge’s local status page after you join its Wi-Fi.</p>
+
+        <h2>Your controls and deletion</h2>
+        <p>In Privacy, you can stop scanning, clear sightings and saved observations, reset ignored identifiers, and remove known beacon networks. In Nearby, you can stop aircraft lookup and delete saved flights. In Station, you can forget the server. Appearance and welcome-screen preferences are also stored locally. Deleting the app removes its local files. Saved observations, scanner settings, the station address and saved flights are excluded from backup.</p>
+        <p>You can change the app’s permissions in iPhone Settings. Clearing local data does not erase records held by external map, aircraft or station providers. Contact the relevant provider or scanner operator about data they hold. Opening an external link, including the open-source repository, sends a request to that website under its own privacy practices.</p>
+
+        <h2>Contact</h2>
+        <p>For privacy questions or requests about Friend or Foe for iPhone, use the publisher’s contact details. <a href="https://gamechangersai.org/about.html">Contact GameChangers AI</a>.</p>
+    </main>
+</body>
+</html>

@@ -7,6 +7,7 @@ on:
     paths:
       - 'esp32/**'
       - 'android/app/src/main/res/raw/privacy_policy.html'
+      - 'docs/iphone-privacy.html'
       - 'tools/badge_flasher/**'
       - 'scripts/build_badge_factory_bundle.py'
       - 'scripts/package_public_badge_release.py'
@@ -16,6 +17,7 @@ on:
     paths:
       - 'esp32/**'
       - 'android/app/src/main/res/raw/privacy_policy.html'
+      - 'docs/iphone-privacy.html'
       - 'tools/badge_flasher/**'
       - 'scripts/build_badge_factory_bundle.py'
       - 'scripts/package_public_badge_release.py'
@@ -302,6 +304,7 @@ jobs:
           mkdir -p _site/firmware/badge-scanner _site/firmware/badge-uplink
 
           cp android/app/src/main/res/raw/privacy_policy.html _site/privacy-policy.html
+          cp docs/iphone-privacy.html _site/iphone-privacy.html
 
           # Web flasher page + manifests
           cp esp32/web-flasher/manifest-probe-scanner.json _site/

@@ -1,0 +1,64 @@
+name: iPhone build and tests
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'ios/**'
+      - 'android/app/src/main/assets/aircraft/**'
+      - 'android/app/src/main/assets/drones/**'
+      - 'android/app/src/main/java/com/friendorfoe/presentation/util/AircraftDatabase.kt'
+      - 'android/app/src/main/java/com/friendorfoe/presentation/util/DroneDatabase.kt'
+      - 'android/app/src/main/java/com/friendorfoe/presentation/util/ReferencePhotoCatalog.kt'
+      - '.github/workflows/ios-build.yml'
+  pull_request:
+    paths:
+      - 'ios/**'
+      - 'android/app/src/main/assets/aircraft/**'
+      - 'android/app/src/main/assets/drones/**'
+      - 'android/app/src/main/java/com/friendorfoe/presentation/util/AircraftDatabase.kt'
+      - 'android/app/src/main/java/com/friendorfoe/presentation/util/DroneDatabase.kt'
+      - 'android/app/src/main/java/com/friendorfoe/presentation/util/ReferencePhotoCatalog.kt'
+      - '.github/workflows/ios-build.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: macos-26
+    timeout-minutes: 35
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.4.1.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Check the shared reference catalog
+        run: python3 ios/Tools/export_reference.py --check
+
+      - name: Build and test on iPhone Simulator
+        run: |
+          set -euo pipefail
+          xcodebuild -version
+          device_id=$(xcrun simctl create "Friend or Foe CI" \
+            com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro \
+            com.apple.CoreSimulator.SimRuntime.iOS-26-4)
+          xcrun simctl bootstatus "$device_id" -b
+          xcodebuild test \
+            -project ios/FriendOrFoe.xcodeproj \
+            -scheme FriendOrFoe \
+            -destination "platform=iOS Simulator,id=$device_id" \
+            -parallel-testing-enabled NO \
+            -resultBundlePath "$RUNNER_TEMP/FriendOrFoe.xcresult"
+
+      - name: Preserve test results on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: iphone-test-results
+          path: ${{ runner.temp }}/FriendOrFoe.xcresult
+          if-no-files-found: ignore
+          retention-days: 5
