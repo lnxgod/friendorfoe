@@ -69,15 +69,23 @@ class PrivacyScreenTest {
             val results = mutableListOf<TextLayoutResult>()
             val match = if (tabTag == null) hasText(label)
                 else hasText(label) and hasAnyAncestor(hasTestTag(tabTag))
-            compose.onNode(match, useUnmergedTree = true)
-                .performSemanticsAction(SemanticsActions.GetTextLayoutResult) { assertTrue(it(results)) }
+            val node = compose.onNode(match, useUnmergedTree = true).assertIsDisplayed()
+            node.performSemanticsAction(SemanticsActions.GetTextLayoutResult) { assertTrue(it(results)) }
             val result = results.single()
-            assertFalse("Clipped: $label", result.hasVisualOverflow)
             assertEquals("Broken word: $label", 1, result.lineCount)
+            assertFalse("Ellipsized: $label", result.isLineEllipsized(0))
+            assertEquals("Missing characters: $label", label.length, result.getLineEnd(0, visibleEnd = true))
+            // Scrollable tabs give the paragraph infinite width. Check the actual glyph line
+            // and visible node rather than TextLayoutResult.didOverflowWidth's paragraph extent.
+            val width = node.fetchSemanticsNode().boundsInRoot.width
+            assertTrue("Clipped horizontally: $label", result.getLineLeft(0) >= -1f && result.getLineRight(0) <= width + 1f)
+            assertTrue("Clipped vertically: $label", result.getLineBottom(0) <= node.fetchSemanticsNode().boundsInRoot.height + 1f)
         }
         for (tab in PrivacyFocus.entries) {
             compose.onNodeWithTag("privacy_focus_${tab.name}").performScrollTo().performClick().assertIsSelected()
             checkLayout(tab.label, "privacy_focus_${tab.name}")
+            checkLayout("0", "privacy_focus_${tab.name}")
+            if (tab == PrivacyFocus.RECORDERS) savePrivacyScreenshot("recorders-large-text.png")
         }
         compose.onNodeWithTag("privacy_content").performScrollToNode(hasText("Phone"))
         checkLayout("Phone")
@@ -253,6 +261,7 @@ class PrivacyScreenTest {
             )) }
         }
         compose.onNodeWithText("No personal recorders detected").assertIsDisplayed()
+        savePrivacyScreenshot("recorders-empty-synthetic.png")
         compose.onNodeWithTag("privacy_tree_beacons").assertDoesNotExist()
         compose.onNodeWithText("View all observations").performClick()
         compose.onNodeWithTag("privacy_focus_ALL").assertIsSelected()

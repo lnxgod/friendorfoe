@@ -420,20 +420,29 @@ private fun PrivacyTabs(state: PrivacyUiState, actions: PrivacyActions) {
     val focusManager = LocalFocusManager.current
     val keyboard = LocalSoftwareKeyboardController.current
     val selectedIndex = PrivacyFocus.entries.indexOf(state.filters.focus)
-    val tabs: @Composable () -> Unit = {
+    val tabs: @Composable (Boolean) -> Unit = { flexible ->
         PrivacyFocus.entries.forEach { focus ->
-            Tab(selected = state.filters.focus == focus, onClick = {
+            val select: () -> Unit = {
                 focusManager.clearFocus()
                 keyboard?.hide()
                 if (focus != state.filters.focus) actions.onFocusChanged(focus)
-            },
-                modifier = Modifier.testTag("privacy_focus_${focus.name}"),
-                text = {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text(focus.label, style = MaterialTheme.typography.labelMedium, maxLines = 1)
-                        Text((state.focusCounts[focus] ?: 0).toString(), style = MaterialTheme.typography.labelSmall)
-                    }
-                })
+            }
+            val modifier = Modifier.testTag("privacy_focus_${focus.name}")
+            val label: @Composable () -> Unit = {
+                Column(
+                    modifier = if (flexible) Modifier.padding(horizontal = 16.dp, vertical = 6.dp) else Modifier,
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    Text(focus.label, style = MaterialTheme.typography.labelMedium, maxLines = 1)
+                    Text((state.focusCounts[focus] ?: 0).toString(), style = MaterialTheme.typography.labelSmall)
+                }
+            }
+            if (flexible) {
+                // Unlike the Material text slot, custom content can grow taller for the count.
+                Tab(selected = state.filters.focus == focus, onClick = select, modifier = modifier.heightIn(min = 48.dp)) { label() }
+            } else {
+                Tab(selected = state.filters.focus == focus, onClick = select, modifier = modifier, text = label)
+            }
         }
     }
     val measurer = rememberTextMeasurer()
@@ -441,17 +450,18 @@ private fun PrivacyTabs(state: PrivacyUiState, actions: PrivacyActions) {
     val labelStyle = MaterialTheme.typography.labelMedium
     val countStyle = MaterialTheme.typography.labelSmall
     BoxWithConstraints {
-        val widestText = PrivacyFocus.entries.maxOf { focus ->
-            maxOf(
-                measurer.measure(focus.label, labelStyle).size.width,
-                measurer.measure((state.focusCounts[focus] ?: 0).toString(), countStyle).size.width,
-            )
+        val sizes = PrivacyFocus.entries.map { focus ->
+            val label = measurer.measure(focus.label, labelStyle).size
+            val count = measurer.measure((state.focusCounts[focus] ?: 0).toString(), countStyle).size
+            maxOf(label.width, count.width) to label.height + count.height
         }
+        val widestText = with(density) { sizes.maxOf { it.first }.toDp() }
+        val needsHeight = with(density) { sizes.maxOf { it.second }.toDp() } > 48.dp
         // Material text tabs add 16 dp of padding on either side of the label.
-        if (with(density) { widestText.toDp() } + 32.dp > maxWidth / PrivacyFocus.entries.size) {
-            ScrollableTabRow(selectedTabIndex = selectedIndex, edgePadding = 0.dp, tabs = tabs)
+        if (widestText + 32.dp > maxWidth / PrivacyFocus.entries.size) {
+            ScrollableTabRow(selectedTabIndex = selectedIndex, edgePadding = 0.dp) { tabs(true) }
         } else {
-            TabRow(selectedTabIndex = selectedIndex, tabs = tabs)
+            TabRow(selectedTabIndex = selectedIndex) { tabs(needsHeight) }
         }
     }
 }
