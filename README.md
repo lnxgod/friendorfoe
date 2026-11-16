@@ -29,6 +29,8 @@ part of a multi-node sensor platform.
 
 Open **Privacy → Recorders** to see supported Bluetooth recorder broadcasts first. Use Nearby for other privacy devices, Beacons for grouped iBeacon networks, or All for every observation. Android can recognize these devices only while a distinctive name, service, or supported setup network is visible. The app cannot tell whether audio or video is being recorded. [Recorder coverage and screenshots](docs/personal-ai-recorders.md) · [Google Play release preparation](docs/google-play-release.md)
 
+For a future iPhone edition, see [which features could work on the phone and which need an external scanner](docs/iphone-feasibility.md).
+
 ## What The Badge Does
 
 - Shows walk-up awareness for privacy and drone signals without needing a cloud

@@ -49,12 +49,12 @@ fun WelcomeContent(actions: WelcomeActions) {
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).testTag("welcome_scroll"),
             verticalArrangement = Arrangement.spacedBy(20.dp)) {
             Text("Friend or Foe", style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold)
-            Text("Aircraft, drones and nearby signals", style = MaterialTheme.typography.titleMedium,
+            Text("Explore nearby devices and aircraft", style = MaterialTheme.typography.titleMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
             PublisherCredit(actions.onOpenPublisher)
-            WelcomeFeature(Icons.Default.Flight, "Nearby", "See what is close, with distance first.")
-            WelcomeFeature(Icons.Default.Map, "Map & trails", "Follow received positions and review flight paths.")
-            WelcomeFeature(Icons.Default.Shield, "Privacy", "Inspect nearby signals and their evidence.")
+            WelcomeFeature(Icons.Default.Shield, "Privacy", "Look for personal recorders, cameras and trackers.")
+            WelcomeFeature(Icons.Default.Flight, "Nearby", "See aircraft and drones sorted by distance.")
+            WelcomeFeature(Icons.Default.Map, "Map & trails", "Follow aircraft and review flight paths.")
             Text("Observations are evidence, not proof of identity, intent, or ownership.",
                 style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.testTag("welcome_scope"))

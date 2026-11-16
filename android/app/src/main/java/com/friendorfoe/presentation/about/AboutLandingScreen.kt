@@ -47,7 +47,7 @@ fun AboutLandingScreen(
         FofActionRow("App settings", "Alerts, detection and connections", onClick = actions.onOpenSettings,
             modifier = Modifier.testTag("about_app_settings"))
         HorizontalDivider()
-        FofActionRow("Wi-Fi probes", "See which networks nearby devices request", onClick = actions.onOpenProbes,
+        FofActionRow("Wi-Fi probes", "See network requests from a USB scanner or sensor server", onClick = actions.onOpenProbes,
             modifier = Modifier.testTag("more_probes"))
         HorizontalDivider()
         FofActionRow("History", "Saved observations and flight paths", onClick = actions.onOpenHistory,

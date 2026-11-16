@@ -1,12 +1,12 @@
 # Friend or Foe on Google Play
 
-The Android application ID is `com.friendorfoe`. The first Play candidate in this branch uses version code 140 and targets API 36. The minimum remains Android 8 (API 26). [Google Play target API requirements](https://support.google.com/googleplay/android-developer/answer/11926878)
+The Android application ID is `com.friendorfoe`. This Play candidate uses version code 140, targets API 36 and supports Android 8 (API 26) or newer. [Google Play target API requirements](https://support.google.com/googleplay/android-developer/answer/11926878)
 
 ## Build an internal-test candidate
 
 From `android/`, run `./gradlew testDebugUnitTest lintDebug bundlePlay` with JDK 17 and Android SDK 36. The output is `app/build/outputs/bundle/play/app-play.aab`. By default this is an unsigned bundle for inspection. To build an upload-signed bundle, supply the registered upload keystore through `KEYSTORE_PATH` (absolute path), `KEYSTORE_PASSWORD`, `KEY_ALIAS` and `KEY_PASSWORD` in the build environment. CI builds and checks the Play bundle on pull requests. The repository's tag workflow publishes a separate APK to GitHub.
 
-Before the first Play release, confirm the package registration, the highest version code in Play Console and the app-signing certificate. Existing signed APK installations can upgrade in place only when Android accepts the Play app-signing identity and version. If continuity with existing users is required, enroll the corresponding existing signing key through Play Console. Keep signing and upload keys outside the repository. [Play App Signing](https://developer.android.com/studio/publish/app-signing)
+Before uploading, check this package’s highest version code and its registered upload and app-signing certificates in Play Console. Use an unused version code higher than the version testers will upgrade from. For a package already enrolled in Play App Signing, use its registered upload key. When enrolling a package already distributed elsewhere, choose the corresponding app-signing key to support an in-place update. Keep signing and upload keys outside the repository. [Android app versioning](https://developer.android.com/studio/publish/versioning) · [Play App Signing](https://developer.android.com/studio/publish/app-signing)
 
 After the release changes reach main, maintainers can run **Actions → Android Build → Run workflow** on main. It tests the app, signs the bundle with the existing repository Android release key, checks its public certificate fingerprint and creates the `friendorfoe-signed-release` workflow artifact. Download `friendorfoe-play.aab` and its SHA-256 file from that artifact. The manual run has no store upload or GitHub Release step. If Play has a different registered upload certificate, use its registered key with the local build instructions instead.
 
@@ -22,17 +22,19 @@ English (US). Proposed category: Tools.
 
 **Title** — Friend or Foe
 
-**Short description** — Find nearby recorder and camera broadcasts, trackers, beacons and aircraft.
+**Short description** — Find nearby recorder and camera signals and see why your phone flagged them.
 
 **Full description**
 
-Open Privacy to look for personal AI recorders first. Friend or Foe uses your Android phone to recognize nearby Bluetooth advertisements and Wi-Fi setup networks from supported devices. Explore recorder, camera, tracker and smart-glasses matches. Open a result to see the signal and name behind the match.
+Use your Android phone to look for nearby personal AI recorders, cameras, smart glasses and trackers. Open Privacy to see supported recorder signals first. Tap a finding to see the Bluetooth or Wi-Fi evidence behind it.
 
-Search by name and narrow the list by device family or detection source. Open Everyday devices to inspect AirPods activity and other common Bluetooth signals. Busy iBeacon networks have their own groups. Wi-Fi findings show the network name when available and explain what triggered the match. Recent encounters show when your phone saw a signal and how its strength changed.
+Search by name or filter by device family. AirPods activity and other common Bluetooth signals are grouped under Everyday devices. iBeacons are grouped by network. Wi-Fi alerts show the network name when available and explain what triggered the alert. Recent encounters show when a signal appeared and how its strength changed.
 
-See nearby aircraft and compatible drone broadcasts, explore a map, or start Nearby Watch for aircraft notifications. You can change detection sources and permissions in Settings. An optional scanner badge or a sensor server you configure can add observations from other radios.
+You can also explore nearby aircraft and compatible drone broadcasts on the map. Start Nearby Watch for aircraft notifications. The phone can scan on its own. An optional scanner badge or a sensor server you configure can supply additional observations.
 
-Detection depends on what a device broadcasts and what Android makes available to your phone. A nearby device can stay silent, and an advertising name can be reused. A match cannot tell you whether a microphone or camera is recording.
+Detection depends on what a device broadcasts and what Android can see. A device can stay silent or reuse another device’s name. A signal match cannot tell you whether a microphone or camera is recording.
+
+Friend or Foe is an open-source app published by GameChangers AI.
 
 **Release notes**
 
@@ -40,12 +42,18 @@ Choose Light, Dark or System under App settings. Open Privacy to try a Bluetooth
 
 ## Images for Play Console
 
-Upload the [512 × 512 app icon](google-play-assets/app-icon.png), [1024 × 500 feature graphic](google-play-assets/feature-graphic.jpg) and the 1080 × 1920 phone screenshots below. Each screenshot is an opaque RGB PNG captured on Android 16. The graphic depicts the optional project badge.
+Upload the phone screenshots in the numbered order below. Each is a 1080 × 1920 opaque RGB PNG from the Android interface. The nearby signals in these examples are synthetic. Copy the English alt text into the matching asset field in Play Console. [Google Play preview asset guidance](https://support.google.com/googleplay/android-developer/answer/9866151)
 
-- [Recorder observations, shown with synthetic test data](google-play-assets/recorder-observations.png)
-- [Grouped iBeacons, shown with synthetic test data](google-play-assets/grouped-beacons.png)
-- [Welcome in light mode](google-play-assets/welcome-light.png)
-- [Interactive recorder-name example in dark mode](google-play-assets/recorder-example-dark.png)
+| Asset | File | Alt text |
+| --- | --- | --- |
+| App icon, 512 × 512 | [App icon](google-play-assets/app-icon.png) | Cyan finder ring and white dot on navy. |
+| Feature graphic, 1024 × 500 | [Feature graphic](google-play-assets/feature-graphic.jpg) | Friend or Foe by GameChangers AI with its optional triangular scanner badge. |
+| Phone 1 | [Recorder findings](google-play-assets/recorder-observations.png) | Privacy shows sample Plaud and Omi recorder signals, the Bluetooth evidence and the recording-status limitation. |
+| Phone 2 | [Wi-Fi alert](google-play-assets/wifi-alert.png) | A sample Wi-Fi alert names the Demo guest network and explains that its access points advertise different security settings. |
+| Phone 3 | [Everyday devices](google-play-assets/everyday-devices.png) | A sample Plaud finding appears above a closed Everyday devices group containing AirPods activity and smart-home signals. |
+| Phone 4 | [Grouped iBeacons](google-play-assets/grouped-beacons.png) | Twelve sample beacon observations appear under one iBeacon network in the Beacons tab. |
+| Phone 5 | [Bluetooth name example](google-play-assets/recorder-example-dark.png) | In dark mode, the Bluetooth name example shows how a sample name matches the Plaud family. |
+| Phone 6 | [Welcome](google-play-assets/welcome-light.png) | The GameChangers AI welcome screen introduces personal recorder and camera detection, nearby aircraft, and flight paths. |
 
 ## Internal testing and production
 

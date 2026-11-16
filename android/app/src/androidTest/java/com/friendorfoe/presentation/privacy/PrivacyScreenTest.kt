@@ -1,7 +1,17 @@
 package com.friendorfoe.presentation.privacy
 
 import android.graphics.Bitmap
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.width
 import androidx.compose.material3.Surface
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.test.performSemanticsAction
+import androidx.compose.ui.text.TextLayoutResult
+import androidx.compose.ui.unit.Density
+import androidx.compose.ui.unit.dp
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.onRoot
@@ -18,6 +28,7 @@ import androidx.compose.ui.test.junit4.StateRestorationTester
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.hasAnyAncestor
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.performScrollToNode
@@ -28,11 +39,55 @@ import com.friendorfoe.detection.PrivacyCategory
 import com.friendorfoe.detection.WifiAnomalyDetector
 import com.friendorfoe.detection.WifiScanBatch
 import com.friendorfoe.presentation.theme.FriendOrFoeTheme
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Assert.assertEquals
 import org.junit.Rule
 import org.junit.Test
 
 class PrivacyScreenTest {
+    @Test
+    fun doubleTextSizeKeepsRecorderTabsAndSourcePermissionReadable() {
+        val explanation = "Nearby devices permission is required for phone Bluetooth scanning"
+        val current = PrivacyCurrentState(
+            listOf(health(PrivacySourceKind.PHONE_BLE, SourceHealthState.PERMISSION_BLOCKED,
+                message = explanation, recoveryLabel = "Grant permission")),
+            emptyList(), 0, emptyList(), true,
+        )
+        val focus = mutableStateOf(PrivacyFocus.RECORDERS)
+        compose.setContent {
+            CompositionLocalProvider(LocalDensity provides Density(LocalDensity.current.density, 2f)) {
+                FriendOrFoeTheme {
+                    Box(Modifier.width(320.dp)) {
+                        PrivacyContent(projectPrivacyUiState(current, PrivacyFilterState(focus = focus.value)),
+                            PrivacyActions(onFocusChanged = { focus.value = it }))
+                    }
+                }
+            }
+        }
+        fun checkLayout(label: String, tabTag: String? = null) {
+            val results = mutableListOf<TextLayoutResult>()
+            val match = if (tabTag == null) hasText(label)
+                else hasText(label) and hasAnyAncestor(hasTestTag(tabTag))
+            compose.onNode(match, useUnmergedTree = true)
+                .performSemanticsAction(SemanticsActions.GetTextLayoutResult) { assertTrue(it(results)) }
+            val result = results.single()
+            assertFalse("Clipped: $label", result.hasVisualOverflow)
+            assertEquals("Broken word: $label", 1, result.lineCount)
+        }
+        for (tab in PrivacyFocus.entries) {
+            compose.onNodeWithTag("privacy_focus_${tab.name}").performScrollTo().performClick().assertIsSelected()
+            checkLayout(tab.label, "privacy_focus_${tab.name}")
+        }
+        compose.onNodeWithTag("privacy_content").performScrollToNode(hasText("Phone"))
+        checkLayout("Phone")
+        // The error card repeats the message below the source controls.
+        val results = mutableListOf<TextLayoutResult>()
+        compose.onAllNodesWithText(explanation, useUnmergedTree = true)[0]
+            .performSemanticsAction(SemanticsActions.GetTextLayoutResult) { assertTrue(it(results)) }
+        assertFalse("Permission explanation is truncated", results.single().hasVisualOverflow)
+    }
+
     @Test
     fun wifiAlertShowsSsidAndReasonWithRadioEvidenceInDetails() {
         val inputs = listOf(

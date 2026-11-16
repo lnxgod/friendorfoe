@@ -182,10 +182,10 @@ fun ListViewScreen(
     if (showLocationRationale) {
         AlertDialog(
             onDismissRequest = { showLocationRationale = false },
-            title = { Text("Allow location for nearby distances") },
+            title = { Text("Allow location for Nearby?") },
             text = {
                 Text(
-                    "Location helps show nearby distance and direction. Your aircraft and drone inventory remains available without it.",
+                    "Friend or Foe uses your location to find aircraft within your selected range and show distances to detections.",
                 )
             },
             confirmButton = {
@@ -227,7 +227,7 @@ internal fun ListContent(
 ) {
     var rangeOpen by rememberSaveable { mutableStateOf(false) }
     val headerCount = when (state.body) {
-        ListBodyState.Loading, is ListBodyState.Failed -> null
+        ListBodyState.WaitingForLocation, ListBodyState.Loading, is ListBodyState.Failed -> null
         else -> nearbyListCountLabel(visibleListRows(state.body), state.aircraftRangeMiles)
     }
     Column(modifier = Modifier.fillMaxSize()) {
@@ -273,14 +273,22 @@ internal fun ListContent(
                 label = { Text("Nearest first") }, modifier = Modifier.testTag("sort_nearest"))
         }
 
-        ListLocationRecoveryBanner(
-            permissionState = state.locationPermissionState,
-            settingsLaunchFailed = state.locationSettingsLaunchFailed,
-            onRequestLocation = actions.onRequestLocation,
-            onOpenLocationSettings = actions.onOpenLocationSettings,
-        )
+        if (state.body != ListBodyState.WaitingForLocation) {
+            ListLocationRecoveryBanner(state, actions)
+        }
 
         when (val body = state.body) {
+            ListBodyState.WaitingForLocation -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                if (state.locationPermissionState.isUsableFor(AppFeature.AR_MAP_LOCATION)) {
+                    FofEmptyState(
+                        title = "Waiting for your phone’s location",
+                        detail = "The aircraft feed will start when your phone finds its location. Check that location is turned on in Android settings.",
+                        modifier = Modifier.padding(horizontal = 24.dp),
+                    )
+                } else {
+                    ListLocationRecoveryBanner(state, actions)
+                }
+            }
             ListBodyState.Loading -> FofLoadingState("Loading nearby detections")
             is ListBodyState.Results -> ListRows(
                 rows = body.rows,
@@ -337,18 +345,16 @@ internal fun ListContent(
 
 @Composable
 private fun ListLocationRecoveryBanner(
-    permissionState: PermissionUiState,
-    settingsLaunchFailed: Boolean,
-    onRequestLocation: () -> Unit,
-    onOpenLocationSettings: () -> PermissionSettingsLaunchResult,
+    state: ListUiState,
+    actions: ListActions,
 ) {
-    when (permissionState) {
+    when (state.locationPermissionState) {
         PermissionUiState.Granted,
         PermissionUiState.Approximate,
         -> Unit
 
         PermissionUiState.Loading -> Text(
-            "Checking location access for nearby distances…",
+            "Checking location access…",
             modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -367,14 +373,14 @@ private fun ListLocationRecoveryBanner(
             ) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        "Nearby distances need location",
+                        "Location access is off",
                         style = MaterialTheme.typography.titleSmall,
                     )
                     Text(
-                        if (settingsLaunchFailed) {
+                        if (state.locationSettingsLaunchFailed) {
                             "Android settings could not be opened on this device. Open Friend or Foe from the system Settings app."
                         } else {
-                            "Aircraft and drone inventory remains available without location."
+                            "Allow location to load nearby aircraft and show distances."
                         },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -382,15 +388,15 @@ private fun ListLocationRecoveryBanner(
                 }
                 TextButton(
                     onClick = {
-                        if (permissionState == PermissionUiState.Denied) {
-                            onRequestLocation()
+                        if (state.locationPermissionState == PermissionUiState.Denied) {
+                            actions.onRequestLocation()
                         } else {
-                            onOpenLocationSettings()
+                            actions.onOpenLocationSettings()
                         }
                     },
                 ) {
                     Text(
-                        if (permissionState == PermissionUiState.Denied) "Allow location"
+                        if (state.locationPermissionState == PermissionUiState.Denied) "Allow location"
                         else "Open app settings",
                     )
                 }

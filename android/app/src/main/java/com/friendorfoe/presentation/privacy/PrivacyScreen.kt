@@ -15,6 +15,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -46,6 +47,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.ScrollableTabRow
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
 import androidx.compose.material3.Surface
@@ -62,12 +64,14 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -415,7 +419,8 @@ fun PrivacyContent(
 private fun PrivacyTabs(state: PrivacyUiState, actions: PrivacyActions) {
     val focusManager = LocalFocusManager.current
     val keyboard = LocalSoftwareKeyboardController.current
-    TabRow(selectedTabIndex = PrivacyFocus.entries.indexOf(state.filters.focus)) {
+    val selectedIndex = PrivacyFocus.entries.indexOf(state.filters.focus)
+    val tabs: @Composable () -> Unit = {
         PrivacyFocus.entries.forEach { focus ->
             Tab(selected = state.filters.focus == focus, onClick = {
                 focusManager.clearFocus()
@@ -429,6 +434,24 @@ private fun PrivacyTabs(state: PrivacyUiState, actions: PrivacyActions) {
                         Text((state.focusCounts[focus] ?: 0).toString(), style = MaterialTheme.typography.labelSmall)
                     }
                 })
+        }
+    }
+    val measurer = rememberTextMeasurer()
+    val density = LocalDensity.current
+    val labelStyle = MaterialTheme.typography.labelMedium
+    val countStyle = MaterialTheme.typography.labelSmall
+    BoxWithConstraints {
+        val widestText = PrivacyFocus.entries.maxOf { focus ->
+            maxOf(
+                measurer.measure(focus.label, labelStyle).size.width,
+                measurer.measure((state.focusCounts[focus] ?: 0).toString(), countStyle).size.width,
+            )
+        }
+        // Material text tabs add 16 dp of padding on either side of the label.
+        if (with(density) { widestText.toDp() } + 32.dp > maxWidth / PrivacyFocus.entries.size) {
+            ScrollableTabRow(selectedTabIndex = selectedIndex, edgePadding = 0.dp, tabs = tabs)
+        } else {
+            TabRow(selectedTabIndex = selectedIndex, tabs = tabs)
         }
     }
 }
@@ -540,70 +563,69 @@ private fun PrivacySourceStatusRow(
     actions: PrivacyActions,
 ) {
     val color = sourceHealthColor(summary.state)
-    Row(
-        modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(vertical = 6.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Box(Modifier.size(8.dp).background(color, RoundedCornerShape(4.dp)))
-        Spacer(Modifier.width(10.dp))
-        Text(
-            text = summary.group.label,
-            style = MaterialTheme.typography.labelLarge,
-            fontWeight = FontWeight.SemiBold,
-            modifier = Modifier.width(72.dp),
-        )
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = summary.state.userLabel(),
-                style = MaterialTheme.typography.bodySmall,
-                fontWeight = FontWeight.SemiBold,
-                color = color,
-            )
-            summary.message?.takeIf { it.isNotBlank() }?.let {
-                Text(
-                    text = it,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
+    val action = when {
+        summary.group == PrivacySourceGroup.PHONE &&
+            summary.state == SourceHealthState.PAUSED -> {
+            "Turn on" to actions.onEnablePhoneScan
         }
-        val action = when {
-            summary.group == PrivacySourceGroup.PHONE &&
-                summary.state == SourceHealthState.PAUSED -> {
-                "Turn on" to actions.onEnablePhoneScan
-            }
-            summary.recoveryLabel == "Grant permission" -> {
-                if (permissionFeatureForPrivacySource(summary.recoverySource) == null) {
-                    "Connect badge" to {
-                        actions.onRecoverSource(summary.recoverySource)
-                    }
-                } else {
-                    "Grant access" to {
-                        actions.onResolveSourcePermission(summary.recoverySource)
-                    }
-                }
-            }
-            summary.recoveryLabel == "Turn on Bluetooth" -> {
-                "Turn on Bluetooth" to actions.onTurnOnBluetooth
-            }
-            summary.recoveryLabel == "Fix backend URL" -> {
-                actions.onOpenBackendSettings?.let { "Open Info" to it }
-            }
-            summary.recoveryLabel.isNullOrBlank() -> null
-            else -> {
-                summary.recoveryLabel to {
+        summary.recoveryLabel == "Grant permission" -> {
+            if (permissionFeatureForPrivacySource(summary.recoverySource) == null) {
+                "Connect badge" to {
                     actions.onRecoverSource(summary.recoverySource)
                 }
+            } else {
+                "Grant access" to {
+                    actions.onResolveSourcePermission(summary.recoverySource)
+                }
             }
         }
-        if (action != null) {
-            TextButton(
-                onClick = action.second,
-                modifier = Modifier.heightIn(min = 48.dp),
-            ) {
-                Text(action.first)
+        summary.recoveryLabel == "Turn on Bluetooth" -> {
+            "Turn on Bluetooth" to actions.onTurnOnBluetooth
+        }
+        summary.recoveryLabel == "Fix backend URL" -> {
+            actions.onOpenBackendSettings?.let { "Open Info" to it }
+        }
+        summary.recoveryLabel.isNullOrBlank() -> null
+        else -> {
+            summary.recoveryLabel to {
+                actions.onRecoverSource(summary.recoverySource)
+            }
+        }
+    }
+    BoxWithConstraints(Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(vertical = 6.dp)) {
+        val stacked = maxWidth < 320.dp || LocalDensity.current.fontScale >= 1.4f
+        val sourceLabel: @Composable (Modifier) -> Unit = { modifier ->
+            Row(modifier, verticalAlignment = Alignment.CenterVertically) {
+                Box(Modifier.size(8.dp).background(color, RoundedCornerShape(4.dp)))
+                Spacer(Modifier.width(10.dp))
+                Text(summary.group.label, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
+            }
+        }
+        val status: @Composable () -> Unit = {
+            Text(summary.state.userLabel(), style = MaterialTheme.typography.bodySmall,
+                fontWeight = FontWeight.SemiBold, color = color)
+            summary.message?.takeIf { it.isNotBlank() }?.let {
+                Text(it, style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = if (stacked) Int.MAX_VALUE else 2, overflow = TextOverflow.Ellipsis)
+            }
+        }
+        val recovery: @Composable () -> Unit = {
+            action?.let { (label, onClick) ->
+                TextButton(onClick = onClick, modifier = Modifier.heightIn(min = 48.dp)) { Text(label) }
+            }
+        }
+        if (stacked) {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                sourceLabel(Modifier)
+                status()
+                recovery()
+            }
+        } else {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                sourceLabel(Modifier.width(90.dp))
+                Column(Modifier.weight(1f)) { status() }
+                recovery()
             }
         }
     }

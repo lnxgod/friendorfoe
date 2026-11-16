@@ -18,7 +18,7 @@ fun nearbyFeedPresentation(
     val failure = aircraftEnabled && feed.phase in setOf(AircraftFeedPhase.RECONNECTING, AircraftFeedPhase.OFFLINE)
     val label = when {
         !aircraftEnabled -> "Aircraft feed paused"
-        feed.phase == AircraftFeedPhase.WAITING -> "Waiting for location"
+        feed.phase == AircraftFeedPhase.WAITING -> "Aircraft feed needs location"
         feed.phase == AircraftFeedPhase.CONNECTING -> "Connecting"
         feed.phase == AircraftFeedPhase.LIVE -> "Aircraft live"
         feed.phase == AircraftFeedPhase.RECONNECTING -> "Reconnecting"
@@ -26,11 +26,16 @@ fun nearbyFeedPresentation(
     }
     val detail = if (feed.rateLimited && feed.retryAtMs != null && feed.retryAtMs > nowMs)
         "Retrying in ${(feed.retryAtMs - nowMs + 999) / 1000}s" else age?.let { "Updated ${if (it < 60_000) "${it / 1000}s" else "${it / 60_000}m"} ago" }
-    val resolved = !aircraftEnabled || raw.isNotEmpty() || feed.phase !in setOf(AircraftFeedPhase.WAITING, AircraftFeedPhase.CONNECTING)
-    return NearbyFeedPresentation(label, detail, failure && !feed.rateLimited, reduceListBody(
-        raw, visible, resolved,
-        failure = if (failure) "Aircraft feed unavailable. Local radio detections can still update." else null,
-        cacheAgeMs = age,
-        activeFilterCount = filterCount,
-    ))
+    val body = if (aircraftEnabled && raw.isEmpty() && feed.phase == AircraftFeedPhase.WAITING) {
+        ListBodyState.WaitingForLocation
+    } else {
+        reduceListBody(
+            raw, visible,
+            resolved = !aircraftEnabled || raw.isNotEmpty() || feed.phase != AircraftFeedPhase.CONNECTING,
+            failure = if (failure) "Aircraft feed unavailable. Local radio detections can still update." else null,
+            cacheAgeMs = age,
+            activeFilterCount = filterCount,
+        )
+    }
+    return NearbyFeedPresentation(label, detail, failure && !feed.rateLimited, body)
 }

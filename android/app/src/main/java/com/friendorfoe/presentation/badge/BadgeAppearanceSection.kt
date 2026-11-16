@@ -241,7 +241,7 @@ fun BadgeAppearanceSection(
     onExpandedChange: (Boolean) -> Unit,
     theme: BadgeTheme,
     appliedTheme: BadgeTheme,
-    themeHash: Long,
+    themeHash: Long?,
     profiles: List<BadgeThemeProfile>,
     onThemeChange: (BadgeTheme) -> Unit,
     onCreateProfile: (String, BadgeTheme) -> Boolean,
@@ -328,7 +328,7 @@ fun BadgeAppearanceSection(
                     text = buildString {
                         append(recognizedPreset?.label ?: "Custom")
                         append("  •  ${theme.palette} / ${theme.background} / ${theme.brightness}%")
-                        append("  •  ${hashCode32(themeHash)}")
+                        themeHash?.let { append("  •  ${hashCode32(it)}") }
                     },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
