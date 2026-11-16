@@ -24,7 +24,7 @@ struct LensInspectionView: View {
                 }
                 if camera.phase == .idle {
                     Label("On-device camera", systemImage: "camera.viewfinder").font(.headline)
-                    Button("Start inspection", action: camera.start).buttonStyle(.borderedProminent)
+                    Button("Start inspection", action: camera.start).buttonStyle(.borderedProminent).tint(Color("ActionFill"))
                 } else {
                     if camera.phase == .starting { ProgressView("Starting camera…") }
                     Button("Stop inspection", action: camera.stop)

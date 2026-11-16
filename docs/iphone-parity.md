@@ -2,6 +2,8 @@
 
 The native iPhone app requires iOS 17 or later. It opens to **Privacy → Recorders** after the welcome screen. This comparison uses the Android Google Play candidate `73badb6` as its baseline. “Implemented” refers to code in this repository. Recognition on specific hardware still needs the device checks below. [Android candidate](https://github.com/lnxgod/friendorfoe/tree/73badb6d354f0097afc6602070dce38e530a9d96/android) · [iPhone implementation](../ios/FriendOrFoe/)
 
+**Simulator previews:** [Welcome](screenshots/iphone/welcome-light.jpg) · [Privacy in light mode](screenshots/iphone/privacy-light.jpg) · [Privacy in dark mode](screenshots/iphone/privacy-dark.jpg) · [Offline Plaud example](screenshots/iphone/recorder-example.jpg).
+
 ## What works on iPhone
 
 | Area | Behavior in this build |

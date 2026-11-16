@@ -2,22 +2,22 @@ import XCTest
 @testable import FriendOrFoe
 
 final class MagneticFieldTests: XCTestCase {
-    func testComparisonUsesTotalFieldAndWaitsForHighAccuracy() {
+    func testComparisonUsesTotalFieldAndWaitsForHighAccuracy() throws {
         var sweep = FieldSweepReading()
         sweep.accept(x: 3, y: 4, z: 12, accuracy: .medium)
-        XCTAssertEqual(sweep.magnitude, 13)
+        XCTAssertEqual(try XCTUnwrap(sweep.magnitude), 13, accuracy: 1e-9)
         XCTAssertNil(sweep.baseline)
         sweep.accept(x: -12, y: 3, z: -4, accuracy: .high)
-        XCTAssertEqual(sweep.baseline, 13)
+        XCTAssertEqual(try XCTUnwrap(sweep.baseline), 13, accuracy: 1e-9)
         sweep.accept(x: 0, y: 0, z: -9, accuracy: .high)
-        XCTAssertEqual(sweep.change, -4)
-        XCTAssertEqual(sweep.peakChange, 4)
+        XCTAssertEqual(try XCTUnwrap(sweep.change), -4, accuracy: 1e-9)
+        XCTAssertEqual(sweep.peakChange, 4, accuracy: 1e-9)
         sweep.accept(x: 16, y: 0, z: 0, accuracy: .high)
-        XCTAssertEqual(sweep.change, 3)
-        XCTAssertEqual(sweep.peakChange, 4)
+        XCTAssertEqual(try XCTUnwrap(sweep.change), 3, accuracy: 1e-9)
+        XCTAssertEqual(sweep.peakChange, 4, accuracy: 1e-9)
         sweep.accept(x: 100, y: 0, z: 0, accuracy: .low)
-        XCTAssertEqual(sweep.change, 87)
-        XCTAssertEqual(sweep.peakChange, 4)
+        XCTAssertEqual(try XCTUnwrap(sweep.change), 87, accuracy: 1e-9)
+        XCTAssertEqual(sweep.peakChange, 4, accuracy: 1e-9)
     }
 
     func testUncalibratedAndInvalidSamplesDoNotCreatePeaksOrKeepStaleReadings() {

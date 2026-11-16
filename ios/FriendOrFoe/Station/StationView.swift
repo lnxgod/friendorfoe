@@ -17,7 +17,7 @@ struct StationView: View {
                     Text("Read recorder sightings, Wi-Fi alerts and beacon reports from a Friend or Foe server you use.")
                 } actions: {
                     Button("Add server") { configuring = true }
-                        .buttonStyle(.borderedProminent)
+                        .buttonStyle(.borderedProminent).tint(Color("ActionFill"))
                     badgeDiagnostics
                 }
             } else {

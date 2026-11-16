@@ -56,7 +56,7 @@ struct PrivacyView: View {
                             Button(scanner.scanning || scanner.starting ? "Stop Bluetooth scan" : "Start Bluetooth scan") {
                                 if scanner.scanning || scanner.starting { scanner.stopBluetooth() } else { scanner.startBluetooth() }
                             }
-                            .buttonStyle(.borderedProminent)
+                            .buttonStyle(.borderedProminent).tint(Color("ActionFill"))
                             .accessibilityIdentifier("privacy.scan")
                         }
                     }.padding(.vertical, 4)

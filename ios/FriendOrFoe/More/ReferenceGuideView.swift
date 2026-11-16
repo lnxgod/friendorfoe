@@ -68,6 +68,6 @@ struct ReferenceGuideView: View {
                 }
             }
         }.navigationTitle("Reference guide")
-        .searchable(text: $search, prompt: "Model, manufacturer or type code")
+        .searchable(text: $search, placement: .navigationBarDrawer(displayMode: .always), prompt: "Model, manufacturer or type code")
     }
 }

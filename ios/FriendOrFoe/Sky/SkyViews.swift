@@ -102,7 +102,7 @@ struct SkyMapView: View {
                                 if sky.enabled { SkyStatus(); SkyAttribution() }
                                 else {
                                     Button("Find nearby aircraft") { showSearchConsent = true }
-                                        .buttonStyle(.borderedProminent)
+                                        .buttonStyle(.borderedProminent).tint(Color("ActionFill"))
                                 }
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)

@@ -46,6 +46,8 @@ final class PhoneFlowTests: XCTestCase {
     func testPermissionFreeTabsAndOfflineGuide() {
         let app = launch(appearance: "Dark")
         let tabs = app.tabBars.buttons
+        XCTAssertTrue(app.buttons["privacy.scan"].waitForExistence(timeout: 5))
+        capture("Privacy dark")
         tabs["Nearby"].tap()
         XCTAssertTrue(app.buttons["sky.start"].exists)
         tabs["Map"].tap()
@@ -63,7 +65,6 @@ final class PhoneFlowTests: XCTestCase {
         field.typeText("B738")
         let result = app.buttons.matching(NSPredicate(format: "label CONTAINS[c] 'Boeing 737 NG'")).firstMatch
         XCTAssertTrue(result.waitForExistence(timeout: 4))
-        tabs["Privacy"].tap()
-        capture("Privacy dark")
+
     }
 }

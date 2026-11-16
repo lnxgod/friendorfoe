@@ -2,7 +2,7 @@ import SwiftUI
 
 @main
 struct FriendOrFoeApp: App {
-    @AppStorage("completedWelcome") private var completedWelcome = false
+    @State private var completedWelcome = UserDefaults.standard.bool(forKey: "completedWelcome")
     @AppStorage("appearance") private var appearance = Appearance.system
     @StateObject private var sky = SkyStore()
     @StateObject private var station = StationStore()
@@ -24,7 +24,10 @@ struct FriendOrFoeApp: App {
                             .tabItem { Label("More", systemImage: "ellipsis.circle") }
                     }
                 } else {
-                    WelcomeView { completedWelcome = true }
+                    WelcomeView {
+                        UserDefaults.standard.set(true, forKey: "completedWelcome")
+                        completedWelcome = true
+                    }
                 }
             }
             .environmentObject(sky)
@@ -94,7 +97,7 @@ struct WelcomeView: View {
                     .font(.footnote).foregroundStyle(.secondary)
                 Button(action: getStarted) {
                     Text("Open Privacy").font(.headline).frame(maxWidth: .infinity).padding(.vertical, 6)
-                }.buttonStyle(.borderedProminent).accessibilityIdentifier("openPrivacy")
+                }.buttonStyle(.borderedProminent).tint(Color("ActionFill")).accessibilityIdentifier("openPrivacy")
             }.padding().background(.regularMaterial)
         }
     }
