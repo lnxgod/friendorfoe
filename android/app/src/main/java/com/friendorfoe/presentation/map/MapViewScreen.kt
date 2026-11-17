@@ -45,6 +45,7 @@ import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.unit.dp
@@ -491,7 +492,14 @@ fun MapViewScreen(
                 )
             }
         }
-
+        // Keep attribution attached to the map in its own row: location prompts,
+        // camera controls and large text must not cover the map provider credit.
+        Box(
+            modifier = Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface),
+            contentAlignment = Alignment.CenterEnd,
+        ) {
+            OpenStreetMapCredit()
+        }
     }
 
     // Bottom sheet for detail
@@ -561,5 +569,13 @@ fun MapViewScreen(
                 }
             }
         }
+    }
+}
+
+@Composable
+internal fun OpenStreetMapCredit() {
+    val uri = LocalUriHandler.current
+    TextButton(onClick = { uri.openUri("https://www.openstreetmap.org/copyright") }) {
+        Text("© OpenStreetMap contributors", style = MaterialTheme.typography.labelMedium)
     }
 }
