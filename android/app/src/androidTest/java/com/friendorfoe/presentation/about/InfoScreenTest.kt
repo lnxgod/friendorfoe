@@ -160,7 +160,7 @@ class InfoScreenTest {
         setInfoContent(
             state = state().copy(
                 backendUrlDraft = "not-a-url",
-                backendUrlError = "Enter a complete http:// or https:// URL",
+                backendUrlError = "Enter the final HTTPS address of your sensor server",
                 backendUrlCanSave = false,
                 backendUrlCanTest = false,
             ),
@@ -169,7 +169,7 @@ class InfoScreenTest {
 
         scrollToSection(1)
         compose.onNodeWithTag("backend_save").performScrollTo().assertIsNotEnabled()
-        compose.onNodeWithText("Enter a complete http:// or https:// URL")
+        compose.onNodeWithText("Enter the final HTTPS address of your sensor server")
             .assertIsDisplayed()
         compose.runOnIdle { assertEquals(0, saved) }
     }
@@ -233,7 +233,7 @@ class InfoScreenTest {
 
     @Test
     fun calibrationOnlyNavigatesAfterExactSessionHealth() {
-        val endpoint = BackendEndpoint.parse("http://badge-lab:8000/").getOrThrow()
+        val endpoint = BackendEndpoint.parse("https://badge-lab:8000/").getOrThrow()
         var opened = 0
         setInfoContent(
             state = state().copy(

@@ -2573,6 +2573,8 @@ class BadgeUsbRepository @Inject constructor(
     private val bleGattOperationMutex = Mutex()
     private val investigationLock = Any()
     private val badgeHttpClient = okHttpClient.newBuilder()
+        .followRedirects(false)
+        .followSslRedirects(false)
         .connectTimeout(1200, TimeUnit.MILLISECONDS)
         .readTimeout(1200, TimeUnit.MILLISECONDS)
         .writeTimeout(1200, TimeUnit.MILLISECONDS)

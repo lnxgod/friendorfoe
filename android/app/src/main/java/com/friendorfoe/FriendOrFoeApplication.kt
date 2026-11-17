@@ -6,6 +6,7 @@ import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ProcessLifecycleOwner
 import com.friendorfoe.data.badge.BadgeUsbRepository
+import com.friendorfoe.data.repository.LocalDetectionPermissionUpdates
 import com.friendorfoe.data.repository.SkyObjectRepository
 import com.friendorfoe.presentation.privacy.PrivacyAlertBootstrap
 import dagger.hilt.android.HiltAndroidApp
@@ -17,6 +18,7 @@ class FriendOrFoeApplication : Application(), DefaultLifecycleObserver {
     @Inject lateinit var badgeUsbRepository: BadgeUsbRepository
     @Inject lateinit var privacyAlertBootstrap: PrivacyAlertBootstrap
     @Inject lateinit var watchMode: com.friendorfoe.presentation.watch.WatchModeController
+    @Inject lateinit var privacySensors: LocalDetectionPermissionUpdates
     @Inject lateinit var skyObjectRepository: SkyObjectRepository
 
     override fun onCreate() {
@@ -28,12 +30,14 @@ class FriendOrFoeApplication : Application(), DefaultLifecycleObserver {
 
     override fun onStart(owner: LifecycleOwner) {
         Log.i("FriendOrFoeApp", "App foregrounded — restarting detection sources")
-        skyObjectRepository.ensureStarted(0.0, 0.0)
+        privacySensors.setForeground(true)
+        skyObjectRepository.ensureScannerStarted()
         badgeUsbRepository.start()
     }
 
     override fun onStop(owner: LifecycleOwner) {
         Log.i("FriendOrFoeApp", "App backgrounded — stopping scanning to save battery")
+        privacySensors.setForeground(false)
         if (!watchMode.state.value.active && !watchMode.state.value.starting) skyObjectRepository.stop()
         badgeUsbRepository.stop()
     }

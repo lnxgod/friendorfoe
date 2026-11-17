@@ -33,7 +33,7 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
-private const val BACKEND_URL_ERROR = "Enter a complete http:// or https:// URL"
+private const val BACKEND_URL_ERROR = "Enter the final HTTPS address of your sensor server"
 
 enum class InfoSettingKey {
     ADS_B,

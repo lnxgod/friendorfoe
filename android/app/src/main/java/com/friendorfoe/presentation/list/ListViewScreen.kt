@@ -185,7 +185,7 @@ fun ListViewScreen(
             title = { Text("Allow location for Nearby?") },
             text = {
                 Text(
-                    "Friend or Foe uses your location to find aircraft within your selected range and show distances to detections.",
+                    "When aircraft lookup is on, Friend or Foe sends your location or a surrounding area to aircraft data providers to find nearby flights. It also uses location on your phone to show distances. You can use approximate location.",
                 )
             },
             confirmButton = {

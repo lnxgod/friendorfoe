@@ -1,3 +1,6 @@
+import groovy.json.JsonSlurper
+import java.security.MessageDigest
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
@@ -10,6 +13,37 @@ val badgeDebugBridgeUrl = providers.gradleProperty("badgeDebugBridgeUrl")
 
 fun buildConfigString(value: String): String =
     "\"${value.replace("\\", "\\\\").replace("\"", "\\\"")}\""
+
+// Debug can use the full development catalog. Distributed variants can only
+// include the exact photo bytes in the reviewed, shared rights manifest.
+val photoRights = rootProject.file("reference-rights/verified-photos.json")
+val rightsDocument = JsonSlurper().parseText(providers.fileContents(layout.projectDirectory.file("../reference-rights/verified-photos.json")).asText.get()) as Map<*, *>
+require(rightsDocument["schemaVersion"] == 1) { "Unsupported reference photo manifest" }
+val storePhotoHashes = (rightsDocument["photos"] as List<*>).map { row ->
+    val photo = row as Map<*, *>
+    val path = photo["path"] as String
+    val digest = photo["sha256"] as String
+    require(path.matches(Regex("(aircraft|drones)/[A-Za-z0-9_-]+[.]jpg")) && digest.matches(Regex("[a-f0-9]{64}")))
+    listOf("title", "creator", "license", "changes").forEach { require(!(photo[it] as? String).isNullOrBlank()) }
+    listOf("sourceURL", "licenseURL").forEach { require((photo[it] as String).startsWith("https://")) }
+    path to digest
+}.also { require(it.isNotEmpty() && it.distinctBy { row -> row.first }.size == it.size) }.toMap()
+val storeAssetsDir = layout.buildDirectory.dir("generated/reference-assets")
+val prepareStoreAssets = tasks.register<Sync>("prepareStoreAssets") {
+    into(storeAssetsDir)
+    val originals = layout.projectDirectory.dir("src/main/assets").asFile
+    from(originals) { exclude("aircraft/**", "drones/**") }
+    from(originals) { include(storePhotoHashes.keys) }
+    from(photoRights)
+    inputs.property("approvedPhotoBytes", storePhotoHashes)
+    doFirst {
+        storePhotoHashes.forEach { (path, expected) ->
+            val actual = MessageDigest.getInstance("SHA-256").digest(originals.resolve(path).readBytes())
+                .joinToString("") { "%02x".format(it) }
+            check(actual == expected) { "Review rights for changed reference photo: $path" }
+        }
+    }
+}
 
 ksp {
     arg("room.schemaLocation", "$projectDir/schemas")
@@ -25,6 +59,8 @@ android {
         targetSdk = 36
         versionCode = 140
         versionName = "0.67.32-android-privacy"
+
+        buildConfigField("String", "REFERENCE_PHOTOS", buildConfigString(storePhotoHashes.keys.sorted().joinToString(",")))
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -95,9 +131,16 @@ android {
     }
 
     sourceSets {
+        getByName("main").assets.setSrcDirs(emptyList<String>())
+        getByName("play").assets.srcDir(storeAssetsDir)
+        getByName("release").assets.srcDir(storeAssetsDir)
+        getByName("debug").assets.srcDir("src/main/assets")
+        getByName("debug").assets.srcDir(rootProject.file("reference-rights"))
         getByName("androidTest").assets.srcDir("$projectDir/schemas")
     }
 }
+
+tasks.matching { it.name == "prePlayBuild" || it.name == "preReleaseBuild" }.configureEach { dependsOn(prepareStoreAssets) }
 
 dependencies {
     implementation("com.google.android.play:app-update:2.1.0")

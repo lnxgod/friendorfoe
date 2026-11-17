@@ -4,6 +4,7 @@ import android.annotation.SuppressLint
 import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
+import com.friendorfoe.data.repository.enabledSkyProviders
 import android.os.SystemClock
 import android.util.Log
 import androidx.lifecycle.ViewModel
@@ -150,27 +151,14 @@ class ListViewModel @Inject constructor(
         if (locationStarted.getAndSet(true)) return
 
         try {
-            if (locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
+            val providers = locationManager.enabledSkyProviders()
+            for (provider in providers) {
                 locationManager.requestLocationUpdates(
-                    LocationManager.GPS_PROVIDER,
-                    LOCATION_UPDATE_INTERVAL_MS,
-                    LOCATION_UPDATE_DISTANCE_M,
-                    locationListener
-                )
-            }
-            if (locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)) {
-                locationManager.requestLocationUpdates(
-                    LocationManager.NETWORK_PROVIDER,
-                    LOCATION_UPDATE_INTERVAL_MS,
-                    LOCATION_UPDATE_DISTANCE_M,
-                    locationListener
+                    provider, LOCATION_UPDATE_INTERVAL_MS, LOCATION_UPDATE_DISTANCE_M, locationListener,
                 )
             }
 
-            val lastKnown = listOfNotNull(
-                locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER),
-                locationManager.getLastKnownLocation(LocationManager.NETWORK_PROVIDER),
-            )
+            val lastKnown = providers.mapNotNull(locationManager::getLastKnownLocation)
             val seed = selectListLocationFix(
                 lastKnown.map { it.toListLocationFix() },
                 SystemClock.elapsedRealtimeNanos(),

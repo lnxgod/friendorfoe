@@ -1,6 +1,9 @@
 package com.friendorfoe.presentation.ar
 
 import android.content.Context
+import android.content.pm.PackageManager
+import android.hardware.Sensor
+import android.hardware.SensorManager
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
@@ -39,6 +42,28 @@ internal fun ArServicesDisclosure(onOpenLink: (String) -> Unit) {
 @Composable
 internal fun ArServicesEntry(onUseNearby: () -> Unit, content: @Composable () -> Unit) {
     val context = LocalContext.current
+    val unavailable = remember(context) {
+        val sensors = context.getSystemService(SensorManager::class.java)
+        when {
+            !context.packageManager.hasSystemFeature(PackageManager.FEATURE_CAMERA) ->
+                "The AR view needs a rear camera."
+            sensors == null || (sensors.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR) == null &&
+                sensors.getDefaultSensor(Sensor.TYPE_GAME_ROTATION_VECTOR) == null &&
+                (sensors.getDefaultSensor(Sensor.TYPE_ACCELEROMETER) == null ||
+                    sensors.getDefaultSensor(Sensor.TYPE_MAGNETIC_FIELD) == null)) ->
+                "This device does not have the orientation sensors used by the AR view."
+            else -> null
+        }
+    }
+    if (unavailable != null) {
+        Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(24.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text("AR unavailable", style = MaterialTheme.typography.headlineSmall)
+            Text(unavailable)
+            Button(onClick = onUseNearby) { Text("Use Nearby instead") }
+        }
+        return
+    }
     val prefs = remember(context) { context.getSharedPreferences("ar_notices", Context.MODE_PRIVATE) }
     var acknowledged by remember(prefs) { mutableStateOf(prefs.getBoolean("google_ar_notice_v1", false)) }
     ArServicesEntryContent(

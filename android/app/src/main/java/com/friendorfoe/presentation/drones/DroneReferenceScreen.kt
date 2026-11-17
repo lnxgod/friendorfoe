@@ -48,6 +48,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.friendorfoe.presentation.components.ReferencePhotoCredit
 import com.friendorfoe.presentation.components.ReferenceImage
 import com.friendorfoe.presentation.util.*
 import com.friendorfoe.presentation.util.DroneCategory
@@ -277,6 +278,7 @@ private fun DroneReferenceCard(
                 }
 
                 if (isExpanded) {
+                    if (droneReferencePhotoUrl(drone) != null) ReferencePhotoCredit(drone.photoAsset)
                     Spacer(modifier = Modifier.height(8.dp))
 
                     // Description

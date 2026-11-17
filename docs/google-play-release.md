@@ -64,3 +64,18 @@ Upload the phone screenshots in the numbered order below. Each is a 1080 × 1920
 5. Exercise the signed Play installation and update route using an eligible tester. Verify native compatibility and conduct a physical Bluetooth/Wi-Fi spot check with known broadcasting devices, recording the phone, Android version and device mode. [Android native compatibility](google-play-native.md)
 
 For foreground-service review, show the Nearby Watch explanation, permission choice, explicit Start control, ongoing notification while minimized, and Stop. In the same recording, demonstrate the user-visible consequence of stopping the watch. Describe the location purpose and the providers used. The reviewer should be able to follow those steps from a fresh install. [Foreground service review](https://support.google.com/googleplay/android-developer/answer/13392821)
+
+## Public listing preflight
+
+The proposed [Android privacy policy URL](https://lnxgod.github.io/friendorfoe/privacy-policy.html) returned **HTTP 404** to an anonymous request on 2026-11-17. Do not use it in Play Console until the Pages deployment succeeds. The [publisher contact page](https://gamechangersai.org/about.html) returned HTTP 200. After deployment, run the following from the root of the exact release checkout. Both commands must succeed; the second detects an old page or a generic landing page that happens to return 200.
+
+```sh
+curl --fail --location --silent --show-error https://lnxgod.github.io/friendorfoe/privacy-policy.html --output /tmp/friendorfoe-play-public-policy.html
+cmp android/app/src/main/res/raw/privacy_policy.html /tmp/friendorfoe-play-public-policy.html
+```
+
+For verification territories, use **Play Console → Android developer verification** to confirm the organization and the registration for `com.friendorfoe`. Google automatically registers most Play apps; do not assume this package is already registered. Enforcement began in Brazil, Indonesia, Singapore and Thailand for participating stores on certified Android 8+ devices. [Android developer verification](https://developer.android.com/developer-verification)
+
+The six phone screenshots are examples; the [release reference image list](../android/reference-rights/README.md) is independent of the store screenshots. In a final signed build, confirm that a model without a cleared photo remains searchable and that users can see the credits for a model with a bundled photo.
+
+Before Pages deployment, the publisher can use the [readable GitHub edition](android-privacy-policy.md) at a public commit permalink. Run `python3 scripts/export_policy_markdown.py android --check`. Open the published Markdown file on GitHub and press **Y**; confirm that the full-commit URL displays the Android policy and the publisher contact without signing in. Keep that commit in the release history. If you enter the permalink in Play Console, replace it when the policy changes. Do not substitute a source-code viewer, raw HTML served as plain text, or a private CI artifact.

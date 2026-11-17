@@ -1,5 +1,9 @@
 package com.friendorfoe.presentation.util
 
+import com.friendorfoe.BuildConfig
+
+private val distributedPhotos = BuildConfig.REFERENCE_PHOTOS.split(',').toSet()
+
 /** Visually audited assets withheld until an identifiable replacement is available. */
 internal val rejectedReferenceAssets: Map<String, String> = mapOf(
     "aircraft/A345.jpg" to "Almost black image; unusable as a visual reference",
@@ -90,7 +94,7 @@ private val unavailableAircraftReferences = setOf(
 )
 
 fun bundledReferencePhotoUrl(asset: String?): String? = asset
-    ?.takeIf { it.isNotBlank() && it !in rejectedReferenceAssets }
+    ?.takeIf { it.isNotBlank() && it !in rejectedReferenceAssets && (BuildConfig.DEBUG || it in distributedPhotos) }
     ?.let { "file:///android_asset/$it" }
 
 fun aircraftReferencePhotoUrl(reference: AircraftReference): String? =

@@ -46,20 +46,23 @@
     <!-- High-risk privacy alerts -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
-    <!-- Camera hardware feature -->
-    <uses-feature android:name="android.hardware.camera" android:required="true" />
+    <!-- Camera and microphone are used only by optional inspection tools. -->
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
     <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
+
+    <uses-feature android:name="android.hardware.microphone" android:required="false" />
 
     <!-- ARCore feature - optional so app works on non-AR devices with fallback -->
     <uses-feature android:name="android.hardware.camera.ar" android:required="false" />
 
     <!-- Sensors for orientation -->
-    <uses-feature android:name="android.hardware.sensor.accelerometer" android:required="true" />
-    <uses-feature android:name="android.hardware.sensor.compass" android:required="true" />
+    <uses-feature android:name="android.hardware.sensor.accelerometer" android:required="false" />
+    <uses-feature android:name="android.hardware.sensor.compass" android:required="false" />
     <uses-feature android:name="android.hardware.sensor.gyroscope" android:required="false" />
 
-    <!-- Location hardware -->
-    <uses-feature android:name="android.hardware.location.gps" android:required="true" />
+    <!-- Recorder scanning and the offline guide do not need a GPS receiver. -->
+    <uses-feature android:name="android.hardware.location" android:required="false" />
+    <uses-feature android:name="android.hardware.location.gps" android:required="false" />
 
     <!-- Bluetooth hardware -->
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="false" />

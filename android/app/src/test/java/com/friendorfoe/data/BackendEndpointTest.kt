@@ -8,11 +8,10 @@ import okhttp3.HttpUrl.Companion.toHttpUrl
 
 class BackendEndpointTest {
     @Test
-    fun acceptsHttpAndNormalizesTrailingSlash() {
-        assertEquals(
-            "http://192.168.4.20:8000/",
-            BackendEndpoint.parse("http://192.168.4.20:8000").getOrThrow().baseUrl,
-        )
+    fun rejectsCleartextEvenForUserSuppliedLocalServers() {
+        listOf("http://192.168.4.20:8000", "http://192.168.4.1", "http://backend.example").forEach { url ->
+            assertTrue(BackendEndpoint.parse(url).isFailure)
+        }
     }
 
     @Test

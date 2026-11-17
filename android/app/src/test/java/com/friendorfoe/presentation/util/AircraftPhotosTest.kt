@@ -8,7 +8,7 @@ class AircraftPhotosTest {
     @Test
     fun normalizesExactBundledType() {
         assertEquals(
-            "file:///android_asset/aircraft/B738.jpg",
+            expectedReferenceUrl("aircraft/B738.jpg"),
             getAircraftPhotoUrl(" b738 "),
         )
     }
@@ -16,7 +16,7 @@ class AircraftPhotosTest {
     @Test
     fun databaseAliasUsesItsRepresentativeBundledPhoto() {
         assertEquals(
-            "file:///android_asset/aircraft/B737.jpg",
+            expectedReferenceUrl("aircraft/B737.jpg"),
             getAircraftPhotoUrl("B736"),
         )
     }

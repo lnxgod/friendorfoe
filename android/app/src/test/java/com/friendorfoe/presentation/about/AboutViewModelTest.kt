@@ -33,7 +33,7 @@ class AboutViewModelTest {
 
     @Test
     fun invalidBackendNeverSavesAndChangingTheSavedEndpointClearsSessionEvidence() = runTest {
-        val endpointA = endpoint("http://badge-lab:8000/")
+        val endpointA = endpoint("https://badge-lab:8000/")
         val endpointB = endpoint("https://field-kit.example/")
         val settings = FakeInfoSettingsStore(DetectionSettings.defaults().copy(
             sensorBackendEnabled = true,
@@ -49,7 +49,7 @@ class AboutViewModelTest {
         viewModel.saveBackendUrl()
         advanceUntilIdle()
 
-        assertEquals("Enter a complete http:// or https:// URL", viewModel.uiState.value.backendUrlError)
+        assertEquals("Enter the final HTTPS address of your sensor server", viewModel.uiState.value.backendUrlError)
         assertNull(settings.lastSavedEndpoint)
         assertEquals(SessionHealth.Healthy(endpointA), session.health.value)
 
@@ -92,7 +92,7 @@ class AboutViewModelTest {
 
     @Test
     fun exactHealthySessionEvidenceSurvivesReturningToInfo() = runTest {
-        val configured = endpoint("http://badge-lab:8000/")
+        val configured = endpoint("https://badge-lab:8000/")
         val settings = FakeInfoSettingsStore(DetectionSettings.defaults().copy(
             sensorBackendEnabled = true,
             backendUrl = configured.baseUrl,

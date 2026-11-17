@@ -73,7 +73,7 @@ class BackendPollingGateTest {
         }
 
         runCurrent()
-        settings.value = settings.value.copy(backendUrl = "http://field-kit:8000/")
+        settings.value = settings.value.copy(backendUrl = "https://field-kit:8000/")
         runCurrent()
 
         assertEquals(listOf("clear", "cancel", "clear", "fresh"), events)

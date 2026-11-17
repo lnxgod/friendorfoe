@@ -10,14 +10,33 @@ import kotlinx.coroutines.flow.asStateFlow
 class LocalDetectionPermissionUpdates @Inject constructor(
     private val provider: LocalDetectionPermissionProvider,
 ) {
-    private val _current = MutableStateFlow(provider.current())
+    // A granted OS permission alone must never start a background privacy scanner.
+    private var foreground = false
+    private var watchActive = false
+    private val _current = MutableStateFlow(LocalDetectionPermissions.None)
     val current: StateFlow<LocalDetectionPermissions> = _current.asStateFlow()
 
-    fun publishCurrent() {
-        _current.value = provider.current()
+    @Synchronized
+    fun setForeground(active: Boolean) {
+        foreground = active
+        publishCurrent()
     }
 
+    @Synchronized
+    fun setWatchActive(active: Boolean) {
+        watchActive = active
+        publishCurrent()
+    }
+
+    @Synchronized
+    fun publishCurrent() = publish(provider.current())
+
+    @Synchronized
     internal fun publish(permissions: LocalDetectionPermissions) {
-        _current.value = permissions
+        _current.value = when {
+            foreground -> permissions
+            watchActive -> permissions.copy(audioCapture = false)
+            else -> LocalDetectionPermissions.None
+        }
     }
 }

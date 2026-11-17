@@ -20,6 +20,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.ProcessLifecycleOwner
 import com.friendorfoe.R
 import com.friendorfoe.data.DetectionPrefs
+import com.friendorfoe.data.repository.LocalDetectionPermissionUpdates
 import com.friendorfoe.data.repository.SkyObjectRepository
 import com.friendorfoe.data.repository.validatedLocationAccuracyMeters
 import com.friendorfoe.presentation.MainActivity
@@ -32,6 +33,7 @@ import javax.inject.Inject
 
 @AndroidEntryPoint
 class NearbyWatchService : Service(), LocationListener {
+    @Inject lateinit var privacySensors: LocalDetectionPermissionUpdates
     @Inject lateinit var repository: SkyObjectRepository
     @Inject lateinit var notifier: SkyAlertNotifier
     @Inject lateinit var preferences: DetectionPrefs
@@ -58,6 +60,7 @@ class NearbyWatchService : Service(), LocationListener {
             ServiceCompat.startForeground(this, ID, notification("Waiting for a location fix"), ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION)
             started = true
             controller.started()
+            privacySensors.setWatchActive(true)
             for (provider in listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER)) {
                 if (locationManager.isProviderEnabled(provider) && (provider != LocationManager.GPS_PROVIDER ||
                     ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED)) {
@@ -129,6 +132,7 @@ class NearbyWatchService : Service(), LocationListener {
     }
 
     override fun onDestroy() {
+        privacySensors.setWatchActive(false)
         scope.cancel()
         if (::locationManager.isInitialized) locationManager.removeUpdates(this)
         if (!ProcessLifecycleOwner.get().lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) repository.stop()

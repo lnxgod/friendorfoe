@@ -11,13 +11,13 @@ value class BackendEndpoint private constructor(val baseUrl: String) {
         fun parse(raw: String): Result<BackendEndpoint> = runCatching {
             val trimmed = raw.trim()
             val strict = URI(trimmed)
-            require(strict.scheme == "http" || strict.scheme == "https")
+            require(strict.scheme == "https")
             require(!strict.host.isNullOrBlank())
             require(strict.rawUserInfo == null)
 
             val parsed = trimmed.toHttpUrlOrNull()
-                ?: error("Enter a complete http:// or https:// URL")
-            require(parsed.scheme == "http" || parsed.scheme == "https")
+                ?: error("Enter the final HTTPS address of your sensor server")
+            require(parsed.isHttps)
             require(parsed.host.isNotBlank())
             require(parsed.username.isBlank() && parsed.password.isBlank())
 

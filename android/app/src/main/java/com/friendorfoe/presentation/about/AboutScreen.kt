@@ -661,8 +661,8 @@ private fun BackendEndpointEditor(state: InfoUiState, actions: InfoActions) {
             singleLine = true,
             isError = state.backendUrlError != null,
             textStyle = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
-            supportingText = state.backendUrlError?.let { error ->
-                { Text(error) }
+            supportingText = {
+                Text(state.backendUrlError ?: "Use HTTPS, including on a local network. The stock badge connects separately.")
             },
         )
         Row(
