@@ -1,0 +1,8 @@
+DerivedData/
+xcuserdata/
+*.xcuserstate
+*.xcresult
+*.xcarchive
+*.ipa
+!FriendOrFoe/Assets.xcassets/AppIcon.appiconset/AppIcon.png
+!FriendOrFoe/Assets.xcassets/BrandMark.imageset/Brand.png

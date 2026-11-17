@@ -1,5 +1,7 @@
 # What Friend or Foe could do on iPhone
 
+> **Historical design note.** This review preceded the native iPhone app. See [iPhone coverage and known gaps](iphone-parity.md) for the implemented features, differences from Android and outstanding device checks.
+
 **Recommendation.** Start with a foreground **Privacy → Recorders** scan. Show the device name or service that matched, signal strength, when it was seen, and “Recording status unknown.” Keep the nearby devices, everyday accessories and beacon groups people already know from Android. Distinguish observations made by this iPhone from reports supplied by a scanner. This is a feasibility review as of November 2026. Device coverage still needs measurements on physical iPhones.
 
 | Feature | What an iPhone version could offer |

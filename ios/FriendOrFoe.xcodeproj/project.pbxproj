@@ -1,0 +1,628 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		52292F60A7B1A22A93245D01 /* iphone-privacy.html in Resources */ = {isa = PBXBuildFile; fileRef = 52292F60A7B1A22A93245D00 /* iphone-privacy.html */; };
+		AB825D5E5F77395D4BC4FDCF /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = C0F3550E033EA2B1B0E42D8C /* Foundation.framework */; };
+		B1639F137AF637802C9ECB7B /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = C0F3550E033EA2B1B0E42D8C /* Foundation.framework */; };
+		CC77DEFD3B4336234129B128 /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = C0F3550E033EA2B1B0E42D8C /* Foundation.framework */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		92A75EA38B724BEF6A45E3F6 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 5A98B43DE569D478FBE9FFBA /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 9F260D8EAF95C5666C7655CC;
+			remoteInfo = FriendOrFoe;
+		};
+		97CA6E1E7A2581D7770C0B7C /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 5A98B43DE569D478FBE9FFBA /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 9F260D8EAF95C5666C7655CC;
+			remoteInfo = FriendOrFoe;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		52292F60A7B1A22A93245D00 /* iphone-privacy.html */ = {isa = PBXFileReference; lastKnownFileType = text.html; name = "iphone-privacy.html"; path = "../docs/iphone-privacy.html"; sourceTree = SOURCE_ROOT; };
+		19613F4C6A292BF7BE12D281 /* FriendOrFoeUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = FriendOrFoeUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		657FC1FC57E71429B3BFF8C2 /* FriendOrFoeTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = FriendOrFoeTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		8293617C92E266F6225C1F49 /* FriendOrFoe.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = FriendOrFoe.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		C0F3550E033EA2B1B0E42D8C /* Foundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Foundation.framework; path = System/Library/Frameworks/Foundation.framework; sourceTree = SDKROOT; };
+/* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedRootGroup section */
+		0CAE48247126A24E16B48522 /* FriendOrFoe */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+			);
+			path = FriendOrFoe;
+			sourceTree = "<group>";
+		};
+		5F501F5D04366550F4DF34B8 /* FriendOrFoeTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+			);
+			path = FriendOrFoeTests;
+			sourceTree = "<group>";
+		};
+		FB72790D302EF6A892F8F6A2 /* FriendOrFoeUITests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+			);
+			path = FriendOrFoeUITests;
+			sourceTree = "<group>";
+		};
+/* End PBXFileSystemSynchronizedRootGroup section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		4F868652BFBFE99F0F209BDB /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B1639F137AF637802C9ECB7B /* Foundation.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		86799C26FA78547E3AFA67ED /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				AB825D5E5F77395D4BC4FDCF /* Foundation.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		CF638654655F8A8E250B3C29 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				CC77DEFD3B4336234129B128 /* Foundation.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		42F7A0159F10272AEFCCD3E3 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				4FF1B34F38FA883D9B3F4701 /* iOS */,
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
+		4FF1B34F38FA883D9B3F4701 /* iOS */ = {
+			isa = PBXGroup;
+			children = (
+				C0F3550E033EA2B1B0E42D8C /* Foundation.framework */,
+			);
+			name = iOS;
+			sourceTree = "<group>";
+		};
+		724F852D9181EFB42AF20906 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				8293617C92E266F6225C1F49 /* FriendOrFoe.app */,
+				657FC1FC57E71429B3BFF8C2 /* FriendOrFoeTests.xctest */,
+				19613F4C6A292BF7BE12D281 /* FriendOrFoeUITests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		D0830A4B82A7FCE526E75E74 = {
+			isa = PBXGroup;
+			children = (
+				52292F60A7B1A22A93245D00 /* iphone-privacy.html */,
+				724F852D9181EFB42AF20906 /* Products */,
+				42F7A0159F10272AEFCCD3E3 /* Frameworks */,
+				0CAE48247126A24E16B48522 /* FriendOrFoe */,
+				5F501F5D04366550F4DF34B8 /* FriendOrFoeTests */,
+				FB72790D302EF6A892F8F6A2 /* FriendOrFoeUITests */,
+			);
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		13556FCD57E58C1095B9996F /* FriendOrFoeTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 7708BAF38DF7BB5632128DA7 /* Build configuration list for PBXNativeTarget "FriendOrFoeTests" */;
+			buildPhases = (
+				647C482DC6979754AF6C1911 /* Sources */,
+				86799C26FA78547E3AFA67ED /* Frameworks */,
+				F6BE7F2B96600A6AA7E3E985 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				9323657E1CD7B6073708F23D /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				5F501F5D04366550F4DF34B8 /* FriendOrFoeTests */,
+			);
+			name = FriendOrFoeTests;
+			productName = FriendOrFoeTests;
+			productReference = 657FC1FC57E71429B3BFF8C2 /* FriendOrFoeTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		32C1D74474258FDD63BAB3D1 /* FriendOrFoeUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = B1FB644B3FDDA010A2DB61E8 /* Build configuration list for PBXNativeTarget "FriendOrFoeUITests" */;
+			buildPhases = (
+				2645A1598D5D7C145176E8B7 /* Sources */,
+				CF638654655F8A8E250B3C29 /* Frameworks */,
+				7C9AA90AEA3F912DF6C20133 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				C306541E93D72A95AA24F46E /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				FB72790D302EF6A892F8F6A2 /* FriendOrFoeUITests */,
+			);
+			name = FriendOrFoeUITests;
+			productName = FriendOrFoeUITests;
+			productReference = 19613F4C6A292BF7BE12D281 /* FriendOrFoeUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
+		9F260D8EAF95C5666C7655CC /* FriendOrFoe */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = D537FC61B918EEE306F26C1E /* Build configuration list for PBXNativeTarget "FriendOrFoe" */;
+			buildPhases = (
+				2A229D48A0CF31C501F1CFF9 /* Sources */,
+				4F868652BFBFE99F0F209BDB /* Frameworks */,
+				AA7FAA81B70B0B2785A758D5 /* Resources */,
+				8C787E39E0114AE4B90A25D1 /* Bundle indexed reference photos */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				0CAE48247126A24E16B48522 /* FriendOrFoe */,
+			);
+			name = FriendOrFoe;
+			productName = FriendOrFoe;
+			productReference = 8293617C92E266F6225C1F49 /* FriendOrFoe.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		5A98B43DE569D478FBE9FFBA /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				LastSwiftUpdateCheck = 1600;
+				LastUpgradeCheck = 1600;
+			};
+			buildConfigurationList = F2309B9E9E91E8B236206BB3 /* Build configuration list for PBXProject "FriendOrFoe" */;
+			compatibilityVersion = "Xcode 16.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = D0830A4B82A7FCE526E75E74;
+			minimizedProjectReferenceProxies = 0;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 724F852D9181EFB42AF20906 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				9F260D8EAF95C5666C7655CC /* FriendOrFoe */,
+				13556FCD57E58C1095B9996F /* FriendOrFoeTests */,
+				32C1D74474258FDD63BAB3D1 /* FriendOrFoeUITests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		7C9AA90AEA3F912DF6C20133 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		AA7FAA81B70B0B2785A758D5 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				52292F60A7B1A22A93245D01 /* iphone-privacy.html in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		F6BE7F2B96600A6AA7E3E985 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		8C787E39E0114AE4B90A25D1 /* Bundle indexed reference photos */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = ();
+			inputPaths = (
+				"$(SRCROOT)/Tools/export_reference.py",
+				"$(SRCROOT)/FriendOrFoe/More/ReferenceIndex.json",
+				"$(SRCROOT)/../android/reference-rights/verified-photos.json",
+				"$(SRCROOT)/../android/app/src/main/assets/aircraft",
+				"$(SRCROOT)/../android/app/src/main/assets/drones",
+			);
+			name = "Bundle indexed reference photos";
+			outputFileListPaths = ("$(SRCROOT)/Tools/ReferencePhotoOutputs.xcfilelist");
+			outputPaths = (
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/aircraft",
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/drones",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "exec /usr/bin/python3 -B \"$SCRIPT_INPUT_FILE_0\" --bundle-photos \"$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH\"";
+		};
+/* End PBXShellScriptBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		2645A1598D5D7C145176E8B7 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		2A229D48A0CF31C501F1CFF9 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		647C482DC6979754AF6C1911 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		9323657E1CD7B6073708F23D /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			name = FriendOrFoe;
+			target = 9F260D8EAF95C5666C7655CC /* FriendOrFoe */;
+			targetProxy = 97CA6E1E7A2581D7770C0B7C /* PBXContainerItemProxy */;
+		};
+		C306541E93D72A95AA24F46E /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			name = FriendOrFoe;
+			target = 9F260D8EAF95C5666C7655CC /* FriendOrFoe */;
+			targetProxy = 92A75EA38B724BEF6A45E3F6 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		22E4FE8D7C50D0AFCD7CF078 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CLANG_ENABLE_OBJC_WEAK = NO;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = "Friend or Foe";
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
+				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "Look for nearby recorder and accessory broadcasts when you start a Privacy scan.";
+				INFOPLIST_KEY_NSCameraUsageDescription = "View the scene and highlight bright reflections when you open the lens inspection tool.";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Connect to the scanner station you configure to show its observations.";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Find aircraft near your chosen area or range iBeacons whose identifiers you enter.";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Measure nearby sound levels and high frequencies during a sound check. Audio stays on your iPhone.";
+				INFOPLIST_KEY_NSMotionUsageDescription = "Measure magnetic field strength when you start a sweep. Readings stay on your iPhone.";
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = org.gamechangersai.FriendOrFoe;
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Debug;
+		};
+		4372D72190696ED4A364D8FB /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		4911136A2A99200505AC8E5D /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CLANG_ENABLE_OBJC_WEAK = NO;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = org.gamechangersai.FriendOrFoe.FriendOrFoeTests;
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/FriendOrFoe.app/FriendOrFoe";
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		86042745277A842CA6699780 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CLANG_ENABLE_OBJC_WEAK = NO;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = "Friend or Foe";
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
+				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "Look for nearby recorder and accessory broadcasts when you start a Privacy scan.";
+				INFOPLIST_KEY_NSCameraUsageDescription = "View the scene and highlight bright reflections when you open the lens inspection tool.";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Connect to the scanner station you configure to show its observations.";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Find aircraft near your chosen area or range iBeacons whose identifiers you enter.";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Measure nearby sound levels and high frequencies during a sound check. Audio stays on your iPhone.";
+				INFOPLIST_KEY_NSMotionUsageDescription = "Measure magnetic field strength when you start a sweep. Readings stay on your iPhone.";
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = org.gamechangersai.FriendOrFoe;
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		91AD0DC1F6CB27AD4B5912CF /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		9F91536F16767785056FDA34 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CLANG_ENABLE_OBJC_WEAK = NO;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = org.gamechangersai.FriendOrFoe.FriendOrFoeUITests;
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+				TEST_TARGET_NAME = FriendOrFoe;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		B0F432002CA05650895EDC1E /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CLANG_ENABLE_OBJC_WEAK = NO;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = org.gamechangersai.FriendOrFoe.FriendOrFoeUITests;
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+				TEST_TARGET_NAME = FriendOrFoe;
+			};
+			name = Debug;
+		};
+		CB8B0909E53DCA5697B376A4 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CLANG_ENABLE_OBJC_WEAK = NO;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = org.gamechangersai.FriendOrFoe.FriendOrFoeTests;
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/FriendOrFoe.app/FriendOrFoe";
+			};
+			name = Debug;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		7708BAF38DF7BB5632128DA7 /* Build configuration list for PBXNativeTarget "FriendOrFoeTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				4911136A2A99200505AC8E5D /* Release */,
+				CB8B0909E53DCA5697B376A4 /* Debug */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		B1FB644B3FDDA010A2DB61E8 /* Build configuration list for PBXNativeTarget "FriendOrFoeUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				9F91536F16767785056FDA34 /* Release */,
+				B0F432002CA05650895EDC1E /* Debug */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		D537FC61B918EEE306F26C1E /* Build configuration list for PBXNativeTarget "FriendOrFoe" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				86042745277A842CA6699780 /* Release */,
+				22E4FE8D7C50D0AFCD7CF078 /* Debug */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		F2309B9E9E91E8B236206BB3 /* Build configuration list for PBXProject "FriendOrFoe" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				91AD0DC1F6CB27AD4B5912CF /* Debug */,
+				4372D72190696ED4A364D8FB /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = 5A98B43DE569D478FBE9FFBA /* Project object */;
+}

@@ -29,7 +29,11 @@ part of a multi-node sensor platform.
 
 Open **Privacy → Recorders** to see supported Bluetooth recorder broadcasts first. Use Nearby for other privacy devices, Beacons for grouped iBeacon networks, or All for every observation. Android can recognize these devices only while a distinctive name, service, or supported setup network is visible. The app cannot tell whether audio or video is being recorded. [Recorder coverage and screenshots](docs/personal-ai-recorders.md) · [Google Play release preparation](docs/google-play-release.md)
 
-For a future iPhone edition, see [which features could work on the phone and which need an external scanner](docs/iphone-feasibility.md).
+## iPhone
+
+The native iPhone app opens on **Privacy → Recorders**. Start a Bluetooth scan or try the offline Plaud example without granting permissions. Browse grouped accessories and known iBeacons, explore nearby aircraft, or connect your own scanner station for Wi-Fi findings. Each finding identifies its source. A Bluetooth match tells you a device is advertising, not whether it is recording.
+
+[Build and run the iPhone app](ios/README.md) · [Compare iPhone and Android coverage](docs/iphone-parity.md)
 
 ## What The Badge Does
 
@@ -171,6 +175,7 @@ field console.
 
 | Path | Purpose |
 |------|---------|
+| `ios/` | Native SwiftUI iPhone app, tests and offline guide index |
 | `android/` | Kotlin + Jetpack Compose app, badge console, privacy views, AR/list/map screens |
 | `new-dash/` | Compact macOS USB browser console for full-size or Lite badge; local SQLite history, formation map, and capability-gated controls |
 | `backend/` | FastAPI ingest, enrichment, dashboard, triangulation, calibration, firmware endpoints |
