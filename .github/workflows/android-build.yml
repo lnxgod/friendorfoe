@@ -42,9 +42,11 @@ jobs:
 
       - name: Build and inspect Play bundle
         run: |
-          (cd android && ./gradlew bundlePlay)
+          (cd android && ./gradlew testPlayUnitTest lintPlay bundlePlay)
           python3 scripts/check_android_native_alignment.py android/app/build/outputs/bundle/play/app-play.aab
           python3 scripts/check_android_image_gps.py android/app/build/outputs/bundle/play/app-play.aab
+          python3 scripts/check_android_store_photos.py android/app/build/outputs/bundle/play/app-play.aab
+          python3 scripts/export_policy_markdown.py android --check
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

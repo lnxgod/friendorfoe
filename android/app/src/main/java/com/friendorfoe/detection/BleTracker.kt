@@ -136,8 +136,8 @@ class BleTracker @Inject constructor() {
     // All tracked BLE devices keyed by MAC
     private val trackedDevices = java.util.concurrent.ConcurrentHashMap<String, TrackedDevice>()
 
-    // User location history for movement detection
-    private val userLocations = mutableListOf<UserPoint>()
+    // Only a real location callback can refresh the seed used by radio observations.
+    @Volatile private var latestUserLocation: UserPoint? = null
 
     // Direction finding state
     @Volatile private var directionScanTarget: String? = null
@@ -181,7 +181,10 @@ class BleTracker @Inject constructor() {
         detection: GlassesDetection,
         compassBearing: Float,
     ) {
-        val latestLocation = synchronized(userLocations) { userLocations.lastOrNull() }
+        val latestLocation = latestUserLocation?.takeIf {
+            !it.timestamp.isAfter(detection.lastSeen) &&
+                !it.timestamp.plusSeconds(120).isBefore(detection.lastSeen)
+        }
         recordSightingAt(
             mac = detection.mac,
             rssi = detection.rssi,
@@ -214,13 +217,6 @@ class BleTracker @Inject constructor() {
         isBonded: Boolean = false,
         locationAccuracyMeters: Float = Float.POSITIVE_INFINITY,
     ) {
-        recordUserLocation(
-            latitude = userLat,
-            longitude = userLon,
-            timestamp = timestamp,
-            locationAccuracyMeters = locationAccuracyMeters,
-        )
-
         val sighting = Sighting(
             rssi = rssi,
             userLat = userLat,
@@ -294,26 +290,11 @@ class BleTracker @Inject constructor() {
         locationAccuracyMeters: Float = Float.POSITIVE_INFINITY,
     ) {
         if (!isValidLocation(latitude, longitude)) return
-        synchronized(userLocations) {
-            val last = userLocations.lastOrNull()
-            if (last != null &&
-                Duration.between(last.timestamp, timestamp).seconds < 5 &&
-                distanceMeters(last.latitude, last.longitude, latitude, longitude) < 3.0
-            ) {
-                return
-            }
-            userLocations.add(
-                UserPoint(
-                    latitude = latitude,
-                    longitude = longitude,
-                    timestamp = timestamp,
-                    accuracyMeters = locationAccuracyMeters,
-                ),
-            )
-            // Keep last 5 minutes
-            val cutoff = timestamp.minusSeconds(300)
-            userLocations.removeAll { it.timestamp.isBefore(cutoff) }
-        }
+        latestUserLocation = UserPoint(latitude, longitude, timestamp, locationAccuracyMeters)
+    }
+
+    internal fun clearLocationSeed() {
+        latestUserLocation = null
     }
 
     /**
@@ -527,7 +508,7 @@ class BleTracker @Inject constructor() {
             }
         }
         trackedDevices.clear()
-        synchronized(userLocations) { userLocations.clear() }
+        clearLocationSeed()
         directionScanTarget = null
         synchronized(directionSamples) { directionSamples.clear() }
     }

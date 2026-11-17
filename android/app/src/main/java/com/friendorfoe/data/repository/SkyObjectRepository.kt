@@ -102,11 +102,7 @@ class SkyObjectRepository @Inject constructor(
     @Volatile private var activeLocalPermissions = LocalDetectionPermissions.None
 
     // Track user position for history persistence
-    @Volatile private var userLocationFix = UserLocationFix(
-        latitude = 0.0,
-        longitude = 0.0,
-        accuracyMeters = Float.POSITIVE_INFINITY,
-    )
+    @Volatile private var userLocationFix = UserLocationFix.Unavailable
 
     // Track which objects have already been persisted to avoid duplicate writes
     private val persistedObjectIds: MutableSet<String> = Collections.synchronizedSet(mutableSetOf())
@@ -251,11 +247,6 @@ class SkyObjectRepository @Inject constructor(
         }
         activeLocalPermissions = permissions
         val location = userLocationFix
-        bleTracker.recordUserLocation(
-            latitude = location.latitude,
-            longitude = location.longitude,
-            locationAccuracyMeters = location.accuracyMeters,
-        )
         Log.i(
             TAG,
             "Starting detection session $generation at (${location.latitude}, ${location.longitude})",
@@ -313,7 +304,11 @@ class SkyObjectRepository @Inject constructor(
 
     /** Stop all detection sources. */
     fun stop() {
-        sessionGate.endSession(::stopDetectionSources)
+        sessionGate.endSession {
+            stopDetectionSources()
+            userLocationFix = UserLocationFix.Unavailable
+            bleTracker.clearLocationSeed()
+        }
     }
 
     private fun stopDetectionSources() {
@@ -364,8 +359,8 @@ class SkyObjectRepository @Inject constructor(
             ),
         )
         sessionGate.withGate {
-            userLocationFix = mergeUserLocationFix(userLocationFix, fix)
             if (sessionGate.isActive()) {
+                userLocationFix = fix
                 bleTracker.recordUserLocation(
                     latitude = latitude,
                     longitude = longitude,

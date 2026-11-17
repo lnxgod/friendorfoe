@@ -9,8 +9,8 @@ import org.junit.Test
 class CalibrationEntryGateTest {
     @Test
     fun requiresEnabledBackendAndHealthyCurrentEndpoint() {
-        val endpointA = BackendEndpoint.parse("http://badge-lab:8000").getOrThrow()
-        val endpointB = BackendEndpoint.parse("http://field-kit:8000").getOrThrow()
+        val endpointA = BackendEndpoint.parse("https://badge-lab:8000").getOrThrow()
+        val endpointB = BackendEndpoint.parse("https://field-kit:8000").getOrThrow()
 
         assertFalse(
             calibrationEntryAvailable(

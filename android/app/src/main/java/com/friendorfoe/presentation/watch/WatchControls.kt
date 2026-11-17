@@ -60,7 +60,7 @@ fun WatchControls(viewModel: WatchControlsViewModel = hiltViewModel()) {
         onDismissRequest = { open = false },
         title = { Text("Watch nearby") },
         text = { Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Text("Keep nearby aircraft and permitted local radio sources running with the screen off. Uses location, mobile data, and battery until you stop.")
+            Text("When aircraft lookup is on, Watch sends your location to aircraft data providers to find nearby flights. Watch keeps location and permitted radios active with the screen off until you stop. The microphone is not used in the background.")
             Text(watch.message ?: if (watch.active) "Watching nearby" else "Watch mode is off")
             error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
             if (error != null || watch.message?.startsWith("Couldn't") == true || watch.message?.startsWith("Watch stopped") == true) {

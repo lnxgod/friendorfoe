@@ -4,6 +4,7 @@ import android.annotation.SuppressLint
 import android.bluetooth.BluetoothManager
 import android.location.LocationListener
 import android.location.LocationManager
+import com.friendorfoe.data.repository.enabledSkyProviders
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.net.wifi.WifiManager
@@ -59,13 +60,11 @@ class AndroidCalibrationPlatform @Inject constructor(
 
     @SuppressLint("MissingPermission")
     override fun requestLocationUpdates(listener: LocationListener) {
-        locationManager.requestLocationUpdates(
-            LocationManager.GPS_PROVIDER, 1000L, 0.5f, listener
-        )
-        if (locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)) {
-            locationManager.requestLocationUpdates(
-                LocationManager.NETWORK_PROVIDER, 2000L, 1.0f, listener
-            )
+        val providers = locationManager.enabledSkyProviders()
+        require(providers.isNotEmpty()) { "No enabled location provider" }
+        for (provider in providers) {
+            val gps = provider == LocationManager.GPS_PROVIDER
+            locationManager.requestLocationUpdates(provider, if (gps) 1000L else 2000L, if (gps) 0.5f else 1f, listener)
         }
     }
 

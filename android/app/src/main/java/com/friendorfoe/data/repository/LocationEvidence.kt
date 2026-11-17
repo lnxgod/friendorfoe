@@ -1,14 +1,21 @@
 package com.friendorfoe.data.repository
 
 import android.location.Location
+import android.location.LocationManager
 import com.friendorfoe.domain.model.Position
 import com.friendorfoe.domain.model.SkyObject
+
+/** Use enabled providers this app can access; BLE-only devices need no GPS provider. */
+internal fun LocationManager.enabledSkyProviders(): List<String> =
+    getProviders(true).filter { it == LocationManager.GPS_PROVIDER || it == LocationManager.NETWORK_PROVIDER }
 
 internal data class UserLocationFix(
     val latitude: Double,
     val longitude: Double,
     val accuracyMeters: Float,
-)
+) {
+    companion object { val Unavailable = UserLocationFix(0.0, 0.0, Float.POSITIVE_INFINITY) }
+}
 
 internal fun validatedLocationAccuracyMeters(
     hasAccuracy: Boolean,

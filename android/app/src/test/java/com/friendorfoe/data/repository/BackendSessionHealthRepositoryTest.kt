@@ -28,7 +28,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 class BackendSessionHealthRepositoryTest {
     @Test
     fun concurrentlyStartedChecksSerializeTheirSessionTransition() {
-        val endpointA = BackendEndpoint.parse("http://badge-lab:8000/").getOrThrow()
+        val endpointA = BackendEndpoint.parse("https://badge-lab:8000/").getOrThrow()
         val endpointB = BackendEndpoint.parse("https://field-kit.example/").getOrThrow()
         val scope = BlockingFirstLaunchScope()
         val repository = BackendSessionHealthRepository(
@@ -69,7 +69,7 @@ class BackendSessionHealthRepositoryTest {
 
     @Test
     fun lateResponseFromReplacedEndpointCannotPublish() = runTest {
-        val endpointA = BackendEndpoint.parse("http://badge-lab:8000/").getOrThrow()
+        val endpointA = BackendEndpoint.parse("https://badge-lab:8000/").getOrThrow()
         val endpointB = BackendEndpoint.parse("https://field-kit.example/").getOrThrow()
         var endpointAContinuation: Continuation<BackendHealthResponse>? = null
         val repository = BackendSessionHealthRepository(
@@ -102,7 +102,7 @@ class BackendSessionHealthRepositoryTest {
     @Test
     fun disabledCheckClearsSessionEvidenceWithoutCallingBackend() = runTest {
         var calls = 0
-        val endpoint = BackendEndpoint.parse("http://badge-lab:8000/").getOrThrow()
+        val endpoint = BackendEndpoint.parse("https://badge-lab:8000/").getOrThrow()
         val repository = BackendSessionHealthRepository(
             healthClient = BackendHealthClient {
                 calls += 1

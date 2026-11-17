@@ -12,6 +12,31 @@ import java.time.Instant
 class BleTrackerTest {
 
     @Test
+    fun `privacy broadcasts cannot refresh or carry a location into the next session`() {
+        val tracker = BleTracker()
+        val start = Instant.parse("2026-01-01T12:00:00Z")
+        val detection = GlassesDetection(
+            mac = "02:00:00:00:00:01", deviceName = "Demo", deviceType = "Accessory",
+            manufacturer = "Example", hasCamera = false, rssi = -55, confidence = 0.8f,
+            matchReason = "name", firstSeen = start, lastSeen = start,
+        )
+        fun sample(seconds: Long): BleTracker.Sighting {
+            tracker.recordPrivacyObservation(detection.copy(lastSeen = start.plusSeconds(seconds)), 0f)
+            return tracker.getDevice(detection.mac)!!.sightings.last()
+        }
+
+        tracker.recordUserLocation(37.0, -122.0, start, 4f)
+        assertEquals(4f, sample(100).locationAccuracyMeters)
+        assertTrue(sample(121).locationAccuracyMeters.isInfinite())
+        tracker.recordUserLocation(37.1, -122.1, start.plusSeconds(122), 5f)
+        assertEquals(5f, sample(123).locationAccuracyMeters)
+        tracker.clearLocationSeed()
+        val next = sample(124)
+        assertTrue(next.locationAccuracyMeters.isInfinite())
+        assertEquals(0.0, next.userLat, 0.0)
+    }
+
+    @Test
     fun `old two minute fifty meter profile no longer alerts`() {
         val tracker = BleTracker()
         val start = Instant.parse("2026-07-16T12:00:00Z")

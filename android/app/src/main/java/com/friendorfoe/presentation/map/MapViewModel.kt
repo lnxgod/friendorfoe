@@ -4,6 +4,7 @@ import android.annotation.SuppressLint
 import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
+import com.friendorfoe.data.repository.enabledSkyProviders
 import android.os.SystemClock
 import android.util.Log
 import androidx.lifecycle.ViewModel
@@ -470,11 +471,13 @@ class MapViewModel @Inject constructor(
         override fun onLocationChanged(location: Location) {
             val nowElapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos()
             val candidate = location.toMapLocationFix()
-            _userLocationFix.value = selectFreshestMapLastKnownLocationFix(
+            val selected = selectFreshestMapLastKnownLocationFix(
                 gps = _userLocationFix.value,
                 network = candidate,
                 nowElapsedRealtimeNanos = nowElapsedRealtimeNanos,
             )
+            _userLocationFix.value = selected
+            if (selected != candidate) return
 
             // Ensure scanning is running even if AR was never visited
             val accuracyMeters = location.validatedLocationAccuracyMeters()
@@ -505,26 +508,16 @@ class MapViewModel @Inject constructor(
         if (!locationStarted.compareAndSet(false, true)) return
 
         try {
-            if (locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
+            val providers = locationManager.enabledSkyProviders()
+            for (provider in providers) {
                 locationManager.requestLocationUpdates(
-                    LocationManager.GPS_PROVIDER,
-                    LOCATION_UPDATE_INTERVAL_MS,
-                    LOCATION_UPDATE_DISTANCE_M,
-                    locationListener
-                )
-            }
-            if (locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)) {
-                locationManager.requestLocationUpdates(
-                    LocationManager.NETWORK_PROVIDER,
-                    LOCATION_UPDATE_INTERVAL_MS,
-                    LOCATION_UPDATE_DISTANCE_M,
-                    locationListener
+                    provider, LOCATION_UPDATE_INTERVAL_MS, LOCATION_UPDATE_DISTANCE_M, locationListener,
                 )
             }
 
-            val gpsLastKnown = locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER)
-            val networkLastKnown =
-                locationManager.getLastKnownLocation(LocationManager.NETWORK_PROVIDER)
+            val cached = providers.associateWith(locationManager::getLastKnownLocation)
+            val gpsLastKnown = cached[LocationManager.GPS_PROVIDER]
+            val networkLastKnown = cached[LocationManager.NETWORK_PROVIDER]
             val nowElapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos()
             val lastKnown = selectFreshestMapLastKnownLocationFix(
                 gps = gpsLastKnown?.let { location ->

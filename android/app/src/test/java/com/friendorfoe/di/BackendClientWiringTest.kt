@@ -5,6 +5,7 @@ import com.friendorfoe.data.BackendRequestInterceptor
 import com.friendorfoe.data.SensorBackendDisabledException
 import kotlinx.coroutines.test.runTest
 import okhttp3.logging.HttpLoggingInterceptor
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -18,6 +19,8 @@ class BackendClientWiringTest {
                 configuredUrl = { "https://backend.example/" },
             ),
         )
+        assertFalse(backendClient.followRedirects)
+        assertFalse(backendClient.followSslRedirects)
         val health = InfoModule.provideBackendHealthClient(backendClient)
         val endpoint = BackendEndpoint.parse("https://backend.example/").getOrThrow()
 
