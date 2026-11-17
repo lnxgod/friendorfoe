@@ -1,7 +1,19 @@
+import CoreLocation
 import XCTest
 @testable import FriendOrFoe
 
 final class PrivacyTests: XCTestCase {
+    func testApproximateLocationOffersBeaconSettingsWithoutStartingRanging() {
+        let folder = URL.temporaryDirectory.appending(path: UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let scanner = PhonePrivacyScanner(storageDirectory: folder, makeLocationManager: { ApproximateBeaconLocation() })
+        XCTAssertTrue(scanner.addBeacon(UUID().uuidString))
+        scanner.startBeacons()
+        XCTAssertFalse(scanner.ranging)
+        XCTAssertTrue(scanner.needsLocationSettings)
+        XCTAssertTrue(scanner.beaconStatus.contains("Precise Location"))
+    }
+
     func testRecorderNameBoundariesAcrossAndroidFamilies() {
         let examples = [
             "PLAUDAB12": "Plaud", "NotePin_123": "Plaud", "PLAUD NOTE PRO": "Plaud",
@@ -132,4 +144,9 @@ final class PrivacyTests: XCTestCase {
         XCTAssertNil(seen.values["0"])
         XCTAssertTrue(seen.values["1"]?.contains("ab12") == true)
     }
+}
+
+private final class ApproximateBeaconLocation: CLLocationManager {
+    override var authorizationStatus: CLAuthorizationStatus { .authorizedWhenInUse }
+    override var accuracyAuthorization: CLAccuracyAuthorization { .reducedAccuracy }
 }

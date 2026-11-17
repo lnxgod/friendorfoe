@@ -1,5 +1,14 @@
 import SwiftUI
 
+struct PhotoCredit: Decodable {
+    let title: String
+    let creator: String
+    let license: String
+    let licenseURL: URL
+    let sourceURL: URL
+    let changes: String
+}
+
 struct ReferenceEntry: Decodable, Identifiable {
     let id: String
     let kind: String
@@ -8,6 +17,7 @@ struct ReferenceEntry: Decodable, Identifiable {
     let group: String
     let codes: [String]?
     let photo: String?
+    let credit: PhotoCredit?
 
     var photoURL: URL? {
         guard let photo else { return nil }
@@ -45,11 +55,15 @@ struct ReferenceGuideView: View {
                     ForEach(entries) { item in
                         NavigationLink {
                             List {
-                                if let url = item.photoURL, let image = UIImage(contentsOfFile: url.path) {
+                                if let credit = item.credit, let url = item.photoURL, let image = UIImage(contentsOfFile: url.path) {
                                     Section {
                                         Image(uiImage: image).resizable().scaledToFit().frame(maxWidth: .infinity)
-                                    } footer: {
-                                        Text(item.photo == "drones/shahed_136.jpg" ? "Reference illustration" : "Reference photo")
+                                            .accessibilityLabel(credit.title)
+                                        Text(credit.title).font(.headline)
+                                        LabeledContent("Creator", value: credit.creator)
+                                        Link(credit.license, destination: credit.licenseURL)
+                                        Link("Image source", destination: credit.sourceURL)
+                                        if !credit.changes.isEmpty { Text(credit.changes).font(.footnote) }
                                     }
                                 }
                                 LabeledContent("Manufacturer", value: item.manufacturer)

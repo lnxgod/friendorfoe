@@ -1,4 +1,5 @@
 import SwiftUI
+import WebKit
 
 struct MoreView: View {
     @AppStorage("appearance") private var appearance = Appearance.system
@@ -43,7 +44,7 @@ private struct PhoneCoverageView: View {
         List {
             Section("On this iPhone") {
                 Text("A foreground Bluetooth scan can recognize some recorders and accessories by a name, service or other broadcast evidence. Devices can go silent or change names. Recording status stays unknown.")
-                Text("For iBeacons, enter a known network identifier in Privacy. Unknown beacon UUIDs are only available through a connected station.")
+                Text("For iBeacons, enter a known network identifier in Privacy and enable Precise Location for ranging. Unknown beacon UUIDs are only available through a connected station.")
             }
             Section("With a scanner station") {
                 Text("A station can report nearby Wi-Fi networks, including the name and the reason a network was flagged. iOS does not give ordinary apps a list of surrounding Wi-Fi networks. Station results belong to that station’s location.")
@@ -62,6 +63,14 @@ private struct PrivacyPolicyView: View {
     var body: some View {
         List {
             Section("GameChangers AI") {
+                NavigationLink("Read full privacy policy") {
+                    if let file = Bundle.main.url(forResource: "iphone-privacy", withExtension: "html") {
+                        OfflinePrivacyDocument(file: file).navigationTitle("Privacy policy")
+                            .navigationBarTitleDisplayMode(.inline)
+                    } else {
+                        ContentUnavailableView("Privacy policy unavailable", systemImage: "doc.text")
+                    }
+                }
                 Text("Friend or Foe for iPhone works without an account. It includes no advertising or analytics SDK. Permissions are requested when you use the corresponding feature.")
             }
             Section("Radio observations") {
@@ -79,5 +88,36 @@ private struct PrivacyPolicyView: View {
                 Link("Contact GameChangers AI", destination: URL(string: "https://gamechangersai.org/about.html")!)
             }
         }.navigationTitle("Privacy & data")
+    }
+}
+
+private struct OfflinePrivacyDocument: UIViewRepresentable {
+    let file: URL
+
+    func makeCoordinator() -> Links { Links(file: file) }
+
+    func makeUIView(context: Context) -> WKWebView {
+        let config = WKWebViewConfiguration()
+        config.websiteDataStore = .nonPersistent()
+        config.defaultWebpagePreferences.allowsContentJavaScript = false
+        let web = WKWebView(frame: .zero, configuration: config)
+        web.navigationDelegate = context.coordinator
+        web.loadFileURL(file, allowingReadAccessTo: file)
+        return web
+    }
+
+    func updateUIView(_ web: WKWebView, context: Context) {}
+
+    final class Links: NSObject, WKNavigationDelegate {
+        let file: URL
+        init(file: URL) { self.file = file }
+        func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction) async -> WKNavigationActionPolicy {
+            guard let url = action.request.url else { return .cancel }
+            if url == file { return .allow }
+            if action.navigationType == .linkActivated && url.scheme == "https" {
+                await UIApplication.shared.open(url)
+            }
+            return .cancel
+        }
     }
 }

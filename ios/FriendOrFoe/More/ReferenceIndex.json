@@ -19,8 +19,7 @@
       "A220",
       "BCS1",
       "BCS3"
-    ],
-    "photo": "aircraft/A220.jpg"
+    ]
   },
   {
     "id": "Aircraft/a300_a310",
@@ -32,8 +31,7 @@
       "A306",
       "A30B",
       "A310"
-    ],
-    "photo": "aircraft/A306.jpg"
+    ]
   },
   {
     "id": "Aircraft/a318",
@@ -43,8 +41,7 @@
     "group": "Narrowbody",
     "codes": [
       "A318"
-    ],
-    "photo": "aircraft/A318.jpg"
+    ]
   },
   {
     "id": "Aircraft/a319",
@@ -54,8 +51,7 @@
     "group": "Narrowbody",
     "codes": [
       "A319"
-    ],
-    "photo": "aircraft/A319.jpg"
+    ]
   },
   {
     "id": "Aircraft/a320",
@@ -65,8 +61,7 @@
     "group": "Narrowbody",
     "codes": [
       "A320"
-    ],
-    "photo": "aircraft/A320.jpg"
+    ]
   },
   {
     "id": "Aircraft/a320neo",
@@ -76,8 +71,7 @@
     "group": "Narrowbody",
     "codes": [
       "A20N"
-    ],
-    "photo": "aircraft/A20N.jpg"
+    ]
   },
   {
     "id": "Aircraft/a321",
@@ -87,8 +81,7 @@
     "group": "Narrowbody",
     "codes": [
       "A321"
-    ],
-    "photo": "aircraft/A321.jpg"
+    ]
   },
   {
     "id": "Aircraft/a321neo",
@@ -98,8 +91,7 @@
     "group": "Narrowbody",
     "codes": [
       "A21N"
-    ],
-    "photo": "aircraft/A21N.jpg"
+    ]
   },
   {
     "id": "Aircraft/a330",
@@ -111,7 +103,15 @@
       "A332",
       "A333"
     ],
-    "photo": "aircraft/A332.jpg"
+    "photo": "aircraft/A332.jpg",
+    "credit": {
+      "title": "Bmi.a330-200.g-wwbb.arp",
+      "creator": "Adrian Pingstone",
+      "license": "Public domain",
+      "licenseURL": "https://commons.wikimedia.org/wiki/File:Bmi.a330-200.g-wwbb.arp.jpg#Licensing",
+      "sourceURL": "https://commons.wikimedia.org/wiki/File:Bmi.a330-200.g-wwbb.arp.jpg",
+      "changes": "Packaged as a reference image. It may be resized, recompressed or stripped of metadata."
+    }
   },
   {
     "id": "Aircraft/a330neo",
@@ -121,8 +121,7 @@
     "group": "Widebody",
     "codes": [
       "A339"
-    ],
-    "photo": "aircraft/A339.jpg"
+    ]
   },
   {
     "id": "Aircraft/a340",
@@ -135,8 +134,7 @@
       "A343",
       "A345",
       "A346"
-    ],
-    "photo": "aircraft/A343.jpg"
+    ]
   },
   {
     "id": "Aircraft/a350",
@@ -147,8 +145,7 @@
     "codes": [
       "A359",
       "A35K"
-    ],
-    "photo": "aircraft/A359.jpg"
+    ]
   },
   {
     "id": "Aircraft/a380",
@@ -158,8 +155,7 @@
     "group": "Widebody",
     "codes": [
       "A388"
-    ],
-    "photo": "aircraft/A388.jpg"
+    ]
   },
   {
     "id": "Aircraft/a400m",
@@ -170,8 +166,7 @@
     "codes": [
       "A400",
       "A400M"
-    ],
-    "photo": "aircraft/A400.jpg"
+    ]
   },
   {
     "id": "Aircraft/as32",
@@ -192,8 +187,7 @@
     "codes": [
       "C295",
       "C295W"
-    ],
-    "photo": "aircraft/C295.jpg"
+    ]
   },
   {
     "id": "Aircraft/ec55",
@@ -213,8 +207,7 @@
     "group": "Helicopter",
     "codes": [
       "AS50"
-    ],
-    "photo": "aircraft/AS50.jpg"
+    ]
   },
   {
     "id": "Aircraft/ec130",
@@ -224,8 +217,7 @@
     "group": "Helicopter",
     "codes": [
       "EC30"
-    ],
-    "photo": "aircraft/EC30.jpg"
+    ]
   },
   {
     "id": "Aircraft/ec135",
@@ -245,8 +237,7 @@
     "group": "Helicopter",
     "codes": [
       "EC45"
-    ],
-    "photo": "aircraft/EC45.jpg"
+    ]
   },
   {
     "id": "Aircraft/bk117",
@@ -256,8 +247,7 @@
     "group": "Helicopter",
     "codes": [
       "BK17"
-    ],
-    "photo": "aircraft/BK17.jpg"
+    ]
   },
   {
     "id": "Aircraft/an124",
@@ -267,8 +257,7 @@
     "group": "Cargo / Transport",
     "codes": [
       "AN124"
-    ],
-    "photo": "aircraft/AN124.jpg"
+    ]
   },
   {
     "id": "Aircraft/an72",
@@ -288,8 +277,7 @@
     "group": "Turboprop",
     "codes": [
       "AT43"
-    ],
-    "photo": "aircraft/AT43.jpg"
+    ]
   },
   {
     "id": "Aircraft/atr72",
@@ -300,8 +288,7 @@
     "codes": [
       "AT72",
       "AT76"
-    ],
-    "photo": "aircraft/AT72.jpg"
+    ]
   },
   {
     "id": "Aircraft/bae146",
@@ -312,8 +299,7 @@
     "codes": [
       "RJ85",
       "RJ1H"
-    ],
-    "photo": "aircraft/RJ85.jpg"
+    ]
   },
   {
     "id": "Aircraft/beechjet400",
@@ -323,8 +309,7 @@
     "group": "Business Jet",
     "codes": [
       "BE40"
-    ],
-    "photo": "aircraft/BE40.jpg"
+    ]
   },
   {
     "id": "Aircraft/baron",
@@ -335,8 +320,7 @@
     "codes": [
       "BE55",
       "BE58"
-    ],
-    "photo": "aircraft/BE58.jpg"
+    ]
   },
   {
     "id": "Aircraft/bonanza",
@@ -346,8 +330,7 @@
     "group": "Light Aircraft",
     "codes": [
       "BE36"
-    ],
-    "photo": "aircraft/BE36.jpg"
+    ]
   },
   {
     "id": "Aircraft/c12",
@@ -357,8 +340,7 @@
     "group": "Fighter / Military",
     "codes": [
       "C12"
-    ],
-    "photo": "aircraft/C12.jpg"
+    ]
   },
   {
     "id": "Aircraft/be76",
@@ -368,8 +350,7 @@
     "group": "Light Aircraft",
     "codes": [
       "BE76"
-    ],
-    "photo": "aircraft/BE76.jpg"
+    ]
   },
   {
     "id": "Aircraft/king_air",
@@ -386,8 +367,7 @@
       "BE9L",
       "BE99",
       "B190"
-    ],
-    "photo": "aircraft/BE20.jpg"
+    ]
   },
   {
     "id": "Aircraft/t6",
@@ -398,7 +378,15 @@
     "codes": [
       "T6"
     ],
-    "photo": "aircraft/T6.jpg"
+    "photo": "aircraft/T6.jpg",
+    "credit": {
+      "title": "U.S. Navy T-6B Texans in a 4-ship formation over a military operations area in Southern Texas",
+      "creator": "Master Sgt. Christopher Boitz",
+      "license": "Public domain",
+      "licenseURL": "https://commons.wikimedia.org/wiki/File:U.S._Navy_T-6B_Texans_in_a_4-ship_formation_over_a_military_operations_area_in_Southern_Texas.jpg#Licensing",
+      "sourceURL": "https://commons.wikimedia.org/wiki/File:U.S._Navy_T-6B_Texans_in_a_4-ship_formation_over_a_military_operations_area_in_Southern_Texas.jpg",
+      "changes": "Packaged as a reference image. It may be resized, recompressed or stripped of metadata."
+    }
   },
   {
     "id": "Aircraft/bell206",
@@ -408,8 +396,7 @@
     "group": "Helicopter",
     "codes": [
       "B06"
-    ],
-    "photo": "aircraft/B06.jpg"
+    ]
   },
   {
     "id": "Aircraft/bell407",
@@ -419,8 +406,7 @@
     "group": "Helicopter",
     "codes": [
       "B407"
-    ],
-    "photo": "aircraft/B407.jpg"
+    ]
   },
   {
     "id": "Aircraft/b412",
@@ -440,8 +426,7 @@
     "group": "Helicopter",
     "codes": [
       "B429"
-    ],
-    "photo": "aircraft/B429.jpg"
+    ]
   },
   {
     "id": "Aircraft/b505",
@@ -473,8 +458,7 @@
       "V22",
       "MV22",
       "CV22"
-    ],
-    "photo": "aircraft/V22.jpg"
+    ]
   },
   {
     "id": "Aircraft/uh1",
@@ -484,8 +468,7 @@
     "group": "Helicopter",
     "codes": [
       "UH1"
-    ],
-    "photo": "aircraft/UH1.jpg"
+    ]
   },
   {
     "id": "Aircraft/b707",
@@ -495,8 +478,7 @@
     "group": "Narrowbody",
     "codes": [
       "B703"
-    ],
-    "photo": "aircraft/B703.jpg"
+    ]
   },
   {
     "id": "Aircraft/b717",
@@ -506,8 +488,7 @@
     "group": "Narrowbody",
     "codes": [
       "B712"
-    ],
-    "photo": "aircraft/B712.jpg"
+    ]
   },
   {
     "id": "Aircraft/b737_classic",
@@ -518,8 +499,7 @@
     "codes": [
       "B734",
       "B735"
-    ],
-    "photo": "aircraft/B734.jpg"
+    ]
   },
   {
     "id": "Aircraft/b737_max",
@@ -530,8 +510,7 @@
     "codes": [
       "B38M",
       "B39M"
-    ],
-    "photo": "aircraft/B38M.jpg"
+    ]
   },
   {
     "id": "Aircraft/b37m",
@@ -541,8 +520,7 @@
     "group": "Narrowbody",
     "codes": [
       "B37M"
-    ],
-    "photo": "aircraft/B38M.jpg"
+    ]
   },
   {
     "id": "Aircraft/b737_ng",
@@ -554,8 +532,7 @@
       "B737",
       "B738",
       "B739"
-    ],
-    "photo": "aircraft/B738.jpg"
+    ]
   },
   {
     "id": "Aircraft/b736",
@@ -565,8 +542,7 @@
     "group": "Narrowbody",
     "codes": [
       "B736"
-    ],
-    "photo": "aircraft/B737.jpg"
+    ]
   },
   {
     "id": "Aircraft/b747",
@@ -577,8 +553,7 @@
     "codes": [
       "B744",
       "B748"
-    ],
-    "photo": "aircraft/B744.jpg"
+    ]
   },
   {
     "id": "Aircraft/b757",
@@ -589,8 +564,7 @@
     "codes": [
       "B752",
       "B753"
-    ],
-    "photo": "aircraft/B752.jpg"
+    ]
   },
   {
     "id": "Aircraft/b767",
@@ -601,8 +575,7 @@
     "codes": [
       "B763",
       "B764"
-    ],
-    "photo": "aircraft/B763.jpg"
+    ]
   },
   {
     "id": "Aircraft/b77f",
@@ -612,8 +585,7 @@
     "group": "Cargo / Transport",
     "codes": [
       "B77F"
-    ],
-    "photo": "aircraft/B77W.jpg"
+    ]
   },
   {
     "id": "Aircraft/b777",
@@ -625,8 +597,7 @@
       "B772",
       "B77W",
       "B77L"
-    ],
-    "photo": "aircraft/B77W.jpg"
+    ]
   },
   {
     "id": "Aircraft/b787",
@@ -638,8 +609,7 @@
       "B788",
       "B789",
       "B78X"
-    ],
-    "photo": "aircraft/B788.jpg"
+    ]
   },
   {
     "id": "Aircraft/ah64",
@@ -649,8 +619,7 @@
     "group": "Helicopter",
     "codes": [
       "AH64"
-    ],
-    "photo": "aircraft/AH64.jpg"
+    ]
   },
   {
     "id": "Aircraft/b52",
@@ -661,7 +630,15 @@
     "codes": [
       "B52"
     ],
-    "photo": "aircraft/B52.jpg"
+    "photo": "aircraft/B52.jpg",
+    "credit": {
+      "title": "A Boeing B-52H Stratofortress in flight over the Persian Gulf (190521-F-XN348-9173)",
+      "creator": "Senior Airman Keifer Bowes",
+      "license": "Public domain",
+      "licenseURL": "https://commons.wikimedia.org/wiki/File:A_Boeing_B-52H_Stratofortress_in_flight_over_the_Persian_Gulf_(190521-F-XN348-9173).jpg#Licensing",
+      "sourceURL": "https://commons.wikimedia.org/wiki/File:A_Boeing_B-52H_Stratofortress_in_flight_over_the_Persian_Gulf_(190521-F-XN348-9173).jpg",
+      "changes": "Packaged as a reference image. It may be resized, recompressed or stripped of metadata."
+    }
   },
   {
     "id": "Aircraft/b52h",
@@ -672,7 +649,15 @@
     "codes": [
       "B52H"
     ],
-    "photo": "aircraft/B52.jpg"
+    "photo": "aircraft/B52.jpg",
+    "credit": {
+      "title": "A Boeing B-52H Stratofortress in flight over the Persian Gulf (190521-F-XN348-9173)",
+      "creator": "Senior Airman Keifer Bowes",
+      "license": "Public domain",
+      "licenseURL": "https://commons.wikimedia.org/wiki/File:A_Boeing_B-52H_Stratofortress_in_flight_over_the_Persian_Gulf_(190521-F-XN348-9173).jpg#Licensing",
+      "sourceURL": "https://commons.wikimedia.org/wiki/File:A_Boeing_B-52H_Stratofortress_in_flight_over_the_Persian_Gulf_(190521-F-XN348-9173).jpg",
+      "changes": "Packaged as a reference image. It may be resized, recompressed or stripped of metadata."
+    }
   },
   {
     "id": "Aircraft/c17",
@@ -683,8 +668,7 @@
     "codes": [
       "C17",
       "C17A"
-    ],
-    "photo": "aircraft/C17.jpg"
+    ]
   },
   {
     "id": "Aircraft/ch46",
@@ -694,8 +678,7 @@
     "group": "Helicopter",
     "codes": [
       "CH46"
-    ],
-    "photo": "aircraft/CH46.jpg"
+    ]
   },
   {
     "id": "Aircraft/ch47",
@@ -706,8 +689,7 @@
     "codes": [
       "CH47",
       "H47"
-    ],
-    "photo": "aircraft/CH47.jpg"
+    ]
   },
   {
     "id": "Aircraft/e3",
@@ -717,8 +699,7 @@
     "group": "Fighter / Military",
     "codes": [
       "E3CF"
-    ],
-    "photo": "aircraft/E3CF.jpg"
+    ]
   },
   {
     "id": "Aircraft/e6b",
@@ -728,8 +709,7 @@
     "group": "Fighter / Military",
     "codes": [
       "E6B"
-    ],
-    "photo": "aircraft/E6B.jpg"
+    ]
   },
   {
     "id": "Aircraft/fa18",
@@ -742,7 +722,15 @@
       "FA18",
       "EA18"
     ],
-    "photo": "aircraft/F18.jpg"
+    "photo": "aircraft/F18.jpg",
+    "credit": {
+      "title": "011218-N-9769P-047 F-A-18 With Weapons Ready for Mission",
+      "creator": "U.S. Navy photo by Photographer's Mate 3rd Class Jayme Pastoric.",
+      "license": "Public domain",
+      "licenseURL": "https://commons.wikimedia.org/wiki/File:011218-N-9769P-047_F-A-18_With_Weapons_Ready_for_Mission.jpg#Licensing",
+      "sourceURL": "https://commons.wikimedia.org/wiki/File:011218-N-9769P-047_F-A-18_With_Weapons_Ready_for_Mission.jpg",
+      "changes": "Packaged as a reference image. It may be resized, recompressed or stripped of metadata."
+    }
   },
   {
     "id": "Aircraft/kc135",
@@ -752,8 +740,7 @@
     "group": "Fighter / Military",
     "codes": [
       "KC135"
-    ],
-    "photo": "aircraft/KC135.jpg"
+    ]
   },
   {
     "id": "Aircraft/kc46",
@@ -763,8 +750,7 @@
     "group": "Fighter / Military",
     "codes": [
       "KC46"
-    ],
-    "photo": "aircraft/KC46.jpg"
+    ]
   },
   {
     "id": "Aircraft/p8",
@@ -775,8 +761,7 @@
     "codes": [
       "P8",
       "P8A"
-    ],
-    "photo": "aircraft/P8.jpg"
+    ]
   },
   {
     "id": "Aircraft/t45",
@@ -786,8 +771,7 @@
     "group": "Trainer",
     "codes": [
       "T45"
-    ],
-    "photo": "aircraft/T45.jpg"
+    ]
   },
   {
     "id": "Aircraft/challenger",
@@ -799,8 +783,7 @@
       "CL30",
       "CL35",
       "CL60"
-    ],
-    "photo": "aircraft/CL35.jpg"
+    ]
   },
   {
     "id": "Aircraft/crj200",
@@ -810,8 +793,7 @@
     "group": "Regional Jet",
     "codes": [
       "CRJ2"
-    ],
-    "photo": "aircraft/CRJ2.jpg"
+    ]
   },
   {
     "id": "Aircraft/crj700_900",
@@ -823,8 +805,7 @@
       "CRJ7",
       "CRJ9",
       "CRJX"
-    ],
-    "photo": "aircraft/CRJ9.jpg"
+    ]
   },
   {
     "id": "Aircraft/jf17",
@@ -834,8 +815,7 @@
     "group": "Fighter / Military",
     "codes": [
       "JF17"
-    ],
-    "photo": "aircraft/JF17.jpg"
+    ]
   },
   {
     "id": "Aircraft/c150",
@@ -846,7 +826,15 @@
     "codes": [
       "C150"
     ],
-    "photo": "aircraft/C150.jpg"
+    "photo": "aircraft/C150.jpg",
+    "credit": {
+      "title": "NASW Cessna 150",
+      "creator": "Smallbones",
+      "license": "CC0",
+      "licenseURL": "https://creativecommons.org/publicdomain/zero/1.0/",
+      "sourceURL": "https://commons.wikimedia.org/wiki/File:NASW_Cessna_150.jpg",
+      "changes": "Packaged as a reference image. It may be resized, recompressed or stripped of metadata."
+    }
   },
   {
     "id": "Aircraft/c152",
@@ -856,8 +844,7 @@
     "group": "Light Aircraft",
     "codes": [
       "C152"
-    ],
-    "photo": "aircraft/C152.jpg"
+    ]
   },
   {
     "id": "Aircraft/c172",
@@ -867,8 +854,7 @@
     "group": "Light Aircraft",
     "codes": [
       "C172"
-    ],
-    "photo": "aircraft/C172.jpg"
+    ]
   },
   {
     "id": "Aircraft/c182",
@@ -878,8 +864,7 @@
     "group": "Light Aircraft",
     "codes": [
       "C182"
-    ],
-    "photo": "aircraft/C182.jpg"
+    ]
   },
   {
     "id": "Aircraft/c206",
@@ -889,8 +874,7 @@
     "group": "Light Aircraft",
     "codes": [
       "C206"
-    ],
-    "photo": "aircraft/C206.jpg"
+    ]
   },
   {
     "id": "Aircraft/c208",
@@ -900,8 +884,7 @@
     "group": "Turboprop",
     "codes": [
       "C208"
-    ],
-    "photo": "aircraft/C208.jpg"
+    ]
   },
   {
     "id": "Aircraft/c210",
@@ -912,7 +895,15 @@
     "codes": [
       "C210"
     ],
-    "photo": "aircraft/C210.jpg"
+    "photo": "aircraft/C210.jpg",
+    "credit": {
+      "title": "Cessna.210.centurion.d-ebws.arp",
+      "creator": "Arpingstone",
+      "license": "Public domain",
+      "licenseURL": "https://commons.wikimedia.org/wiki/File:Cessna.210.centurion.d-ebws.arp.jpg#Licensing",
+      "sourceURL": "https://commons.wikimedia.org/wiki/File:Cessna.210.centurion.d-ebws.arp.jpg",
+      "changes": "Packaged as a reference image. It may be resized, recompressed or stripped of metadata."
+    }
   },
   {
     "id": "Aircraft/c310",
@@ -922,8 +913,7 @@
     "group": "Light Aircraft",
     "codes": [
       "C310"
-    ],
-    "photo": "aircraft/C310.jpg"
+    ]
   },
   {
     "id": "Aircraft/c340",
@@ -933,8 +923,7 @@
     "group": "Light Aircraft",
     "codes": [
       "C340"
-    ],
-    "photo": "aircraft/C340.jpg"
+    ]
   },
   {
     "id": "Aircraft/c414",
@@ -945,8 +934,7 @@
     "codes": [
       "C414",
       "C421"
-    ],
-    "photo": "aircraft/C421.jpg"
+    ]
   },
   {
     "id": "Aircraft/citation_cj",
@@ -958,8 +946,7 @@
       "C525",
       "C25A",
       "C25B"
-    ],
-    "photo": "aircraft/C525.jpg"
+    ]
   },
   {
     "id": "Aircraft/citation_mustang",
@@ -970,7 +957,15 @@
     "codes": [
       "C510"
     ],
-    "photo": "aircraft/C510.jpg"
+    "photo": "aircraft/C510.jpg",
+    "credit": {
+      "title": "Cessna 510 Citation Mustang (N610PT, cn 510-0172) (12-8-2022)",
+      "creator": "ZLEA",
+      "license": "CC0",
+      "licenseURL": "https://creativecommons.org/publicdomain/zero/1.0/",
+      "sourceURL": "https://commons.wikimedia.org/wiki/File:Cessna_510_Citation_Mustang_(N610PT,_cn_510-0172)_(12-8-2022).jpg",
+      "changes": "Packaged as a reference image. It may be resized, recompressed or stripped of metadata."
+    }
   },
   {
     "id": "Aircraft/citation_large",
@@ -983,8 +978,7 @@
       "C560",
       "C680",
       "C700"
-    ],
-    "photo": "aircraft/C680.jpg"
+    ]
   },
   {
     "id": "Aircraft/wz10",
@@ -1004,8 +998,7 @@
     "group": "Fighter / Military",
     "codes": [
       "J10"
-    ],
-    "photo": "aircraft/J10.jpg"
+    ]
   },
   {
     "id": "Aircraft/j20",
@@ -1015,8 +1008,7 @@
     "group": "Fighter / Military",
     "codes": [
       "J20"
-    ],
-    "photo": "aircraft/J20.jpg"
+    ]
   },
   {
     "id": "Aircraft/sr20",
@@ -1026,8 +1018,7 @@
     "group": "Light Aircraft",
     "codes": [
       "SR20"
-    ],
-    "photo": "aircraft/SR20.jpg"
+    ]
   },
   {
     "id": "Aircraft/sr22",
@@ -1037,8 +1028,7 @@
     "group": "Light Aircraft",
     "codes": [
       "SR22"
-    ],
-    "photo": "aircraft/SR22.jpg"
+    ]
   },
   {
     "id": "Aircraft/sf50",
@@ -1048,8 +1038,7 @@
     "group": "Business Jet",
     "codes": [
       "SF50"
-    ],
-    "photo": "aircraft/SF50.jpg"
+    ]
   },
   {
     "id": "Aircraft/tbm",
@@ -1061,8 +1050,7 @@
       "TBM7",
       "TBM8",
       "TBM9"
-    ],
-    "photo": "aircraft/TBM9.jpg"
+    ]
   },
   {
     "id": "Aircraft/falcon_large",
@@ -1075,8 +1063,7 @@
       "FA8X",
       "F900",
       "F2TH"
-    ],
-    "photo": "aircraft/FA8X.jpg"
+    ]
   },
   {
     "id": "Aircraft/mirage2000",
@@ -1087,8 +1074,7 @@
     "codes": [
       "MIRA",
       "MIR2"
-    ],
-    "photo": "aircraft/MIR2.jpg"
+    ]
   },
   {
     "id": "Aircraft/rafale",
@@ -1098,8 +1084,7 @@
     "group": "Fighter / Military",
     "codes": [
       "RFAL"
-    ],
-    "photo": "aircraft/RFAL.jpg"
+    ]
   },
   {
     "id": "Aircraft/dash8_100_200",
@@ -1110,8 +1095,7 @@
     "codes": [
       "DH8A",
       "DH8B"
-    ],
-    "photo": "aircraft/DH8A.jpg"
+    ]
   },
   {
     "id": "Aircraft/dash8_300_400",
@@ -1122,8 +1106,7 @@
     "codes": [
       "DH8C",
       "DH8D"
-    ],
-    "photo": "aircraft/DH8D.jpg"
+    ]
   },
   {
     "id": "Aircraft/da40",
@@ -1133,8 +1116,7 @@
     "group": "Light Aircraft",
     "codes": [
       "DA40"
-    ],
-    "photo": "aircraft/DA40.jpg"
+    ]
   },
   {
     "id": "Aircraft/da42",
@@ -1144,8 +1126,7 @@
     "group": "Light Aircraft",
     "codes": [
       "DA42"
-    ],
-    "photo": "aircraft/DA42.jpg"
+    ]
   },
   {
     "id": "Aircraft/e170",
@@ -1155,8 +1136,7 @@
     "group": "Regional Jet",
     "codes": [
       "E170"
-    ],
-    "photo": "aircraft/E170.jpg"
+    ]
   },
   {
     "id": "Aircraft/e175",
@@ -1167,8 +1147,7 @@
     "codes": [
       "E75L",
       "E75S"
-    ],
-    "photo": "aircraft/E75L.jpg"
+    ]
   },
   {
     "id": "Aircraft/e2",
@@ -1179,8 +1158,7 @@
     "codes": [
       "E290",
       "E295"
-    ],
-    "photo": "aircraft/E290.jpg"
+    ]
   },
   {
     "id": "Aircraft/e190_195",
@@ -1191,8 +1169,7 @@
     "codes": [
       "E190",
       "E195"
-    ],
-    "photo": "aircraft/E190.jpg"
+    ]
   },
   {
     "id": "Aircraft/erj",
@@ -1203,8 +1180,7 @@
     "codes": [
       "E135",
       "E145"
-    ],
-    "photo": "aircraft/E145.jpg"
+    ]
   },
   {
     "id": "Aircraft/legacy450",
@@ -1214,8 +1190,7 @@
     "group": "Business Jet",
     "codes": [
       "E545"
-    ],
-    "photo": "aircraft/E545.jpg"
+    ]
   },
   {
     "id": "Aircraft/phenom300",
@@ -1225,8 +1200,7 @@
     "group": "Business Jet",
     "codes": [
       "E55P"
-    ],
-    "photo": "aircraft/E55P.jpg"
+    ]
   },
   {
     "id": "Aircraft/e550",
@@ -1246,8 +1220,7 @@
     "group": "Fighter / Military",
     "codes": [
       "EUFI"
-    ],
-    "photo": "aircraft/EUFI.jpg"
+    ]
   },
   {
     "id": "Aircraft/sw4",
@@ -1257,8 +1230,7 @@
     "group": "Turboprop",
     "codes": [
       "SW4"
-    ],
-    "photo": "aircraft/SW4.jpg"
+    ]
   },
   {
     "id": "Aircraft/a10",
@@ -1268,8 +1240,7 @@
     "group": "Fighter / Military",
     "codes": [
       "A10"
-    ],
-    "photo": "aircraft/A10.jpg"
+    ]
   },
   {
     "id": "Aircraft/mq1",
@@ -1279,8 +1250,7 @@
     "group": "Fighter / Military",
     "codes": [
       "MQ1"
-    ],
-    "photo": "aircraft/MQ1.jpg"
+    ]
   },
   {
     "id": "Aircraft/mq9",
@@ -1290,8 +1260,7 @@
     "group": "Fighter / Military",
     "codes": [
       "MQ9"
-    ],
-    "photo": "aircraft/MQ9.jpg"
+    ]
   },
   {
     "id": "Aircraft/f16",
@@ -1301,8 +1270,7 @@
     "group": "Fighter / Military",
     "codes": [
       "F16"
-    ],
-    "photo": "aircraft/F16.jpg"
+    ]
   },
   {
     "id": "Aircraft/f14",
@@ -1312,8 +1280,7 @@
     "group": "Fighter / Military",
     "codes": [
       "F14"
-    ],
-    "photo": "aircraft/F14.jpg"
+    ]
   },
   {
     "id": "Aircraft/g280",
@@ -1323,8 +1290,7 @@
     "group": "Business Jet",
     "codes": [
       "G280"
-    ],
-    "photo": "aircraft/G280.jpg"
+    ]
   },
   {
     "id": "Aircraft/gulfstream_large",
@@ -1339,8 +1305,7 @@
       "GLEX",
       "GA5C",
       "GA6C"
-    ],
-    "photo": "aircraft/GLF6.jpg"
+    ]
   },
   {
     "id": "Aircraft/hawker800",
@@ -1350,8 +1315,7 @@
     "group": "Business Jet",
     "codes": [
       "H25B"
-    ],
-    "photo": "aircraft/H25B.jpg"
+    ]
   },
   {
     "id": "Aircraft/hondajet",
@@ -1361,8 +1325,7 @@
     "group": "Business Jet",
     "codes": [
       "HDJT"
-    ],
-    "photo": "aircraft/HDJT.jpg"
+    ]
   },
   {
     "id": "Aircraft/kfir",
@@ -1372,8 +1335,7 @@
     "group": "Fighter / Military",
     "codes": [
       "KFIR"
-    ],
-    "photo": "aircraft/KFIR.jpg"
+    ]
   },
   {
     "id": "Aircraft/il76",
@@ -1383,8 +1345,7 @@
     "group": "Cargo / Transport",
     "codes": [
       "IL76"
-    ],
-    "photo": "aircraft/IL76.jpg"
+    ]
   },
   {
     "id": "Aircraft/ka52",
@@ -1394,8 +1355,7 @@
     "group": "Helicopter",
     "codes": [
       "KA52"
-    ],
-    "photo": "aircraft/KA52.jpg"
+    ]
   },
   {
     "id": "Aircraft/learjet",
@@ -1407,8 +1367,7 @@
       "LJ35",
       "LJ45",
       "LJ60"
-    ],
-    "photo": "aircraft/LJ45.jpg"
+    ]
   },
   {
     "id": "Aircraft/aw109",
@@ -1418,8 +1377,7 @@
     "group": "Helicopter",
     "codes": [
       "A109"
-    ],
-    "photo": "aircraft/A109.jpg"
+    ]
   },
   {
     "id": "Aircraft/aw139",
@@ -1429,8 +1387,7 @@
     "group": "Helicopter",
     "codes": [
       "A139"
-    ],
-    "photo": "aircraft/A139.jpg"
+    ]
   },
   {
     "id": "Aircraft/a169",
@@ -1451,7 +1408,15 @@
     "codes": [
       "AC130"
     ],
-    "photo": "aircraft/AC130.jpg"
+    "photo": "aircraft/AC130.jpg",
+    "credit": {
+      "title": "AC-130H Spectre jettisons flares",
+      "creator": "U.S. Air Force photo/Senior Airman Julianne Showalter",
+      "license": "Public domain",
+      "licenseURL": "https://commons.wikimedia.org/wiki/File:AC-130H_Spectre_jettisons_flares.jpg#Licensing",
+      "sourceURL": "https://commons.wikimedia.org/wiki/File:AC-130H_Spectre_jettisons_flares.jpg",
+      "changes": "Packaged as a reference image. It may be resized, recompressed or stripped of metadata."
+    }
   },
   {
     "id": "Aircraft/c130",
@@ -1464,7 +1429,15 @@
       "C130H",
       "C30J"
     ],
-    "photo": "aircraft/C130.jpg"
+    "photo": "aircraft/C130.jpg",
+    "credit": {
+      "title": "Lockheed C-130 NASA 707 in flight (AC84-0407-8)",
+      "creator": "NASA/Larry Sammons",
+      "license": "Public domain",
+      "licenseURL": "https://commons.wikimedia.org/wiki/File:Lockheed_C-130_NASA_707_in_flight_(AC84-0407-8).jpg#Licensing",
+      "sourceURL": "https://commons.wikimedia.org/wiki/File:Lockheed_C-130_NASA_707_in_flight_(AC84-0407-8).jpg",
+      "changes": "Packaged as a reference image. It may be resized, recompressed or stripped of metadata."
+    }
   },
   {
     "id": "Aircraft/c5",
@@ -1475,8 +1448,7 @@
     "codes": [
       "C5",
       "C5M"
-    ],
-    "photo": "aircraft/C5.jpg"
+    ]
   },
   {
     "id": "Aircraft/f117",
@@ -1486,8 +1458,7 @@
     "group": "Fighter / Military",
     "codes": [
       "F117"
-    ],
-    "photo": "aircraft/F117.jpg"
+    ]
   },
   {
     "id": "Aircraft/f22",
@@ -1497,8 +1468,7 @@
     "group": "Fighter / Military",
     "codes": [
       "F22"
-    ],
-    "photo": "aircraft/F22.jpg"
+    ]
   },
   {
     "id": "Aircraft/f35",
@@ -1509,7 +1479,15 @@
     "codes": [
       "F35"
     ],
-    "photo": "aircraft/F35.jpg"
+    "photo": "aircraft/F35.jpg",
+    "credit": {
+      "title": "F-35 Heritage Flight Team performs in Bell Fort Worth Alliance AirShow",
+      "creator": "Airman 1st Class Alexander Cook",
+      "license": "Public domain",
+      "licenseURL": "https://commons.wikimedia.org/wiki/File:F-35_Heritage_Flight_Team_performs_in_Bell_Fort_Worth_Alliance_AirShow.jpg#Licensing",
+      "sourceURL": "https://commons.wikimedia.org/wiki/File:F-35_Heritage_Flight_Team_performs_in_Bell_Fort_Worth_Alliance_AirShow.jpg",
+      "changes": "Packaged as a reference image. It may be resized, recompressed or stripped of metadata."
+    }
   },
   {
     "id": "Aircraft/sr71",
@@ -1520,7 +1498,15 @@
     "codes": [
       "SR71"
     ],
-    "photo": "aircraft/SR71.jpg"
+    "photo": "aircraft/SR71.jpg",
+    "credit": {
+      "title": "Lockheed SR-71 Blackbird",
+      "creator": "USAF / Judson Brohmer",
+      "license": "Public domain",
+      "licenseURL": "https://commons.wikimedia.org/wiki/File:Lockheed_SR-71_Blackbird.jpg#Licensing",
+      "sourceURL": "https://commons.wikimedia.org/wiki/File:Lockheed_SR-71_Blackbird.jpg",
+      "changes": "Packaged as a reference image. It may be resized, recompressed or stripped of metadata."
+    }
   },
   {
     "id": "Aircraft/u2",
@@ -1531,7 +1517,15 @@
     "codes": [
       "U2"
     ],
-    "photo": "aircraft/U2.jpg"
+    "photo": "aircraft/U2.jpg",
+    "credit": {
+      "title": "5th Reconnaissance Squadron - U-2 Osan",
+      "creator": "United States Air Force",
+      "license": "Public domain",
+      "licenseURL": "https://commons.wikimedia.org/wiki/File:5th_Reconnaissance_Squadron_-_U-2_Osan.jpg#Licensing",
+      "sourceURL": "https://commons.wikimedia.org/wiki/File:5th_Reconnaissance_Squadron_-_U-2_Osan.jpg",
+      "changes": "Packaged as a reference image. It may be resized, recompressed or stripped of metadata."
+    }
   },
   {
     "id": "Aircraft/av8b",
@@ -1542,7 +1536,15 @@
     "codes": [
       "AV8B"
     ],
-    "photo": "aircraft/AV8B.jpg"
+    "photo": "aircraft/AV8B.jpg",
+    "credit": {
+      "title": "A left side view of an AV-8B Harrier aircraft in flight during the joint US South Korean Exercise TEAM SPIRIT 87 DN-SN-89-05002",
+      "creator": "PHCS Ron Bayles, USN",
+      "license": "Public domain",
+      "licenseURL": "https://commons.wikimedia.org/wiki/File:A_left_side_view_of_an_AV-8B_Harrier_aircraft_in_flight_during_the_joint_US_South_Korean_Exercise_TEAM_SPIRIT_87_DN-SN-89-05002.jpg#Licensing",
+      "sourceURL": "https://commons.wikimedia.org/wiki/File:A_left_side_view_of_an_AV-8B_Harrier_aircraft_in_flight_during_the_joint_US_South_Korean_Exercise_TEAM_SPIRIT_87_DN-SN-89-05002.jpg",
+      "changes": "Packaged as a reference image. It may be resized, recompressed or stripped of metadata."
+    }
   },
   {
     "id": "Aircraft/dc10",
@@ -1552,8 +1554,7 @@
     "group": "Widebody",
     "codes": [
       "DC10"
-    ],
-    "photo": "aircraft/DC10.jpg"
+    ]
   },
   {
     "id": "Aircraft/f15",
@@ -1563,8 +1564,7 @@
     "group": "Fighter / Military",
     "codes": [
       "F15"
-    ],
-    "photo": "aircraft/F15.jpg"
+    ]
   },
   {
     "id": "Aircraft/f4",
@@ -1574,8 +1574,7 @@
     "group": "Fighter / Military",
     "codes": [
       "F4"
-    ],
-    "photo": "aircraft/F4.jpg"
+    ]
   },
   {
     "id": "Aircraft/kc10",
@@ -1586,7 +1585,15 @@
     "codes": [
       "KC10"
     ],
-    "photo": "aircraft/KC10.jpg"
+    "photo": "aircraft/KC10.jpg",
+    "credit": {
+      "title": "305thopgroup-kc10",
+      "creator": "United States Air Force",
+      "license": "Public domain",
+      "licenseURL": "https://commons.wikimedia.org/wiki/File:305thopgroup-kc10.jpg#Licensing",
+      "sourceURL": "https://commons.wikimedia.org/wiki/File:305thopgroup-kc10.jpg",
+      "changes": "Packaged as a reference image. It may be resized, recompressed or stripped of metadata."
+    }
   },
   {
     "id": "Aircraft/md11",
@@ -1596,8 +1603,7 @@
     "group": "Widebody",
     "codes": [
       "MD11"
-    ],
-    "photo": "aircraft/MD11.jpg"
+    ]
   },
   {
     "id": "Aircraft/md80",
@@ -1607,8 +1613,7 @@
     "group": "Narrowbody",
     "codes": [
       "MD80"
-    ],
-    "photo": "aircraft/MD80.jpg"
+    ]
   },
   {
     "id": "Aircraft/mig29",
@@ -1618,8 +1623,7 @@
     "group": "Fighter / Military",
     "codes": [
       "MIG29"
-    ],
-    "photo": "aircraft/MIG29.jpg"
+    ]
   },
   {
     "id": "Aircraft/mig31",
@@ -1629,8 +1633,7 @@
     "group": "Fighter / Military",
     "codes": [
       "MIG31"
-    ],
-    "photo": "aircraft/MIG31.jpg"
+    ]
   },
   {
     "id": "Aircraft/mi24",
@@ -1640,8 +1643,7 @@
     "group": "Helicopter",
     "codes": [
       "MI24"
-    ],
-    "photo": "aircraft/MI24.jpg"
+    ]
   },
   {
     "id": "Aircraft/mi26",
@@ -1651,8 +1653,7 @@
     "group": "Helicopter",
     "codes": [
       "MI26"
-    ],
-    "photo": "aircraft/MI26.jpg"
+    ]
   },
   {
     "id": "Aircraft/mi28",
@@ -1662,8 +1663,7 @@
     "group": "Helicopter",
     "codes": [
       "MI28"
-    ],
-    "photo": "aircraft/MI28.jpg"
+    ]
   },
   {
     "id": "Aircraft/mi8",
@@ -1674,8 +1674,7 @@
     "codes": [
       "MI8",
       "MI17"
-    ],
-    "photo": "aircraft/MI8.jpg"
+    ]
   },
   {
     "id": "Aircraft/mooney",
@@ -1686,8 +1685,7 @@
     "codes": [
       "M20P",
       "M20T"
-    ],
-    "photo": "aircraft/M20P.jpg"
+    ]
   },
   {
     "id": "Aircraft/nh90",
@@ -1697,8 +1695,7 @@
     "group": "Helicopter",
     "codes": [
       "NH90"
-    ],
-    "photo": "aircraft/NH90.jpg"
+    ]
   },
   {
     "id": "Aircraft/f5",
@@ -1708,8 +1705,7 @@
     "group": "Fighter / Military",
     "codes": [
       "F5"
-    ],
-    "photo": "aircraft/F5.jpg"
+    ]
   },
   {
     "id": "Aircraft/b2",
@@ -1720,7 +1716,15 @@
     "codes": [
       "B2"
     ],
-    "photo": "aircraft/B2.jpg"
+    "photo": "aircraft/B2.jpg",
+    "credit": {
+      "title": "2nd Air Refueling Squadron refuels B-2's 161110-F-GV347-141",
+      "creator": "Senior Airman Keith James",
+      "license": "Public domain",
+      "licenseURL": "https://commons.wikimedia.org/wiki/File:2nd_Air_Refueling_Squadron_refuels_B-2%27s_161110-F-GV347-141.jpg#Licensing",
+      "sourceURL": "https://commons.wikimedia.org/wiki/File:2nd_Air_Refueling_Squadron_refuels_B-2%27s_161110-F-GV347-141.jpg",
+      "changes": "Packaged as a reference image. It may be resized, recompressed or stripped of metadata."
+    }
   },
   {
     "id": "Aircraft/e2c",
@@ -1730,8 +1734,7 @@
     "group": "Fighter / Military",
     "codes": [
       "E2C"
-    ],
-    "photo": "aircraft/E2C.jpg"
+    ]
   },
   {
     "id": "Aircraft/rq4",
@@ -1741,8 +1744,7 @@
     "group": "Fighter / Military",
     "codes": [
       "RQ4"
-    ],
-    "photo": "aircraft/RQ4.jpg"
+    ]
   },
   {
     "id": "Aircraft/t38",
@@ -1753,7 +1755,15 @@
     "codes": [
       "T38"
     ],
-    "photo": "aircraft/T38.jpg"
+    "photo": "aircraft/T38.jpg",
+    "credit": {
+      "title": "T-38 in flight over Dry Lake",
+      "creator": "Jim Ross/NASA",
+      "license": "Public domain",
+      "licenseURL": "https://commons.wikimedia.org/wiki/File:T-38_in_flight_over_Dry_Lake.jpg#Licensing",
+      "sourceURL": "https://commons.wikimedia.org/wiki/File:T-38_in_flight_over_Dry_Lake.jpg",
+      "changes": "Packaged as a reference image. It may be resized, recompressed or stripped of metadata."
+    }
   },
   {
     "id": "Aircraft/tornado",
@@ -1763,8 +1773,7 @@
     "group": "Fighter / Military",
     "codes": [
       "GR4"
-    ],
-    "photo": "aircraft/GR4.jpg"
+    ]
   },
   {
     "id": "Aircraft/pc12",
@@ -1774,8 +1783,7 @@
     "group": "Turboprop",
     "codes": [
       "PC12"
-    ],
-    "photo": "aircraft/PC12.jpg"
+    ]
   },
   {
     "id": "Aircraft/pc24",
@@ -1785,8 +1793,7 @@
     "group": "Business Jet",
     "codes": [
       "PC24"
-    ],
-    "photo": "aircraft/PC24.jpg"
+    ]
   },
   {
     "id": "Aircraft/pc6",
@@ -1796,8 +1803,7 @@
     "group": "Turboprop",
     "codes": [
       "PC6"
-    ],
-    "photo": "aircraft/PC6.jpg"
+    ]
   },
   {
     "id": "Aircraft/pa32",
@@ -1807,8 +1813,7 @@
     "group": "Light Aircraft",
     "codes": [
       "PA32"
-    ],
-    "photo": "aircraft/PA32.jpg"
+    ]
   },
   {
     "id": "Aircraft/pa28",
@@ -1819,8 +1824,7 @@
     "codes": [
       "P28A",
       "PA28"
-    ],
-    "photo": "aircraft/PA28.jpg"
+    ]
   },
   {
     "id": "Aircraft/p46t",
@@ -1830,8 +1834,7 @@
     "group": "Turboprop",
     "codes": [
       "P46T"
-    ],
-    "photo": "aircraft/P46T.jpg"
+    ]
   },
   {
     "id": "Aircraft/pa18",
@@ -1841,8 +1844,7 @@
     "group": "Light Aircraft",
     "codes": [
       "PA18"
-    ],
-    "photo": "aircraft/PA18.jpg"
+    ]
   },
   {
     "id": "Aircraft/pa44",
@@ -1852,8 +1854,7 @@
     "group": "Light Aircraft",
     "codes": [
       "PA44"
-    ],
-    "photo": "aircraft/PA44.jpg"
+    ]
   },
   {
     "id": "Aircraft/pa34",
@@ -1863,8 +1864,7 @@
     "group": "Light Aircraft",
     "codes": [
       "PA34"
-    ],
-    "photo": "aircraft/PA34.jpg"
+    ]
   },
   {
     "id": "Aircraft/prm1",
@@ -1874,8 +1874,7 @@
     "group": "Business Jet",
     "codes": [
       "PRM1"
-    ],
-    "photo": "aircraft/PRM1.jpg"
+    ]
   },
   {
     "id": "Aircraft/r22",
@@ -1885,8 +1884,7 @@
     "group": "Helicopter",
     "codes": [
       "R22"
-    ],
-    "photo": "aircraft/R22.jpg"
+    ]
   },
   {
     "id": "Aircraft/r44",
@@ -1896,8 +1894,7 @@
     "group": "Helicopter",
     "codes": [
       "R44"
-    ],
-    "photo": "aircraft/R44.jpg"
+    ]
   },
   {
     "id": "Aircraft/b1",
@@ -1908,7 +1905,15 @@
     "codes": [
       "B1"
     ],
-    "photo": "aircraft/B1.jpg"
+    "photo": "aircraft/B1.jpg",
+    "credit": {
+      "title": "Global Power Bomber CTF conducts B-1B external captive carry demonstration (201120-F-JG201-9095)",
+      "creator": "Ethan Wagner",
+      "license": "Public domain",
+      "licenseURL": "https://commons.wikimedia.org/wiki/File:Global_Power_Bomber_CTF_conducts_B-1B_external_captive_carry_demonstration_(201120-F-JG201-9095).jpg#Licensing",
+      "sourceURL": "https://commons.wikimedia.org/wiki/File:Global_Power_Bomber_CTF_conducts_B-1B_external_captive_carry_demonstration_(201120-F-JG201-9095).jpg",
+      "changes": "Packaged as a reference image. It may be resized, recompressed or stripped of metadata."
+    }
   },
   {
     "id": "Aircraft/b1b",
@@ -1919,7 +1924,15 @@
     "codes": [
       "B1B"
     ],
-    "photo": "aircraft/B1.jpg"
+    "photo": "aircraft/B1.jpg",
+    "credit": {
+      "title": "Global Power Bomber CTF conducts B-1B external captive carry demonstration (201120-F-JG201-9095)",
+      "creator": "Ethan Wagner",
+      "license": "Public domain",
+      "licenseURL": "https://commons.wikimedia.org/wiki/File:Global_Power_Bomber_CTF_conducts_B-1B_external_captive_carry_demonstration_(201120-F-JG201-9095).jpg#Licensing",
+      "sourceURL": "https://commons.wikimedia.org/wiki/File:Global_Power_Bomber_CTF_conducts_B-1B_external_captive_carry_demonstration_(201120-F-JG201-9095).jpg",
+      "changes": "Packaged as a reference image. It may be resized, recompressed or stripped of metadata."
+    }
   },
   {
     "id": "Aircraft/saab_340",
@@ -1930,8 +1943,7 @@
     "codes": [
       "SF34",
       "SB20"
-    ],
-    "photo": "aircraft/SF34.jpg"
+    ]
   },
   {
     "id": "Aircraft/gripen",
@@ -1941,8 +1953,7 @@
     "group": "Fighter / Military",
     "codes": [
       "GRF4"
-    ],
-    "photo": "aircraft/GRF4.jpg"
+    ]
   },
   {
     "id": "Aircraft/fc31",
@@ -1962,8 +1973,7 @@
     "group": "Helicopter",
     "codes": [
       "CH53"
-    ],
-    "photo": "aircraft/CH53.jpg"
+    ]
   },
   {
     "id": "Aircraft/hh60",
@@ -1994,7 +2004,15 @@
     "codes": [
       "S70"
     ],
-    "photo": "aircraft/UH60.jpg"
+    "photo": "aircraft/UH60.jpg",
+    "credit": {
+      "title": "Blackhawk",
+      "creator": "SSGT SUZANNE M. JENKINS, USAF",
+      "license": "Public domain",
+      "licenseURL": "https://commons.wikimedia.org/wiki/File:Blackhawk.jpg#Licensing",
+      "sourceURL": "https://commons.wikimedia.org/wiki/File:Blackhawk.jpg",
+      "changes": "Packaged as a reference image. It may be resized, recompressed or stripped of metadata."
+    }
   },
   {
     "id": "Aircraft/s76",
@@ -2004,8 +2022,7 @@
     "group": "Helicopter",
     "codes": [
       "S76"
-    ],
-    "photo": "aircraft/S76.jpg"
+    ]
   },
   {
     "id": "Aircraft/s92",
@@ -2015,8 +2032,7 @@
     "group": "Helicopter",
     "codes": [
       "S92"
-    ],
-    "photo": "aircraft/S92.jpg"
+    ]
   },
   {
     "id": "Aircraft/sh60",
@@ -2038,7 +2054,15 @@
       "UH60",
       "H60"
     ],
-    "photo": "aircraft/UH60.jpg"
+    "photo": "aircraft/UH60.jpg",
+    "credit": {
+      "title": "Blackhawk",
+      "creator": "SSGT SUZANNE M. JENKINS, USAF",
+      "license": "Public domain",
+      "licenseURL": "https://commons.wikimedia.org/wiki/File:Blackhawk.jpg#Licensing",
+      "sourceURL": "https://commons.wikimedia.org/wiki/File:Blackhawk.jpg",
+      "changes": "Packaged as a reference image. It may be resized, recompressed or stripped of metadata."
+    }
   },
   {
     "id": "Aircraft/su25",
@@ -2048,8 +2072,7 @@
     "group": "Fighter / Military",
     "codes": [
       "SU25"
-    ],
-    "photo": "aircraft/SU25.jpg"
+    ]
   },
   {
     "id": "Aircraft/su27",
@@ -2059,8 +2082,7 @@
     "group": "Fighter / Military",
     "codes": [
       "SU27"
-    ],
-    "photo": "aircraft/SU27.jpg"
+    ]
   },
   {
     "id": "Aircraft/su30",
@@ -2070,8 +2092,7 @@
     "group": "Fighter / Military",
     "codes": [
       "SU30"
-    ],
-    "photo": "aircraft/SU30.jpg"
+    ]
   },
   {
     "id": "Aircraft/su34",
@@ -2081,8 +2102,7 @@
     "group": "Fighter / Military",
     "codes": [
       "SU34"
-    ],
-    "photo": "aircraft/SU34.jpg"
+    ]
   },
   {
     "id": "Aircraft/su35",
@@ -2092,8 +2112,7 @@
     "group": "Fighter / Military",
     "codes": [
       "SU35"
-    ],
-    "photo": "aircraft/SU35.jpg"
+    ]
   },
   {
     "id": "Aircraft/su57",
@@ -2103,8 +2122,7 @@
     "group": "Fighter / Military",
     "codes": [
       "SU57"
-    ],
-    "photo": "aircraft/SU57.jpg"
+    ]
   },
   {
     "id": "Aircraft/su95",
@@ -2114,8 +2132,7 @@
     "group": "Regional Jet",
     "codes": [
       "SU95"
-    ],
-    "photo": "aircraft/SU95.jpg"
+    ]
   },
   {
     "id": "Aircraft/tu160",
@@ -2125,8 +2142,7 @@
     "group": "Fighter / Military",
     "codes": [
       "TU160"
-    ],
-    "photo": "aircraft/TU160.jpg"
+    ]
   },
   {
     "id": "Aircraft/tu22m",
@@ -2136,8 +2152,7 @@
     "group": "Fighter / Military",
     "codes": [
       "TU22"
-    ],
-    "photo": "aircraft/TU22.jpg"
+    ]
   },
   {
     "id": "Aircraft/tu95",
@@ -2147,8 +2162,7 @@
     "group": "Fighter / Military",
     "codes": [
       "TU95"
-    ],
-    "photo": "aircraft/TU95.jpg"
+    ]
   },
   {
     "id": "Aircraft/tu16",
@@ -2189,8 +2203,7 @@
     "kind": "Drone",
     "name": "AeroVironment Switchblade 600",
     "manufacturer": "AeroVironment (USA)",
-    "group": "Loitering Munition",
-    "photo": "drones/switchblade.jpg"
+    "group": "Loitering Munition"
   },
   {
     "id": "Drone/amazon_mk30",
@@ -2225,16 +2238,14 @@
     "kind": "Drone",
     "name": "Autel Dragonfish",
     "manufacturer": "Autel",
-    "group": "Enterprise",
-    "photo": "drones/autel_dragonfish.jpg"
+    "group": "Enterprise"
   },
   {
     "id": "Drone/autel_evo2",
     "kind": "Drone",
     "name": "Autel EVO II Pro",
     "manufacturer": "Autel",
-    "group": "Consumer",
-    "photo": "drones/autel_evo2.jpg"
+    "group": "Consumer"
   },
   {
     "id": "Drone/autel_evo3_pro",
@@ -2276,24 +2287,21 @@
     "kind": "Drone",
     "name": "Bayraktar Akinci",
     "manufacturer": "Baykar (Turkey)",
-    "group": "Military Strike",
-    "photo": "drones/bayraktar_akinci.jpg"
+    "group": "Military Strike"
   },
   {
     "id": "Drone/bayraktar_tb2",
     "kind": "Drone",
     "name": "Bayraktar TB2",
     "manufacturer": "Baykar (Turkey)",
-    "group": "Military Strike",
-    "photo": "drones/bayraktar_tb2.jpg"
+    "group": "Military Strike"
   },
   {
     "id": "Drone/bayraktar_tb3",
     "kind": "Drone",
     "name": "Bayraktar TB3",
     "manufacturer": "Baykar (Turkey)",
-    "group": "Military Strike",
-    "photo": "drones/bayraktar_tb3.jpg"
+    "group": "Military Strike"
   },
   {
     "id": "Drone/betafpv_cetus_pro",
@@ -2314,8 +2322,7 @@
     "kind": "Drone",
     "name": "CASC CH-4 Rainbow",
     "manufacturer": "CASC (China)",
-    "group": "Military Recon",
-    "photo": "drones/ch4.jpg"
+    "group": "Military Recon"
   },
   {
     "id": "Drone/ch5",
@@ -2336,24 +2343,21 @@
     "kind": "Drone",
     "name": "DJI Air 2",
     "manufacturer": "DJI",
-    "group": "Consumer",
-    "photo": "drones/dji_air2.jpg"
+    "group": "Consumer"
   },
   {
     "id": "Drone/dji_air",
     "kind": "Drone",
     "name": "DJI Air 3",
     "manufacturer": "DJI",
-    "group": "Consumer",
-    "photo": "drones/dji_air.jpg"
+    "group": "Consumer"
   },
   {
     "id": "Drone/dji_air3s",
     "kind": "Drone",
     "name": "DJI Air 3S",
     "manufacturer": "DJI",
-    "group": "Consumer",
-    "photo": "drones/dji_air3s.jpg"
+    "group": "Consumer"
   },
   {
     "id": "Drone/dji_avata2",
@@ -2388,8 +2392,7 @@
     "kind": "Drone",
     "name": "DJI FPV / Avata",
     "manufacturer": "DJI",
-    "group": "Racing / FPV",
-    "photo": "drones/dji_fpv.jpg"
+    "group": "Racing / FPV"
   },
   {
     "id": "Drone/dji_inspire3",
@@ -2403,8 +2406,7 @@
     "kind": "Drone",
     "name": "DJI Matrice 300/350 RTK",
     "manufacturer": "DJI",
-    "group": "Enterprise",
-    "photo": "drones/dji_matrice.jpg"
+    "group": "Enterprise"
   },
   {
     "id": "Drone/dji_matrice30t",
@@ -2418,8 +2420,7 @@
     "kind": "Drone",
     "name": "DJI Mavic 3",
     "manufacturer": "DJI",
-    "group": "Consumer",
-    "photo": "drones/dji_mavic3.jpg"
+    "group": "Consumer"
   },
   {
     "id": "Drone/dji_mavic3_classic",
@@ -2447,16 +2448,14 @@
     "kind": "Drone",
     "name": "DJI Mini 3",
     "manufacturer": "DJI",
-    "group": "Consumer",
-    "photo": "drones/dji_mini3.jpg"
+    "group": "Consumer"
   },
   {
     "id": "Drone/dji_mini4",
     "kind": "Drone",
     "name": "DJI Mini 4 Pro",
     "manufacturer": "DJI",
-    "group": "Consumer",
-    "photo": "drones/dji_mini4.jpg"
+    "group": "Consumer"
   },
   {
     "id": "Drone/dji_mini4k",
@@ -2470,16 +2469,14 @@
     "kind": "Drone",
     "name": "DJI Neo",
     "manufacturer": "DJI",
-    "group": "Consumer",
-    "photo": "drones/dji_neo.jpg"
+    "group": "Consumer"
   },
   {
     "id": "Drone/dji_phantom4",
     "kind": "Drone",
     "name": "DJI Phantom 4 Pro",
     "manufacturer": "DJI",
-    "group": "Consumer",
-    "photo": "drones/dji_phantom4.jpg"
+    "group": "Consumer"
   },
   {
     "id": "Drone/eachine_e520s",
@@ -2500,8 +2497,7 @@
     "kind": "Drone",
     "name": "FIMI X8 Mini",
     "manufacturer": "FIMI/Xiaomi",
-    "group": "Consumer",
-    "photo": "drones/fimi_x8.jpg"
+    "group": "Consumer"
   },
   {
     "id": "Drone/flyability_elios3",
@@ -2522,8 +2518,7 @@
     "kind": "Drone",
     "name": "Forpost-R",
     "manufacturer": "Ural Works (Russia)",
-    "group": "Military Recon",
-    "photo": "drones/forpost_r.jpg"
+    "group": "Military Recon"
   },
   {
     "id": "Drone/fpv_generic",
@@ -2537,8 +2532,7 @@
     "kind": "Drone",
     "name": "Freefly Astro",
     "manufacturer": "Freefly Systems",
-    "group": "Enterprise",
-    "photo": "drones/freefly_astro.jpg"
+    "group": "Enterprise"
   },
   {
     "id": "Drone/geprc_cinelog35",
@@ -2573,8 +2567,7 @@
     "kind": "Drone",
     "name": "HOVERAir X1",
     "manufacturer": "Zero Zero Robotics",
-    "group": "Consumer",
-    "photo": "drones/hoverair_x1.jpg"
+    "group": "Consumer"
   },
   {
     "id": "Drone/hoverair_x1_pro",
@@ -2602,8 +2595,7 @@
     "kind": "Drone",
     "name": "IAI Harop",
     "manufacturer": "Israel Aerospace Industries",
-    "group": "Loitering Munition",
-    "photo": "drones/harop.jpg"
+    "group": "Loitering Munition"
   },
   {
     "id": "Drone/harop_ng",
@@ -2617,8 +2609,7 @@
     "kind": "Drone",
     "name": "IAI Harpy",
     "manufacturer": "Israel Aerospace Industries",
-    "group": "Loitering Munition",
-    "photo": "drones/harpy.jpg"
+    "group": "Loitering Munition"
   },
   {
     "id": "Drone/heron",
@@ -2626,7 +2617,15 @@
     "name": "IAI Heron",
     "manufacturer": "Israel Aerospace Industries",
     "group": "Military Recon",
-    "photo": "drones/heron.jpg"
+    "photo": "drones/heron.jpg",
+    "credit": {
+      "title": "IAI Heron 1 in flight 2",
+      "creator": "SSGT REYNALDO RAMON, USAF",
+      "license": "Public domain",
+      "licenseURL": "https://commons.wikimedia.org/wiki/File:IAI_Heron_1_in_flight_2.JPEG#Licensing",
+      "sourceURL": "https://commons.wikimedia.org/wiki/File:IAI_Heron_1_in_flight_2.JPEG",
+      "changes": "Packaged as a reference image. It may be resized, recompressed or stripped of metadata."
+    }
   },
   {
     "id": "Drone/iflight_nazgul5_v3",
@@ -2654,8 +2653,7 @@
     "kind": "Drone",
     "name": "Joby S4 eVTOL",
     "manufacturer": "Joby Aviation",
-    "group": "Enterprise",
-    "photo": "drones/joby_s4.jpg"
+    "group": "Enterprise"
   },
   {
     "id": "Drone/kratos_xq67a",
@@ -2676,8 +2674,7 @@
     "kind": "Drone",
     "name": "Mohajer-6",
     "manufacturer": "Qods Aviation (Iran)",
-    "group": "Military Recon",
-    "photo": "drones/mohajer_6.jpg"
+    "group": "Military Recon"
   },
   {
     "id": "Drone/mq1_predator",
@@ -2685,7 +2682,15 @@
     "name": "MQ-1 Predator",
     "manufacturer": "General Atomics (USA)",
     "group": "Military Recon",
-    "photo": "drones/mq1_predator.jpg"
+    "photo": "drones/mq1_predator.jpg",
+    "credit": {
+      "title": "MQ-1 Predator unmanned aircraft",
+      "creator": "U.S. Air Force photo/Lt Col Leslie Pratt",
+      "license": "Public domain",
+      "licenseURL": "https://commons.wikimedia.org/wiki/File:MQ-1_Predator_unmanned_aircraft.jpg#Licensing",
+      "sourceURL": "https://commons.wikimedia.org/wiki/File:MQ-1_Predator_unmanned_aircraft.jpg",
+      "changes": "Packaged as a reference image. It may be resized, recompressed or stripped of metadata."
+    }
   },
   {
     "id": "Drone/mq1c_gray_eagle",
@@ -2699,16 +2704,14 @@
     "kind": "Drone",
     "name": "MQ-25 Stingray",
     "manufacturer": "Boeing (USA)",
-    "group": "Military Recon",
-    "photo": "drones/mq25_stingray.jpg"
+    "group": "Military Recon"
   },
   {
     "id": "Drone/mq28_ghost_bat",
     "kind": "Drone",
     "name": "MQ-28 Ghost Bat",
     "manufacturer": "Boeing Australia",
-    "group": "Military Strike",
-    "photo": "drones/mq28_ghost_bat.jpg"
+    "group": "Military Strike"
   },
   {
     "id": "Drone/mq4c_triton",
@@ -2716,7 +2719,15 @@
     "name": "MQ-4C Triton",
     "manufacturer": "Northrop Grumman (USA)",
     "group": "Military Recon",
-    "photo": "drones/mq4c_triton.jpg"
+    "photo": "drones/mq4c_triton.jpg",
+    "credit": {
+      "title": "MQ-4C Triton Test Flight with Multi-Intelligence Upgrade",
+      "creator": "U.S. Navy",
+      "license": "Public domain",
+      "licenseURL": "https://commons.wikimedia.org/wiki/File:MQ-4C_Triton_Test_Flight_with_Multi-Intelligence_Upgrade.jpg#Licensing",
+      "sourceURL": "https://commons.wikimedia.org/wiki/File:MQ-4C_Triton_Test_Flight_with_Multi-Intelligence_Upgrade.jpg",
+      "changes": "Packaged as a reference image. It may be resized, recompressed or stripped of metadata."
+    }
   },
   {
     "id": "Drone/mq9_reaper",
@@ -2724,7 +2735,15 @@
     "name": "MQ-9 Reaper",
     "manufacturer": "General Atomics (USA)",
     "group": "Military Strike",
-    "photo": "drones/mq9_reaper.jpg"
+    "photo": "drones/mq9_reaper.jpg",
+    "credit": {
+      "title": "MQ-9 Reaper UAV (cropped)",
+      "creator": "Lt. Col. Leslie Pratt",
+      "license": "Public domain",
+      "licenseURL": "https://commons.wikimedia.org/wiki/File:MQ-9_Reaper_UAV_(cropped).jpg#Licensing",
+      "sourceURL": "https://commons.wikimedia.org/wiki/File:MQ-9_Reaper_UAV_(cropped).jpg",
+      "changes": "Packaged as a reference image. It may be resized, recompressed or stripped of metadata."
+    }
   },
   {
     "id": "Drone/neheme_nh525",
@@ -2738,16 +2757,14 @@
     "kind": "Drone",
     "name": "Orion (Pacer)",
     "manufacturer": "Kronshtadt (Russia)",
-    "group": "Military Recon",
-    "photo": "drones/orion_uav.jpg"
+    "group": "Military Recon"
   },
   {
     "id": "Drone/orlan10",
     "kind": "Drone",
     "name": "Orlan-10",
     "manufacturer": "Special Technology Center (Russia)",
-    "group": "Military Recon",
-    "photo": "drones/orlan10.jpg"
+    "group": "Military Recon"
   },
   {
     "id": "Drone/parrot_anafi",
@@ -2768,8 +2785,7 @@
     "kind": "Drone",
     "name": "Parrot Bebop 2",
     "manufacturer": "Parrot",
-    "group": "Consumer",
-    "photo": "drones/parrot_bebop2.jpg"
+    "group": "Consumer"
   },
   {
     "id": "Drone/phoenix_ghost",
@@ -2825,32 +2841,28 @@
     "kind": "Drone",
     "name": "RQ-20B Puma AE",
     "manufacturer": "AeroVironment",
-    "group": "Military Recon",
-    "photo": "drones/puma_ae.jpg"
+    "group": "Military Recon"
   },
   {
     "id": "Drone/rq21_blackjack",
     "kind": "Drone",
     "name": "RQ-21A Blackjack",
     "manufacturer": "Insitu/Boeing",
-    "group": "Military Recon",
-    "photo": "drones/rq21_blackjack.jpg"
+    "group": "Military Recon"
   },
   {
     "id": "Drone/rq4_global_hawk",
     "kind": "Drone",
     "name": "RQ-4 Global Hawk",
     "manufacturer": "Northrop Grumman (USA)",
-    "group": "Military Recon",
-    "photo": "drones/rq4_global_hawk.jpg"
+    "group": "Military Recon"
   },
   {
     "id": "Drone/rq7_shadow",
     "kind": "Drone",
     "name": "RQ-7 Shadow",
     "manufacturer": "Textron",
-    "group": "Military Recon",
-    "photo": "drones/rq7_shadow.jpg"
+    "group": "Military Recon"
   },
   {
     "id": "Drone/ruko_f11_gim2",
@@ -2871,24 +2883,21 @@
     "kind": "Drone",
     "name": "Ryze Tello II",
     "manufacturer": "Ryze/DJI",
-    "group": "Consumer",
-    "photo": "drones/ryze_tello2.jpg"
+    "group": "Consumer"
   },
   {
     "id": "Drone/tello",
     "kind": "Drone",
     "name": "Ryze/DJI Tello",
     "manufacturer": "Ryze/DJI",
-    "group": "Consumer",
-    "photo": "drones/tello.jpg"
+    "group": "Consumer"
   },
   {
     "id": "Drone/scan_eagle",
     "kind": "Drone",
     "name": "ScanEagle",
     "manufacturer": "Insitu/Boeing",
-    "group": "Military Recon",
-    "photo": "drones/scan_eagle.jpg"
+    "group": "Military Recon"
   },
   {
     "id": "Drone/sensefly_ebee_x",
@@ -2909,8 +2918,7 @@
     "kind": "Drone",
     "name": "Shahed-136 / Geran-2",
     "manufacturer": "HESA (Iran)",
-    "group": "Loitering Munition",
-    "photo": "drones/shahed_136.jpg"
+    "group": "Loitering Munition"
   },
   {
     "id": "Drone/shahed_238",
@@ -2966,8 +2974,7 @@
     "kind": "Drone",
     "name": "Skydio S1",
     "manufacturer": "Skydio",
-    "group": "Consumer",
-    "photo": "drones/skydio_s1.jpg"
+    "group": "Consumer"
   },
   {
     "id": "Drone/skydio_x10",
@@ -2981,16 +2988,14 @@
     "kind": "Drone",
     "name": "Skydio X2",
     "manufacturer": "Skydio",
-    "group": "Enterprise",
-    "photo": "drones/skydio_x2.jpg"
+    "group": "Enterprise"
   },
   {
     "id": "Drone/snaptain_sp510",
     "kind": "Drone",
     "name": "Snaptain SP510",
     "manufacturer": "Snaptain",
-    "group": "Consumer",
-    "photo": "drones/snaptain_sp510.jpg"
+    "group": "Consumer"
   },
   {
     "id": "Drone/snaptain_sp7100",
@@ -3011,8 +3016,7 @@
     "kind": "Drone",
     "name": "Switchblade 300",
     "manufacturer": "AeroVironment",
-    "group": "Loitering Munition",
-    "photo": "drones/switchblade_300.jpg"
+    "group": "Loitering Munition"
   },
   {
     "id": "Drone/syma_x500",
@@ -3026,8 +3030,7 @@
     "kind": "Drone",
     "name": "TAI Anka-S",
     "manufacturer": "Turkish Aerospace (Turkey)",
-    "group": "Military Strike",
-    "photo": "drones/anka_s.jpg"
+    "group": "Military Strike"
   },
   {
     "id": "Drone/tenssenx_t80",
@@ -3041,8 +3044,7 @@
     "kind": "Drone",
     "name": "UVision Hero-30/120/400",
     "manufacturer": "UVision (Israel)",
-    "group": "Loitering Munition",
-    "photo": "drones/hero_family.jpg"
+    "group": "Loitering Munition"
   },
   {
     "id": "Drone/visuo_xs816",
@@ -3063,8 +3065,7 @@
     "kind": "Drone",
     "name": "WB Electronics Warmate",
     "manufacturer": "WB Electronics (Poland)",
-    "group": "Loitering Munition",
-    "photo": "drones/warmate.jpg"
+    "group": "Loitering Munition"
   },
   {
     "id": "Drone/wing_delivery",
@@ -3078,16 +3079,14 @@
     "kind": "Drone",
     "name": "Wing Loong II",
     "manufacturer": "CASC/Chengdu (China)",
-    "group": "Military Strike",
-    "photo": "drones/wing_loong.jpg"
+    "group": "Military Strike"
   },
   {
     "id": "Drone/wingcopter_198",
     "kind": "Drone",
     "name": "Wingcopter 198",
     "manufacturer": "Wingcopter",
-    "group": "Enterprise",
-    "photo": "drones/wingcopter_198.jpg"
+    "group": "Enterprise"
   },
   {
     "id": "Drone/wingsland_s6",
@@ -3101,8 +3100,7 @@
     "kind": "Drone",
     "name": "WingtraOne",
     "manufacturer": "Wingtra",
-    "group": "Enterprise",
-    "photo": "drones/wingtraone.jpg"
+    "group": "Enterprise"
   },
   {
     "id": "Drone/xq58_valkyrie",
@@ -3110,23 +3108,29 @@
     "name": "XQ-58 Valkyrie",
     "manufacturer": "Kratos (USA)",
     "group": "Military Strike",
-    "photo": "drones/xq58_valkyrie.jpg"
+    "photo": "drones/xq58_valkyrie.jpg",
+    "credit": {
+      "title": "XQ-58A Valkyrie demonstrator first flight",
+      "creator": "88 Air Base Wing Public Affairs",
+      "license": "Public domain",
+      "licenseURL": "https://commons.wikimedia.org/wiki/File:XQ-58A_Valkyrie_demonstrator_first_flight.jpg#Licensing",
+      "sourceURL": "https://commons.wikimedia.org/wiki/File:XQ-58A_Valkyrie_demonstrator_first_flight.jpg",
+      "changes": "Packaged as a reference image. It may be resized, recompressed or stripped of metadata."
+    }
   },
   {
     "id": "Drone/yuneec_typhoon",
     "kind": "Drone",
     "name": "Yuneec Typhoon H Plus",
     "manufacturer": "Yuneec",
-    "group": "Consumer",
-    "photo": "drones/yuneec_typhoon.jpg"
+    "group": "Consumer"
   },
   {
     "id": "Drone/lancet",
     "kind": "Drone",
     "name": "ZALA Lancet",
     "manufacturer": "ZALA Aero (Russia)",
-    "group": "Loitering Munition",
-    "photo": "drones/lancet.jpg"
+    "group": "Loitering Munition"
   },
   {
     "id": "Drone/zipline_p2",

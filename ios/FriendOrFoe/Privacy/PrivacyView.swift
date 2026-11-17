@@ -104,7 +104,7 @@ struct PrivacyView: View {
                                 if let url = URL(string: UIApplication.openSettingsURLString) { openURL(url) }
                             }
                         }
-                    } footer: { Text("iPhone can range iBeacons whose network UUID you know. Location access is requested when you start ranging.") }
+                    } footer: { Text("To range iBeacons, add a known network UUID and allow Precise Location when prompted. Bluetooth recorder scanning works without location access.") }
                 }
                 if filtering {
                     Section {

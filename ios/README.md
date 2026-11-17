@@ -2,7 +2,7 @@
 
 Friend or Foe by GameChangers AI runs on iPhone with iOS 17 or later. Open the recorder guide to try the classifier offline, or start a foreground Bluetooth scan to see nearby signals. The platform comparison describes which Android features work directly on iPhone and which need a scanner station. [iPhone feature parity](../docs/iphone-parity.md)
 
-The public iPhone privacy policy is prepared for GitHub Pages. After the Pages workflow deploys from `main`, verify the proposed URL opens without signing in before using it in App Store Connect. [Policy source](../docs/iphone-privacy.html) · [Proposed public policy URL](https://lnxgod.github.io/friendorfoe/iphone-privacy.html)
+See [public policy and store disclosures](#public-policy-and-store-disclosures) for the anonymous policy check and store questionnaire.
 
 ## Run in Xcode
 
@@ -39,3 +39,18 @@ Changes to Android’s aircraft and drone catalogs or photo policy can require r
 2. In Xcode, verify the app target’s release signing team, marketing version and build number. Each subsequent upload for a version needs a new build number. Choose **Any iOS Device (arm64)** as the destination and **Product → Archive**. In Organizer, select the archive, then **Distribute App → App Store Connect** and upload it. Keep signing certificates, profiles and account credentials outside the repository. [Prepare an app for distribution](https://developer.apple.com/documentation/xcode/preparing-your-app-for-distribution) · [Upload an archive](https://developer.apple.com/documentation/xcode/distributing-your-app-for-beta-testing-and-releases)
 3. After Apple processes the build, open **TestFlight** in the app record. Complete the applicable export-compliance questions, enter the features to test and add the build to an internal group. Install through TestFlight on the test iPhone. External testing adds beta review for the first build. [TestFlight setup](https://developer.apple.com/help/app-store-connect/test-a-beta-version/testflight-overview/)
 4. For the public release, complete the store listing, screenshots, support and privacy-policy URLs, privacy disclosures and review notes. Tell reviewers how to open the offline recorder example without external hardware. Select the tested build and submit it to App Review. [App Store Connect workflow](https://developer.apple.com/help/app-store-connect/get-started/app-store-connect-workflow)
+
+## Public policy and store disclosures
+
+The proposed [policy on GitHub Pages](https://lnxgod.github.io/friendorfoe/iphone-privacy.html) returned **HTTP 404** to an anonymous request on 2026-11-17. Do not enter that URL until the Pages deployment completes. From the release checkout, download it without credentials and compare the body to the release policy:
+
+```sh
+curl --fail --location --silent --show-error https://lnxgod.github.io/friendorfoe/iphone-privacy.html --output /tmp/friendorfoe-iphone-public-policy.html
+cmp docs/iphone-privacy.html /tmp/friendorfoe-iphone-public-policy.html
+```
+
+Before Pages deployment, the project can instead use the [readable GitHub edition](../docs/iphone-privacy-policy.md) at a public commit permalink. Run `python3 scripts/export_policy_markdown.py iphone --check`. Open the published Markdown file on GitHub, press **Y** to obtain its permanent commit URL, then open that URL in a signed-out browser and confirm the iPhone heading, provider disclosures and clickable publisher contact. Retain the addressed commit in the release history. If that link becomes the store policy, update App Store Connect whenever the policy changes. GitHub's HTML source viewer, raw HTML served as plain text and private CI artifacts are not substitutes.
+
+The iPhone manifest identifies **Coarse Location → App Functionality**, not linked to identity and not used for tracking. Aircraft lookup sends the search area rounded to 0.1° to adsb.lol. Local-only Bluetooth, beacon, camera, microphone and magnetic measurements are not uploaded as user content. Apple distinguishes data handled only on the device from data retained by your service or partners. Before answering the App Privacy form, confirm provider logging/retention, IP address uses and any publisher-operated station against the final release. Do not copy the Android SDK declarations to the iPhone form. [Apple App Privacy definitions](https://developer.apple.com/app-store/app-privacy-details/)
+
+Upload an archive built with Xcode 26 or later and the iOS 26 SDK or later, with a deployment target of iOS 13 or later. This app uses iOS 17 as its minimum. Complete the age-rating questionnaire and export-compliance questions in the publisher’s account. If distributing in the EU, confirm the account’s trader-status declaration. [Apple submission requirements](https://developer.apple.com/news/upcoming-requirements/)

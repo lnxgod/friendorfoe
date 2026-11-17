@@ -35,8 +35,11 @@ final class PhonePrivacyScanner: NSObject, ObservableObject, CBCentralManagerDel
     var ignoredCount: Int { preferences.ignored.count }
 
     private let file: URL
+    private let makeLocationManager: () -> CLLocationManager
 
-    init(storageDirectory: URL = URL.applicationSupportDirectory.appending(path: "PhonePrivacy", directoryHint: .isDirectory)) {
+    init(storageDirectory: URL = URL.applicationSupportDirectory.appending(path: "PhonePrivacy", directoryHint: .isDirectory),
+         makeLocationManager: @escaping () -> CLLocationManager = { CLLocationManager() }) {
+        self.makeLocationManager = makeLocationManager
         file = storageDirectory.appending(path: "preferences.json")
         super.init()
         do {
@@ -207,7 +210,7 @@ final class PhonePrivacyScanner: NSObject, ObservableObject, CBCentralManagerDel
         guard !knownBeacons.isEmpty else { return }
         wantsBeacons = true
         if locator == nil {
-            locator = CLLocationManager()
+            locator = makeLocationManager()
             locator?.delegate = self
         }
         beginRangingIfAllowed()
@@ -218,6 +221,12 @@ final class PhonePrivacyScanner: NSObject, ObservableObject, CBCentralManagerDel
         needsLocationSettings = false
         switch locator.authorizationStatus {
         case .authorizedAlways, .authorizedWhenInUse:
+            guard locator.accuracyAuthorization == .fullAccuracy else {
+                stopBeacons()
+                needsLocationSettings = true
+                beaconStatus = "Turn on Precise Location in Settings to range known beacons."
+                return
+            }
             guard CLLocationManager.isRangingAvailable() else {
                 stopBeacons()
                 beaconStatus = "Beacon ranging is unavailable on this device."

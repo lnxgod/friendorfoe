@@ -65,6 +65,30 @@ final class PhoneFlowTests: XCTestCase {
         field.typeText("B738")
         let result = app.buttons.matching(NSPredicate(format: "label CONTAINS[c] 'Boeing 737 NG'")).firstMatch
         XCTAssertTrue(result.waitForExistence(timeout: 4))
+    }
 
+    func testFullPrivacyPolicyOpensOffline() {
+        let app = launch()
+        app.tabBars.buttons["More"].tap()
+        app.buttons["Privacy & data"].tap()
+        app.buttons["Read full privacy policy"].tap()
+        let heading = app.webViews.staticTexts["Nearby devices and beacons"]
+        XCTAssertTrue(heading.waitForExistence(timeout: 10))
+    }
+
+    func testOfflineGuideShowsImageCreditAndSource() {
+        let app = launch(appearance: "Light")
+        app.tabBars.buttons["More"].tap()
+        app.buttons["Aircraft & drone guide"].tap()
+        let field = app.searchFields.firstMatch
+        XCTAssertTrue(field.waitForExistence(timeout: 5))
+        field.tap()
+        field.typeText("C150")
+        let model = app.buttons.matching(NSPredicate(format: "label CONTAINS 'Cessna 150'")).firstMatch
+        XCTAssertTrue(model.waitForExistence(timeout: 5))
+        model.tap()
+        let source = app.descendants(matching: .any).matching(NSPredicate(format: "label == 'Image source'")).firstMatch
+        XCTAssertTrue(source.waitForExistence(timeout: 5))
+        capture("Offline guide with credit")
     }
 }

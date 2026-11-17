@@ -5,6 +5,10 @@ on:
     branches: [main]
     paths:
       - 'ios/**'
+      - 'docs/iphone-privacy-policy.md'
+      - 'scripts/export_policy_markdown.py'
+      - 'docs/iphone-privacy.html'
+      - 'android/reference-rights/verified-photos.json'
       - 'android/app/src/main/assets/aircraft/**'
       - 'android/app/src/main/assets/drones/**'
       - 'android/app/src/main/java/com/friendorfoe/presentation/util/AircraftDatabase.kt'
@@ -14,6 +18,10 @@ on:
   pull_request:
     paths:
       - 'ios/**'
+      - 'docs/iphone-privacy-policy.md'
+      - 'scripts/export_policy_markdown.py'
+      - 'docs/iphone-privacy.html'
+      - 'android/reference-rights/verified-photos.json'
       - 'android/app/src/main/assets/aircraft/**'
       - 'android/app/src/main/assets/drones/**'
       - 'android/app/src/main/java/com/friendorfoe/presentation/util/AircraftDatabase.kt'
@@ -37,7 +45,9 @@ jobs:
           persist-credentials: false
 
       - name: Check the shared reference catalog
-        run: python3 ios/Tools/export_reference.py --check
+        run: |
+          python3 ios/Tools/export_reference.py --check
+          python3 scripts/export_policy_markdown.py iphone --check
 
       - name: Build and test on iPhone Simulator
         run: |

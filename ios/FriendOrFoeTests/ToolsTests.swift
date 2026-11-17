@@ -22,7 +22,17 @@ final class ToolsTests: XCTestCase {
         XCTAssertGreaterThan(guide.filter { $0.kind == "Drone" }.count, 100)
         let boeing = try XCTUnwrap(guide.first { $0.matches("B738") })
         XCTAssertTrue(boeing.name.contains("737"))
-        XCTAssertTrue(FileManager.default.fileExists(atPath: try XCTUnwrap(boeing.photoURL).path))
+        for entry in guide {
+            if let photoURL = entry.photoURL {
+                let credit = try XCTUnwrap(entry.credit)
+                XCTAssertFalse(credit.creator.isEmpty)
+                XCTAssertEqual(credit.sourceURL.scheme, "https")
+                XCTAssertEqual(credit.licenseURL.scheme, "https")
+                XCTAssertTrue(FileManager.default.fileExists(atPath: photoURL.path))
+            } else {
+                XCTAssertNil(entry.credit)
+            }
+        }
         XCTAssertFalse(guide.contains { $0.photo == "aircraft/A345.jpg" })
         let resources = try XCTUnwrap(Bundle.main.resourceURL)
         var bundled = Set<String>()
