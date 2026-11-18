@@ -7,9 +7,9 @@ import androidx.compose.material.icons.filled.Flight
 import androidx.compose.material.icons.filled.Map
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.ui.graphics.vector.ImageVector
+import com.friendorfoe.presentation.about.openUri
 import com.friendorfoe.presentation.components.FofDisclosure
-import android.content.Intent
-import android.net.Uri
+import com.friendorfoe.presentation.components.PublisherCredit
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.defaultMinSize
@@ -29,27 +29,16 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 
-private const val GAMECHANGERS_URL = "https://gamechangersai.org"
-private const val REPOSITORY_URL = "https://github.com/lnxgod/friendorfoe"
 
 data class WelcomeActions(
     val onGetStarted: () -> Unit = {},
-    val onOpenLink: (String) -> Unit = {},
+    val onOpenPublisher: (String) -> Unit = {},
 )
 
 @Composable
 fun WelcomeScreen(onGetStarted: () -> Unit) {
     val context = LocalContext.current
-    WelcomeContent(
-        actions = WelcomeActions(
-            onGetStarted = onGetStarted,
-            onOpenLink = { url ->
-                runCatching {
-                    context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
-                }
-            },
-        ),
-    )
+    WelcomeContent(WelcomeActions(onGetStarted = onGetStarted, onOpenPublisher = context::openUri))
 }
 
 @Composable
@@ -60,11 +49,12 @@ fun WelcomeContent(actions: WelcomeActions) {
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).testTag("welcome_scroll"),
             verticalArrangement = Arrangement.spacedBy(20.dp)) {
             Text("Friend or Foe", style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold)
-            Text("Aircraft, drones and nearby signals", style = MaterialTheme.typography.titleMedium,
+            Text("Explore nearby devices and aircraft", style = MaterialTheme.typography.titleMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
-            WelcomeFeature(Icons.Default.Flight, "Nearby", "See what is close, with distance first.")
-            WelcomeFeature(Icons.Default.Map, "Map & trails", "Follow received positions and review flight paths.")
-            WelcomeFeature(Icons.Default.Shield, "Privacy", "Inspect nearby signals and their evidence.")
+            PublisherCredit(actions.onOpenPublisher)
+            WelcomeFeature(Icons.Default.Shield, "Privacy", "Look for personal recorders, cameras and trackers.")
+            WelcomeFeature(Icons.Default.Flight, "Nearby", "See aircraft and drones sorted by distance.")
+            WelcomeFeature(Icons.Default.Map, "Map & trails", "Follow aircraft and review flight paths.")
             Text("Observations are evidence, not proof of identity, intent, or ownership.",
                 style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.testTag("welcome_scope"))
@@ -73,8 +63,6 @@ fun WelcomeContent(actions: WelcomeActions) {
                 WelcomeFact("Network features may exchange location or detection data with the service you use.")
                 WelcomeFact("Android asks for access when a feature needs it.")
                 WelcomeFact("Coverage depends on nearby signals, permissions and configured services.")
-                WelcomeLinkRow("GameChangers") { actions.onOpenLink(GAMECHANGERS_URL) }
-                WelcomeLinkRow("GitHub Repository") { actions.onOpenLink(REPOSITORY_URL) }
             }
         }
         Text("Permissions are requested when you use a feature.",
@@ -102,9 +90,4 @@ private fun WelcomeFeature(icon: ImageVector, title: String, detail: String) {
 private fun WelcomeFact(text: String) {
     Text(text, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
         modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp))
-}
-
-@Composable
-private fun WelcomeLinkRow(label: String, onClick: () -> Unit) {
-    androidx.compose.material3.TextButton(onClick = onClick) { Text(label) }
 }

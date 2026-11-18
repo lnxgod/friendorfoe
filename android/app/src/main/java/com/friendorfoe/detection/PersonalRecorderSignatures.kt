@@ -13,7 +13,16 @@ internal object PersonalRecorderSignatures {
         Signature("Bee", listOf("bee"), "03d5d5c4-a86c-11ee-9d89-8f2089a49e7e"),
         Signature("Friend", listOf("friend_"), "1a3fd0e7-b1f3-ac9e-2e49-b647b2c4f8da"),
         Signature("Fieldy", listOf("fieldy"), null),
+        Signature("viaim", listOf("viaim recdot", "viaim opennote"), null),
+        Signature("soundcore", listOf("soundcore work"), null),
+        Signature("Notta", listOf("notta memo"), null),
+        Signature("Instamic", listOf("instamic"), null),
+        Signature("DJI", listOf("dji-mic2", "dji-mic3", "dji mic 2", "dji mic 3"), null),
     )
+
+    private val plaudSerialName = Regex("plaud[a-z0-9]{4}", RegexOption.IGNORE_CASE)
+
+    val brands: List<String> = signatures.map { it.brand }
 
     fun match(name: String?, services: List<String> = emptyList()): Match? {
         for (signature in signatures) {
@@ -22,7 +31,7 @@ internal object PersonalRecorderSignatures {
             }
         }
         val localName = name.orEmpty().trim()
-        if (Regex("plaud[a-z0-9]{4}", RegexOption.IGNORE_CASE).matches(localName)) {
+        if (plaudSerialName.matches(localName)) {
             return Match("Plaud", 0.75f, "recorder:name:plaud_serial")
         }
         for (signature in signatures) {

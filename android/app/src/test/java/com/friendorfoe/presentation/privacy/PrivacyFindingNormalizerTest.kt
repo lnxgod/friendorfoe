@@ -31,6 +31,18 @@ class PrivacyFindingNormalizerTest {
     }
 
     @Test
+    fun recorderSignatureSurvivesAppleActivityAndAdvertisedListeningName() {
+        val recorder = detection(
+            deviceType = "Recorder earbuds",
+            deviceName = "Listening with AirPods",
+            category = PrivacyCategory.VOICE_RECORDER,
+            bleCompanyId = 0x004C,
+            matchReason = "name:recorder",
+        )
+        assertSame(recorder, PrivacyFindingNormalizer.normalize(recorder))
+    }
+
+    @Test
     fun unrelatedNonAppleListeningCategoryIsPreserved() {
         val original = detection(
             manufacturer = "Other",

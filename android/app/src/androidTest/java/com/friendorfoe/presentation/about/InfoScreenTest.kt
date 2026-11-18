@@ -51,7 +51,7 @@ class InfoScreenTest {
                 "Detection & connections",
                 "Guide & category legend",
                 "Privacy & Data",
-                "About, support, version & updates",
+                "About, version & updates",
                 "Advanced",
             ),
             INFO_SECTION_TITLES,
@@ -160,7 +160,7 @@ class InfoScreenTest {
         setInfoContent(
             state = state().copy(
                 backendUrlDraft = "not-a-url",
-                backendUrlError = "Enter a complete http:// or https:// URL",
+                backendUrlError = "Enter the final HTTPS address of your sensor server",
                 backendUrlCanSave = false,
                 backendUrlCanTest = false,
             ),
@@ -169,9 +169,21 @@ class InfoScreenTest {
 
         scrollToSection(1)
         compose.onNodeWithTag("backend_save").performScrollTo().assertIsNotEnabled()
-        compose.onNodeWithText("Enter a complete http:// or https:// URL")
+        compose.onNodeWithText("Enter the final HTTPS address of your sensor server")
             .assertIsDisplayed()
         compose.runOnIdle { assertEquals(0, saved) }
+    }
+
+    @Test
+    fun opensAndClosesTheBundledPrivacyPolicy() {
+        setInfoContent()
+        scrollToSection(3)
+        compose.onNodeWithTag("open_privacy_policy").performScrollTo().performClick()
+        compose.onNodeWithText("Friend or Foe Privacy Policy").assertIsDisplayed()
+        compose.onNodeWithText("Retention and deletion").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("Contact GameChangers AI").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("Close").performClick()
+        compose.onNodeWithText("Friend or Foe Privacy Policy").assertDoesNotExist()
     }
 
     @Test
@@ -185,7 +197,7 @@ class InfoScreenTest {
             "A configured sensor backend exchanges detection data with this app.",
             "Calibration sends operator/session GPS to the configured backend when used.",
         ).forEach { fact ->
-            compose.onNodeWithText(fact).assertIsDisplayed()
+            compose.onNodeWithText(fact).performScrollTo().assertIsDisplayed()
         }
         listOf(
             "No personal data is collected or transmitted",
@@ -221,7 +233,7 @@ class InfoScreenTest {
 
     @Test
     fun calibrationOnlyNavigatesAfterExactSessionHealth() {
-        val endpoint = BackendEndpoint.parse("http://badge-lab:8000/").getOrThrow()
+        val endpoint = BackendEndpoint.parse("https://badge-lab:8000/").getOrThrow()
         var opened = 0
         setInfoContent(
             state = state().copy(
@@ -245,6 +257,15 @@ class InfoScreenTest {
     }
 
     @Test
+    fun aboutPublisherGoesToTheOrganizationWebsite() {
+        var destination: String? = null
+        setInfoContent(actions = InfoActions(onOpenPublisher = { destination = it }))
+        scrollToSection(4)
+        compose.onNodeWithText("Published by GameChangers AI").performScrollTo().performClick()
+        compose.runOnIdle { assertEquals("https://gamechangersai.org/", destination) }
+    }
+
+    @Test
     fun updateFailureIsNeutralAndNeverFabricatesAvailability() {
         setInfoContent(
             state = state().copy(
@@ -254,7 +275,7 @@ class InfoScreenTest {
 
         scrollToSection(4)
         compose.onNodeWithText("Could not check for updates")
-            .assertIsDisplayed()
+            .performScrollTo().assertIsDisplayed()
         assertEquals(
             0,
             compose.onAllNodesWithText("Update available", substring = true)

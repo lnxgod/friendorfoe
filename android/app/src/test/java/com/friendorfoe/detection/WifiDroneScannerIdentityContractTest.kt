@@ -17,7 +17,7 @@ class WifiDroneScannerIdentityContractTest {
         assertTrue(source.contains("WifiTransmitterIdentity.detectionId(\"wifi_dji\", ssid, bssid)"))
         assertTrue(source.contains("WifiTransmitterIdentity.detectionId(\"wifi\", ssid, bssid)"))
         assertTrue(source.contains("WifiTransmitterIdentity.detectionId(\"wifi_soft\", ssid, bssid)"))
-        assertTrue(source.contains("bssid?.let { WifiOuiDatabase.lookup(it) }"))
+        assertTrue(source.contains("bssid?.let(WifiOuiDatabase::lookupDroneVendor)"))
     }
 
     private fun scannerSource(): String {

@@ -91,7 +91,7 @@ fun BadgeDisplayFiltersSection(
     expanded: Boolean,
     onExpandedChange: (Boolean) -> Unit,
     policy: BadgeDisplayPolicy,
-    displayPolicyHash: Long,
+    displayPolicyHash: Long?,
     filteredCounts: Map<String, Int>,
     onPolicyChange: (BadgeDisplayPolicy) -> Unit,
     onApply: () -> Unit,
@@ -120,7 +120,8 @@ fun BadgeDisplayFiltersSection(
                     fontWeight = FontWeight.Bold,
                 )
                 Text(
-                    text = "Exact badge policy · ${hashCode32(displayPolicyHash)}",
+                    text = displayPolicyHash?.let { "Badge policy · ${hashCode32(it)}" }
+                        ?: "Preview display rules",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,

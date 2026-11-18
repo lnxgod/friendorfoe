@@ -1,5 +1,7 @@
 import pytest
 
+from app.services.anomaly_detector import AnomalyDetector
+from app.services.entity_tracker import EntityTracker, TrackedEntity
 from app.services.privacy_devices import (
     classify_privacy_device,
     privacy_summary,
@@ -268,6 +270,11 @@ def test_privacy_signature_catalog_matches_wifi_privacy_aps():
     assert tapo["manufacturer"] == "TP-Link"
     assert tapo["class_reason"] == "privacy:camera:tapo"
 
+    assert match_privacy_wifi_ssid("Kasa_Cam_9aC4")["class_reason"] == "privacy:camera:kasa"
+    for ssid in ("Kasa_Cam_12GG", "Tapo_Cam_", "Tapo_Cam_12345", "Tapo_Plug_12AB",
+                 "TAPO-Hub", "SmartLife-ABCD", "Tuya-Plug"):
+        assert match_privacy_wifi_ssid(ssid) is None
+
     swann = match_privacy_wifi_ssid("Swann-SWIFI-1a2b3c")
     assert swann is not None
     assert swann["manufacturer"] == "Swann"
@@ -300,7 +307,16 @@ def test_privacy_signature_catalog_matches_wifi_privacy_aps():
     assert match_privacy_wifi_ssid("ALPR-maint") is None
 
 
-def test_registered_flock_wifi_oui_maps_to_alpr_privacy_kind():
+def test_flock_vendor_name_does_not_trigger_entity_or_lingering_alert():
+    entity = TrackedEntity("flock", label="Flock Safety device", manufacturers={"Flock Safety"})
+    assert not EntityTracker._is_high_risk(entity)
+    assert not AnomalyDetector()._is_tracker_id("Flock Safety device")
+
+    entity.label = "ALPR Camera"
+    assert EntityTracker._is_high_risk(entity)
+
+
+def test_registered_flock_wifi_oui_only_identifies_the_vendor():
     enriched = classify_privacy_device({
         "source": "wifi_oui",
         "bssid": "B4:1E:52:AA:BB:CC",
@@ -310,8 +326,9 @@ def test_registered_flock_wifi_oui_maps_to_alpr_privacy_kind():
         "current_rssi": -52,
     })
 
-    assert enriched["privacy_kind"] == "FLOCK_ALPR"
-    assert enriched["display_label"] == "FLOCK CAM"
+    assert enriched["privacy_kind"] == "SECURITY_INFRASTRUCTURE"
+    assert enriched["display_label"] == "FLOCK DEVICE"
+    assert enriched["risk_level"] == "low"
 
 
 @pytest.mark.parametrize(
@@ -332,8 +349,9 @@ def test_registered_flock_wifi_oui_privacy_kind_normalizes_mac_formats(bssid):
         "current_rssi": -52,
     })
 
-    assert enriched["privacy_kind"] == "FLOCK_ALPR"
-    assert enriched["display_label"] == "FLOCK CAM"
+    assert enriched["privacy_kind"] == "SECURITY_INFRASTRUCTURE"
+    assert enriched["display_label"] == "FLOCK DEVICE"
+    assert enriched["risk_level"] == "low"
 
 
 @pytest.mark.parametrize("bssid", ["XB4:1E:52:AA:BB:CC", "B4:1E:5Z:AA:BB:CC"])
@@ -348,6 +366,18 @@ def test_malformed_flock_wifi_oui_near_matches_do_not_map_to_privacy_kind(bssid)
 
     assert enriched["privacy_kind"] != "FLOCK_ALPR"
     assert enriched["display_label"] != "FLOCK CAM"
+
+
+def test_explicit_alpr_product_evidence_takes_precedence_over_flock_oui():
+    enriched = classify_privacy_device({
+        "source": "wifi_ap_inventory",
+        "bssid": "B4:1E:52:AA:BB:CC",
+        "class_reason": "privacy:alpr:elsag",
+        "current_rssi": -52,
+    })
+    assert enriched["privacy_kind"] == "FLOCK_ALPR"
+    assert enriched["display_label"] == "ALPR CAMERA"
+    assert enriched["risk_level"] == "high"
 
 
 def test_flock_ble_name_does_not_map_to_alpr_privacy_kind():

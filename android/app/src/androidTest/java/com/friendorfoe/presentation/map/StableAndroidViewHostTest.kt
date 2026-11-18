@@ -9,6 +9,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.test.click
+import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.junit4.createComposeRule
@@ -83,7 +84,7 @@ class StableAndroidViewHostTest {
     }
 
     @Test
-    fun hiddenMapViewDoesNotReceiveTouchInput() {
+    fun locatingMapBlocksTouchesUntilTheUserChoosesToBrowse() {
         val revealed = mutableStateOf(false)
         var touchCount = 0
 
@@ -101,15 +102,15 @@ class StableAndroidViewHostTest {
                     },
                     modifier = Modifier.fillMaxSize(),
                 )
-                if (!revealed.value) MapLocatingOverlay()
+                if (!revealed.value) MapLocatingOverlay(onBrowse = { revealed.value = true })
             }
         }
 
-        compose.onNodeWithTag("locator_host").performTouchInput { click() }
+        compose.onNodeWithTag("locator_host").performTouchInput { click(androidx.compose.ui.geometry.Offset(8f, 8f)) }
         compose.runOnIdle { assertEquals(0, touchCount) }
 
-        compose.runOnUiThread { revealed.value = true }
-        compose.waitForIdle()
+        compose.onNodeWithText("Browse map without a fix").performTouchInput { click() }
+        compose.onNodeWithText("Finding your location…").assertDoesNotExist()
         compose.onNodeWithTag("locator_host").performTouchInput { click() }
 
         compose.runOnIdle { assertEquals(2, touchCount) }

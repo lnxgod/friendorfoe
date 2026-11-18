@@ -185,6 +185,42 @@ class BadgePrivacySourceAdapterTest {
     }
 
     @Test
+    fun radioSourceDeterminesWifiEvidenceIndependentlyOfBadgeTransport() {
+        val report = badgeEntity(7).copy(
+            ssid = "Example Lab", source = "wifi_assoc", label = "Deauth",
+            detail = "", evidence = "", threatClass = "wifi_anomaly", category = "WIFI", code = "WIFI",
+        )
+        fun map(entity: BadgeThreatEntity) = BadgePrivacySourceAdapter.mapEntity(
+            entity, PrivacySourceKind.BADGE_BLE, 10_000L, 100_000L, "row",
+        )!!
+        val named = map(report)
+        assertEquals("Example Lab", named.wifiNetwork?.ssid)
+        assertTrue(named.wifiNetwork!!.reason.contains("deauthentication"))
+        assertEquals(PrivacySourceKind.BADGE_BLE, named.source)
+
+        val hidden = map(report.copy(ssid = "", bssid = "00:11:22:33:44:55", evidence = "WiFi deauth frames"))
+        val unnamedNetwork = requireNotNull(hidden.wifiNetwork)
+        assertNull(unnamedNetwork.ssid)
+        assertEquals("The scanner observed Wi-Fi deauthentication frames.", unnamedNetwork.reason)
+        assertEquals(named.observationKey, hidden.observationKey)
+        assertNull(map(report.copy(source = "ble_fingerprint")).wifiNetwork)
+        assertNull(map(report.copy(source = "unknown")).wifiNetwork)
+        assertNull(map(report.copy(source = "wifi_probe", ssid = "Requested network")).wifiNetwork)
+    }
+
+    @Test
+    fun legacyFlockBadgeVendorEvidenceRemainsNearbyAndExplicitAlprIsPreserved() {
+        val vendor = badgeEntity(1).copy(evidence = "Flock registered OUI")
+        fun map(entity: BadgeThreatEntity) = BadgePrivacySourceAdapter.mapEntity(
+            entity, PrivacySourceKind.BADGE_USB, 10_000L, 100_000L, "row",
+        )!!
+        assertEquals(PrivacyCategory.SECURITY_INFRASTRUCTURE, map(vendor).category)
+        assertEquals("Flock Safety device", map(vendor).title)
+        assertEquals(FindingSeverity.NEARBY, map(vendor).severity)
+        assertEquals(PrivacyCategory.ALPR_CAMERA, map(vendor.copy(label = "ALPR Camera", evidence = "privacy:alpr:elsag")).category)
+    }
+
+    @Test
     fun sameEntityAppleListeningNormalizesButSplitEntitiesNeverCorrelate() {
         val same = BadgePrivacySourceAdapter.mapEntity(
             entity = badgeEntity(sourceId = 1).copy(

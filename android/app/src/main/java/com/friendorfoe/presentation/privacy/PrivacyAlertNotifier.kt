@@ -107,7 +107,7 @@ private fun postPrivacyNotification(
         intent,
         PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
     )
-    val body = finding.evidence
+    val body = finding.wifiNetwork?.reason ?: finding.evidence
         ?: "${finding.source.userLabel()} · ${finding.category.label}"
     val notification = NotificationCompat.Builder(context, PRIVACY_ALERT_CHANNEL_ID)
         .setSmallIcon(R.drawable.ic_launcher_foreground)

@@ -32,7 +32,7 @@ class WelcomeScreenTest {
 
         val action = compose.onNodeWithTag("welcome_get_started").assertIsDisplayed()
         compose.onNodeWithTag("welcome_data").performScrollTo().performClick()
-        compose.onNodeWithText("GitHub Repository").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("Android asks for access when a feature needs it.").performScrollTo().assertIsDisplayed()
         action.assertIsDisplayed()
         action.performClick()
         compose.runOnIdle { assertEquals(1, continued) }
@@ -44,6 +44,21 @@ class WelcomeScreenTest {
                     .fetchSemanticsNodes().size,
             )
         }
+    }
+
+    @Test
+    fun welcomePublisherOpensTheOfficialWebsiteWithoutStartingOnboarding() {
+        var destination: String? = null
+        var continued = 0
+        setWelcome(onContinue = { continued++ }, onOpenPublisher = { destination = it })
+
+        compose.onNodeWithText("Published by GameChangers AI").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("gamechangersai.org").performClick()
+        compose.runOnIdle {
+            assertEquals("https://gamechangersai.org/", destination)
+            assertEquals(0, continued)
+        }
+        compose.onNodeWithTag("welcome_get_started").assertIsDisplayed()
     }
 
     @Test
@@ -59,30 +74,6 @@ class WelcomeScreenTest {
             "Android asks for access when a feature needs it.",
         ).forEach { fact ->
             compose.onNodeWithText(fact).performScrollTo().assertIsDisplayed()
-        }
-    }
-
-    @Test
-    fun optionalLinksOnlyOpenFixedHttpsDestinations() {
-        val opened = mutableListOf<String>()
-        setWelcome(onOpenLink = opened::add)
-        compose.onNodeWithTag("welcome_data").performScrollTo().performClick()
-
-        compose.onNodeWithText("GameChangers")
-            .performScrollTo()
-            .performClick()
-        compose.onNodeWithText("GitHub Repository")
-            .performScrollTo()
-            .performClick()
-
-        compose.runOnIdle {
-            assertEquals(
-                listOf(
-                    "https://gamechangersai.org",
-                    "https://github.com/lnxgod/friendorfoe",
-                ),
-                opened,
-            )
         }
     }
 
@@ -123,14 +114,14 @@ class WelcomeScreenTest {
 
     private fun setWelcome(
         onContinue: () -> Unit = {},
-        onOpenLink: (String) -> Unit = {},
+        onOpenPublisher: (String) -> Unit = {},
     ) {
         compose.setContent {
             FriendOrFoeTheme {
                 WelcomeContent(
                     WelcomeActions(
                         onGetStarted = onContinue,
-                        onOpenLink = onOpenLink,
+                        onOpenPublisher = onOpenPublisher,
                     ),
                 )
             }

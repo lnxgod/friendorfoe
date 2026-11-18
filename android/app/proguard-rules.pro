@@ -20,3 +20,13 @@
 
 # Keep domain models (used by Gson)
 -keep class com.friendorfoe.domain.model.** { *; }
+
+# Nearby identifiers, coordinates and endpoint errors can enter diagnostic messages.
+# Release and Play builds keep functional error handling without writing those messages to Logcat.
+-assumenosideeffects class android.util.Log {
+    public static int v(...);
+    public static int d(...);
+    public static int i(...);
+    public static int w(...);
+    public static int e(...);
+}

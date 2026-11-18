@@ -92,7 +92,9 @@ fun PrivacyEncountersContent(
                     Modifier.fillMaxWidth().clickable { onOpenFinding(encounter.key) }.padding(16.dp),
                     verticalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
-                    Text(encounter.finding.title, style = MaterialTheme.typography.titleMedium)
+                    val network = encounter.finding.wifiNetwork
+                    Text(network?.ssidLabel() ?: encounter.finding.title, style = MaterialTheme.typography.titleMedium)
+                    network?.let { Text(it.reason, style = MaterialTheme.typography.bodyMedium) }
                     Text(encounter.finding.source.userLabel(), style = MaterialTheme.typography.labelMedium)
                     Text("Last observed ${formatEncounterTime(encounter.lastObservedWallMs)} · ${encounter.observationCount} updates")
                     if (encounter.repeatedObservationPeriods >= 2) Text(
@@ -173,6 +175,10 @@ internal fun formatEncounterTime(wallMs: Long): String = Instant.ofEpochMilli(wa
 
 internal fun encounterEvidenceText(encounter: PrivacyEncounter): String = buildString {
     appendLine(encounter.finding.title)
+    encounter.finding.wifiNetwork?.let {
+        appendLine(it.ssidLabel())
+        appendLine(it.reason)
+    }
     appendLine("Source: ${encounter.finding.source.userLabel()}")
     appendLine("Record: ${encounter.key.sourceRecordId}")
     appendLine("First observed: ${Instant.ofEpochMilli(encounter.firstObservedWallMs)}")
@@ -183,7 +189,7 @@ internal fun encounterEvidenceText(encounter: PrivacyEncounter): String = buildS
         appendLine("Period: ${Instant.ofEpochMilli(period.firstWallMs)} to ${Instant.ofEpochMilli(period.lastWallMs)}; ${period.updates} updates")
     }
     appendLine("Periods are separated by at least 2 minutes without reports; scanning interruptions can create gaps.")
-    encounter.finding.evidence?.let { appendLine("Evidence: $it") }
+    encounter.finding.evidence?.takeUnless { it == encounter.finding.wifiNetwork?.reason }?.let { appendLine("Evidence: $it") }
     encounter.finding.limitation?.let { appendLine("Limitations: $it") }
     append("Saved observation; does not establish current presence, identity, or intent.")
 }

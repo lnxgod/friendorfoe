@@ -102,25 +102,26 @@ fun projectPrivacyUiState(
     filters: PrivacyFilterState = PrivacyFilterState(),
     focusedKey: PrivacyFindingKey? = null,
 ): PrivacyUiState {
-    val visible = current.findings.filter { it.matches(filters) }
+    val tabFindings = if (filters.focus == PrivacyFocus.ALL) current.findings
+        else current.findings.filter { it.inFocus(filters.focus) }
+    val visible = tabFindings.filter { it.matchesRefinements(filters) }
     val focused = focusedKey?.let { key ->
         current.findings.singleOrNull { it.routableKey == key }
     }
     return PrivacyUiState(
         sourceHealth = current.sources,
         sourceSummaries = summarizePrivacySources(current.sources),
-        availableCategories = current.findings.map(PrivacyFinding::category)
+        availableCategories = (tabFindings.map(PrivacyFinding::category) + filters.categories)
             .distinct()
             .sortedBy(PrivacyCategory::label),
-        availableSources = (current.sources.map(PrivacySourceHealth::source) +
-            current.findings.map(PrivacyFinding::source))
+        availableSources = (tabFindings.map(PrivacyFinding::source) + filters.sources +
+            if (filters.focus == PrivacyFocus.ALL) current.sources.map(PrivacySourceHealth::source) else emptyList())
             .distinct()
             .sortedBy(PrivacySourceKind::preferenceId),
         visibleFindings = visible,
         totalCurrentCount = current.findings.size,
         focusCounts = PrivacyFocus.entries.associateWith { focus ->
-            val tabFilter = PrivacyFilterState(focus = focus)
-            current.findings.count { it.matches(tabFilter) }
+            current.findings.count { it.inFocus(focus) }
         },
         totalBeaconCount = current.findings.count(PrivacyFinding::isRoutineBeacon),
         threatCount = current.threatCount,
@@ -208,13 +209,14 @@ fun summarizePrivacySources(
     )
 }
 
-private fun PrivacyFinding.matches(filters: PrivacyFilterState): Boolean {
-    when (filters.focus) {
-        PrivacyFocus.ALL -> Unit
-        PrivacyFocus.RECORDERS -> if (category != PrivacyCategory.VOICE_RECORDER) return false
-        PrivacyFocus.BEACONS -> if (!isRoutineBeacon()) return false
-        PrivacyFocus.QUIET -> if (isRoutineBeacon() && severity.rank < FindingSeverity.AWARENESS.rank) return false
-    }
+private fun PrivacyFinding.inFocus(focus: PrivacyFocus): Boolean = when (focus) {
+    PrivacyFocus.ALL -> true
+    PrivacyFocus.RECORDERS -> category == PrivacyCategory.VOICE_RECORDER
+    PrivacyFocus.BEACONS -> isRoutineBeacon()
+    PrivacyFocus.QUIET -> !isRoutineBeacon() || severity.rank >= FindingSeverity.AWARENESS.rank
+}
+
+private fun PrivacyFinding.matchesRefinements(filters: PrivacyFilterState): Boolean {
     if (filters.attentionOnly && (severity.rank < FindingSeverity.AWARENESS.rank || ownership == Ownership.OWNED)) return false
     if (filters.liveOnly && freshness != FindingFreshness.LIVE) return false
     if (filters.categories.isNotEmpty() && category !in filters.categories) return false
@@ -224,6 +226,8 @@ private fun PrivacyFinding.matches(filters: PrivacyFilterState): Boolean {
     val family = deviceFamily()
     return listOfNotNull(
         title,
+        wifiNetwork?.ssid,
+        wifiNetwork?.reason,
         evidence,
         limitation,
         category.label,

@@ -124,6 +124,9 @@ internal fun filterPrivacyEncounters(
 ): List<PrivacyEncounter> = entries.filter { encounter ->
     (!repeatedOnly || encounter.repeatedObservationPeriods >= 2) &&
         (!hideOwned || encounter.finding.ownership != Ownership.OWNED) &&
-        (query.isBlank() || listOf(encounter.finding.title, encounter.finding.source.userLabel(), encounter.key.sourceRecordId)
+        (query.isBlank() || listOfNotNull(
+            encounter.finding.title, encounter.finding.wifiNetwork?.ssid, encounter.finding.wifiNetwork?.reason,
+            encounter.finding.source.userLabel(), encounter.key.sourceRecordId,
+        )
             .any { it.contains(query.trim(), ignoreCase = true) })
 }

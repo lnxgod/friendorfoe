@@ -30,7 +30,7 @@ class MapBackendPollingTest {
     @Test
     fun endpointReplacementRejectsLateResultAndDisableClearsOnlyRemoteState() = runTest {
         val settings = MutableStateFlow(
-            DetectionSettings.defaults().copy(sensorBackendEnabled = true),
+            DetectionSettings.defaults().copy(sensorBackendEnabled = true, backendUrl = "https://sensor.example/"),
         )
         val localObject = Drone(
             id = "local-row",

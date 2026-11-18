@@ -325,9 +325,9 @@ fun FofEmptyState(
 
 @Composable
 private fun fofToneColor(tone: FofTone): Color = when (tone) {
-    FofTone.Neutral -> MaterialTheme.colorScheme.outline
+    FofTone.Neutral -> MaterialTheme.colorScheme.onSurfaceVariant
     FofTone.Primary -> MaterialTheme.colorScheme.primary
-    FofTone.Success -> Color(0xFF2E7D32)
-    FofTone.Warning -> Color(0xFFF57C00)
+    FofTone.Success -> MaterialTheme.colorScheme.primary
+    FofTone.Warning -> MaterialTheme.colorScheme.tertiary
     FofTone.Danger -> MaterialTheme.colorScheme.error
 }

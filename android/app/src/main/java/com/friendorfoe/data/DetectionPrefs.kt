@@ -8,6 +8,7 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import java.security.MessageDigest
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -46,7 +47,7 @@ data class DetectionSettings(
             policeAlertsEnabled = false,
             sensorBackendEnabled = false,
             backendOnlyMode = false,
-            backendUrl = "http://fof-server.local:8000/",
+            backendUrl = "",
         )
     }
 }
@@ -82,7 +83,35 @@ class DetectionPrefs @Inject constructor(
         private const val KEY_BACKEND_ONLY = "sensor_backend_only_mode"
         private const val KEY_CAL_TOKEN = "fof_calibration_token"
         private const val KEY_OPERATOR_LABEL = "fof_calibration_operator"
-        private const val DEFAULT_BACKEND_URL = "http://fof-server.local:8000/"
+        private const val KEY_REMOVE_BUNDLED_DEFAULTS = "removed_bundled_backend_defaults_v1"
+        // Recognize values written by older releases without shipping a usable destination or token.
+        private const val LEGACY_URL_DIGEST = "685f43a3dfd38dc6475b74cc410dd24d1904651cead0e6dee588abf10fc6e85f"
+        private const val LEGACY_TOKEN_DIGEST = "99eb5a58c917e47d8bf11fac8ab38503e9ee27ab46d926482ad0b032d09c8d55"
+
+        internal fun retireBundledDefaults(
+            prefs: SharedPreferences,
+            urlDigest: String = LEGACY_URL_DIGEST,
+            tokenDigest: String = LEGACY_TOKEN_DIGEST,
+        ) {
+            if (prefs.getBoolean(KEY_REMOVE_BUNDLED_DEFAULTS, false)) return
+            val editor = prefs.edit()
+            val url = prefs.getString(KEY_BACKEND_URL, null).orEmpty().trim().trimEnd('/').lowercase()
+            if (url.isEmpty() || legacyDigest(url) == urlDigest) {
+                editor.remove(KEY_BACKEND_URL)
+                // An upgrade must not start phone collectors that the operator paused.
+                if (!prefs.getBoolean(KEY_BACKEND_ONLY, false)) editor.remove(KEY_SENSOR_BACKEND)
+            }
+            val token = prefs.getString(KEY_CAL_TOKEN, null)
+            if (token != null && legacyDigest(token) == tokenDigest) editor.remove(KEY_CAL_TOKEN)
+            editor.putBoolean(KEY_REMOVE_BUNDLED_DEFAULTS, true).apply()
+        }
+
+        internal fun legacyDigest(value: String): String = MessageDigest.getInstance("SHA-256")
+            .digest(value.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
+    }
+
+    init {
+        retireBundledDefaults(prefs)
     }
 
     private val _settings = MutableStateFlow(snapshot())
@@ -215,7 +244,7 @@ class DetectionPrefs @Inject constructor(
 
     /** Backend URL — configurable */
     override var backendUrl: String
-        get() = prefs.getString(KEY_BACKEND_URL, DEFAULT_BACKEND_URL) ?: DEFAULT_BACKEND_URL
+        get() = prefs.getString(KEY_BACKEND_URL, null).orEmpty()
         set(value) = updateSettings { putString(KEY_BACKEND_URL, value) }
 
     /** Backend-only mode — phone sensors off; ESP32/API/badge feeds remain available. */
@@ -225,12 +254,9 @@ class DetectionPrefs @Inject constructor(
             putBoolean(KEY_BACKEND_ONLY, value && sensorBackendEnabled)
         }
 
-    /** Bearer token for the calibration walk endpoints.
-     *  Default matches the backend's `_DEV_DEFAULT_CAL_TOKEN` so a
-     *  fresh install + fresh backend Just Work. Operator can overwrite
-     *  via the Calibrate screen if they've pinned FOF_CAL_TOKEN in prod. */
+    /** Operator-provided token for calibration walk endpoints. */
     override var calibrationToken: String
-        get() = prefs.getString(KEY_CAL_TOKEN, "chompchomp") ?: "chompchomp"
+        get() = prefs.getString(KEY_CAL_TOKEN, null).orEmpty()
         set(value) = prefs.edit().putString(KEY_CAL_TOKEN, value).apply()
 
     /** Display name shown to operators reviewing calibration history. */

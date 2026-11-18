@@ -20,7 +20,7 @@ class BackendPollingGateTest {
     @Test
     fun disablingBackendCancelsPollingAndClearsRemoteState() = runTest {
         val settings = MutableStateFlow(
-            DetectionSettings.defaults().copy(sensorBackendEnabled = true),
+            DetectionSettings.defaults().copy(sensorBackendEnabled = true, backendUrl = "https://sensor.example/"),
         )
         var fetches = 0
         var clears = 0
@@ -48,7 +48,7 @@ class BackendPollingGateTest {
     @Test
     fun changingEndpointCancelsOldLoopAndClearsBeforeRefetch() = runTest {
         val settings = MutableStateFlow(
-            DetectionSettings.defaults().copy(sensorBackendEnabled = true),
+            DetectionSettings.defaults().copy(sensorBackendEnabled = true, backendUrl = "https://sensor.example/"),
         )
         val events = mutableListOf<String>()
         var fetches = 0
@@ -73,7 +73,7 @@ class BackendPollingGateTest {
         }
 
         runCurrent()
-        settings.value = settings.value.copy(backendUrl = "http://field-kit:8000/")
+        settings.value = settings.value.copy(backendUrl = "https://field-kit:8000/")
         runCurrent()
 
         assertEquals(listOf("clear", "cancel", "clear", "fresh"), events)
@@ -83,7 +83,7 @@ class BackendPollingGateTest {
     @Test
     fun lateNonCooperativeFetchCannotPublishAfterEndpointChanges() = runTest {
         val settings = MutableStateFlow(
-            DetectionSettings.defaults().copy(sensorBackendEnabled = true),
+            DetectionSettings.defaults().copy(sensorBackendEnabled = true, backendUrl = "https://sensor.example/"),
         )
         val continuations = mutableListOf<Continuation<String>>()
         val published = mutableListOf<String>()
@@ -115,7 +115,7 @@ class BackendPollingGateTest {
     @Test
     fun lateNonCooperativeFailureCannotPublishAfterEndpointChanges() = runTest {
         val settings = MutableStateFlow(
-            DetectionSettings.defaults().copy(sensorBackendEnabled = true),
+            DetectionSettings.defaults().copy(sensorBackendEnabled = true, backendUrl = "https://sensor.example/"),
         )
         val continuations = mutableListOf<Continuation<String>>()
         val failures = mutableListOf<String>()
@@ -144,7 +144,7 @@ class BackendPollingGateTest {
     }
 
     @Test
-    fun initiallyDisabledBackendDoesNotFetchUntilExplicitlyEnabled() = runTest {
+    fun freshInstallDoesNotFetchUntilEnabledAndConfigured() = runTest {
         val settings = MutableStateFlow(DetectionSettings.defaults())
         var fetches = 0
         val job = launch {
@@ -161,6 +161,9 @@ class BackendPollingGateTest {
         assertEquals(0, fetches)
 
         settings.value = settings.value.copy(sensorBackendEnabled = true)
+        runCurrent()
+        assertEquals(0, fetches)
+        settings.value = settings.value.copy(backendUrl = "https://sensor.example/")
         runCurrent()
         assertEquals(1, fetches)
         job.cancel()

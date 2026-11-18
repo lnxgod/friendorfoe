@@ -110,7 +110,12 @@ private fun FindingDetails(finding: PrivacyFinding) {
         modifier = Modifier.fillMaxWidth().padding(20.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        Text(finding.title, style = MaterialTheme.typography.headlineSmall)
+        val network = finding.wifiNetwork
+        Text(network?.ssidLabel() ?: finding.title, style = MaterialTheme.typography.headlineSmall)
+        if (network != null) {
+            Text(network.reason, style = MaterialTheme.typography.bodyLarge)
+            Text(finding.title, style = MaterialTheme.typography.titleSmall)
+        }
         Text(
             "${finding.severity.detailLabel()} · ${finding.source.userLabel()} · " +
                 finding.freshness.detailLabel(),
@@ -119,7 +124,7 @@ private fun FindingDetails(finding: PrivacyFinding) {
             color = MaterialTheme.colorScheme.primary,
         )
         if (finding.ownership == Ownership.OWNED) Text("Your device")
-        finding.evidence?.let { Text(it) }
+        finding.evidence?.takeUnless { it == network?.reason }?.let { Text(it) }
         finding.limitation?.let {
             Text(it, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }

@@ -21,6 +21,17 @@ class NearbyFeedPresentationTest {
         assertEquals(ListBodyState.NoDetections, nearbyFeedPresentation(AircraftFeedState(AircraftFeedPhase.LIVE, 1000), true, emptyList(), emptyList(), 0, 5000).body)
         assertEquals(ListBodyState.Loading, nearbyFeedPresentation(AircraftFeedState(AircraftFeedPhase.CONNECTING), true, emptyList(), emptyList(), 0, 5000).body)
     }
+    @Test fun missingLocationHasItsOwnStateOnlyWhenThereAreNoDetectionsToShow() {
+        val waiting = AircraftFeedState()
+        val empty = nearbyFeedPresentation(waiting, true, emptyList(), emptyList(), 0, 5000)
+        assertEquals(ListBodyState.WaitingForLocation, empty.body)
+        assertFalse(empty.canRetry)
+
+        val rows = listOf(aircraft("local", null))
+        assertEquals(ListBodyState.Results(rows), nearbyFeedPresentation(waiting, true, rows, rows, 0, 5000).body)
+        assertEquals(ListBodyState.NoMatches(1), nearbyFeedPresentation(waiting, true, rows, emptyList(), 1, 5000).body)
+        assertEquals(ListBodyState.NoDetections, nearbyFeedPresentation(waiting, false, emptyList(), emptyList(), 0, 5000).body)
+    }
     @Test fun outageRetainsRowsAndShowsLastSuccessAge() {
         val rows = listOf(aircraft("cached", 5.0))
         val feed = AircraftFeedState(AircraftFeedPhase.LIVE, 1000).failed(5000, 1, 5000)

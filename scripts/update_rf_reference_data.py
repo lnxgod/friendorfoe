@@ -19,7 +19,6 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -33,7 +32,7 @@ SOURCES = {
     "ieee_ma_l": "https://standards-oui.ieee.org/oui/oui.csv",
     "ieee_ma_m": "https://standards-oui.ieee.org/oui28/mam.csv",
     "ieee_ma_s": "https://standards-oui.ieee.org/oui36/oui36.csv",
-    "ieee_cid": "https://standards-oui.ieee.org/cid/cid.csv",
+    "ieee_iab": "https://standards-oui.ieee.org/iab/iab.csv",
     "wireshark_manuf": "https://www.wireshark.org/download/automated/data/manuf",
     "nmap_mac_prefixes": "https://raw.githubusercontent.com/nmap/nmap/master/nmap-mac-prefixes",
     "bluetooth_company_ids": "https://bitbucket.org/bluetooth-SIG/public/raw/main/assigned_numbers/company_identifiers/company_identifiers.yaml",
@@ -272,22 +271,24 @@ def _load_overrides(path: Path) -> dict[str, object]:
 
 
 def _source_bytes(args: argparse.Namespace, source: str) -> bytes:
+    if args.source_dir:
+        # One saved download per source (file names are the SOURCES keys).
+        return (args.source_dir / source).read_bytes()
     if args.local_only:
         if source == "wireshark_manuf":
             return LOCAL_MANUF.read_bytes()
         if source == "bluetooth_company_ids":
             return LOCAL_BLE_COMPANY_IDS.read_bytes()
-        raise RuntimeError(f"{source} unavailable in --local-only mode")
-    try:
-        return _download(SOURCES[source])
-    except (HTTPError, URLError, TimeoutError) as exc:
-        if source == "wireshark_manuf" and LOCAL_MANUF.exists():
-            print(f"warning: {source} fetch failed ({exc}); using {LOCAL_MANUF}", file=sys.stderr)
-            return LOCAL_MANUF.read_bytes()
-        if source == "bluetooth_company_ids" and LOCAL_BLE_COMPANY_IDS.exists():
-            print(f"warning: {source} fetch failed ({exc}); using {LOCAL_BLE_COMPANY_IDS}", file=sys.stderr)
-            return LOCAL_BLE_COMPANY_IDS.read_bytes()
-        raise
+        raise ValueError(f"{source} unavailable in --local-only mode")
+    # A failed refresh must leave the committed artifact untouched. In particular,
+    # the local BLE fallback is JSON and must not be parsed as SIG YAML.
+    return _download(SOURCES[source])
+
+
+def _checked(source: str, rows, minimum: int):
+    if len(rows) < minimum:
+        raise ValueError(f"{source}: parsed {len(rows):,} entries; expected at least {minimum:,}")
+    return rows
 
 
 def build(args: argparse.Namespace) -> dict:
@@ -298,13 +299,14 @@ def build(args: argparse.Namespace) -> dict:
         ("ieee_ma_l", 24, "MA-L"),
         ("ieee_ma_m", 28, "MA-M"),
         ("ieee_ma_s", 36, "MA-S"),
-        ("ieee_cid", 24, "CID"),
+        ("ieee_iab", 36, "IAB"),  # Former Individual Address Block registry (not CID).
     ):
         if args.local_only:
             continue
         data = _source_bytes(args, source)
         source_meta[source] = {"url": SOURCES[source], "bytes": len(data), "sha256": _sha256(data)}
-        for prefix, bits, short, long, registry in _parse_ieee_csv(data, source, default_bits):
+        rows = _checked(source, _parse_ieee_csv(data, source, default_bits), 30000 if default_bits == 24 else 3000)
+        for prefix, bits, short, long, registry in rows:
             _upsert(
                 entries,
                 prefix=prefix,
@@ -321,7 +323,7 @@ def build(args: argparse.Namespace) -> dict:
         "bytes": len(manuf_data),
         "sha256": _sha256(manuf_data),
     }
-    for prefix, bits, short, long in _parse_manuf(manuf_data):
+    for prefix, bits, short, long in _checked("wireshark_manuf", _parse_manuf(manuf_data), 40000):
         _upsert(
             entries,
             prefix=prefix,
@@ -335,7 +337,7 @@ def build(args: argparse.Namespace) -> dict:
     if not args.local_only:
         nmap_data = _source_bytes(args, "nmap_mac_prefixes")
         source_meta["nmap_mac_prefixes"] = {"url": SOURCES["nmap_mac_prefixes"], "bytes": len(nmap_data), "sha256": _sha256(nmap_data)}
-        for prefix, bits, short, long in _parse_nmap(nmap_data):
+        for prefix, bits, short, long in _checked("nmap_mac_prefixes", _parse_nmap(nmap_data), 30000):
             _upsert(
                 entries,
                 prefix=prefix,
@@ -357,6 +359,8 @@ def build(args: argparse.Namespace) -> dict:
         if args.local_only
         else _parse_ble_company_yaml(ble_data)
     )
+
+    _checked("bluetooth_company_ids", ble_company_ids, 3000)
 
     overrides = _load_overrides(OVERRIDES_PATH)
     for prefix_text, override in dict(overrides.get("prefix_overrides", {})).items():
@@ -413,14 +417,29 @@ def build(args: argparse.Namespace) -> dict:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", type=Path, default=OUT_PATH)
-    parser.add_argument("--local-only", action="store_true", help="Use committed local inputs only.")
+    source_group = parser.add_mutually_exclusive_group()
+    source_group.add_argument("--source-dir", type=Path, help="Read saved registry downloads named by source ID instead of fetching again.")
+    source_group.add_argument("--local-only", action="store_true", help="Use local manuf.txt and BLE fallback JSON only.")
     args = parser.parse_args(argv)
+    if args.local_only and args.output == OUT_PATH:
+        parser.error("--local-only is a partial rebuild; set --output to a scratch file")
     t0 = time.time()
     artifact = build(args)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     tmp = args.output.with_suffix(args.output.suffix + ".new")
     tmp.write_text(json.dumps(artifact, indent=2, sort_keys=True) + "\n")
     tmp.replace(args.output)
+    if args.output == OUT_PATH and not args.local_only:
+        # The lightweight company lookup and drone reference tools use this subset.
+        # Generate it from the same SIG download, never from a second network fetch.
+        rows = sorted(artifact["ble_company_ids"].values(), key=lambda row: row["code"])
+        fallback = LOCAL_BLE_COMPANY_IDS.with_suffix(".json.new")
+        body = ",\n".join(
+            f'    {{ "code": {row["code"]}, "name": {json.dumps(row["name"], ensure_ascii=False)} }}'
+            for row in rows
+        )
+        fallback.write_text("[\n" + body + "\n]\n", encoding="utf-8")
+        fallback.replace(LOCAL_BLE_COMPANY_IDS)
     print(
         f"wrote {args.output} with {artifact['source_entry_counts']['mac_prefixes']:,} "
         f"MAC prefixes and {artifact['source_entry_counts']['ble_company_ids']:,} BLE company IDs "

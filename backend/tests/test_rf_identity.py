@@ -35,7 +35,7 @@ def test_randomized_wifi_mac_has_no_fake_brand():
     assert "Probe IE hash: A1B2C3D4" in meta["evidence"]
 
 
-def test_probe_group_uses_public_oui_majority_for_brand_with_randomized_members():
+def test_probe_group_uses_public_oui_majority_for_brand_with_randomized_members(configured_test_network):
     meta = enrich_rf_evidence(
         source="wifi_probe_request",
         bssid="3A:11:22:33:44:55",
@@ -44,7 +44,7 @@ def test_probe_group_uses_public_oui_majority_for_brand_with_randomized_members(
             "F4:65:0B:AA:BB:CC",
             "00:70:07:AA:BB:CC",
         ],
-        probed_ssids=["TeamCharityCase", "PrinterSetup"],
+        probed_ssids=["Example-Fixture-SSID", "PrinterSetup"],
         ie_hash="4F6E335E",
         classification="wifi_device",
     )
@@ -57,25 +57,25 @@ def test_probe_group_uses_public_oui_majority_for_brand_with_randomized_members(
     assert meta["public_oui_brands"]["Espressif"] == 2
     assert meta["representative_public_mac"] == "F4:65:0B:AA:BB:CC"
     assert meta["representative_oui_prefix"] == "F4:65:0B"
-    assert meta["known_network_label"] == "TeamCharityCase lab/property"
+    assert meta["known_network_label"] == "Example test network"
     assert meta["device_family"] == "operator_known_lab_device"
     assert any("Group OUI majority: Espressif" in e for e in meta["evidence"])
 
 
-def test_randomized_only_known_network_gets_operator_label_not_fake_oui():
+def test_randomized_only_known_network_gets_operator_label_not_fake_oui(configured_test_network):
     meta = enrich_rf_evidence(
         source="wifi_ap_inventory",
         bssid="C2:07:1D:22:5E:E0",
-        ssid="TeamCharityCase-2",
+        ssid="Example-Fixture-SSID-2",
         classification="wifi_device",
     )
 
     assert meta["mac_is_randomized"] is True
-    assert meta["brand"] == "TeamCharityCase lab/property"
+    assert meta["brand"] == "Example test network"
     assert meta["brand_source"] == "known_network_label"
     assert meta["device_class"] == "known_owned"
     assert meta["device_family"] == "operator_known_lab_device"
-    assert meta["known_network_label"] == "TeamCharityCase lab/property"
+    assert meta["known_network_label"] == "Example test network"
     assert any("Known network label" in e for e in meta["evidence"])
     assert "locally_administered_bit" in meta["evidence"]
 
@@ -83,7 +83,7 @@ def test_randomized_only_known_network_gets_operator_label_not_fake_oui():
 def test_friendly_camera_oui_adds_family_without_hidden_camera_overclaim():
     meta = enrich_rf_evidence(
         source="wifi_ap_inventory",
-        bssid="90:48:9A:12:34:56",
+        bssid="18:7F:88:12:34:56",
         ssid="FrontDoor",
         classification="wifi_device",
     )
@@ -91,7 +91,7 @@ def test_friendly_camera_oui_adds_family_without_hidden_camera_overclaim():
     assert meta["mac_is_randomized"] is False
     assert meta["brand"] == "Ring"
     assert meta["brand_source"] == "friendly_oui"
-    assert meta["oui_prefix"] == "90:48:9A"
+    assert meta["oui_prefix"] == "18:7F:88"
     assert meta["device_family"] == "camera_or_video"
     assert meta["device_class"] == "surveillance_camera"
     assert any("Curated OUI prefix: Ring" in e for e in meta["evidence"])
@@ -194,7 +194,7 @@ def test_airpods_connected_audio_gets_remote_listening_identity_explanation():
     assert explanation["recommended_action"] == "inspect_room"
 
 
-def test_registered_flock_oui_adds_alpr_camera_family():
+def test_registered_flock_oui_identifies_security_infrastructure():
     meta = enrich_rf_evidence(
         source="wifi_oui",
         bssid="B4:1E:52:AA:BB:CC",
@@ -206,8 +206,8 @@ def test_registered_flock_oui_adds_alpr_camera_family():
     assert meta["brand"] == "Flock Safety"
     assert meta["brand_source"] == "friendly_oui"
     assert meta["oui_prefix"] == "B4:1E:52"
-    assert meta["device_family"] == "camera_or_video"
-    assert meta["device_class"] == "surveillance_camera"
+    assert meta["device_family"] == "security_infrastructure"
+    assert meta["device_class"] == "security_infrastructure"
 
 
 @pytest.mark.parametrize(
@@ -230,7 +230,7 @@ def test_registered_flock_oui_is_normalized_across_common_mac_formats(bssid):
     assert meta["brand"] == "Flock Safety"
     assert meta["brand_source"] == "friendly_oui"
     assert meta["oui_prefix"] == "B4:1E:52"
-    assert meta["device_class"] == "surveillance_camera"
+    assert meta["device_class"] == "security_infrastructure"
 
 
 @pytest.mark.parametrize("bssid", ["XB4:1E:52:AA:BB:CC", "B4:1E:5Z:AA:BB:CC"])
@@ -555,7 +555,7 @@ async def test_live_devices_endpoint_adds_rf_meta(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_probe_endpoint_exposes_group_oui_rollup_and_known_network(monkeypatch):
+async def test_probe_endpoint_exposes_group_oui_rollup_and_known_network(monkeypatch, configured_test_network):
     now = time.time()
     monkeypatch.setattr(detections, "_recent_detections", deque([
         StoredDetection(
@@ -563,9 +563,9 @@ async def test_probe_endpoint_exposes_group_oui_rollup_and_known_network(monkeyp
             source="wifi_probe_request",
             confidence=0.05,
             rssi=-55,
-            ssid="TeamCharityCase",
+            ssid="Example-Fixture-SSID",
             bssid="3A:11:22:33:44:55",
-            probed_ssids=["TeamCharityCase"],
+            probed_ssids=["Example-Fixture-SSID"],
             ie_hash="4F6E335E",
             device_id="node-a",
             received_at=now - 5,
@@ -576,9 +576,9 @@ async def test_probe_endpoint_exposes_group_oui_rollup_and_known_network(monkeyp
             source="wifi_probe_request",
             confidence=0.05,
             rssi=-48,
-            ssid="TeamCharityCase",
+            ssid="Example-Fixture-SSID",
             bssid="F4:65:0B:AA:BB:CC",
-            probed_ssids=["TeamCharityCase", "FoF-Lab"],
+            probed_ssids=["Example-Fixture-SSID", "FoF-Lab"],
             ie_hash="4F6E335E",
             device_id="node-b",
             received_at=now - 3,
@@ -589,9 +589,9 @@ async def test_probe_endpoint_exposes_group_oui_rollup_and_known_network(monkeyp
             source="wifi_probe_request",
             confidence=0.05,
             rssi=-50,
-            ssid="TeamCharityCase",
+            ssid="Example-Fixture-SSID",
             bssid="00:70:07:AA:BB:CC",
-            probed_ssids=["TeamCharityCase"],
+            probed_ssids=["Example-Fixture-SSID"],
             ie_hash="4F6E335E",
             device_id="node-c",
             received_at=now - 4,
@@ -609,10 +609,10 @@ async def test_probe_endpoint_exposes_group_oui_rollup_and_known_network(monkeyp
     assert device["brand_source"] == "group_oui_majority"
     assert device["public_oui_brands"]["Espressif"] == 2
     assert device["randomized_mac_count"] == 1
-    assert device["known_network_label"] == "TeamCharityCase lab/property"
+    assert device["known_network_label"] == "Example test network"
     assert device["device_family"] == "operator_known_lab_device"
     assert device["representative_oui_prefix"] in {"F4:65:0B", "00:70:07"}
-    assert set(device["probed_ssids"]) == {"TeamCharityCase", "FoF-Lab"}
+    assert set(device["probed_ssids"]) == {"Example-Fixture-SSID", "FoF-Lab"}
 
 
 @pytest.mark.asyncio

@@ -7,7 +7,19 @@ class PersonalRecorderSignaturesTest {
     @Test fun `recorder names use boundaries and ignore case`() {
         val examples = mapOf("PLAUDAB12" to "Plaud", "PLAUD NOTE" to "Plaud", "Plaud Note Pro" to "Plaud",
             "NotePin_123" to "Plaud", "omi" to "Omi", "Limitless Pendant" to "Limitless",
-            "Bee_AB12" to "Bee", "friend_123" to "Friend", "Fieldy" to "Fieldy")
+            "Bee_AB12" to "Bee", "friend_123" to "Friend", "Fieldy" to "Fieldy",
+            "viaim RecDot" to "viaim",
+            "VIAIM OpenNote" to "viaim",
+            "soundcore Work" to "soundcore",
+            "soundcore Work_AB12" to "soundcore",
+            "Notta Memo" to "Notta",
+            "Notta Memo Pro" to "Notta",
+            "Instamic BLE" to "Instamic",
+            "Instamic 01" to "Instamic",
+            "DJI-MIC2-123456" to "DJI",
+            "DJI-MIC3-1234" to "DJI",
+            "DJI Mic 2" to "DJI",
+            "DJI Mic 3" to "DJI")
         for ((name, brand) in examples) {
             assertEquals(name, brand, PersonalRecorderSignatures.match(name)?.manufacturer)
         }
@@ -16,7 +28,29 @@ class PersonalRecorderSignaturesTest {
 
     @Test fun `unrelated names and shared UUIDs do not match`() {
         for (name in listOf("Pebblebee", "Beech", "Beeline", "Friend", "Friendly Speaker",
-            "Pendant", "Compass", "My PLAUD phone", "Plaudify", "Fieldyard", "OMIRON")) {
+            "Pendant", "Compass", "My PLAUD phone", "Plaudify", "Fieldyard", "OMIRON",
+            "viaim",
+            "viaim Air",
+            "viaim Nano+",
+            "viaim RecDotty",
+            "soundcore",
+            "soundcore Liberty 4",
+            "soundcore Workout",
+            "Anker",
+            "Notta",
+            "Notta Memories",
+            "Instamicrophone",
+            "DJI",
+            "DJI Mini 3",
+            "DJI-MIC20",
+            "DJI-MIC30",
+            "DJI-MICX-XXXX",
+            "DJI Mic Mini",
+            "Zoom",
+            "F2",
+            "F2(1)",
+            "Looki",
+            "Looki L1")) {
             assertNull(name, PersonalRecorderSignatures.match(name))
         }
         for (uuid in listOf("00001910-0000-1000-8000-00805f9b34fb",

@@ -1,6 +1,9 @@
 package com.friendorfoe.presentation.theme
 
 import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
+import android.os.Build
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
@@ -11,7 +14,6 @@ import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.SideEffect
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -48,6 +50,9 @@ private val DarkColorScheme = darkColorScheme(
     secondary = Color(0xFFB5CCC3), onSecondary = Color(0xFF20362F),
     secondaryContainer = Color(0xFF263F36), onSecondaryContainer = Color(0xFFD2E9DF),
     tertiary = Color(0xFFEBC17C), onTertiary = Color(0xFF412D08),
+    tertiaryContainer = Color(0xFF5A4018), onTertiaryContainer = Color(0xFFFFDFA7),
+    inverseSurface = Color(0xFFE2EBE7), inverseOnSurface = Color(0xFF23322F),
+    inversePrimary = Color(0xFF006C53), surfaceTint = Color(0xFF83DFC4),
     background = Color(0xFF0E1518), onBackground = Color(0xFFEBF1EE),
     surface = Color(0xFF0E1518), onSurface = Color(0xFFEBF1EE),
     surfaceDim = Color(0xFF0E1518), surfaceBright = Color(0xFF303B3C),
@@ -66,6 +71,9 @@ private val LightColorScheme = lightColorScheme(
     secondary = Color(0xFF476457), onSecondary = Color.White,
     secondaryContainer = Color(0xFFDCECE3), onSecondaryContainer = Color(0xFF18352A),
     tertiary = Color(0xFF805600), onTertiary = Color.White,
+    tertiaryContainer = Color(0xFFFFE6B9), onTertiaryContainer = Color(0xFF4A3000),
+    inverseSurface = Color(0xFF273632), inverseOnSurface = Color(0xFFEDF5EF),
+    inversePrimary = Color(0xFF83DFC4), surfaceTint = Color(0xFF006C53),
     background = Color(0xFFF8FAF7), onBackground = Color(0xFF18221F),
     surface = Color(0xFFF8FAF7), onSurface = Color(0xFF18221F),
     surfaceDim = Color(0xFFD9E2DC), surfaceBright = Color(0xFFF8FAF7),
@@ -78,19 +86,36 @@ private val LightColorScheme = lightColorScheme(
     errorContainer = Color(0xFFFFDAD6), onErrorContainer = Color(0xFF410002),
 )
 
+internal fun appColorScheme(darkTheme: Boolean) = if (darkTheme) DarkColorScheme else LightColorScheme
+
+private tailrec fun Context.activityOrNull(): Activity? = when (this) {
+    is Activity -> this
+    is ContextWrapper -> baseContext.activityOrNull()
+    else -> null
+}
+
 @Composable
 fun FriendOrFoeTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
     content: @Composable () -> Unit
 ) {
-    val colorScheme = if (darkTheme) DarkColorScheme else LightColorScheme
+    val colorScheme = appColorScheme(darkTheme)
 
     val view = LocalView.current
     if (!view.isInEditMode) {
         SideEffect {
-            val window = (view.context as Activity).window
-            window.statusBarColor = Color.Transparent.toArgb()
-            WindowCompat.getInsetsController(window, view).isAppearanceLightStatusBars = !darkTheme
+            val window = view.context.activityOrNull()?.window ?: return@SideEffect
+            if (Build.VERSION.SDK_INT < 35) {
+                window.statusBarColor = android.graphics.Color.TRANSPARENT
+                window.navigationBarColor = android.graphics.Color.TRANSPARENT
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                window.isNavigationBarContrastEnforced = false
+            }
+            WindowCompat.getInsetsController(window, view).apply {
+                isAppearanceLightStatusBars = !darkTheme
+                isAppearanceLightNavigationBars = !darkTheme
+            }
         }
     }
 

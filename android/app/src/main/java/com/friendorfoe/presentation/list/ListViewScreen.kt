@@ -31,8 +31,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
 import androidx.compose.material3.Surface
 import androidx.compose.material3.FilterChip
 import androidx.compose.runtime.produceState
@@ -68,6 +66,7 @@ import com.friendorfoe.presentation.components.FofLoadingState
 import com.friendorfoe.presentation.components.FofNoMatchesState
 import com.friendorfoe.presentation.filter.CompactFilterBar
 import com.friendorfoe.presentation.filter.FilterModalSheet
+import com.friendorfoe.presentation.permissions.LocationPermissionDisclosure
 import com.friendorfoe.presentation.permissions.AppFeature
 import com.friendorfoe.presentation.permissions.PermissionSettingsLaunchResult
 import com.friendorfoe.presentation.permissions.PermissionUiState
@@ -180,23 +179,14 @@ fun ListViewScreen(
     }
 
     if (showLocationRationale) {
-        AlertDialog(
-            onDismissRequest = { showLocationRationale = false },
-            title = { Text("Allow location for nearby distances") },
-            text = {
-                Text(
-                    "Location helps show nearby distance and direction. Your aircraft and drone inventory remains available without it.",
-                )
+        LocationPermissionDisclosure(
+            title = "Allow location for Nearby?",
+            explanation = "When aircraft lookup is on, Friend or Foe sends your location or a surrounding area to aircraft data providers to find nearby flights. It also uses location on your phone to show distances. You can use approximate location.",
+            onContinue = {
+                showLocationRationale = false
+                permissionBindings.request(AppFeature.AR_MAP_LOCATION)
             },
-            confirmButton = {
-                Button(onClick = {
-                    showLocationRationale = false
-                    permissionBindings.request(AppFeature.AR_MAP_LOCATION)
-                }) { Text("Continue") }
-            },
-            dismissButton = {
-                TextButton(onClick = { showLocationRationale = false }) { Text("Not now") }
-            },
+            onDismiss = { showLocationRationale = false },
         )
     }
 }
@@ -227,7 +217,7 @@ internal fun ListContent(
 ) {
     var rangeOpen by rememberSaveable { mutableStateOf(false) }
     val headerCount = when (state.body) {
-        ListBodyState.Loading, is ListBodyState.Failed -> null
+        ListBodyState.WaitingForLocation, ListBodyState.Loading, is ListBodyState.Failed -> null
         else -> nearbyListCountLabel(visibleListRows(state.body), state.aircraftRangeMiles)
     }
     Column(modifier = Modifier.fillMaxSize()) {
@@ -273,14 +263,22 @@ internal fun ListContent(
                 label = { Text("Nearest first") }, modifier = Modifier.testTag("sort_nearest"))
         }
 
-        ListLocationRecoveryBanner(
-            permissionState = state.locationPermissionState,
-            settingsLaunchFailed = state.locationSettingsLaunchFailed,
-            onRequestLocation = actions.onRequestLocation,
-            onOpenLocationSettings = actions.onOpenLocationSettings,
-        )
+        if (state.body != ListBodyState.WaitingForLocation) {
+            ListLocationRecoveryBanner(state, actions)
+        }
 
         when (val body = state.body) {
+            ListBodyState.WaitingForLocation -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                if (state.locationPermissionState.isUsableFor(AppFeature.AR_MAP_LOCATION)) {
+                    FofEmptyState(
+                        title = "Waiting for your phone’s location",
+                        detail = "The aircraft feed will start when your phone finds its location. Check that location is turned on in Android settings.",
+                        modifier = Modifier.padding(horizontal = 24.dp),
+                    )
+                } else {
+                    ListLocationRecoveryBanner(state, actions)
+                }
+            }
             ListBodyState.Loading -> FofLoadingState("Loading nearby detections")
             is ListBodyState.Results -> ListRows(
                 rows = body.rows,
@@ -337,18 +335,16 @@ internal fun ListContent(
 
 @Composable
 private fun ListLocationRecoveryBanner(
-    permissionState: PermissionUiState,
-    settingsLaunchFailed: Boolean,
-    onRequestLocation: () -> Unit,
-    onOpenLocationSettings: () -> PermissionSettingsLaunchResult,
+    state: ListUiState,
+    actions: ListActions,
 ) {
-    when (permissionState) {
+    when (state.locationPermissionState) {
         PermissionUiState.Granted,
         PermissionUiState.Approximate,
         -> Unit
 
         PermissionUiState.Loading -> Text(
-            "Checking location access for nearby distances…",
+            "Checking location access…",
             modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -367,14 +363,14 @@ private fun ListLocationRecoveryBanner(
             ) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        "Nearby distances need location",
+                        "Location access is off",
                         style = MaterialTheme.typography.titleSmall,
                     )
                     Text(
-                        if (settingsLaunchFailed) {
+                        if (state.locationSettingsLaunchFailed) {
                             "Android settings could not be opened on this device. Open Friend or Foe from the system Settings app."
                         } else {
-                            "Aircraft and drone inventory remains available without location."
+                            "Allow location to load nearby aircraft and show distances."
                         },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -382,15 +378,15 @@ private fun ListLocationRecoveryBanner(
                 }
                 TextButton(
                     onClick = {
-                        if (permissionState == PermissionUiState.Denied) {
-                            onRequestLocation()
+                        if (state.locationPermissionState == PermissionUiState.Denied) {
+                            actions.onRequestLocation()
                         } else {
-                            onOpenLocationSettings()
+                            actions.onOpenLocationSettings()
                         }
                     },
                 ) {
                     Text(
-                        if (permissionState == PermissionUiState.Denied) "Allow location"
+                        if (state.locationPermissionState == PermissionUiState.Denied) "Allow location"
                         else "Open app settings",
                     )
                 }

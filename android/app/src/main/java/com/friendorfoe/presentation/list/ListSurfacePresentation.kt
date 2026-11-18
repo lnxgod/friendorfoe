@@ -12,6 +12,7 @@ import com.friendorfoe.presentation.permissions.PermissionSettingsLaunchResult
 import com.friendorfoe.presentation.permissions.PermissionUiState
 
 sealed interface ListBodyState {
+    data object WaitingForLocation : ListBodyState
     data object Loading : ListBodyState
     data class Results(val rows: List<SkyObject>) : ListBodyState
     data class StaleResults(

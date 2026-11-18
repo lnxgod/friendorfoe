@@ -10,10 +10,12 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -45,6 +47,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.ScrollableTabRow
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
 import androidx.compose.material3.Surface
@@ -61,19 +64,23 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.friendorfoe.detection.PersonalRecorderSignatures
 import com.friendorfoe.detection.PrivacyCategory
 import com.friendorfoe.presentation.components.FofEmptyState
 import com.friendorfoe.presentation.components.FofErrorState
+import com.friendorfoe.presentation.components.LeaveBackendOnlyDialog
 import com.friendorfoe.presentation.components.FofLoadingState
 import com.friendorfoe.presentation.components.FofNoMatchesState
 import com.friendorfoe.presentation.permissions.PermissionSettingsLaunchResult
@@ -113,7 +120,7 @@ data class PrivacyActions(
 @Composable
 fun PrivacyScreen(
     onOpenIgnoredDevices: (() -> Unit)? = null,
-    onOpenInfo: (() -> Unit)? = null,
+    onOpenBackendSettings: (() -> Unit)? = null,
     onOpenFinding: ((PrivacyFindingKey) -> Unit)? = null,
     onOpenProbes: (() -> Unit)? = null,
     onOpenEncounters: (() -> Unit)? = null,
@@ -162,7 +169,7 @@ fun PrivacyScreen(
             onOpenProbes = onOpenProbes,
             onOpenEncounters = onOpenEncounters,
             onRetryAllSources = viewModel::retryAllFailed,
-            onOpenBackendSettings = onOpenInfo,
+            onOpenBackendSettings = onOpenBackendSettings,
             onOpenIgnoredDevices = onOpenIgnoredDevices,
             onIgnore = viewModel::ignore,
             onTrack = {
@@ -176,8 +183,15 @@ fun PrivacyScreen(
         ),
     )
 
+    if (pendingPermissionAction?.backendOnlyExit == BackendOnlyExit.NEEDS_CONFIRMATION) {
+        LeaveBackendOnlyDialog(
+            onConfirm = viewModel::confirmLeaveBackendOnly,
+            onDismiss = viewModel::cancelPendingPermissionAction,
+        )
+    }
     pendingPermissionAction?.takeIf {
-        !it.requestLaunched || it.settingsLaunchFailed
+        it.backendOnlyExit != BackendOnlyExit.NEEDS_CONFIRMATION &&
+            (!it.requestLaunched || it.settingsLaunchFailed)
     }?.let { pending ->
         val source = pending.source
         val feature = requireNotNull(permissionFeatureForPrivacySource(source))
@@ -271,10 +285,13 @@ fun PrivacyContent(
     }
     val groups = remember(state.visibleFindings) { groupPrivacyDevices(state.visibleFindings) }
     val branchKeys = groups.flatMap { branch -> listOf(branch.group.key) + branch.families.flatMap { listOf(it.family.key) + it.networks.map { network -> network.key } } }
-    // Search/filter changes reveal matches; live scan updates keep the user's choices.
-    var expandByDefault by rememberSaveable(state.filters) { mutableStateOf(state.filters.query.isNotBlank()) }
+    // Search reveals matching families, but the everyday rollup still needs a tap.
+    var expandAll by rememberSaveable(state.filters) { mutableStateOf<Boolean?>(null) }
     var toggledBranches by rememberSaveable(state.filters) { mutableStateOf(emptyList<String>()) }
-    val expandedKeys = branchKeys.filter { expandByDefault != (it in toggledBranches) }.toSet()
+    val expandedKeys = branchKeys.filter { key ->
+        val startsOpen = expandAll ?: (state.filters.query.isNotBlank() && key != PrivacyDeviceGroup.EVERYDAY.key)
+        startsOpen != (key in toggledBranches)
+    }.toSet()
     val individualFindings = remember(state.visibleFindings) { state.individualFindings }
     LazyColumn(
         state = listState,
@@ -367,7 +384,7 @@ fun PrivacyContent(
                                 Text("Browse nearby", modifier = Modifier.weight(1f), style = MaterialTheme.typography.titleSmall)
                                 val allExpanded = expandedKeys.size == branchKeys.size
                                 TextButton(
-                                    onClick = { expandByDefault = !allExpanded; toggledBranches = emptyList() },
+                                    onClick = { expandAll = !allExpanded; toggledBranches = emptyList() },
                                     modifier = Modifier.testTag("privacy_tree_toggle_all"),
                                 ) { Text(if (allExpanded) "Collapse all" else "Expand all") }
                             }
@@ -402,20 +419,49 @@ fun PrivacyContent(
 private fun PrivacyTabs(state: PrivacyUiState, actions: PrivacyActions) {
     val focusManager = LocalFocusManager.current
     val keyboard = LocalSoftwareKeyboardController.current
-    TabRow(selectedTabIndex = PrivacyFocus.entries.indexOf(state.filters.focus)) {
+    val selectedIndex = PrivacyFocus.entries.indexOf(state.filters.focus)
+    val tabs: @Composable (Boolean) -> Unit = { flexible ->
         PrivacyFocus.entries.forEach { focus ->
-            Tab(selected = state.filters.focus == focus, onClick = {
+            val select: () -> Unit = {
                 focusManager.clearFocus()
                 keyboard?.hide()
-                actions.onFocusChanged(focus)
-            },
-                modifier = Modifier.testTag("privacy_focus_${focus.name}"),
-                text = {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text(focus.label, style = MaterialTheme.typography.labelMedium, maxLines = 1)
-                        Text((state.focusCounts[focus] ?: 0).toString(), style = MaterialTheme.typography.labelSmall)
-                    }
-                })
+                if (focus != state.filters.focus) actions.onFocusChanged(focus)
+            }
+            val modifier = Modifier.testTag("privacy_focus_${focus.name}")
+            val label: @Composable () -> Unit = {
+                Column(
+                    modifier = if (flexible) Modifier.padding(horizontal = 16.dp, vertical = 6.dp) else Modifier,
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    Text(focus.label, style = MaterialTheme.typography.labelMedium, maxLines = 1)
+                    Text((state.focusCounts[focus] ?: 0).toString(), style = MaterialTheme.typography.labelSmall)
+                }
+            }
+            if (flexible) {
+                // Unlike the Material text slot, custom content can grow taller for the count.
+                Tab(selected = state.filters.focus == focus, onClick = select, modifier = modifier.heightIn(min = 48.dp)) { label() }
+            } else {
+                Tab(selected = state.filters.focus == focus, onClick = select, modifier = modifier, text = label)
+            }
+        }
+    }
+    val measurer = rememberTextMeasurer()
+    val density = LocalDensity.current
+    val labelStyle = MaterialTheme.typography.labelMedium
+    val countStyle = MaterialTheme.typography.labelSmall
+    BoxWithConstraints {
+        val sizes = PrivacyFocus.entries.map { focus ->
+            val label = measurer.measure(focus.label, labelStyle).size
+            val count = measurer.measure((state.focusCounts[focus] ?: 0).toString(), countStyle).size
+            maxOf(label.width, count.width) to label.height + count.height
+        }
+        val widestText = with(density) { sizes.maxOf { it.first }.toDp() }
+        val needsHeight = with(density) { sizes.maxOf { it.second }.toDp() } > 48.dp
+        // Material text tabs add 16 dp of padding on either side of the label.
+        if (widestText + 32.dp > maxWidth / PrivacyFocus.entries.size) {
+            ScrollableTabRow(selectedTabIndex = selectedIndex, edgePadding = 0.dp) { tabs(true) }
+        } else {
+            TabRow(selectedTabIndex = selectedIndex) { tabs(needsHeight) }
         }
     }
 }
@@ -527,70 +573,69 @@ private fun PrivacySourceStatusRow(
     actions: PrivacyActions,
 ) {
     val color = sourceHealthColor(summary.state)
-    Row(
-        modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(vertical = 6.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Box(Modifier.size(8.dp).background(color, RoundedCornerShape(4.dp)))
-        Spacer(Modifier.width(10.dp))
-        Text(
-            text = summary.group.label,
-            style = MaterialTheme.typography.labelLarge,
-            fontWeight = FontWeight.SemiBold,
-            modifier = Modifier.width(72.dp),
-        )
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = summary.state.userLabel(),
-                style = MaterialTheme.typography.bodySmall,
-                fontWeight = FontWeight.SemiBold,
-                color = color,
-            )
-            summary.message?.takeIf { it.isNotBlank() }?.let {
-                Text(
-                    text = it,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
+    val action = when {
+        summary.group == PrivacySourceGroup.PHONE &&
+            summary.state == SourceHealthState.PAUSED -> {
+            "Turn on" to actions.onEnablePhoneScan
         }
-        val action = when {
-            summary.group == PrivacySourceGroup.PHONE &&
-                summary.state == SourceHealthState.PAUSED -> {
-                "Turn on" to actions.onEnablePhoneScan
-            }
-            summary.recoveryLabel == "Grant permission" -> {
-                if (permissionFeatureForPrivacySource(summary.recoverySource) == null) {
-                    "Connect badge" to {
-                        actions.onRecoverSource(summary.recoverySource)
-                    }
-                } else {
-                    "Grant access" to {
-                        actions.onResolveSourcePermission(summary.recoverySource)
-                    }
-                }
-            }
-            summary.recoveryLabel == "Turn on Bluetooth" -> {
-                "Turn on Bluetooth" to actions.onTurnOnBluetooth
-            }
-            summary.recoveryLabel == "Fix backend URL" -> {
-                actions.onOpenBackendSettings?.let { "Open Info" to it }
-            }
-            summary.recoveryLabel.isNullOrBlank() -> null
-            else -> {
-                summary.recoveryLabel to {
+        summary.recoveryLabel == "Grant permission" -> {
+            if (permissionFeatureForPrivacySource(summary.recoverySource) == null) {
+                "Connect badge" to {
                     actions.onRecoverSource(summary.recoverySource)
                 }
+            } else {
+                "Grant access" to {
+                    actions.onResolveSourcePermission(summary.recoverySource)
+                }
             }
         }
-        if (action != null) {
-            TextButton(
-                onClick = action.second,
-                modifier = Modifier.heightIn(min = 48.dp),
-            ) {
-                Text(action.first)
+        summary.recoveryLabel == "Turn on Bluetooth" -> {
+            "Turn on Bluetooth" to actions.onTurnOnBluetooth
+        }
+        summary.recoveryLabel == "Fix backend URL" -> {
+            actions.onOpenBackendSettings?.let { "Open connection settings" to it }
+        }
+        summary.recoveryLabel.isNullOrBlank() -> null
+        else -> {
+            summary.recoveryLabel to {
+                actions.onRecoverSource(summary.recoverySource)
+            }
+        }
+    }
+    BoxWithConstraints(Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(vertical = 6.dp)) {
+        val stacked = maxWidth < 320.dp || LocalDensity.current.fontScale >= 1.4f
+        val sourceLabel: @Composable (Modifier) -> Unit = { modifier ->
+            Row(modifier, verticalAlignment = Alignment.CenterVertically) {
+                Box(Modifier.size(8.dp).background(color, RoundedCornerShape(4.dp)))
+                Spacer(Modifier.width(10.dp))
+                Text(summary.group.label, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
+            }
+        }
+        val status: @Composable () -> Unit = {
+            Text(summary.state.userLabel(), style = MaterialTheme.typography.bodySmall,
+                fontWeight = FontWeight.SemiBold, color = color)
+            summary.message?.takeIf { it.isNotBlank() }?.let {
+                Text(it, style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = if (stacked) Int.MAX_VALUE else 2, overflow = TextOverflow.Ellipsis)
+            }
+        }
+        val recovery: @Composable () -> Unit = {
+            action?.let { (label, onClick) ->
+                TextButton(onClick = onClick, modifier = Modifier.heightIn(min = 48.dp)) { Text(label) }
+            }
+        }
+        if (stacked) {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                sourceLabel(Modifier)
+                status()
+                recovery()
+            }
+        } else {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                sourceLabel(Modifier.width(90.dp))
+                Column(Modifier.weight(1f)) { status() }
+                recovery()
             }
         }
     }
@@ -651,7 +696,7 @@ private fun PrivacySearchAndFilters(
                 if (state.filters.focus == PrivacyFocus.RECORDERS) {
                     Text("Recorder brand", style = MaterialTheme.typography.labelMedium)
                     Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        listOf("Plaud", "Omi", "Limitless", "Bee", "Friend", "Fieldy").forEach { brand ->
+                        PersonalRecorderSignatures.brands.forEach { brand ->
                             val selected = state.filters.query.equals(brand, ignoreCase = true)
                             FilterChip(selected = selected,
                                 onClick = { actions.onQueryChanged(if (selected) "" else brand) },
@@ -671,6 +716,7 @@ private fun PrivacySearchAndFilters(
                     Box {
                         FilterChip(
                             selected = state.filters.categories.isNotEmpty(),
+                            enabled = state.availableCategories.isNotEmpty(),
                             onClick = { categoriesOpen = true },
                             label = {
                                 Text(filterLabel("Categories", state.filters.categories.size))
@@ -699,6 +745,7 @@ private fun PrivacySearchAndFilters(
                     Box {
                         FilterChip(
                             selected = state.filters.sources.isNotEmpty(),
+                            enabled = state.availableSources.isNotEmpty(),
                             onClick = { sourcesOpen = true },
                             label = { Text(filterLabel("Sources", state.filters.sources.size)) },
                             modifier = Modifier.heightIn(min = 48.dp),
@@ -762,6 +809,9 @@ internal fun PrivacyFindingRow(
     showObservationId: Boolean = false,
 ) {
     val accent = sectionColor(finding.section())
+    val network = finding.wifiNetwork
+    val headline = network?.ssidLabel() ?: finding.title
+    val showFullEvidence = network == null || finding.routableKey == null
     val rowModifier = if (finding.routableKey != null) {
         Modifier.clickable { actions.onOpenDetails(requireNotNull(finding.routableKey)) }
     } else {
@@ -777,7 +827,8 @@ internal fun PrivacyFindingRow(
                     append(", ")
                     append(finding.source.userLabel())
                     append(", ")
-                    append(finding.title)
+                    append(headline)
+                    if (network != null) append(", ${network.reason}")
                 }
             },
     ) {
@@ -789,10 +840,13 @@ internal fun PrivacyFindingRow(
             Row(verticalAlignment = Alignment.Top) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = finding.title,
+                        text = headline,
                         style = MaterialTheme.typography.bodyLarge,
                         fontWeight = FontWeight.SemiBold,
                     )
+                    if (network != null) {
+                        Text(network.reason, style = MaterialTheme.typography.bodyMedium)
+                    }
                     Text(
                         text = buildFindingMetadata(finding),
                         style = MaterialTheme.typography.labelSmall,
@@ -818,14 +872,14 @@ internal fun PrivacyFindingRow(
                     )
                 }
             }
-            finding.evidence?.takeIf { it.isNotBlank() }?.let {
+            finding.evidence?.takeIf { showFullEvidence && it.isNotBlank() && it != network?.reason }?.let {
                 Text(
                     text = it,
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-            finding.limitation?.takeIf { it.isNotBlank() }?.let {
+            finding.limitation?.takeIf { showFullEvidence && it.isNotBlank() }?.let {
                 Text(
                     text = it,
                     style = MaterialTheme.typography.bodySmall,
@@ -902,14 +956,18 @@ private fun PrivacyFindingDetailDialog(
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text(finding?.title ?: "Item no longer current") },
+        title = { Text(finding?.wifiNetwork?.ssidLabel() ?: finding?.title ?: "Item no longer current") },
         text = {
             if (finding == null) {
                 Text("This exact finding is no longer in the current list.")
             } else {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Column(
+                    Modifier.verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    finding.wifiNetwork?.let { Text(it.reason) }
                     Text(buildFindingMetadata(finding), style = MaterialTheme.typography.labelMedium)
-                    finding.evidence?.let { Text(it) }
+                    finding.evidence?.takeUnless { it == finding.wifiNetwork?.reason }?.let { Text(it) }
                     finding.limitation?.let {
                         Text(it, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
@@ -1007,10 +1065,12 @@ private fun PrivacySignalSweepDialog(
 private fun filterLabel(label: String, selected: Int): String =
     if (selected == 0) label else "$label · $selected"
 
+internal fun WifiNetworkEvidence.ssidLabel(): String = ssid?.let { "SSID · $it" } ?: "SSID unavailable"
+
 private fun buildFindingMetadata(finding: PrivacyFinding): String = buildList {
     add(finding.severity.userLabel())
     add(finding.source.userLabel())
-    add(finding.category.label)
+    add(if (finding.wifiNetwork != null) finding.title else finding.category.label)
     add(
         when (finding.freshness) {
             FindingFreshness.LIVE -> "Live"
@@ -1047,7 +1107,7 @@ private fun sourceHealthColor(state: SourceHealthState): Color = when (state) {
     SourceHealthState.PAUSED -> MaterialTheme.colorScheme.tertiary
     SourceHealthState.PERMISSION_BLOCKED,
     SourceHealthState.FAILED -> MaterialTheme.colorScheme.error
-    SourceHealthState.UNSUPPORTED -> MaterialTheme.colorScheme.outline
+    SourceHealthState.UNSUPPORTED -> MaterialTheme.colorScheme.onSurfaceVariant
 }
 
 @Composable
@@ -1055,7 +1115,7 @@ private fun sectionColor(section: PrivacySection): Color = when (section) {
     PrivacySection.THREATS -> MaterialTheme.colorScheme.error
     PrivacySection.AWARENESS -> MaterialTheme.colorScheme.tertiary
     PrivacySection.NEARBY -> MaterialTheme.colorScheme.primary
-    PrivacySection.INFO -> MaterialTheme.colorScheme.outline
+    PrivacySection.INFO -> MaterialTheme.colorScheme.onSurfaceVariant
 }
 
 private fun formatPrivacyWallTime(wallMs: Long): String = runCatching {
@@ -1072,11 +1132,46 @@ private fun RecorderCoverage() {
             Text("Supported recorders & scan setup")
         }
         if (expanded) {
-            Text("This Android phone can detect Plaud, Omi, Limitless, Bee, Friend and Fieldy directly over Bluetooth. No badge is required.",
+            Text("This Android phone can recognize recorder broadcasts directly over Bluetooth. No badge is required. Supported name hints include Plaud, Omi, Limitless, Bee, Friend, Fieldy, viaim RecDot/OpenNote, soundcore Work, Notta Memo/Memo Pro, Instamic and DJI Mic 2/3.",
                 style = MaterialTheme.typography.bodySmall)
-            Text("Enable Phone scanning and Nearby devices permission. Plaud and Fieldy require recognizable broadcast names; the others also support matching service identifiers. Silent or renamed devices can be missed. Detection does not prove recording.",
+            Text("Enable Phone scanning and Nearby devices permission. Omi, Limitless, Bee and Friend also have service-identifier rules; the other families require recognizable names. New name rules are not hardware-validated. Bluetooth capability alone does not guarantee a visible BLE broadcast, especially while paired. Silent or renamed devices can be missed. Recording status is unknown.",
                 modifier = Modifier.padding(vertical = 8.dp), style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
+            RecorderNameExample()
         }
     }
+}
+
+@Composable
+internal fun RecorderNameExample() {
+    var open by rememberSaveable { mutableStateOf(false) }
+    TextButton(onClick = { open = true }) { Text("Try a Bluetooth name") }
+    if (!open) return
+
+    var name by remember { mutableStateOf("PLAUDAB12") }
+    val match = remember(name) { PersonalRecorderSignatures.match(name) }
+    AlertDialog(
+        onDismissRequest = { open = false },
+        title = { Text("Try a Bluetooth name") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text("Edit the example to see how recorder names are matched. This runs on your phone without starting a scan.")
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it.take(248) },
+                    label = { Text("Bluetooth name") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth().testTag("example_bluetooth_name"),
+                )
+                if (name.isNotBlank()) {
+                    Text(
+                        match?.let { "Name matches the ${it.manufacturer} recorder family." }
+                            ?: "No supported recorder name matches.",
+                        style = MaterialTheme.typography.titleSmall,
+                    )
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = { open = false }) { Text("Done") } },
+    )
 }

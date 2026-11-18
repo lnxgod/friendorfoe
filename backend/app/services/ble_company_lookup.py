@@ -45,7 +45,7 @@ def _categorize(name: str) -> str:
 
 
 def load_company_ids():
-    """Load the Nordic BLE company ID database."""
+    """Load the bundled Bluetooth SIG company ID database."""
     global _company_db
     json_path = Path(__file__).parent / "ble_company_ids.json"
 

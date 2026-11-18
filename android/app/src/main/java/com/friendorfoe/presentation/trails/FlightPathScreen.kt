@@ -15,7 +15,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalUriHandler
+import com.friendorfoe.presentation.map.OpenStreetMapCredit
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.semantics.semantics
@@ -34,6 +34,7 @@ import org.osmdroid.config.Configuration
 import org.osmdroid.tileprovider.tilesource.TileSourceFactory
 import org.osmdroid.util.BoundingBox
 import org.osmdroid.util.GeoPoint
+import com.friendorfoe.presentation.map.ApplyMapAppearance
 import org.osmdroid.views.MapView
 import org.osmdroid.views.overlay.Marker
 import java.time.Instant
@@ -135,12 +136,9 @@ fun FlightPathContent(state: FlightPathState, onBack: () -> Unit, onRetry: () ->
                 }
                 else -> {
                     FlightPathMap(points, selected, windowHours to fitRequest, Modifier.fillMaxWidth().height(300.dp))
-                    val uri = LocalUriHandler.current
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                         TextButton(onClick = { fitRequest++ }) { Text("Fit path") }
-                        TextButton(onClick = { uri.openUri("https://www.openstreetmap.org/copyright") }) {
-                            Text("© OpenStreetMap")
-                        }
+                        OpenStreetMapCredit()
                     }
                     val segments = remember(points) { splitAircraftTrail(points) }
                     val meters = segments.sumOf { segment -> segment.zipWithNext().sumOf { (a, b) -> trackDistanceMeters(a, b) } }
@@ -229,6 +227,7 @@ private fun FlightPathMap(
             controller.setZoom(11.0)
         }
     }
+    ApplyMapAppearance(map)
     val paths = remember(map) { AircraftTrailOverlay(map) }
     fun pointMarker(label: String, color: Int) = Marker(map).apply {
         title = label

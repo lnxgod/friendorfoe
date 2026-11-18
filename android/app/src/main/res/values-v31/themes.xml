@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Android 12 and later use the per-app night mode to draw the system splash. -->
+    <bool name="app_disable_legacy_launch_preview">false</bool>
+</resources>

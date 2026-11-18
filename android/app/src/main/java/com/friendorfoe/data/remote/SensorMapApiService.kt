@@ -10,8 +10,7 @@ import retrofit2.http.Query
  * Retrofit interface for the Friend or Foe backend sensor map API.
  *
  * Retrieves triangulated drone positions from multiple ESP32 sensor nodes.
- * Base URL is configurable (default: http://10.0.2.2:8000 for emulator,
- * override via BuildConfig or settings).
+ * Requests use the sensor backend configured by the operator in App settings.
  */
 interface SensorMapApiService {
 

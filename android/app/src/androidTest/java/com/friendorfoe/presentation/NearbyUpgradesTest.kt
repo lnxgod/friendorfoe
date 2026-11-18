@@ -80,6 +80,24 @@ class NearbyUpgradesTest {
         compose.onNodeWithText("No nearby detections").assertDoesNotExist()
     }
 
+    @Test fun missingLocationOffersPermissionBeforeWaitingForAPhoneFix() {
+        var permission by mutableStateOf<PermissionUiState>(PermissionUiState.Denied)
+        compose.setContent {
+            FriendOrFoeTheme {
+                ListContent(
+                    state = ListUiState(body = ListBodyState.WaitingForLocation, locationPermissionState = permission),
+                    actions = ListActions(onRequestLocation = { permission = PermissionUiState.Approximate }),
+                )
+            }
+        }
+
+        compose.onNodeWithText("Loading nearby detections").assertDoesNotExist()
+        compose.onNodeWithText("No nearby detections").assertDoesNotExist()
+        compose.onNodeWithText("Allow location").assertIsDisplayed().performClick()
+        compose.onNodeWithText("Waiting for your phone’s location").assertIsDisplayed()
+        compose.onNodeWithText("Allow location").assertDoesNotExist()
+    }
+
     @Test fun savedFlightOlderThanOneDayRemainsReviewableAndExportUsesItsPositions() {
         val points = (0..2).map { TrackingEntity(objectId = "saved", latitude = 32.7 + it * 0.001, longitude = -117.1 + it * 0.003,
             altitudeMeters = 1000.0 + it * 10, heading = null, speedMps = 50f,

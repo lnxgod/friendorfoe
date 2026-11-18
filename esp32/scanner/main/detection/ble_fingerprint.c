@@ -198,6 +198,15 @@ static const char *recorder_name_brand(const char *name)
         {"bee", "Bee"},
         {"friend_", "Friend"},
         {"fieldy", "Fieldy"},
+        {"viaim recdot", "viaim"},
+        {"viaim opennote", "viaim"},
+        {"soundcore work", "soundcore"},
+        {"notta memo", "Notta"},
+        {"instamic", "Instamic"},
+        {"dji-mic2", "DJI"},
+        {"dji-mic3", "DJI"},
+        {"dji mic 2", "DJI"},
+        {"dji mic 3", "DJI"},
     };
     while (*name == ' ') name++;
     if (strlen(name) == 9 && strncasecmp(name, "plaud", 5) == 0 &&
@@ -1009,7 +1018,11 @@ void ble_fingerprint_compute(const uint8_t *data, int length,
 
     /* Do not replace tracker/drone/glasses evidence with a mutable name. */
     const char *name_brand = recorder_name_brand(local_name);
-    if (recorder_brand || (name_brand && fp->device_type == BLE_DEV_UNKNOWN)) {
+    /* DJI's company-only controller classification is not model evidence. */
+    bool dji_mic_name = name_brand && strcmp(name_brand, "DJI") == 0 &&
+        fp->device_type == BLE_DEV_DRONE_CONTROLLER && fp->class_reason[0] == '\0' &&
+        (company_id == DJI_COMPANY_ID || company_id == DJI_SIG_COMPANY_ID);
+    if (recorder_brand || (name_brand && fp->device_type == BLE_DEV_UNKNOWN) || dji_mic_name) {
         fp->device_type = BLE_DEV_AI_RECORDER;
         fp->is_tracker = false;
         snprintf(fp->class_reason, sizeof(fp->class_reason), "recorder:%s:%s",

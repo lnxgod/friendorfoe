@@ -6,16 +6,25 @@ import java.security.MessageDigest
 import org.junit.Assert.*
 import org.junit.Test
 
-class ReferencePhotoCatalogTest {
-    private fun repoFile(path: String): File = listOf(File(path), File("../$path"), File("../../$path"))
-        .first { it.exists() }
+private fun repoFile(path: String): File = listOf(File(path), File("../$path"), File("../../$path"))
+    .first { it.exists() }
 
+// Compare against the reviewed manifest independently of the generated build constant.
+private val approvedPhotoPaths by lazy {
+    JsonParser.parseString(repoFile("android/reference-rights/verified-photos.json").readText())
+        .asJsonObject["photos"].asJsonArray.map { it.asJsonObject["path"].asString }.toSet()
+}
+
+internal fun expectedReferenceUrl(file: String): String? =
+    if (com.friendorfoe.BuildConfig.DEBUG || file in approvedPhotoPaths) "file:///android_asset/$file" else null
+
+class ReferencePhotoCatalogTest {
     @Test fun catalogIdsAreUniqueSoReferenceListsCanRenderEveryEntry() {
         val aircraftIds = AircraftDatabase.allAircraft.map { it.id }
         val droneIds = DroneDatabase.allDrones.map { it.id }
         assertEquals(aircraftIds.size, aircraftIds.toSet().size)
         assertEquals(droneIds.size, droneIds.toSet().size)
-        assertEquals("file:///android_asset/aircraft/CH53.jpg", getAircraftPhotoUrl("CH53"))
+        assertEquals(expectedReferenceUrl("aircraft/CH53.jpg"), getAircraftPhotoUrl("CH53"))
     }
 
     @Test fun everyVisibleCatalogPhotoExistsInTheApp() {
@@ -39,8 +48,8 @@ class ReferencePhotoCatalogTest {
 
     @Test fun exactAirframesNoLongerBorrowUnrelatedModelPhotos() {
         listOf("SU57", "SU25", "F4", "F5", "KFIR", "CH46", "NH90", "MI26", "MQ1", "RQ4", "PC24", "SF50")
-            .forEach { code -> assertEquals("file:///android_asset/aircraft/$code.jpg", getAircraftPhotoUrl(code)) }
-        assertEquals("file:///android_asset/aircraft/F18.jpg", getAircraftPhotoUrl("FA18"))
+            .forEach { code -> assertEquals(expectedReferenceUrl("aircraft/$code.jpg"), getAircraftPhotoUrl(code)) }
+        assertEquals(expectedReferenceUrl("aircraft/F18.jpg"), getAircraftPhotoUrl("FA18"))
         assertNull(getAircraftPhotoUrl("FC31"))
         assertNull(getAircraftPhotoUrl("A320FAKE"))
     }

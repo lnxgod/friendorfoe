@@ -5,16 +5,6 @@
 # Keep claims evidence-gated: randomized MACs never get a vendor from MAC alone.
 
 prefix_overrides:
-  "90:48:9A":
-    brand: "Ring"
-    product_hint: "Ring camera/doorbell family"
-    device_family: "camera_or_video"
-    device_class: "surveillance_camera"
-  "00:40:40":
-    brand: "Ring"
-    product_hint: "Ring camera/doorbell family"
-    device_family: "camera_or_video"
-    device_class: "surveillance_camera"
   "18:7F:88":
     brand: "Ring"
     product_hint: "Ring camera/doorbell family"
@@ -35,11 +25,6 @@ prefix_overrides:
     product_hint: "Wyze camera/IoT family"
     device_family: "camera_or_video"
     device_class: "surveillance_camera"
-  "40:5D:82":
-    brand: "Arlo"
-    product_hint: "Arlo camera family"
-    device_family: "camera_or_video"
-    device_class: "surveillance_camera"
   "EC:71:DB":
     brand: "Reolink"
     product_hint: "Reolink camera family"
@@ -57,11 +42,6 @@ prefix_overrides:
     device_class: "surveillance_camera"
 
 ssid_patterns:
-  - pattern: "teamcharitycase*"
-    label: "TeamCharityCase lab/property"
-    device_class: "known_owned"
-    device_family: "operator_known_lab_device"
-    confidence: 0.75
   - pattern: "esp_*"
     label: "ESP/IoT firmware SSID pattern"
     device_class: "suspect_iot"

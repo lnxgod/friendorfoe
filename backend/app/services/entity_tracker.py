@@ -85,7 +85,7 @@ class EntityTracker:
         "Meta Quest", "Meta VR",
         "Flipper", "Pwnagotchi", "Marauder",
         # v0.62 spooky-device classes from scanner-side name-pattern detection
-        "Card Skimmer", "Hidden Camera", "Flock Safety",
+        "Card Skimmer", "Hidden Camera", "ALPR Camera",
         "Camera Near", "Body Camera", "Fleet Camera", "Surveillance Camera",
         "Venue Beacon", "Event Badge", "Mobile Key Lock", "BLE HID",
         "Auracast",
@@ -293,7 +293,7 @@ class EntityTracker:
         if not manufacturer and bssid and len(bssid) >= 8:
             try:
                 from app.services.enrichment_ble import oui_lookup
-                manufacturer = oui_lookup(bssid) or ""
+                manufacturer = oui_lookup(bssid, source=source, ble_addr_type=kwargs.get("ble_addr_type")) or ""
             except ImportError:
                 pass
 

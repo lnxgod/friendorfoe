@@ -1,6 +1,17 @@
 package com.friendorfoe.presentation.privacy
 
 import android.graphics.Bitmap
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.width
+import androidx.compose.material3.Surface
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.test.performSemanticsAction
+import androidx.compose.ui.text.TextLayoutResult
+import androidx.compose.ui.unit.Density
+import androidx.compose.ui.unit.dp
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.onRoot
@@ -9,6 +20,7 @@ import androidx.test.platform.app.InstrumentationRegistry
 import java.io.File
 import androidx.compose.ui.test.assertHasClickAction
 import androidx.compose.ui.test.assertIsSelected
+import androidx.compose.ui.test.performTextReplacement
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
@@ -16,18 +28,153 @@ import androidx.compose.ui.test.junit4.StateRestorationTester
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.hasAnyAncestor
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performClick
+import com.friendorfoe.presentation.components.LeaveBackendOnlyDialog
 import com.friendorfoe.detection.PrivacyCategory
+import com.friendorfoe.detection.WifiAnomalyDetector
+import com.friendorfoe.detection.WifiScanBatch
 import com.friendorfoe.presentation.theme.FriendOrFoeTheme
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Assert.assertEquals
 import org.junit.Rule
 import org.junit.Test
 
 class PrivacyScreenTest {
+    @Test
+    fun doubleTextSizeKeepsRecorderTabsAndSourcePermissionReadable() {
+        val explanation = "Nearby devices permission is required for phone Bluetooth scanning"
+        val current = PrivacyCurrentState(
+            listOf(health(PrivacySourceKind.PHONE_BLE, SourceHealthState.PERMISSION_BLOCKED,
+                message = explanation, recoveryLabel = "Grant permission")),
+            emptyList(), 0, emptyList(), true,
+        )
+        val focus = mutableStateOf(PrivacyFocus.RECORDERS)
+        compose.setContent {
+            CompositionLocalProvider(LocalDensity provides Density(LocalDensity.current.density, 2f)) {
+                FriendOrFoeTheme {
+                    Box(Modifier.width(320.dp)) {
+                        PrivacyContent(projectPrivacyUiState(current, PrivacyFilterState(focus = focus.value)),
+                            PrivacyActions(onFocusChanged = { focus.value = it }))
+                    }
+                }
+            }
+        }
+        fun checkLayout(label: String, tabTag: String? = null) {
+            val results = mutableListOf<TextLayoutResult>()
+            val match = if (tabTag == null) hasText(label)
+                else hasText(label) and hasAnyAncestor(hasTestTag(tabTag))
+            val node = compose.onNode(match, useUnmergedTree = true).assertIsDisplayed()
+            node.performSemanticsAction(SemanticsActions.GetTextLayoutResult) { assertTrue(it(results)) }
+            val result = results.single()
+            assertEquals("Broken word: $label", 1, result.lineCount)
+            assertFalse("Ellipsized: $label", result.isLineEllipsized(0))
+            assertEquals("Missing characters: $label", label.length, result.getLineEnd(0, visibleEnd = true))
+            // Scrollable tabs give the paragraph infinite width. Check the actual glyph line
+            // and visible node rather than TextLayoutResult.didOverflowWidth's paragraph extent.
+            val width = node.fetchSemanticsNode().boundsInRoot.width
+            assertTrue("Clipped horizontally: $label", result.getLineLeft(0) >= -1f && result.getLineRight(0) <= width + 1f)
+            assertTrue("Clipped vertically: $label", result.getLineBottom(0) <= node.fetchSemanticsNode().boundsInRoot.height + 1f)
+        }
+        for (tab in PrivacyFocus.entries) {
+            compose.onNodeWithTag("privacy_focus_${tab.name}").performScrollTo().performClick().assertIsSelected()
+            checkLayout(tab.label, "privacy_focus_${tab.name}")
+            checkLayout("0", "privacy_focus_${tab.name}")
+            if (tab == PrivacyFocus.RECORDERS) savePrivacyScreenshot("recorders-large-text.png")
+        }
+        compose.onNodeWithTag("privacy_content").performScrollToNode(hasText("Phone"))
+        checkLayout("Phone")
+        // The error card repeats the message below the source controls.
+        val results = mutableListOf<TextLayoutResult>()
+        compose.onAllNodesWithText(explanation, useUnmergedTree = true)[0]
+            .performSemanticsAction(SemanticsActions.GetTextLayoutResult) { assertTrue(it(results)) }
+        assertFalse("Permission explanation is truncated", results.single().hasVisualOverflow)
+    }
+
+    @Test
+    fun wifiAlertShowsSsidAndReasonWithRadioEvidenceInDetails() {
+        val inputs = listOf(
+            WifiAnomalyDetector.WifiNetwork("Demo guest", "02:00:00:00:00:01", "[ESS]", -61, 2412),
+            WifiAnomalyDetector.WifiNetwork("Demo guest", "02:00:00:00:00:02", "[WPA2-PSK-CCMP][ESS]", -65, 5180),
+            WifiAnomalyDetector.WifiNetwork("", "02:00:00:00:00:03", "[WEP][ESS]", -68, 2437),
+        )
+        val batch = WifiScanBatch(1L, emptyList(), 1_000L, 10_000L)
+        val findings = WifiAnomalyDetector.analyzeNetworksForTest(inputs).associate { anomaly ->
+            anomaly.type to WifiPrivacySourceAdapter.mapAnomaly(anomaly, batch)
+        }
+        val observation = findings.getValue("evil_twin")
+        val hidden = findings.getValue("weak_security")
+        val current = mutableStateOf(observation)
+        val detailsOpen = mutableStateOf(false)
+        compose.setContent {
+            FriendOrFoeTheme(darkTheme = false) {
+                Surface {
+                    if (detailsOpen.value) {
+                        PrivacyFindingDetailsContent(PrivacyFindingLookupState.Present(current.value), {}, {})
+                    } else {
+                        val state = projectPrivacyUiState(
+                            PrivacyCurrentState(emptyList(), listOf(current.value), 1, emptyList(), true),
+                            PrivacyFilterState(focus = PrivacyFocus.ALL),
+                        )
+                        PrivacyContent(state, PrivacyActions(onOpenDetails = { detailsOpen.value = true }))
+                    }
+                }
+            }
+        }
+        compose.onNodeWithTag("privacy_content").performScrollToNode(hasTestTag("finding_${observation.displayId}"))
+        compose.onNodeWithText("SSID · Demo guest").assertIsDisplayed()
+        compose.onNodeWithText(requireNotNull(observation.wifiNetwork).reason).assertIsDisplayed()
+        compose.onNodeWithText(requireNotNull(observation.evidence)).assertDoesNotExist()
+        savePrivacyScreenshot("wifi-alert-synthetic.png")
+        compose.runOnIdle { current.value = hidden }
+        compose.onNodeWithText("SSID unavailable").assertIsDisplayed()
+        compose.onNodeWithText(requireNotNull(hidden.wifiNetwork).reason).assertIsDisplayed()
+        compose.onNodeWithText("Details").performScrollTo().performClick()
+        compose.onNodeWithText("SSID unavailable").assertIsDisplayed()
+        compose.onNodeWithText(hidden.title).assertIsDisplayed()
+        compose.onNodeWithText(requireNotNull(hidden.wifiNetwork).reason).assertIsDisplayed()
+        compose.onNodeWithText(requireNotNull(hidden.evidence)).performScrollTo().assertIsDisplayed()
+    }
+
+    @Test
+    fun nameExampleUsesRecorderRulesAndResetsOnClose() {
+        compose.setContent { FriendOrFoeTheme { RecorderNameExample() } }
+        compose.onNodeWithText("Try a Bluetooth name").performClick()
+        compose.onNodeWithText("Name matches the Plaud recorder family.").assertIsDisplayed()
+        compose.onNodeWithTag("example_bluetooth_name").performTextReplacement("headphones")
+        compose.onNodeWithText("No supported recorder name matches.").assertIsDisplayed()
+        compose.onNodeWithText("Done").performClick()
+        compose.onNodeWithTag("example_bluetooth_name").assertDoesNotExist()
+        compose.onNodeWithText("Try a Bluetooth name").performClick()
+        compose.onNodeWithText("Name matches the Plaud recorder family.").assertIsDisplayed()
+    }
+
+    @Test
+    fun backendOnlyModeDialogOffersDistinctKeepAndResumeChoices() {
+        var resumes = 0
+        var dismissals = 0
+        val visible = mutableStateOf(true)
+        compose.setContent {
+            FriendOrFoeTheme {
+                if (visible.value) LeaveBackendOnlyDialog(
+                    onConfirm = { resumes++; visible.value = false },
+                    onDismiss = { dismissals++; visible.value = false },
+                )
+            }
+        }
+        compose.onNodeWithText("Other enabled phone sensors can resume", substring = true).assertIsDisplayed()
+        compose.onNodeWithText("Keep backend-only mode").performClick()
+        compose.onNodeWithText("Leave backend-only mode?").assertDoesNotExist()
+        compose.runOnIdle { assertEquals(0, resumes); assertEquals(1, dismissals); visible.value = true }
+        compose.onNodeWithText("Use phone scanning").performClick()
+        compose.runOnIdle { assertEquals(1, resumes); assertEquals(1, dismissals) }
+    }
+
     @Test
     fun recorderFiltersCoverageAndIBeaconNetworksAreUsable() {
         val recorder = finding(FindingSeverity.AWARENESS, "plaud", category = PrivacyCategory.VOICE_RECORDER).copy(
@@ -37,9 +184,9 @@ class PrivacyScreenTest {
             finding(FindingSeverity.NEARBY, "beacon$index", category = PrivacyCategory.VENUE_BEACON).copy(
                 title = "iBeacon $index", beaconUuid = "00112233-4455-6677-8899-aabbccddeeff")
         }
-        val otherRecorders = listOf("Omi", "Bee").map { brand ->
+        val otherRecorders = listOf("Omi", "Bee", "Instamic").map { brand ->
             finding(FindingSeverity.NEARBY, brand.lowercase(), category = PrivacyCategory.VOICE_RECORDER).copy(
-                title = "$brand AI Voice Recorder", evidence = "Phone Bluetooth • matching service",
+                title = "$brand Voice Recorder", evidence = "Phone Bluetooth • name hint",
                 limitation = "Recording status is unknown.")
         }
         val current = PrivacyCurrentState(emptyList(), listOf(recorder) + otherRecorders + beacons, 1, emptyList(), true)
@@ -55,7 +202,7 @@ class PrivacyScreenTest {
         }
         compose.onNodeWithTag("privacy_focus_RECORDERS").assertIsSelected()
         compose.onNodeWithTag("finding_plaud").assertIsDisplayed()
-        saveBeaconScreenshot("recorders-first.png")
+        savePrivacyScreenshot("recorders-first.png")
         compose.onNodeWithTag("privacy_search").performTextInput("missing")
         androidx.test.espresso.Espresso.closeSoftKeyboard()
         compose.onNodeWithTag("finding_plaud").assertDoesNotExist()
@@ -64,11 +211,16 @@ class PrivacyScreenTest {
         compose.onNodeWithTag("finding_plaud").assertIsDisplayed()
         compose.onNodeWithTag("privacy_filters").performClick()
         compose.onNodeWithText("Live only").performClick()
-        compose.onNodeWithTag("privacy_brand_Plaud").performClick()
+        compose.onNodeWithTag("privacy_brand_Instamic").performScrollTo().performClick()
+        compose.runOnIdle { assertEquals("Instamic", filters.value.query) }
+        compose.onNodeWithTag("finding_instamic").assertExists()
+        savePrivacyScreenshot("recorders-new-brand-filter.png")
+        compose.onNodeWithTag("privacy_brand_Plaud").performScrollTo().performClick()
         compose.onNodeWithTag("finding_plaud").assertExists()
+        compose.onNodeWithTag("privacy_focus_RECORDERS").performClick()
         compose.runOnIdle { assertEquals("Plaud", filters.value.query) }
         compose.onNodeWithTag("privacy_focus_RECORDERS").assertIsDisplayed()
-        saveBeaconScreenshot("recorders-filters.png")
+        savePrivacyScreenshot("recorders-filters.png")
         compose.onNodeWithTag("privacy_clear_refinements").performClick()
         compose.onNodeWithTag("privacy_filters").performClick()
         compose.onNodeWithTag("privacy_attention").performClick()
@@ -78,9 +230,9 @@ class PrivacyScreenTest {
         compose.onNodeWithTag("finding_plaud").assertExists()
         compose.onNodeWithTag("privacy_tree_beacons").assertDoesNotExist()
         compose.onNodeWithTag("recorder_coverage").performClick()
-        compose.onNodeWithTag("privacy_content").performScrollToNode(hasText("This Android phone can detect", substring = true))
-        compose.onNodeWithText("This Android phone can detect", substring = true).assertIsDisplayed()
-        saveBeaconScreenshot("recorders-phone-coverage.png")
+        compose.onNodeWithTag("privacy_content").performScrollToNode(hasText("This Android phone can recognize", substring = true))
+        compose.onNodeWithText("This Android phone can recognize", substring = true).assertIsDisplayed()
+        savePrivacyScreenshot("recorders-phone-coverage.png")
         compose.onNodeWithTag("privacy_content").performScrollToNode(hasTestTag("recorder_coverage"))
         compose.onNodeWithTag("recorder_coverage").performClick()
         compose.onNodeWithTag("privacy_content").performScrollToNode(hasTestTag("privacy_focus_BEACONS"))
@@ -89,7 +241,7 @@ class PrivacyScreenTest {
         clickBranch("beacons")
         clickBranch("ibeacon")
         compose.onNodeWithTag("privacy_content").performScrollToNode(hasTestTag("privacy_tree_ibeacon_uuid:00112233-4455-6677-8899-aabbccddeeff"))
-        saveBeaconScreenshot("ibeacons-grouped-network.png")
+        savePrivacyScreenshot("ibeacons-grouped-network.png")
         clickBranch("ibeacon_uuid:00112233-4455-6677-8899-aabbccddeeff")
         compose.onNodeWithTag("privacy_content").performScrollToNode(hasTestTag("finding_beacon1"))
         compose.onNodeWithTag("finding_beacon1").assertIsDisplayed()
@@ -109,6 +261,7 @@ class PrivacyScreenTest {
             )) }
         }
         compose.onNodeWithText("No personal recorders detected").assertIsDisplayed()
+        savePrivacyScreenshot("recorders-empty-synthetic.png")
         compose.onNodeWithTag("privacy_tree_beacons").assertDoesNotExist()
         compose.onNodeWithText("View all observations").performClick()
         compose.onNodeWithTag("privacy_focus_ALL").assertIsSelected()
@@ -132,8 +285,8 @@ class PrivacyScreenTest {
 
     @Test
     fun liveBluetoothUpdatesKeepRowPositionsAndTapTargetsStable() {
-        val first = finding(FindingSeverity.NEARBY, "a", category = PrivacyCategory.SMART_SPEAKER)
-        val second = finding(FindingSeverity.NEARBY, "b", category = PrivacyCategory.SMART_SPEAKER)
+        val first = finding(FindingSeverity.NEARBY, "a", category = PrivacyCategory.ACTION_CAMERA)
+        val second = finding(FindingSeverity.NEARBY, "b", category = PrivacyCategory.ACTION_CAMERA)
         fun project(rows: List<PrivacyFinding>) = projectPrivacyUiState(
             PrivacyCurrentReducer().reduce(
                 listOf(PrivacySourceSnapshot(
@@ -210,6 +363,7 @@ class PrivacyScreenTest {
 
     @Test
     fun sourceStatusIsCompactAndFailureDoesNotHideGoodRows() {
+        var connectionSettingsOpened = 0
         val state = projectPrivacyUiState(
             PrivacyCurrentState(
                 sources = listOf(
@@ -217,26 +371,30 @@ class PrivacyScreenTest {
                     health(
                         PrivacySourceKind.BACKEND,
                         SourceHealthState.FAILED,
-                        message = "Backend timed out",
-                        recoveryLabel = "Retry",
+                        message = "Invalid backend address",
+                        recoveryLabel = "Fix backend URL",
                     ),
                     health(PrivacySourceKind.BADGE_USB, SourceHealthState.LIVE),
                     health(PrivacySourceKind.WIFI_ANALYSIS, SourceHealthState.LIVE),
                 ),
-                findings = listOf(finding(FindingSeverity.NEARBY, "phone", category = PrivacyCategory.SMART_SPEAKER)),
+                findings = listOf(finding(FindingSeverity.NEARBY, "phone", category = PrivacyCategory.ACTION_CAMERA)),
                 threatCount = 0,
                 alertEligible = emptyList(),
                 initialResolutionComplete = true,
             ),
         )
         compose.setContent {
-            FriendOrFoeTheme { PrivacyContent(state, PrivacyActions()) }
+            FriendOrFoeTheme {
+                PrivacyContent(state, PrivacyActions(onOpenBackendSettings = { connectionSettingsOpened++ }))
+            }
         }
 
         listOf("Phone", "Backend", "Badge", "Wi-Fi").forEach {
             compose.onNodeWithText(it).assertIsDisplayed()
         }
-        compose.onNodeWithText("Backend timed out").assertIsDisplayed()
+        compose.onNodeWithText("Invalid backend address").assertIsDisplayed()
+        compose.onNodeWithText("Open connection settings").performScrollTo().performClick()
+        compose.runOnIdle { assertEquals(1, connectionSettingsOpened) }
         compose.onNodeWithTag("finding_phone").performScrollTo().assertIsDisplayed()
         compose.onNodeWithText("Privacy sources unavailable").assertDoesNotExist()
     }
@@ -442,6 +600,56 @@ class PrivacyScreenTest {
     }
 
     @Test
+    fun everydayObservationsStayCollapsedUntilOpenedIncludingDuringSearch() {
+        val pods = (1..3).map { index ->
+            finding(FindingSeverity.INFO, "pods$index", category = PrivacyCategory.APPLE_CONTINUITY)
+        }
+        val speaker = finding(FindingSeverity.NEARBY, "speaker", category = PrivacyCategory.SMART_SPEAKER)
+        val recorder = finding(FindingSeverity.AWARENESS, "plaud", category = PrivacyCategory.VOICE_RECORDER)
+            .copy(title = "Plaud AI Voice Recorder", evidence = "Bluetooth name matches the Plaud recorder family",
+                limitation = "Recording status is unknown.")
+        val current = PrivacyCurrentState(emptyList(), pods + speaker + recorder, 1, emptyList(), true)
+        val query = mutableStateOf("")
+        var opened: PrivacyFindingKey? = null
+        compose.setContent {
+            FriendOrFoeTheme(darkTheme = false) {
+                Surface {
+                    val state = projectPrivacyUiState(current, PrivacyFilterState(query = query.value))
+                    PrivacyContent(state, PrivacyActions(onOpenDetails = { opened = it }))
+                }
+            }
+        }
+        val list = compose.onNodeWithTag("privacy_content")
+        val groupTag = "privacy_tree_everyday"
+        list.performScrollToNode(hasTestTag("finding_plaud"))
+        compose.onNodeWithText("Plaud AI Voice Recorder").assertIsDisplayed()
+        list.performScrollToNode(hasTestTag(groupTag))
+        compose.onNodeWithText("Everyday devices · 4").assertIsDisplayed()
+        compose.onNodeWithTag("privacy_tree_airpods").assertDoesNotExist()
+        compose.onNodeWithTag("finding_pods1").assertDoesNotExist()
+        savePrivacyScreenshot("privacy-everyday-rollup.png")
+
+        clickBranch("everyday")
+        list.performScrollToNode(hasTestTag("privacy_tree_airpods"))
+        compose.onNodeWithText("AirPods activity · 3").assertIsDisplayed()
+        compose.onNodeWithTag("finding_pods1").assertDoesNotExist()
+        clickBranch("airpods")
+        list.performScrollToNode(hasTestTag("finding_pods2_details"))
+        compose.onNodeWithTag("finding_pods2_details").performClick()
+        compose.runOnIdle {
+            assertEquals(pods[1].routableKey, opened)
+            query.value = "AirPods"
+        }
+        list.performScrollToNode(hasTestTag(groupTag))
+        compose.onNodeWithText("Everyday devices · 3").assertIsDisplayed()
+        compose.onNodeWithTag("finding_pods1").assertDoesNotExist()
+        clickBranch("everyday")
+        list.performScrollToNode(hasTestTag("finding_pods1"))
+        compose.onNodeWithTag("finding_pods1").assertIsDisplayed()
+        compose.onNodeWithTag("finding_speaker").assertDoesNotExist()
+    }
+
+    @Test
     fun venueBeaconsStartCollapsedAndExpandWithWorkingDeviceActions() {
         val beacon = finding(FindingSeverity.INFO, "beacon", fullActions = true, category = PrivacyCategory.VENUE_BEACON).copy(title = "iBeacon Lobby")
         val tracker = finding(FindingSeverity.NEARBY, "findhub").copy(
@@ -472,7 +680,7 @@ class PrivacyScreenTest {
         compose.onNodeWithTag("privacy_content").performScrollToNode(hasTestTag("privacy_tree_beacons"))
         compose.onNodeWithText("Venue beacons · 1").assertIsDisplayed()
         compose.onNodeWithTag("finding_beacon").assertDoesNotExist()
-        saveBeaconScreenshot("beacons-collapsed.png")
+        savePrivacyScreenshot("beacons-collapsed.png")
         compose.onNodeWithTag("privacy_tree_beacons").performClick()
         compose.onNodeWithTag("finding_beacon").assertDoesNotExist()
         clickBranch("ibeacon")
@@ -490,7 +698,7 @@ class PrivacyScreenTest {
             state.value = initial.copy(visibleFindings = initial.visibleFindings.map { it.copy(signalDbm = -44) })
         }
         compose.onNodeWithTag("finding_beacon").assertIsDisplayed()
-        saveBeaconScreenshot("beacons-expanded.png")
+        savePrivacyScreenshot("beacons-expanded.png")
         compose.onNodeWithTag("privacy_content").performScrollToNode(hasTestTag("privacy_tree_beacons"))
         compose.onNodeWithTag("privacy_tree_beacons").performClick()
         compose.onNodeWithTag("finding_beacon").assertDoesNotExist()
@@ -522,11 +730,11 @@ class PrivacyScreenTest {
         compose.setContent { FriendOrFoeTheme { PrivacyContent(state, PrivacyActions()) } }
         compose.onNodeWithTag("finding_attention").assertIsDisplayed()
         compose.onNodeWithTag("finding_airtag").assertDoesNotExist()
-        saveBeaconScreenshot("device-tree-collapsed.png")
+        savePrivacyScreenshot("device-tree-collapsed.png")
         clickBranch("trackers")
         clickBranch("beacons")
         compose.onNodeWithTag("privacy_content").performScrollToNode(hasTestTag("privacy_tree_trackers"))
-        saveBeaconScreenshot("device-tree-families.png")
+        savePrivacyScreenshot("device-tree-families.png")
         compose.onNodeWithTag("finding_tile").assertDoesNotExist()
         clickBranch("find_my")
         compose.onNodeWithTag("privacy_content").performScrollToNode(hasTestTag("finding_airtag"))
@@ -592,7 +800,7 @@ class PrivacyScreenTest {
         compose.onNodeWithTag("privacy_tree_$key").performClick()
     }
 
-    private fun saveBeaconScreenshot(name: String) {
+    private fun savePrivacyScreenshot(name: String) {
         val image = compose.onRoot().captureToImage().asAndroidBitmap()
         File(InstrumentationRegistry.getInstrumentation().targetContext.filesDir, name)
             .outputStream().use { image.compress(Bitmap.CompressFormat.PNG, 100, it) }
@@ -602,8 +810,8 @@ class PrivacyScreenTest {
         val rows = listOf(
             finding(FindingSeverity.CRITICAL, "critical", fullActions = true),
             finding(FindingSeverity.AWARENESS, "awareness"),
-            finding(FindingSeverity.NEARBY, "nearby", category = PrivacyCategory.SMART_SPEAKER),
-            finding(FindingSeverity.INFO, "info", category = PrivacyCategory.APPLE_CONTINUITY),
+            finding(FindingSeverity.NEARBY, "nearby", category = PrivacyCategory.ACTION_CAMERA),
+            finding(FindingSeverity.INFO, "info", category = PrivacyCategory.DRONE_CONTROLLER),
         )
         return projectPrivacyUiState(
             PrivacyCurrentState(

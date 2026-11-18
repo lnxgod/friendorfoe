@@ -10,6 +10,7 @@ import android.hardware.SensorManager
 import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
+import com.friendorfoe.data.repository.enabledSkyProviders
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.os.SystemClock
@@ -1036,7 +1037,6 @@ class ArViewModel @Inject constructor(
                 location.validatedLocationAccuracyMeters(),
             )
 
-            Log.d(TAG, "Location updated: (${location.latitude}, ${location.longitude}), alt=${location.altitude}m")
         }
 
         @Deprecated("Deprecated in API level 29")
@@ -1104,8 +1104,9 @@ class ArViewModel @Inject constructor(
             Log.d(TAG, "Location listener already registered, skipping")
         } else {
             try {
-                val gpsEnabled = locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)
-                val networkEnabled = locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)
+                val providers = locationManager.enabledSkyProviders()
+                val gpsEnabled = LocationManager.GPS_PROVIDER in providers
+                val networkEnabled = LocationManager.NETWORK_PROVIDER in providers
 
                 // Try GPS provider first
                 if (gpsEnabled) {
@@ -1140,8 +1141,9 @@ class ArViewModel @Inject constructor(
                 locationListenerRegistered = true
 
                 // Use the freshest valid last-known location while waiting for a live fix.
-                val gpsLastKnown = locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER)
-                val networkLastKnown = locationManager.getLastKnownLocation(LocationManager.NETWORK_PROVIDER)
+                val cached = providers.associateWith(locationManager::getLastKnownLocation)
+                val gpsLastKnown = cached[LocationManager.GPS_PROVIDER]
+                val networkLastKnown = cached[LocationManager.NETWORK_PROVIDER]
                 val lastKnown = selectFreshestArLastKnownLocationFix(
                     gps = gpsLastKnown?.toArLocationFix(),
                     network = networkLastKnown?.toArLocationFix(),

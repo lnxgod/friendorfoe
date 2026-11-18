@@ -7,8 +7,7 @@ import com.friendorfoe.data.AppVersion
 import com.friendorfoe.data.BackendEndpoint
 import com.friendorfoe.data.DetectionPrefs
 import com.friendorfoe.data.DetectionSettings
-import com.friendorfoe.data.isUpdateAvailable
-import com.friendorfoe.data.repository.AppUpdateMetadata
+import com.friendorfoe.data.repository.PlayUpdateStatus
 import com.friendorfoe.data.repository.AppUpdateRepository
 import com.friendorfoe.data.repository.BackendSessionHealthRepository
 import com.friendorfoe.data.repository.SessionHealth
@@ -34,7 +33,7 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
-private const val BACKEND_URL_ERROR = "Enter a complete http:// or https:// URL"
+private const val BACKEND_URL_ERROR = "Enter the final HTTPS address of your sensor server"
 
 enum class InfoSettingKey {
     ADS_B,
@@ -90,7 +89,7 @@ sealed interface UpdateUiState {
     data object Idle : UpdateUiState
     data object Checking : UpdateUiState
     data class UpToDate(val installed: AppVersion) : UpdateUiState
-    data class Available(val remote: AppUpdateMetadata) : UpdateUiState
+    data object Available : UpdateUiState
     data class Failed(val message: String) : UpdateUiState
 }
 
@@ -387,20 +386,12 @@ class AboutViewModel @Inject constructor(
         }
     }
 
-    fun enablePhonePrivacyScan() {
-        val feature = AppFeature.PHONE_PRIVACY_SCAN
-        val state = permissionStateSource.states.value[feature]
-        if (state?.isUsableFor(feature) == true) {
-            settingsStore.set(InfoSettingKey.PHONE_PRIVACY_SCAN, true)
-            if (settingsStore.settings.value.backendOnlyMode) {
-                settingsStore.set(InfoSettingKey.BACKEND_ONLY, false)
-            }
-        } else {
-            beginPermissionEnable(
-                key = InfoSettingKey.PHONE_PRIVACY_SCAN,
-                resumeLocalCollectors = true,
-            )
-        }
+    fun enablePhonePrivacyScan(allowBackendOnlyExit: Boolean = false) {
+        if (settingsStore.settings.value.backendOnlyMode && !allowBackendOnlyExit) return
+        beginPermissionEnable(
+            key = InfoSettingKey.PHONE_PRIVACY_SCAN,
+            resumeLocalCollectors = allowBackendOnlyExit,
+        )
     }
 
     fun requestBackendOnlyConfirmation() {
@@ -472,11 +463,10 @@ class AboutViewModel @Inject constructor(
             currentCoroutineContext().ensureActive()
             if (updateGeneration.get() != generation) return@launch
             updateState.value = result.fold(
-                onSuccess = { metadata ->
-                    if (isUpdateAvailable(installedVersion, metadata.version)) {
-                        UpdateUiState.Available(metadata)
-                    } else {
-                        UpdateUiState.UpToDate(installedVersion)
+                onSuccess = { status ->
+                    when (status) {
+                        PlayUpdateStatus.AVAILABLE -> UpdateUiState.Available
+                        PlayUpdateStatus.CURRENT -> UpdateUiState.UpToDate(installedVersion)
                     }
                 },
                 onFailure = { UpdateUiState.Failed("Could not check for updates") },
@@ -588,12 +578,12 @@ class AboutViewModel @Inject constructor(
 
 private const val PENDING_PERMISSION_SETTING_KEY = "pending_info_permission_setting"
 private const val PENDING_PERMISSION_LAUNCHED_KEY = "pending_info_permission_launched"
-private const val PENDING_PERMISSION_RESUME_LOCAL_KEY = "pending_info_permission_resume_local"
+private const val PENDING_PERMISSION_RESUME_LOCAL_KEY = "pending_info_permission_backend_exit_approved"
 private const val PENDING_PERMISSION_SETTINGS_FAILED_KEY = "pending_info_permission_settings_failed"
 private const val PENDING_BACKEND_ONLY_CONFIRMATION_KEY = "pending_backend_only_confirmation"
 
 private fun String.validationError(): String? =
-    if (BackendEndpoint.parse(this).isSuccess) null else BACKEND_URL_ERROR
+    if (isBlank() || BackendEndpoint.parse(this).isSuccess) null else BACKEND_URL_ERROR
 
 private fun DetectionSettings.backendConfig(): Pair<Boolean, BackendEndpoint?> =
     sensorBackendEnabled to BackendEndpoint.parse(backendUrl).getOrNull()

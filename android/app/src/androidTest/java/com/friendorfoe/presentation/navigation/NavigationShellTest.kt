@@ -26,8 +26,8 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navigation
 import androidx.test.espresso.Espresso.pressBack
 import com.friendorfoe.data.AppVersion
-import com.friendorfoe.data.repository.AppUpdateMetadata
 import com.friendorfoe.presentation.about.InfoUiState
+import com.friendorfoe.presentation.about.ProjectAboutScreen
 import com.friendorfoe.presentation.about.UpdateUiState
 import com.friendorfoe.presentation.permissions.AppFeature
 import com.friendorfoe.presentation.permissions.PermissionBindings
@@ -155,6 +155,25 @@ class NavigationShellTest {
     }
 
     @Test
+    fun moreOpensProjectAboutAndReturnsOnBack() {
+        compose.setContent {
+            FriendOrFoeTheme {
+                val nav = rememberNavController()
+                NavHost(nav, startDestination = Screen.About.route) {
+                    composable(Screen.About.route) { AboutTopLevelRoute(nav) }
+                    composable(Screen.ProjectAbout.route) {
+                        ProjectAboutScreen(onBack = nav::popBackStack, onOpenLink = {})
+                    }
+                }
+            }
+        }
+        compose.onNodeWithTag("more_about").assertIsDisplayed().performClick()
+        compose.onNodeWithTag("project_about").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Back").performClick()
+        compose.onNodeWithTag("about_landing").assertIsDisplayed()
+    }
+
+    @Test
     fun productionAboutSettingsRouteReturnsToAboutOnBack() {
         compose.setContent {
             FriendOrFoeTheme {
@@ -191,12 +210,8 @@ class NavigationShellTest {
     }
 
     @Test
-    fun productionAboutUpdateActionUsesTheReleaseUrl() {
-        var opened: String? = null
-        val remote = AppUpdateMetadata(
-            version = AppVersion(null, "0.68.0"),
-            releaseUrl = "https://github.com/lnxgod/friendorfoe/releases/tag/v0.68.0",
-        )
+    fun productionAboutUpdateActionOpensPlay() {
+        var opens = 0
 
         compose.setContent {
             FriendOrFoeTheme {
@@ -205,15 +220,15 @@ class NavigationShellTest {
                     navController = navController,
                     state = InfoUiState(
                         installedVersion = AppVersion(120, "0.67.7"),
-                        updateState = UpdateUiState.Available(remote),
+                        updateState = UpdateUiState.Available,
                     ),
-                    onOpenUpdate = { opened = it },
+                    onOpenUpdate = { opens++ },
                 )
             }
         }
 
         compose.onNodeWithTag("about_open_update").performScrollTo().performClick()
-        compose.runOnIdle { assertEquals(remote.releaseUrl, opened) }
+        compose.runOnIdle { assertEquals(1, opens) }
     }
 
     @Test

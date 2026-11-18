@@ -88,6 +88,7 @@ fun BadgeControlScreen(
     val isBackendLite = state.controlStatus?.isBackendLite() == true
     val commandsEnabled = BadgeControlTransportPolicy.allowsCommandSurface(state.status)
     val refreshEnabled = BadgeControlTransportPolicy.allowsStatusRefresh(state.status)
+    val showHardwareControls = commandsEnabled || state.controlStatus != null
 
     fun dispatchDanger(event: BadgeDangerEvent) {
         val transition = reduceBadgeDangerCommand(
@@ -122,24 +123,29 @@ fun BadgeControlScreen(
                 onRefresh = viewModel::refresh,
             )
         }
-        item {
-            BadgeLiveFeedSection(
-                state = state,
-                initialFocusKey = initialFocusKey,
-                investigation = investigation,
-                onCancelInvestigation = viewModel::cancelInvestigation,
-                onEntityDetails = { selectedEntity = it },
-            )
+        if (state.status != BadgeUsbStatus.DISCONNECTED || state.activity.isNotEmpty() ||
+            state.controlStatus != null || investigation != null) {
+            item {
+                BadgeLiveFeedSection(
+                    state = state,
+                    initialFocusKey = initialFocusKey,
+                    investigation = investigation,
+                    onCancelInvestigation = viewModel::cancelInvestigation,
+                    onEntityDetails = { selectedEntity = it },
+                )
+            }
         }
         if (isBackendLite) {
             item { BadgeLiteHeadlessSection(state) }
         } else {
-            item {
-                BadgeLcdRemoteSection(
-                    display = state.controlStatus?.displayState,
-                    commandsEnabled = commandsEnabled,
-                    onNavigate = viewModel::displayNav,
-                )
+            if (showHardwareControls) {
+                item {
+                    BadgeLcdRemoteSection(
+                        display = state.controlStatus?.displayState,
+                        commandsEnabled = commandsEnabled,
+                        onNavigate = viewModel::displayNav,
+                    )
+                }
             }
             item {
                 Surface(
@@ -155,7 +161,7 @@ fun BadgeControlScreen(
                         onExpandedChange = { appearanceExpanded = it },
                         theme = draftTheme,
                         appliedTheme = state.controlStatus?.theme ?: defaultBadgeTheme(),
-                        themeHash = state.controlStatus?.themeHash ?: 0,
+                        themeHash = state.controlStatus?.themeHash,
                         profiles = profiles,
                         onThemeChange = { draftTheme = it },
                         onCreateProfile = viewModel::createProfile,
@@ -182,7 +188,7 @@ fun BadgeControlScreen(
                         expanded = filtersExpanded,
                         onExpandedChange = { filtersExpanded = it },
                         policy = draftPolicy,
-                        displayPolicyHash = state.controlStatus?.displayPolicyHash ?: 0,
+                        displayPolicyHash = state.controlStatus?.displayPolicyHash,
                         filteredCounts = state.controlStatus?.filteredCounts.orEmpty(),
                         onPolicyChange = { draftPolicy = it },
                         onApply = { viewModel.applyDisplayPolicy(draftPolicy) },
@@ -196,14 +202,16 @@ fun BadgeControlScreen(
                     )
                 }
             }
-            item {
-                BadgeOperationsSection(
-                    state = state,
-                    commandsEnabled = commandsEnabled,
-                    onSetMode = viewModel::setMode,
-                    onResetTheme = viewModel::resetTheme,
-                    onDanger = { action -> dispatchDanger(BadgeDangerEvent.Request(action)) },
-                )
+            if (showHardwareControls) {
+                item {
+                    BadgeOperationsSection(
+                        state = state,
+                        commandsEnabled = commandsEnabled,
+                        onSetMode = viewModel::setMode,
+                        onResetTheme = viewModel::resetTheme,
+                        onDanger = { action -> dispatchDanger(BadgeDangerEvent.Request(action)) },
+                    )
+                }
             }
         }
         item { Spacer(modifier = Modifier.height(6.dp)) }
@@ -269,9 +277,14 @@ private fun BadgeStatusSection(
     onRefresh: () -> Unit,
 ) {
     val identityLines = badgeStatusIdentityLines(state)
+    val disconnectedWithoutStatus = state.status == BadgeUsbStatus.DISCONNECTED &&
+        state.controlStatus == null && state.eventCount == 0
     BadgeSection(
         title = "Badge USB",
-        subtitle = state.transportLabel.ifBlank { state.status.name.replace('_', ' ') },
+        subtitle = state.transportLabel.ifBlank {
+            if (state.status == BadgeUsbStatus.DISCONNECTED) "No badge connected"
+            else state.status.name.replace('_', ' ')
+        },
         modifier = Modifier.testTag("badge_status"),
     ) {
         identityLines.forEachIndexed { index, line ->
@@ -297,6 +310,7 @@ private fun BadgeStatusSection(
                 modifier = Modifier.padding(top = 4.dp),
             )
         }
+        if (disconnectedWithoutStatus) return@BadgeSection
         Text(
             text = "${state.eventCount} events  •  ${state.controlStatus?.version ?: "Status unavailable"}",
             style = MaterialTheme.typography.bodySmall,

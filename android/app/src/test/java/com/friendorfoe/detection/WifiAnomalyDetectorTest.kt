@@ -7,6 +7,33 @@ import org.junit.Test
 class WifiAnomalyDetectorTest {
 
     @Test
+    fun redactedNamesCannotLinkAccessPointsOrCountTowardNameChanges() {
+        val openAp = "02:00:00:00:00:01"
+        val weakAp = "02:00:00:00:00:02"
+        val scans = listOf(
+            WifiAnomalyDetector.WifiNetwork("<unknown ssid>", openAp, "[ESS]", -45, 2412),
+            WifiAnomalyDetector.WifiNetwork("<unknown ssid>", weakAp, "[WEP][ESS]", -50, 2437),
+        ) + (1..4).map { i ->
+            WifiAnomalyDetector.WifiNetwork("Guest $i", openAp, "[ESS]", -45, 2412)
+        }
+        val findings = WifiAnomalyDetector.analyzeNetworksForTest(scans)
+
+        assertEquals(listOf("weak_security"), findings.map { it.type })
+        assertEquals(listOf(weakAp), findings.single().bssids)
+    }
+
+    @Test
+    fun surroundingSpacesArePartOfTheAdvertisedNetworkName() {
+        val readings = listOf(
+            WifiAnomalyDetector.WifiNetwork(" Hall ", "02:00:00:00:00:01", "[ESS]", -46, 2412),
+            WifiAnomalyDetector.WifiNetwork("Hall", "02:00:00:00:00:02", "[WPA2-PSK-CCMP][ESS]", -52, 2437),
+        )
+        assertTrue(WifiAnomalyDetector.analyzeNetworksForTest(readings).isEmpty())
+        val sameName = listOf(readings.first(), readings.last().copy(ssid = " Hall "))
+        assertEquals(" Hall ", WifiAnomalyDetector.analyzeNetworksForTest(sameName).single().ssid)
+    }
+
+    @Test
     fun evil_twin_details_include_each_ap_and_security() {
         val anomalies = WifiAnomalyDetector.analyzeNetworksForTest(
             listOf(

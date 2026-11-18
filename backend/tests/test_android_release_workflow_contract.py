@@ -7,8 +7,8 @@ ANDROID_GRADLE = REPO_ROOT / "android" / "app" / "build.gradle.kts"
 ANDROID_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "android-build.yml"
 ESP32_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "esp32-web-flasher.yml"
 
-VERSION_NAME = "0.67.31-android-recorder-first"
-VERSION_CODE = 139
+VERSION_NAME = "0.67.32-android-privacy"
+VERSION_CODE = 140
 SIGNER_SHA256 = (
     "3a1581ba5d10df59fdb28e09987851d6c7d79ce26df4eb69b9f6d262b9b68e95"
 )
@@ -174,3 +174,15 @@ def test_source_only_tags_skip_unrelated_release_work():
     assert "contains(github.ref_name, 'android')" not in esp32_build
     assert "Attach firmware to release" in esp32_build
     assert "needs.build.result == 'success'" in esp32_deploy
+
+def test_main_dispatch_can_prepare_a_signed_play_bundle_without_publishing():
+    workflow = ANDROID_WORKFLOW.read_text()
+    signing = _job(workflow, "sign-release", "publish-release")
+    publish = _job(workflow, "publish-release")
+    assert "workflow_dispatch:" in workflow
+    assert "(github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')" in signing
+    assert "Build signed Play upload candidate" in signing and "./gradlew bundlePlay" in signing
+    assert 'jarsigner -verify "$AAB"' in signing and "keytool -printcert -rfc -jarfile" in signing
+    assert f"{SIGNER_SHA256}  -" in signing and "friendorfoe-play.aab.sha256" in signing
+    assert "github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')" in publish
+    assert ".aab" not in publish

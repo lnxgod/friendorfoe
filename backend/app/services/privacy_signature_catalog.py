@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import string
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -33,6 +34,8 @@ def validate_privacy_signature_catalog() -> list[str]:
         pattern = str(entry.get("pattern") or "")
         match_type = str(entry.get("match_type") or "")
         key = (match_type.lower(), pattern.lower())
+        if match_type not in {"prefix", "prefix_hex4", "contains", "exact"}:
+            errors.append(f"{prefix}: unsupported match type {match_type!r}")
         if not pattern:
             errors.append(f"{prefix}: missing pattern")
         if pattern.upper() in _BANNED_BROAD_PATTERNS or len(pattern) < 4:
@@ -56,7 +59,10 @@ def _matches(text: str, pattern: str, match_type: str) -> bool:
         return text_l == pattern_l
     if match_type == "contains":
         return pattern_l in text_l
-    return text_l.startswith(pattern_l)
+    if match_type == "prefix_hex4":
+        suffix = text[len(pattern):]
+        return text_l.startswith(pattern_l) and len(suffix) == 4 and all(ch in string.hexdigits for ch in suffix)
+    return match_type == "prefix" and text_l.startswith(pattern_l)
 
 
 def match_privacy_wifi_ssid(ssid: str | None) -> dict[str, Any] | None:

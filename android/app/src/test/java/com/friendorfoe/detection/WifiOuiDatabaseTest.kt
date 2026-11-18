@@ -26,7 +26,9 @@ class WifiOuiDatabaseTest {
 
         listOf(
             "X60:60:1F:AA:BB:CC",
-            "60:60:1Z:AA:BB:CC"
+            "60:60:1Z:AA:BB:CC",
+            "60:60:1F", "60:60:1F:AA:BB:CC:DD", "60:60:1F:AA:BB:GG",
+            "62:60:1F:AA:BB:CC", "61:60:1F:AA:BB:CC"
         ).forEach { bssid ->
             assertNull(
                 "Malformed near-match should not resolve OUI: $bssid",
@@ -52,6 +54,11 @@ class WifiOuiDatabaseTest {
             assertEquals(OuiRole.PRIVACY_INFRASTRUCTURE, entry.role)
             assertFalse(WifiOuiDatabase.isDroneOui(bssid))
         }
+
+        val plaud = WifiOuiDatabase.lookup("9C:06:CF:12:34:56")
+        assertEquals("PLAUD", plaud?.manufacturer)
+        assertEquals(OuiRole.ENRICHMENT_ONLY, plaud?.role)
+        assertNull(WifiOuiDatabase.lookupDroneVendor("9C:06:CF:12:34:56"))
 
         val flock = WifiOuiDatabase.lookup("B4:1E:52:11:22:33")
         assertEquals(OuiRole.PRIVACY_FLOCK, flock?.role)

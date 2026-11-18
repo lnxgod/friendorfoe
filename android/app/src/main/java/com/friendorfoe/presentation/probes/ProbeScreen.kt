@@ -16,8 +16,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.platform.LocalUriHandler
-import com.friendorfoe.data.probes.PROBE_FLASHER_URL
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -67,7 +65,6 @@ fun ProbeContent(state: ProbeUiState, actions: ProbeActions) {
     var chooseScanner by rememberSaveable { mutableStateOf(false) }
     val snackbar = remember { SnackbarHostState() }
     val haptics = LocalHapticFeedback.current
-    val uriHandler = LocalUriHandler.current
     LaunchedEffect(state.snapshotElapsedMs, state.newActivity) {
         state.newActivity?.let { message ->
             haptics.performHapticFeedback(HapticFeedbackType.LongPress)
@@ -105,8 +102,7 @@ fun ProbeContent(state: ProbeUiState, actions: ProbeActions) {
                         Text(state.usb.message, style = MaterialTheme.typography.bodyMedium)
                         if (!state.usb.connected) {
                             Button(onClick = actions.onRetry, enabled = !state.usb.connecting) { Text("Connect USB") }
-                            TextButton(onClick = { uriHandler.openUri(PROBE_FLASHER_URL) }) { Text("Get scanner firmware") }
-                            Text("First flash the ESP32-S3 in Chrome or Edge on a computer. Then connect its native USB port to this phone. Scanning runs while this screen is open.", style = MaterialTheme.typography.bodySmall)
+                            Text("Install the Friend or Foe USB probe firmware on your ESP32-S3 from a computer. Then connect its native USB port to this phone. Scanning runs while this screen is open.", style = MaterialTheme.typography.bodySmall)
                         } else if (state.usb.dropped > 0) {
                             Text("Busy radio · ${state.usb.dropped} reports skipped by sampling or USB limits since scanner boot.", style = MaterialTheme.typography.bodySmall)
                         }

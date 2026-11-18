@@ -30,6 +30,24 @@ class PrivacyDeviceGroupsTest {
             PrivacyFocus.BEACONS to 1, PrivacyFocus.ALL to 2), projected.focusCounts)
     }
 
+    @Test fun tabFilterChoicesExcludeUnrelatedSignalsAndRetainExpiredSelections() {
+        val recorder = finding(id = "rec", category = PrivacyCategory.VOICE_RECORDER)
+        val beaconKey = PrivacyFindingKey(PrivacySourceKind.WIFI_ANALYSIS, "beacon")
+        val beacon = finding(id = "beacon", category = PrivacyCategory.VENUE_BEACON)
+            .copy(source = beaconKey.source, observationKey = beaconKey, routableKey = beaconKey)
+        val rows = current(listOf(recorder, beacon))
+        val filters = PrivacyFilterState(focus = PrivacyFocus.RECORDERS, query = "no match",
+            sources = setOf(PrivacySourceKind.BADGE))
+        val filtered = projectPrivacyUiState(rows, filters)
+        assertTrue(filtered.visibleFindings.isEmpty())
+        assertEquals(listOf(PrivacyCategory.VOICE_RECORDER), filtered.availableCategories)
+        assertEquals(setOf(PrivacySourceKind.PHONE_BLE, PrivacySourceKind.BADGE), filtered.availableSources.toSet())
+        val expired = projectPrivacyUiState(current(listOf(beacon)), filters.copy(
+            categories = setOf(PrivacyCategory.VOICE_RECORDER)))
+        assertEquals(listOf(PrivacySourceKind.BADGE), expired.availableSources)
+        assertEquals(listOf(PrivacyCategory.VOICE_RECORDER), expired.availableCategories)
+    }
+
     @Test fun recorderAndQuietFiltersKeepWarningsAndCombineWithSearch() {
         val recorder = finding(id = "plaud", title = "AI Voice Recorder", evidence = "Plaud", category = PrivacyCategory.VOICE_RECORDER, severity = FindingSeverity.AWARENESS)
         val beacon = finding(id = "beacon", title = "iBeacon", category = PrivacyCategory.VENUE_BEACON)
@@ -82,8 +100,58 @@ class PrivacyDeviceGroupsTest {
         assertEquals(PrivacyDeviceFamily.OTHER_BEACONS, beacon.copy(title = "Venue Beacon").deviceFamily())
         assertEquals(PrivacyDeviceFamily.OTHER_TRACKERS, finding(title = "Versatile tracker").deviceFamily())
         assertEquals(PrivacyDeviceFamily.OTHER_TRACKERS, finding(title = "Accessory", limitation = "Could be an AirTag or Tile").deviceFamily())
-        assertNull(finding(category = PrivacyCategory.SMART_TV, title = "Samsung").deviceFamily())
-        assertNull(finding(category = PrivacyCategory.APPLE_CONTINUITY, title = "Apple").deviceFamily())
+        assertEquals(PrivacyDeviceFamily.SMART_HOME, finding(category = PrivacyCategory.SMART_TV, title = "Samsung").deviceFamily())
+        assertEquals(PrivacyDeviceFamily.APPLE_ACTIVITY, finding(category = PrivacyCategory.APPLE_CONTINUITY, title = "Apple").deviceFamily())
+    }
+
+    @Test
+    fun everydayFamiliesRetainEachObservationAndCanBeFoundByFamilyName() {
+        val direct = finding("direct", "Apple Continuity AirPods", category = PrivacyCategory.APPLE_CONTINUITY)
+        val activity = finding("activity", "AirPods connection/activity nearby", category = PrivacyCategory.APPLE_CONTINUITY)
+        val alias = finding("alias", "Paired accessory", category = PrivacyCategory.APPLE_CONTINUITY).copy(
+            appleEvidence = PrivacyAppleListeningEvidence(true, true, false),
+        )
+        val named = finding("named", "AirPods Pro", category = PrivacyCategory.INFORMATIONAL)
+        val continuity = finding("handoff", "Apple Handoff", category = PrivacyCategory.APPLE_CONTINUITY)
+        val audio = finding("le-audio", "Auracast", category = PrivacyCategory.AURACAST)
+        val headphones = finding("phones", "Surface Headphones", category = PrivacyCategory.INFORMATIONAL)
+        val keyboard = finding("keyboard", "BLE Keyboard", category = PrivacyCategory.BLE_HID)
+        val speaker = finding("speaker", "Smart speaker", category = PrivacyCategory.SMART_SPEAKER)
+        val hub = finding("hub", "Home Hub", category = PrivacyCategory.SMART_HOME_HUB)
+        val tv = finding("tv", "Smart TV", category = PrivacyCategory.SMART_TV)
+        val rows = listOf(continuity, direct, audio, activity, headphones, alias, keyboard, speaker, named, hub, tv)
+
+        val state = projectPrivacyUiState(current(rows))
+        val group = groupPrivacyDevices(state.visibleFindings).single()
+        assertEquals(PrivacyDeviceGroup.EVERYDAY, group.group)
+        assertTrue(state.individualFindings.isEmpty())
+        assertEquals(rows.size, group.findings.size)
+        assertEquals(rows.toSet(), group.findings.toSet())
+        assertEquals(listOf(
+            PrivacyDeviceFamily.AIRPODS, PrivacyDeviceFamily.APPLE_ACTIVITY, PrivacyDeviceFamily.BLUETOOTH_AUDIO,
+            PrivacyDeviceFamily.INPUT_DEVICES, PrivacyDeviceFamily.SMART_HOME,
+        ), group.families.map { it.family })
+        assertEquals(listOf(direct, activity, alias, named), group.families.first().findings)
+        assertEquals(listOf(direct, activity, alias, named),
+            projectPrivacyUiState(current(rows), PrivacyFilterState(query = "AirPods")).visibleFindings)
+    }
+
+    @Test
+    fun deviceNamesCannotHideRecordersCamerasWifiOrAmbiguousSignals() {
+        val named = finding(title = "AirPods Pro", category = PrivacyCategory.INFORMATIONAL)
+        val wifiKey = PrivacyFindingKey(PrivacySourceKind.WIFI_ANALYSIS, "wifi")
+        val individual = listOf(
+            named.copy(title = "viaim recording earbuds", category = PrivacyCategory.VOICE_RECORDER),
+            named.copy(title = "Headphones camera", category = PrivacyCategory.ACTION_CAMERA),
+            named.copy(source = wifiKey.source, observationKey = wifiKey, routableKey = wifiKey),
+            named.copy(wifiNetwork = WifiNetworkEvidence("AirPods Pro", "A Wi-Fi name match.")),
+            named.copy(title = "Nearby accessory", limitation = "Could be AirPods or earbuds"),
+            named.copy(title = "Airpodstyle"),
+            named.copy(severity = FindingSeverity.AWARENESS),
+            named.copy(severity = FindingSeverity.CRITICAL),
+        )
+        assertTrue(groupPrivacyDevices(individual).isEmpty())
+        assertEquals(individual, projectPrivacyUiState(current(individual)).individualFindings)
     }
 
     @Test

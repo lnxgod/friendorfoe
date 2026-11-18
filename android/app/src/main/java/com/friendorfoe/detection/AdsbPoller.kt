@@ -88,7 +88,6 @@ class AdsbPoller @Inject constructor(
         if (!validAircraftFeedPosition(latitude, longitude)) return
         scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
-        Log.i(TAG, "Starting ADS-B polling at ($latitude, $longitude)")
 
         currentLat = latitude
         currentLon = longitude

@@ -36,6 +36,7 @@ import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -45,6 +46,7 @@ import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.unit.dp
@@ -57,6 +59,7 @@ import com.friendorfoe.presentation.detail.AircraftDetailContent
 import com.friendorfoe.presentation.detail.DetailState
 import com.friendorfoe.presentation.detail.DetailViewModel
 import com.friendorfoe.presentation.detail.DroneDetailContent
+import com.friendorfoe.presentation.permissions.LocationPermissionDisclosure
 import com.friendorfoe.presentation.permissions.PermissionUiState
 import com.friendorfoe.presentation.permissions.isUsable
 import com.friendorfoe.domain.model.Position
@@ -143,20 +146,19 @@ internal fun View.installMapCameraTouchListener(
 }
 
 @Composable
-internal fun MapLocatingOverlay(modifier: Modifier = Modifier) {
+internal fun MapLocatingOverlay(onBrowse: (() -> Unit)? = null) {
     Box(
-        modifier = modifier
-            .fillMaxSize()
-            .pointerInput(Unit) {
-                awaitPointerEventScope {
-                    while (true) {
-                        awaitPointerEvent(PointerEventPass.Initial).changes.forEach { it.consume() }
-                    }
-                }
-            }
-            .background(MaterialTheme.colorScheme.surface),
+        modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface),
         contentAlignment = Alignment.Center,
     ) {
+        // Intercept touches behind the message while leaving its browse action interactive.
+        Box(Modifier.matchParentSize().pointerInput(Unit) {
+            awaitPointerEventScope {
+                while (true) {
+                    awaitPointerEvent(PointerEventPass.Initial).changes.forEach { it.consume() }
+                }
+            }
+        })
         androidx.compose.foundation.layout.Column(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(12.dp),
@@ -167,7 +169,34 @@ internal fun MapLocatingOverlay(modifier: Modifier = Modifier) {
                 style = MaterialTheme.typography.bodyLarge,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            if (onBrowse != null) {
+                TextButton(onClick = onBrowse) { Text("Browse map without a fix") }
+            }
         }
+    }
+}
+
+@Composable
+internal fun MapLocationAccessButton(
+    state: PermissionUiState,
+    onRequest: () -> Unit,
+    onOpenSettings: () -> Unit,
+) {
+    if (state == PermissionUiState.Loading) return
+    var showRationale by rememberSaveable { mutableStateOf(false) }
+    TextButton(onClick = { showRationale = true }) {
+        Text(if (state == PermissionUiState.Denied) "Use location" else "App settings")
+    }
+    if (showRationale) {
+        LocationPermissionDisclosure(
+            title = "Allow location for Map?",
+            explanation = "When aircraft lookup is on, Friend or Foe sends your location or a surrounding area to aircraft data providers. OpenStreetMap receives the map area you view. You can use approximate location or keep browsing without it.",
+            onContinue = {
+                showRationale = false
+                if (state == PermissionUiState.Denied) onRequest() else onOpenSettings()
+            },
+            onDismiss = { showRationale = false },
+        )
     }
 }
 
@@ -259,7 +288,6 @@ fun MapViewScreen(
         selectedObjectId?.let { detailViewModel.loadDetail(it) }
     }
 
-    val isDarkTheme = androidx.compose.foundation.isSystemInDarkTheme()
 
     val mapView = remember {
         MapView(context).apply {
@@ -311,7 +339,7 @@ fun MapViewScreen(
     val revealMap = shouldRevealMap(
         locationPermissionState = locationPermissionState,
         userPosition = userPosition,
-    ) || flightTrails.trails.isNotEmpty()
+    ) || flightTrails.trails.isNotEmpty() || userControlsCamera
     DisposableEffect(mapView, viewModel, cameraOwnership, revealMap) {
         mapView.installMapCameraTouchListener(
             isMapRevealed = { revealMap },
@@ -359,24 +387,7 @@ fun MapViewScreen(
         }
     }
 
-    // Neutral luminance keeps labels readable without inverting parks and water into neon hues.
-    LaunchedEffect(isDarkTheme) {
-        if (isDarkTheme) {
-            mapView.overlayManager.tilesOverlay.setColorFilter(
-                android.graphics.ColorMatrixColorFilter(
-                    android.graphics.ColorMatrix(floatArrayOf(
-                        -0.128f, -0.429f, -0.043f, 0f, 170f,
-                        -0.128f, -0.429f, -0.043f, 0f, 179f,
-                        -0.128f, -0.429f, -0.043f, 0f, 181f,
-                         0f,      0f,      0f,     1f,   0f
-                    ))
-                )
-            )
-        } else {
-            mapView.overlayManager.tilesOverlay.setColorFilter(null)
-        }
-        mapView.invalidate()
-    }
+    ApplyMapAppearance(mapView)
 
     androidx.compose.foundation.layout.Column(Modifier.fillMaxSize()) {
         // Live filters and recorded paths share the same controls and filter policy.
@@ -429,7 +440,13 @@ fun MapViewScreen(
                 },
             )
             if (!revealMap) {
-                MapLocatingOverlay()
+                MapLocatingOverlay(onBrowse = if (locationPermissionState.isUsable()) {
+                    {
+                        userControlsCamera = true
+                        viewModel.stopFollowingCompass()
+                        mapView.controller.setZoom(2.0)
+                    }
+                } else null)
             }
 
             if (!locationPermissionState.isUsable()) {
@@ -447,15 +464,7 @@ fun MapViewScreen(
                     ) {
                         Text("Browsing without your location", style = MaterialTheme.typography.bodySmall,
                             modifier = Modifier.weight(1f))
-                        if (locationPermissionState != PermissionUiState.Loading) {
-                            TextButton(onClick = if (locationPermissionState == PermissionUiState.Denied) {
-                                onRequestLocation
-                            } else {
-                                onOpenLocationSettings
-                            }) {
-                                Text(if (locationPermissionState == PermissionUiState.Denied) "Use location" else "App settings")
-                            }
-                        }
+                        MapLocationAccessButton(locationPermissionState, onRequestLocation, onOpenLocationSettings)
                     }
                 }
             } else if (locationPermissionState == PermissionUiState.Approximate) {
@@ -509,7 +518,14 @@ fun MapViewScreen(
                 )
             }
         }
-
+        // Keep attribution attached to the map in its own row: location prompts,
+        // camera controls and large text must not cover the map provider credit.
+        Box(
+            modifier = Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface),
+            contentAlignment = Alignment.CenterEnd,
+        ) {
+            OpenStreetMapCredit()
+        }
     }
 
     // Bottom sheet for detail
@@ -579,5 +595,13 @@ fun MapViewScreen(
                 }
             }
         }
+    }
+}
+
+@Composable
+internal fun OpenStreetMapCredit() {
+    val uri = LocalUriHandler.current
+    TextButton(onClick = { uri.openUri("https://www.openstreetmap.org/copyright") }) {
+        Text("© OpenStreetMap contributors", style = MaterialTheme.typography.labelMedium)
     }
 }

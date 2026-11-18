@@ -23,7 +23,10 @@ class FeaturePermissionsTest {
         )
 
         assertEquals(expected, requiredPermissions(AppFeature.LOCAL_RADIO_DISCOVERY, sdk = 35))
-        assertEquals(expected, requiredPermissions(AppFeature.PHONE_PRIVACY_SCAN, sdk = 35))
+        assertEquals(expected - Manifest.permission.NEARBY_WIFI_DEVICES,
+            requiredPermissions(AppFeature.PHONE_PRIVACY_SCAN, sdk = 35))
+        assertEquals(setOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION),
+            permissionRequestPlan(AppFeature.WIFI_PRIVACY_SCAN, 35, emptySet()))
     }
 
     @Test

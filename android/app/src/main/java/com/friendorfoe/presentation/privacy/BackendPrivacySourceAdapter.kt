@@ -8,7 +8,9 @@ import com.friendorfoe.data.remote.LivePrivacyDevicesDto
 import com.friendorfoe.data.remote.SensorMapApiService
 import com.friendorfoe.data.time.MonotonicClock
 import com.friendorfoe.di.ApplicationScope
+import com.friendorfoe.detection.OuiRole
 import com.friendorfoe.detection.PrivacyCategory
+import com.friendorfoe.detection.WifiOuiDatabase
 import java.util.concurrent.atomic.AtomicLong
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -271,11 +273,17 @@ class BackendPrivacySourceAdapter internal constructor(
             val lastObservedElapsed = lastWall?.let {
                 elapsedTimestampForWall(nowElapsed, nowWall, it)
             } ?: nowElapsed
-            val title = dto.displayLabel?.takeIf { it.isNotBlank() }
+            // Older servers used FLOCK_ALPR for Wi-Fi OUI observations.
+            val vendorOnly = dto.privacyKind == "FLOCK_ALPR" && dto.source?.startsWith("wifi") == true &&
+                dto.privacyEvidence.none { it["value"].toString().startsWith("privacy:alpr:", ignoreCase = true) } &&
+                (dto.source == "wifi_oui" ||
+                    dto.lastBssid?.let { WifiOuiDatabase.lookup(it)?.role } == OuiRole.PRIVACY_FLOCK)
+            val title = if (vendorOnly) "Flock Safety device" else dto.displayLabel?.takeIf { it.isNotBlank() }
                 ?: dto.deviceType?.takeIf { it.isNotBlank() }
                 ?: dto.privacyKind?.takeIf { it.isNotBlank() }
                 ?: "Backend privacy finding"
-            val category = categoryFor(dto.privacyKind, dto.deviceType, title)
+            val category = if (vendorOnly) PrivacyCategory.SECURITY_INFRASTRUCTURE
+                else categoryFor(dto.privacyKind, dto.deviceType, title)
             val evidence = listOfNotNull(
                 dto.displayDetail?.takeIf { it.isNotBlank() },
                 dto.evidence?.filter(String::isNotBlank)?.joinToString(" • ")?.takeIf { it.isNotBlank() },
@@ -309,13 +317,24 @@ class BackendPrivacySourceAdapter internal constructor(
                 routableKey = stableId?.let { key },
                 title = title,
                 evidence = evidence,
-                limitation = if (category == PrivacyCategory.VOICE_RECORDER)
-                    "Bluetooth recorder signature; recording status is unknown." else null,
+                wifiNetwork = reportedWifiRule(dto.source)?.let { fallback ->
+                    dto.privacyEvidence.firstNotNullOfOrNull { entry ->
+                        if (entry["field"] == "ssid") (entry["value"] as? String).observedWifiSsid() else null
+                    }?.let { ssid ->
+                        val rule = dto.evidence.orEmpty().mapNotNull { it.readableWifiReportReason(ssid) }.joinToString(" • ")
+                        WifiNetworkEvidence(ssid = ssid, reason = rule.ifBlank { fallback })
+                    }
+                },
+                limitation = when (category) {
+                    PrivacyCategory.VOICE_RECORDER -> "Bluetooth recorder signature; recording status is unknown."
+                    PrivacyCategory.SECURITY_INFRASTRUCTURE -> "The Wi-Fi signal does not establish the model or camera capability."
+                    else -> null
+                },
                 category = category,
-                severity = if (plainAppleActivity) {
-                    FindingSeverity.INFO
-                } else {
-                    severityFor(dto.riskLevel, category)
+                severity = when {
+                    plainAppleActivity -> FindingSeverity.INFO
+                    category == PrivacyCategory.SECURITY_INFRASTRUCTURE -> FindingSeverity.NEARBY
+                    else -> severityFor(dto.riskLevel, category)
                 },
                 ownership = Ownership.UNKNOWN,
                 signalDbm = dto.currentRssi,
@@ -343,6 +362,7 @@ class BackendPrivacySourceAdapter internal constructor(
                 "APPLE_CONTINUITY" -> PrivacyCategory.APPLE_CONTINUITY
                 "VOICE_RECORDER" -> PrivacyCategory.VOICE_RECORDER
                 "REMOTE_LISTENING" -> PrivacyCategory.REMOTE_LISTENING
+                "SECURITY_INFRASTRUCTURE" -> PrivacyCategory.SECURITY_INFRASTRUCTURE
                 "FLOCK_ALPR" -> PrivacyCategory.ALPR_CAMERA
                 "CAMERA_NEAR" -> PrivacyCategory.SURVEILLANCE_CAMERA
                 "SKIMMER" -> PrivacyCategory.ATTACK_TOOL

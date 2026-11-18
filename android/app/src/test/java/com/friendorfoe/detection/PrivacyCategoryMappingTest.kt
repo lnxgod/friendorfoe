@@ -59,14 +59,16 @@ class PrivacyCategoryMappingTest {
     }
 
     @Test
-    fun maps_registered_flock_wifi_oui_to_alpr_camera() {
+    fun maps_registered_flock_wifi_oui_to_vendor_evidence() {
         val registeredOui = GlassesDetector.checkWifiBssid(
             ssid = "",
             bssid = "B4:1E:52:AA:BB:CC",
             rssi = -58
         )
         assertNotNull(registeredOui)
-        assertEquals(PrivacyCategory.ALPR_CAMERA, registeredOui!!.category)
+        assertEquals(PrivacyCategory.SECURITY_INFRASTRUCTURE, registeredOui!!.category)
+        assertFalse(registeredOui.hasCamera)
+        assertNotNull(registeredOui.details["limitation"])
         assertEquals("Flock Safety", registeredOui.manufacturer)
         assertEquals("wifi_oui:flock:B4:1E:52", registeredOui.matchReason)
 
@@ -183,7 +185,7 @@ class PrivacyCategoryMappingTest {
             rssi = -52
         )
         assertNotNull(tapo)
-        assertEquals(PrivacyCategory.HIDDEN_CAMERA, tapo!!.category)
+        assertEquals(PrivacyCategory.SURVEILLANCE_CAMERA, tapo!!.category)
         assertEquals("TP-Link", tapo.manufacturer)
 
         val deauther = GlassesDetector.checkWifiSsid(

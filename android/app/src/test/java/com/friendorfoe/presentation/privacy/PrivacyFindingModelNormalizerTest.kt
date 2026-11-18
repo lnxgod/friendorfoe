@@ -2,6 +2,7 @@ package com.friendorfoe.presentation.privacy
 
 import com.friendorfoe.detection.PrivacyCategory
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Test
 
@@ -204,6 +205,24 @@ class PrivacyFindingModelNormalizerTest {
         assertEquals("Apple Handoff nearby", normalized.title)
         assertEquals(PrivacyCategory.APPLE_CONTINUITY, normalized.category)
         assertEquals(FindingSeverity.INFO, normalized.severity)
+    }
+
+    @Test
+    fun appleWordsCannotMoveRecorderOrWifiFindingsIntoEverydayDevices() {
+        val recorder = finding(
+            title = "Recording earbuds",
+            category = PrivacyCategory.VOICE_RECORDER,
+            appleEvidence = null,
+        ).copy(evidence = "Microphone on a recorder paired with an iPhone")
+        val wifi = recorder.copy(
+            category = PrivacyCategory.INFORMATIONAL,
+            wifiNetwork = WifiNetworkEvidence("Demo guest", "The badge observed an access point."),
+        )
+        for (item in listOf(recorder, wifi)) {
+            val normalized = PrivacyFindingNormalizer.normalize(item)
+            assertSame(item, normalized)
+            assertNull(normalized.deviceTreeFamily())
+        }
     }
 
     @Test

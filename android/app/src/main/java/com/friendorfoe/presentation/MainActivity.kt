@@ -1,6 +1,8 @@
 package com.friendorfoe.presentation
 
 import android.app.Activity
+import android.app.UiModeManager
+import android.os.Build
 import android.content.Intent
 import android.os.Bundle
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -10,6 +12,10 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.Surface
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -23,6 +29,8 @@ import androidx.lifecycle.lifecycleScope
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.NavHostController
+import com.friendorfoe.data.preferences.AppThemeMode
+import com.friendorfoe.data.preferences.AppThemePreferences
 import com.friendorfoe.data.preferences.AppLaunchState
 import com.friendorfoe.data.preferences.sanitizeTopLevelRoute
 import com.friendorfoe.data.repository.RuntimePermissionChangeNotifier
@@ -42,6 +50,8 @@ import com.friendorfoe.presentation.privacy.PrivacyNotificationRoute
 import com.friendorfoe.presentation.privacy.acceptPrivacyLaunchIntent
 import com.friendorfoe.presentation.permissions.PermissionStateRepository
 import com.friendorfoe.presentation.permissions.capturePermissionRationales
+import com.friendorfoe.presentation.theme.AppThemeSelection
+import com.friendorfoe.presentation.theme.LocalAppThemeSelection
 import com.friendorfoe.presentation.theme.FriendOrFoeTheme
 import com.friendorfoe.presentation.welcome.WelcomeScreen
 import dagger.hilt.android.AndroidEntryPoint
@@ -50,6 +60,7 @@ import kotlinx.coroutines.launch
 
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
+    @Inject lateinit var themePreferences: AppThemePreferences
     @Inject lateinit var permissionStateRepository: PermissionStateRepository
     @Inject lateinit var runtimePermissionChangeNotifier: RuntimePermissionChangeNotifier
     @Inject lateinit var wifiScanCoordinator: WifiScanCoordinator
@@ -70,14 +81,31 @@ class MainActivity : ComponentActivity() {
         setContent {
             val pendingRoute by pendingPrivacyRoute.pending.collectAsStateWithLifecycle()
             val skyObjectId by pendingSkyObject.collectAsStateWithLifecycle()
-            FriendOrFoeTheme {
-                FriendOrFoeApp(
-                    pendingSkyObject = skyObjectId,
-                    onSkyObjectConsumed = { pendingSkyObject.value = null },
-                    pendingPrivacyRoute = pendingRoute,
-                    onPrivacyRouteConsumed = pendingPrivacyRoute::consume,
-                )
+            val mode by themePreferences.mode.collectAsStateWithLifecycle()
+            FriendOrFoeTheme(darkTheme = mode.isDark(isSystemInDarkTheme())) {
+                CompositionLocalProvider(LocalAppThemeSelection provides AppThemeSelection(mode, ::selectAppTheme)) {
+                    Surface(Modifier.fillMaxSize()) {
+                        FriendOrFoeApp(
+                            pendingSkyObject = skyObjectId,
+                            onSkyObjectConsumed = { pendingSkyObject.value = null },
+                            pendingPrivacyRoute = pendingRoute,
+                            onPrivacyRouteConsumed = pendingPrivacyRoute::consume,
+                        )
+                    }
+                }
             }
+        }
+    }
+
+    private fun selectAppTheme(mode: AppThemeMode) {
+        themePreferences.select(mode)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            // Persist the resource mode for the system-drawn splash on subsequent cold launches.
+            getSystemService(UiModeManager::class.java)?.setApplicationNightMode(when (mode) {
+                AppThemeMode.SYSTEM -> UiModeManager.MODE_NIGHT_AUTO
+                AppThemeMode.LIGHT -> UiModeManager.MODE_NIGHT_NO
+                AppThemeMode.DARK -> UiModeManager.MODE_NIGHT_YES
+            })
         }
     }
 

@@ -1,6 +1,7 @@
 package com.friendorfoe.presentation.util
 
-import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
 import com.friendorfoe.domain.model.ObjectCategory
@@ -48,7 +49,7 @@ private fun categoryColorDark(category: ObjectCategory): Color {
  */
 @Composable
 fun categoryColorThemed(category: ObjectCategory): Color {
-    return if (isSystemInDarkTheme()) categoryColorDark(category) else categoryColorLight(category)
+    return if (MaterialTheme.colorScheme.surface.luminance() < 0.5f) categoryColorDark(category) else categoryColorLight(category)
 }
 
 /**

@@ -2,6 +2,7 @@ package com.friendorfoe.presentation.privacy
 
 import com.friendorfoe.data.preferences.FindingPreferenceKey
 import com.friendorfoe.detection.PrivacyCategory
+import com.friendorfoe.detection.isAdvertisedWifiName
 
 enum class PrivacySourceKind(val preferenceId: String) {
     PHONE_BLE("phone_ble"),
@@ -67,6 +68,18 @@ data class PrivacyAppleListeningEvidence(
     val listeningOrientedCategoryOrWording: Boolean,
 )
 
+data class WifiNetworkEvidence(val ssid: String?, val reason: String)
+
+/** Keep an advertised name on one line, including when the radio sends control characters. */
+internal fun String?.observedWifiSsid(): String? {
+    if (this == null || !isAdvertisedWifiName()) return null
+    return buildString {
+        for (c in this@observedWifiSsid) {
+            append(if (c.isISOControl() || c in '\u2028'..'\u202E' || c in '\u2066'..'\u2069') '\uFFFD' else c)
+        }
+    }
+}
+
 data class PrivacyFinding(
     val displayId: String,
     val observationKey: PrivacyFindingKey,
@@ -89,6 +102,7 @@ data class PrivacyFinding(
     val capabilities: PrivacyCapabilities = PrivacyCapabilities(),
     val freshness: FindingFreshness = FindingFreshness.LIVE,
     val beaconUuid: String? = null,
+    val wifiNetwork: WifiNetworkEvidence? = null,
 ) {
     init {
         require(observationKey.source == source) {

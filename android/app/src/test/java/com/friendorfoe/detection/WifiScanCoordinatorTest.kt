@@ -74,6 +74,28 @@ class WifiScanCoordinatorTest {
     }
 
     @Test
+    fun unsuccessfulBroadcastDoesNotRefreshCachedPrivacyFindings() = runTest {
+        val platform = FakeWifiScanPlatform()
+        val coordinator = coordinator(platform)
+        val events = mutableListOf<WifiScanEvent>()
+        val collector = collectEvents(coordinator, events)
+        runCurrent()
+        platform.dispatchResultsAvailable()
+        runCurrent()
+        val previous = coordinator.currentBatch.value
+        val reads = platform.cachedResultsCalls
+        platform.dispatchResultsAvailable(updated = false)
+        runCurrent()
+        assertTrue(events.last() is WifiScanEvent.Failure)
+        assertEquals(previous, coordinator.currentBatch.value)
+        assertEquals(reads, platform.cachedResultsCalls)
+        platform.dispatchResultsAvailable()
+        runCurrent()
+        assertTrue(events.last() is WifiScanEvent.Success)
+        collector.cancel()
+    }
+
+    @Test
     fun failedResultReadRetainsLastSuccessfulBatch() = runTest {
         val platform = FakeWifiScanPlatform()
         val coordinator = coordinator(platform)
@@ -262,13 +284,13 @@ private class FakeWifiScanPlatform(
     var startFailure: SecurityException? = null
     var cachedFailure: SecurityException? = null
     var results: List<ScanResult> = emptyList()
-    private var resultsCallback: (() -> Unit)? = null
+    private var resultsCallback: ((Boolean) -> Unit)? = null
 
     override fun readiness(): WifiScanReadiness = readinessState
 
-    override fun registerResultsReceiver(onResultsAvailable: () -> Unit) {
+    override fun registerResultsReceiver(onScanCompleted: (resultsUpdated: Boolean) -> Unit) {
         registerCount += 1
-        resultsCallback = onResultsAvailable
+        resultsCallback = onScanCompleted
     }
 
     override fun unregisterResultsReceiver() {
@@ -288,7 +310,7 @@ private class FakeWifiScanPlatform(
         return results
     }
 
-    fun dispatchResultsAvailable() {
-        resultsCallback?.invoke()
+    fun dispatchResultsAvailable(updated: Boolean = true) {
+        resultsCallback?.invoke(updated)
     }
 }

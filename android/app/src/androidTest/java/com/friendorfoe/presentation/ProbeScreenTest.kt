@@ -75,7 +75,7 @@ class ProbeScreenTest {
             onRetry = { connected = true }, onSelectUsb = { state = state.copy(usbSource = it) }
         )) } } }
         compose.onNodeWithText("USB Wi-Fi probe scanner").assertIsDisplayed()
-        compose.onNodeWithText("Get scanner firmware").assertIsDisplayed()
+        compose.onNodeWithText("Install the Friend or Foe USB probe firmware", substring = true).assertIsDisplayed()
         compose.onNodeWithText("Connect USB").performClick()
         compose.runOnIdle { assertTrue(connected) }
         capture("usb-setup")

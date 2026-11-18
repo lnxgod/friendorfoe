@@ -380,7 +380,7 @@ void test_badge_teamcharitycase_ssid_is_suppressed(void);
 void test_badge_plain_fof_ssid_is_suppressed_as_ambient(void);
 void test_badge_broad_flock_like_ssids_are_suppressed(void);
 void test_badge_flock_ble_name_does_not_produce_flock_camera(void);
-void test_badge_flock_wifi_oui_produces_flock_camera_not_drone(void);
+void test_badge_flock_wifi_oui_produces_vendor_evidence(void);
 void test_badge_privacy_infrastructure_oui_uses_vendor_device_wording(void);
 void test_badge_weak_non_drone_gate_keeps_minus_85_boundary_and_drones(void);
 void test_badge_flock_wifi_oui_normalizes_common_mac_formats(void);
@@ -1352,7 +1352,7 @@ int main(void)
     RUN_TEST(test_badge_plain_fof_ssid_is_suppressed_as_ambient);
     RUN_TEST(test_badge_broad_flock_like_ssids_are_suppressed);
     RUN_TEST(test_badge_flock_ble_name_does_not_produce_flock_camera);
-    RUN_TEST(test_badge_flock_wifi_oui_produces_flock_camera_not_drone);
+    RUN_TEST(test_badge_flock_wifi_oui_produces_vendor_evidence);
     RUN_TEST(test_badge_privacy_infrastructure_oui_uses_vendor_device_wording);
     RUN_TEST(test_badge_weak_non_drone_gate_keeps_minus_85_boundary_and_drones);
     RUN_TEST(test_badge_flock_wifi_oui_normalizes_common_mac_formats);

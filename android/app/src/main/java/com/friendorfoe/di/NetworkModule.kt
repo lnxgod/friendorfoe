@@ -39,7 +39,7 @@ object NetworkModule {
     private const val HEXDB_BASE_URL = "https://hexdb.io/"
     private const val OPEN_METEO_BASE_URL = "https://api.open-meteo.com/"
     // Backend URL: placeholder — actual URL is read from DetectionPrefs at request time
-    private const val BACKEND_BASE_URL = "http://localhost:8000/"
+    private const val BACKEND_BASE_URL = "https://localhost/"
 
     @Provides
     @Singleton
@@ -56,6 +56,7 @@ object NetworkModule {
         loggingInterceptor: HttpLoggingInterceptor
     ): OkHttpClient {
         return OkHttpClient.Builder()
+            .followSslRedirects(false)
             .addInterceptor(loggingInterceptor)
             .connectTimeout(15, TimeUnit.SECONDS)
             .readTimeout(15, TimeUnit.SECONDS)
@@ -70,6 +71,7 @@ object NetworkModule {
         loggingInterceptor: HttpLoggingInterceptor
     ): OkHttpClient {
         return OkHttpClient.Builder()
+            .followSslRedirects(false)
             .addInterceptor(loggingInterceptor)
             .connectTimeout(8, TimeUnit.SECONDS)
             .readTimeout(8, TimeUnit.SECONDS)
@@ -210,6 +212,8 @@ object NetworkModule {
         @Named("backendRequestInterceptor") backendRequestInterceptor: Interceptor,
     ): OkHttpClient {
         return OkHttpClient.Builder()
+            .followSslRedirects(false)
+            .followRedirects(false)
             .addInterceptor(backendRequestInterceptor)
             .addInterceptor(loggingInterceptor)
             .connectTimeout(8, TimeUnit.SECONDS)

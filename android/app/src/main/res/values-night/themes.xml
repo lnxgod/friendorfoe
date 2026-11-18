@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="app_window_surface">#0E1518</color>
+    <bool name="app_light_system_bars">false</bool>
+    <style name="FofPlatformTheme" parent="android:Theme.Material.NoActionBar" />
+</resources>

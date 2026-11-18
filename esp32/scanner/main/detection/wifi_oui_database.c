@@ -83,7 +83,7 @@ static const oui_table_entry_t OUI_TABLE[] = {
      * B4:1E:52 is the IEEE registered Flock Safety OUI. C4:2F:90 (Hikvision)
      * and E8:AB:FA (Reecam) were mislabeled as drones; corrected to their true
      * camera vendors and flagged (privacy relevance, not drone). */
-    { { 0xB4, 0x1E, 0x52 }, { "Flock Safety",   "Flock Safety ALPR/camera registered OUI", false, OUI_ROLE_PRIVACY_FLOCK } },
+    { { 0xB4, 0x1E, 0x52 }, { "Flock Safety",   "Flock Safety registered OUI", false, OUI_ROLE_PRIVACY_FLOCK } },
     { { 0xE0, 0xA7, 0x00 }, { "Verkada",        "Verkada Inc.",                    false, OUI_ROLE_PRIVACY_INFRASTRUCTURE } },
     { { 0xCC, 0x47, 0xBD }, { "Rhombus",        "Rhombus Systems",                 false, OUI_ROLE_PRIVACY_INFRASTRUCTURE } },
     { { 0x00, 0x25, 0xDF }, { "Axon",           "Axon Enterprise",                 false, OUI_ROLE_PRIVACY_INFRASTRUCTURE } },
@@ -91,6 +91,8 @@ static const oui_table_entry_t OUI_TABLE[] = {
     { { 0x50, 0xDF, 0x95 }, { "Lytx",           "Lytx Inc.",                       false, OUI_ROLE_PRIVACY_INFRASTRUCTURE } },
     { { 0x58, 0xA7, 0x48 }, { "Lytx",           "Lytx Inc.",                       false, OUI_ROLE_PRIVACY_INFRASTRUCTURE } },
     { { 0x70, 0xE4, 0x6E }, { "Lytx",           "Lytx Inc.",                       false, OUI_ROLE_PRIVACY_INFRASTRUCTURE } },
+    /* IEEE MA-L, 2026-11-15: vendor context, not recorder evidence. */
+    { { 0x9C, 0x06, 0xCF }, { "PLAUD",         "PLAUD Inc.",                     true, OUI_ROLE_ENRICHMENT_ONLY } },
     { { 0xC4, 0x2F, 0x90 }, { "Hikvision",      "Hangzhou Hikvision (IP camera)", true, OUI_ROLE_ENRICHMENT_ONLY } },
     { { 0xE8, 0xAB, 0xFA }, { "Reecam",         "Shenzhen Reecam (IP camera)",    true, OUI_ROLE_ENRICHMENT_ONLY } },
 

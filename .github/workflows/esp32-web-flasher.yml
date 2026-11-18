@@ -6,6 +6,7 @@ on:
     tags: ['v*']
     paths:
       - 'esp32/**'
+      - 'android/app/src/main/res/raw/privacy_policy.html'
       - 'tools/badge_flasher/**'
       - 'scripts/build_badge_factory_bundle.py'
       - 'scripts/package_public_badge_release.py'
@@ -14,6 +15,7 @@ on:
     branches: [main]
     paths:
       - 'esp32/**'
+      - 'android/app/src/main/res/raw/privacy_policy.html'
       - 'tools/badge_flasher/**'
       - 'scripts/build_badge_factory_bundle.py'
       - 'scripts/package_public_badge_release.py'
@@ -298,6 +300,8 @@ jobs:
         run: |
           mkdir -p _site/firmware/scanner _site/firmware/scanner-seed _site/firmware/uplink-s3
           mkdir -p _site/firmware/badge-scanner _site/firmware/badge-uplink
+
+          cp android/app/src/main/res/raw/privacy_policy.html _site/privacy-policy.html
 
           # Web flasher page + manifests
           cp esp32/web-flasher/manifest-probe-scanner.json _site/

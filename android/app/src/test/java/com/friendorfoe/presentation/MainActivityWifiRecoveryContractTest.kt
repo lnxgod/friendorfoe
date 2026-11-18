@@ -68,7 +68,7 @@ private class ResumeWifiPlatform(
 
     override fun readiness(): WifiScanReadiness = readinessState
 
-    override fun registerResultsReceiver(onResultsAvailable: () -> Unit) = Unit
+    override fun registerResultsReceiver(onScanCompleted: (resultsUpdated: Boolean) -> Unit) = Unit
 
     override fun unregisterResultsReceiver() = Unit
 

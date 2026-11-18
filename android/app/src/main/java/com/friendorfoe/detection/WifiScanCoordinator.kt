@@ -25,6 +25,10 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 
+/** Android can redact a name even when it still reports the access point's radio settings. */
+internal fun String.isAdvertisedWifiName(): Boolean =
+    isNotBlank() && any { it != '\u0000' } && !equals("<unknown ssid>", ignoreCase = true)
+
 data class WifiScanNetwork(
     val ssid: String,
     val bssid: String,
@@ -168,8 +172,9 @@ class WifiScanCoordinator internal constructor(
             lastPublishedBlockedState = null
         }
         try {
-            platform.registerResultsReceiver {
-                scope.launch { publishReceiverResultsIfReady() }
+            platform.registerResultsReceiver { updated ->
+                if (updated) scope.launch { publishReceiverResultsIfReady() }
+                else publishFailure("Wi-Fi scan did not update; previous observations retained")
             }
             receiverRegistered = true
             scanJob?.cancel()
@@ -317,8 +322,6 @@ class WifiScanCoordinator internal constructor(
         val message = when (state) {
             WifiScanReadiness.MISSING_FINE_LOCATION ->
                 "Location permission is required for Wi-Fi scan results"
-            WifiScanReadiness.MISSING_NEARBY_WIFI_DEVICES ->
-                "Nearby devices permission is required for Wi-Fi scan results"
             WifiScanReadiness.LOCATION_SERVICES_DISABLED ->
                 "Location services must be enabled for Wi-Fi scan results"
             WifiScanReadiness.WIFI_DISABLED ->
