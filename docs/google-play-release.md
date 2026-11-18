@@ -54,6 +54,7 @@ Upload the phone screenshots in the numbered order below. Each is a 1080 × 1920
 | Phone 4 | [Grouped iBeacons](google-play-assets/grouped-beacons.png) | Twelve sample beacon observations appear under one iBeacon network in the Beacons tab. |
 | Phone 5 | [Bluetooth name example](google-play-assets/recorder-example-dark.png) | In dark mode, the Bluetooth name example shows how a sample name matches the Plaud family. |
 | Phone 6 | [Welcome](google-play-assets/welcome-light.png) | The GameChangers AI welcome screen introduces personal recorder and camera detection, nearby aircraft, and flight paths. |
+| Phone 7 | [About in dark mode](google-play-assets/about-dark.png) | About shows the triangular scanner badge, the DEF CON 34 talk and GameChangers AI’s mission. |
 
 ## Internal testing and production
 
@@ -76,6 +77,6 @@ cmp android/app/src/main/res/raw/privacy_policy.html /tmp/friendorfoe-play-publi
 
 For verification territories, use **Play Console → Android developer verification** to confirm the organization and the registration for `com.friendorfoe`. Google automatically registers most Play apps; do not assume this package is already registered. Enforcement began in Brazil, Indonesia, Singapore and Thailand for participating stores on certified Android 8+ devices. [Android developer verification](https://developer.android.com/developer-verification)
 
-The six phone screenshots are examples; the [release reference image list](../android/reference-rights/README.md) is independent of the store screenshots. In a final signed build, confirm that a model without a cleared photo remains searchable and that users can see the credits for a model with a bundled photo.
+The seven phone screenshots illustrate the app. The [release reference image list](../android/reference-rights/README.md) covers photos bundled inside the app. In a final signed build, confirm that a model without a cleared photo remains searchable and that users can see the credits for a model with a bundled photo.
 
-Before Pages deployment, the publisher can use the [readable GitHub edition](android-privacy-policy.md) at a public commit permalink. Run `python3 scripts/export_policy_markdown.py android --check`. Open the published Markdown file on GitHub and press **Y**; confirm that the full-commit URL displays the Android policy and the publisher contact without signing in. Keep that commit in the release history. If you enter the permalink in Play Console, replace it when the policy changes. Do not substitute a source-code viewer, raw HTML served as plain text, or a private CI artifact.
+The [public Android privacy policy for this candidate](https://github.com/lnxgod/friendorfoe/blob/679d9a04c9c336565ac8b23ddb5125fdc5d9b5e4/docs/android-privacy-policy.md) opened without signing in on November 18, 2026. Its text matches the bundled policy, including the factory badge status check. Use this permalink for the current candidate. After a policy change, run `python3 scripts/export_policy_markdown.py android --check` and update the Play listing to the new public version.
