@@ -1,7 +1,9 @@
 package com.friendorfoe.presentation.about
 
+import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.net.Uri
+import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -263,8 +265,12 @@ fun InfoSettingsScreen(
 }
 
 internal fun android.content.Context.openUri(raw: String) {
-    runCatching {
+    try {
         startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(raw)))
+    } catch (_: ActivityNotFoundException) {
+        Toast.makeText(this, "No app is available to open this link.", Toast.LENGTH_LONG).show()
+    } catch (_: SecurityException) {
+        Toast.makeText(this, "Android blocked this link from opening.", Toast.LENGTH_LONG).show()
     }
 }
 

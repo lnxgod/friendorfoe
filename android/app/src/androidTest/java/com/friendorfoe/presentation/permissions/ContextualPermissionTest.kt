@@ -17,6 +17,7 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import com.friendorfoe.presentation.ar.ArSystemStatusFrame
+import com.friendorfoe.presentation.map.MapLocationAccessButton
 import com.friendorfoe.presentation.navigation.FofNavigationSuite
 import com.friendorfoe.presentation.navigation.ArPermissionRoute
 import com.friendorfoe.presentation.navigation.TopLevelDestination
@@ -143,6 +144,33 @@ class ContextualPermissionTest {
     }
 
     @Test
+    fun mapDisclosesOnlineLocationUseBeforePermissionAndSettings() {
+        var requests = 0
+        var settings = 0
+        var state by mutableStateOf<PermissionUiState>(PermissionUiState.Denied)
+        compose.setContent {
+            FriendOrFoeTheme {
+                MapLocationAccessButton(state, onRequest = { requests++ }, onOpenSettings = { settings++ })
+            }
+        }
+
+        compose.onNodeWithText("Use location").performClick()
+        compose.onNodeWithText("OpenStreetMap", substring = true).assertIsDisplayed()
+        compose.onNodeWithText("Not now").performClick()
+        compose.runOnIdle { assertEquals(0, requests) }
+        compose.onNodeWithText("Use location").performClick()
+        compose.onNodeWithText("Continue").performClick()
+        compose.runOnIdle {
+            assertEquals(1, requests)
+            state = PermissionUiState.PermanentlyDenied
+        }
+        compose.onNodeWithText("App settings").performClick()
+        compose.runOnIdle { assertEquals(0, settings) }
+        compose.onNodeWithText("Continue").performClick()
+        compose.runOnIdle { assertEquals(1, settings) }
+    }
+
+    @Test
     fun gpsAndOptionalLocationStatusNeverReplaceArCameraContent() {
         var locationRequests = 0
         var locationState by mutableStateOf<PermissionUiState>(PermissionUiState.Denied)
@@ -164,6 +192,12 @@ class ContextualPermissionTest {
 
         compose.onNodeWithText("AR camera content").assertIsDisplayed()
         compose.onNodeWithText("Location is optional", substring = true).performClick()
+        compose.onNodeWithText("Open-Meteo", substring = true).assertIsDisplayed()
+        compose.onNodeWithText("Not now").performClick()
+        compose.runOnIdle { assertEquals(0, locationRequests) }
+        compose.onNodeWithText("AR camera content").assertIsDisplayed()
+        compose.onNodeWithText("Location is optional", substring = true).performClick()
+        compose.onNodeWithText("Continue").performClick()
         compose.runOnIdle {
             assertEquals(1, locationRequests)
             locationState = PermissionUiState.Granted

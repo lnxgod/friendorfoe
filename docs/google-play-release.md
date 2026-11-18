@@ -34,11 +34,11 @@ You can also explore nearby aircraft and compatible drone broadcasts on the map.
 
 Detection depends on what a device broadcasts and what Android can see. A device can stay silent or reuse another device’s name. A signal match cannot tell you whether a microphone or camera is recording.
 
-Friend or Foe is an open-source app published by GameChangers AI.
+Friend or Foe is an open-source app published by GameChangers AI, a nonprofit that brings hands-on AI learning to rural communities. Open More → About to meet the team and watch the DEF CON 34 talk that tells the story behind the app and scanner badge.
 
 **Release notes**
 
-Choose Light, Dark or System under App settings. Open Privacy to try a Bluetooth recorder name, inspect grouped everyday devices and iBeacons, or see why a Wi-Fi network was flagged. Find GameChangers AI on Welcome and More, and read the privacy policy offline.
+Choose Light, Dark or System under App settings. Open Privacy to inspect recorder signals, grouped everyday devices and iBeacons, or see why a Wi-Fi network was flagged. In More → About, learn about GameChangers AI and watch our DEF CON 34 talk. You can also browse the map while waiting for a location fix.
 
 ## Images for Play Console
 

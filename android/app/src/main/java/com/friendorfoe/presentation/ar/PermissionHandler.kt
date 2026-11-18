@@ -23,6 +23,9 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -32,6 +35,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.friendorfoe.presentation.permissions.LocationPermissionDisclosure
 import com.friendorfoe.presentation.permissions.PermissionUiState
 import com.friendorfoe.presentation.permissions.isUsable
 
@@ -91,6 +95,19 @@ internal fun ArSystemStatusFrame(
     onOpenSystemLocationSettings: () -> Unit,
     content: @Composable () -> Unit,
 ) {
+    var showLocationRationale by rememberSaveable { mutableStateOf(false) }
+    if (showLocationRationale) {
+        LocationPermissionDisclosure(
+            title = "Allow location for Camera?",
+            explanation = "When aircraft lookup is on, Friend or Foe sends your location or a surrounding area to aircraft data providers. Weather lookups send your coordinates to Open-Meteo. You can use approximate location or keep using the camera without it.",
+            onContinue = {
+                showLocationRationale = false
+                if (locationPermissionState == PermissionUiState.PermanentlyDenied) onOpenLocationSettings()
+                else onRequestLocation()
+            },
+            onDismiss = { showLocationRationale = false },
+        )
+    }
     Box(modifier = Modifier.fillMaxSize()) {
         content()
 
@@ -100,12 +117,12 @@ internal fun ArSystemStatusFrame(
             PermissionUiState.Granted -> null
             PermissionUiState.Approximate -> ArStatusBanner(
                 message = "Approximate location — tap for precise distance and bearing",
-                action = onRequestLocation,
+                action = { showLocationRationale = true },
                 color = Color(0xFFFF9800),
             )
             PermissionUiState.Denied -> ArStatusBanner(
                 message = "Location is optional — tap to add distance and bearing",
-                action = onRequestLocation,
+                action = { showLocationRationale = true },
                 color = Color(0xFFFF9800),
             )
             PermissionUiState.Loading -> ArStatusBanner(
@@ -115,7 +132,7 @@ internal fun ArSystemStatusFrame(
             )
             else -> ArStatusBanner(
                 message = "Location is off — tap to open app settings",
-                action = onOpenLocationSettings,
+                action = { showLocationRationale = true },
                 color = Color(0xFFFF9800),
             )
         }

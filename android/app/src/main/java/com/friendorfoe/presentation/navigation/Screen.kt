@@ -29,6 +29,7 @@ sealed class Screen(val route: String) {
     }
     data object History : Screen("history")
     data object About : Screen("info")
+    data object ProjectAbout : Screen("info/project")
     data object AboutSettings : Screen("info/settings")
     data object Detail : Screen("detail/{objectId}") {
         fun createRoute(objectId: String) = "detail/${encodeRouteSegment(objectId)}"

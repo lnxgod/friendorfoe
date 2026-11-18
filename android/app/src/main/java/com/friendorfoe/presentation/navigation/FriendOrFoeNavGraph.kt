@@ -31,6 +31,7 @@ import com.friendorfoe.presentation.about.AboutLandingScreen
 import com.friendorfoe.presentation.about.AboutViewModel
 import com.friendorfoe.presentation.about.InfoUiState
 import com.friendorfoe.presentation.about.InfoSettingsScreen
+import com.friendorfoe.presentation.about.ProjectAboutScreen
 import com.friendorfoe.presentation.about.openUri
 import com.friendorfoe.presentation.about.openPlayStoreListing
 import com.friendorfoe.presentation.aircraft.AircraftReferenceScreen
@@ -196,8 +197,8 @@ private fun NavGraphBuilder.registerDestinations(
                 onOpenIgnoredDevices = {
                     navController.navigate(Screen.IgnoredDevices.route) { launchSingleTop = true }
                 },
-                onOpenInfo = {
-                    navigateTopLevel(navController, TopLevelDestination.ABOUT)
+                onOpenBackendSettings = {
+                    navController.navigate(Screen.AboutSettings.route) { launchSingleTop = true }
                 },
                 onOpenFinding = { key ->
                     navController.navigate(Screen.PrivacyFinding.createRoute(key))
@@ -287,6 +288,7 @@ internal fun AboutTopLevelRoute(
                 .ifBlank { BuildConfig.VERSION_NAME },
             updateState = state.updateState,
             actions = AboutLandingActions(
+                onOpenAbout = { navController.navigate(Screen.ProjectAbout.route) { launchSingleTop = true } },
                 onOpenProbes = { navController.navigate(Screen.Probes.route) },
                 onOpenSavedFlights = { navController.navigate(Screen.SavedFlights.route) },
                 onOpenHistory = { navController.navigate(Screen.History.route) { launchSingleTop = true } },
@@ -340,6 +342,11 @@ internal fun AboutSettingsRoute(
 private fun NavGraphBuilder.registerSecondaryDestinations(
     navController: NavHostController,
 ) {
+    composable(Screen.ProjectAbout.route) {
+        val context = LocalContext.current
+        ProjectAboutScreen(onBack = navController::popBackStack, onOpenLink = context::openUri)
+    }
+
     composable(Screen.AboutSettings.route) {
         AboutSettingsRoute(
             navController = navController,

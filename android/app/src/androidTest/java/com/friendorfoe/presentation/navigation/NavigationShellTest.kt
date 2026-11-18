@@ -27,6 +27,7 @@ import androidx.navigation.navigation
 import androidx.test.espresso.Espresso.pressBack
 import com.friendorfoe.data.AppVersion
 import com.friendorfoe.presentation.about.InfoUiState
+import com.friendorfoe.presentation.about.ProjectAboutScreen
 import com.friendorfoe.presentation.about.UpdateUiState
 import com.friendorfoe.presentation.permissions.AppFeature
 import com.friendorfoe.presentation.permissions.PermissionBindings
@@ -151,6 +152,25 @@ class NavigationShellTest {
         compose.onNodeWithTag("about_reference").performClick()
 
         compose.onNodeWithTag("screen_reference_guide").assertIsDisplayed()
+    }
+
+    @Test
+    fun moreOpensProjectAboutAndReturnsOnBack() {
+        compose.setContent {
+            FriendOrFoeTheme {
+                val nav = rememberNavController()
+                NavHost(nav, startDestination = Screen.About.route) {
+                    composable(Screen.About.route) { AboutTopLevelRoute(nav) }
+                    composable(Screen.ProjectAbout.route) {
+                        ProjectAboutScreen(onBack = nav::popBackStack, onOpenLink = {})
+                    }
+                }
+            }
+        }
+        compose.onNodeWithTag("more_about").assertIsDisplayed().performClick()
+        compose.onNodeWithTag("project_about").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Back").performClick()
+        compose.onNodeWithTag("about_landing").assertIsDisplayed()
     }
 
     @Test

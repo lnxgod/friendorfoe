@@ -363,6 +363,7 @@ class PrivacyScreenTest {
 
     @Test
     fun sourceStatusIsCompactAndFailureDoesNotHideGoodRows() {
+        var connectionSettingsOpened = 0
         val state = projectPrivacyUiState(
             PrivacyCurrentState(
                 sources = listOf(
@@ -370,8 +371,8 @@ class PrivacyScreenTest {
                     health(
                         PrivacySourceKind.BACKEND,
                         SourceHealthState.FAILED,
-                        message = "Backend timed out",
-                        recoveryLabel = "Retry",
+                        message = "Invalid backend address",
+                        recoveryLabel = "Fix backend URL",
                     ),
                     health(PrivacySourceKind.BADGE_USB, SourceHealthState.LIVE),
                     health(PrivacySourceKind.WIFI_ANALYSIS, SourceHealthState.LIVE),
@@ -383,13 +384,17 @@ class PrivacyScreenTest {
             ),
         )
         compose.setContent {
-            FriendOrFoeTheme { PrivacyContent(state, PrivacyActions()) }
+            FriendOrFoeTheme {
+                PrivacyContent(state, PrivacyActions(onOpenBackendSettings = { connectionSettingsOpened++ }))
+            }
         }
 
         listOf("Phone", "Backend", "Badge", "Wi-Fi").forEach {
             compose.onNodeWithText(it).assertIsDisplayed()
         }
-        compose.onNodeWithText("Backend timed out").assertIsDisplayed()
+        compose.onNodeWithText("Invalid backend address").assertIsDisplayed()
+        compose.onNodeWithText("Open connection settings").performScrollTo().performClick()
+        compose.runOnIdle { assertEquals(1, connectionSettingsOpened) }
         compose.onNodeWithTag("finding_phone").performScrollTo().assertIsDisplayed()
         compose.onNodeWithText("Privacy sources unavailable").assertDoesNotExist()
     }

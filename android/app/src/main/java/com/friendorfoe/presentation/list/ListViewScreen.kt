@@ -31,8 +31,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
 import androidx.compose.material3.Surface
 import androidx.compose.material3.FilterChip
 import androidx.compose.runtime.produceState
@@ -68,6 +66,7 @@ import com.friendorfoe.presentation.components.FofLoadingState
 import com.friendorfoe.presentation.components.FofNoMatchesState
 import com.friendorfoe.presentation.filter.CompactFilterBar
 import com.friendorfoe.presentation.filter.FilterModalSheet
+import com.friendorfoe.presentation.permissions.LocationPermissionDisclosure
 import com.friendorfoe.presentation.permissions.AppFeature
 import com.friendorfoe.presentation.permissions.PermissionSettingsLaunchResult
 import com.friendorfoe.presentation.permissions.PermissionUiState
@@ -180,23 +179,14 @@ fun ListViewScreen(
     }
 
     if (showLocationRationale) {
-        AlertDialog(
-            onDismissRequest = { showLocationRationale = false },
-            title = { Text("Allow location for Nearby?") },
-            text = {
-                Text(
-                    "When aircraft lookup is on, Friend or Foe sends your location or a surrounding area to aircraft data providers to find nearby flights. It also uses location on your phone to show distances. You can use approximate location.",
-                )
+        LocationPermissionDisclosure(
+            title = "Allow location for Nearby?",
+            explanation = "When aircraft lookup is on, Friend or Foe sends your location or a surrounding area to aircraft data providers to find nearby flights. It also uses location on your phone to show distances. You can use approximate location.",
+            onContinue = {
+                showLocationRationale = false
+                permissionBindings.request(AppFeature.AR_MAP_LOCATION)
             },
-            confirmButton = {
-                Button(onClick = {
-                    showLocationRationale = false
-                    permissionBindings.request(AppFeature.AR_MAP_LOCATION)
-                }) { Text("Continue") }
-            },
-            dismissButton = {
-                TextButton(onClick = { showLocationRationale = false }) { Text("Not now") }
-            },
+            onDismiss = { showLocationRationale = false },
         )
     }
 }

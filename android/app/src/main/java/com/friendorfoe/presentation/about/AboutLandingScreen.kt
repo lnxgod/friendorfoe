@@ -5,6 +5,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
@@ -25,6 +26,7 @@ data class AboutLandingActions(
     val onOpenHistory: () -> Unit = {},
     val onOpenBadge: () -> Unit = {},
     val onOpenPublisher: (String) -> Unit = {},
+    val onOpenAbout: () -> Unit = {},
 )
 
 @Composable
@@ -38,9 +40,16 @@ fun AboutLandingScreen(
         modifier.fillMaxSize().testTag("about_landing")
             .verticalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 20.dp),
     ) {
-        Text("More", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold)
-        Text("Friend or Foe", style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("More", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold)
+                Text("Friend or Foe", style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            OutlinedButton(onClick = actions.onOpenAbout, modifier = Modifier.testTag("more_about")) {
+                Text("About")
+            }
+        }
         Spacer(Modifier.height(8.dp))
         PublisherCredit(actions.onOpenPublisher)
         Spacer(Modifier.height(12.dp))
@@ -70,7 +79,7 @@ fun AboutLandingScreen(
         FofActionRow(
             title = "Source code on GitHub",
             description = "Browse the Friend or Foe project",
-            onClick = { actions.onOpenSource("https://github.com/lnxgod/friendorfoe") },
+            onClick = { actions.onOpenSource(PROJECT_SOURCE_URL) },
             modifier = Modifier.testTag("about_github"),
         )
         Text("Observations are evidence, not proof of identity, intent, or ownership.",

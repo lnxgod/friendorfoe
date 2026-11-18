@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -118,6 +119,22 @@ fun rememberPermissionBindings(
         openFeatureSettings = { feature, state ->
             openFeaturePermissionSettings(context, feature, state)
         },
+    )
+}
+
+@Composable
+internal fun LocationPermissionDisclosure(
+    title: String,
+    explanation: String,
+    onContinue: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = { Text(explanation, Modifier.verticalScroll(rememberScrollState())) },
+        confirmButton = { Button(onClick = onContinue) { Text("Continue") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Not now") } },
     )
 }
 

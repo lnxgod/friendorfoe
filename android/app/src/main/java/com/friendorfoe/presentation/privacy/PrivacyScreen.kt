@@ -120,7 +120,7 @@ data class PrivacyActions(
 @Composable
 fun PrivacyScreen(
     onOpenIgnoredDevices: (() -> Unit)? = null,
-    onOpenInfo: (() -> Unit)? = null,
+    onOpenBackendSettings: (() -> Unit)? = null,
     onOpenFinding: ((PrivacyFindingKey) -> Unit)? = null,
     onOpenProbes: (() -> Unit)? = null,
     onOpenEncounters: (() -> Unit)? = null,
@@ -169,7 +169,7 @@ fun PrivacyScreen(
             onOpenProbes = onOpenProbes,
             onOpenEncounters = onOpenEncounters,
             onRetryAllSources = viewModel::retryAllFailed,
-            onOpenBackendSettings = onOpenInfo,
+            onOpenBackendSettings = onOpenBackendSettings,
             onOpenIgnoredDevices = onOpenIgnoredDevices,
             onIgnore = viewModel::ignore,
             onTrack = {
@@ -593,7 +593,7 @@ private fun PrivacySourceStatusRow(
             "Turn on Bluetooth" to actions.onTurnOnBluetooth
         }
         summary.recoveryLabel == "Fix backend URL" -> {
-            actions.onOpenBackendSettings?.let { "Open Info" to it }
+            actions.onOpenBackendSettings?.let { "Open connection settings" to it }
         }
         summary.recoveryLabel.isNullOrBlank() -> null
         else -> {

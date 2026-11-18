@@ -1,5 +1,13 @@
 package com.friendorfoe.presentation.about
 
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.width
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.Density
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.junit4.createComposeRule
@@ -16,6 +24,34 @@ import org.junit.Test
 class AboutLandingScreenTest {
     @get:Rule
     val compose = createComposeRule()
+
+    @Test
+    fun aboutLinksStayReachableOnCompactScreensWithLargeText() {
+        val opened = mutableListOf<String>()
+        compose.setContent {
+            val density = LocalDensity.current
+            CompositionLocalProvider(LocalDensity provides Density(density.density, 2f)) {
+                FriendOrFoeTheme {
+                    Box(Modifier.width(320.dp).height(560.dp)) {
+                        ProjectAboutScreen(onBack = {}, onOpenLink = { opened.add(it) })
+                    }
+                }
+            }
+        }
+        compose.runOnIdle { assertEquals(emptyList<String>(), opened) }
+        listOf("Watch the talk on YouTube", "Published by GameChangers AI", "About GameChangers AI",
+            "Source code on GitHub").forEach {
+            compose.onNodeWithText(it).performScrollTo().assertIsDisplayed().performClick()
+        }
+        compose.runOnIdle {
+            assertEquals(listOf(
+                "https://www.youtube.com/watch?v=VxlqV-vBvy4",
+                "https://gamechangersai.org/",
+                "https://gamechangersai.org/about.html",
+                "https://github.com/lnxgod/friendorfoe",
+            ), opened)
+        }
+    }
 
     @Test
     fun moreShowsDailyToolsAndKeepsSettingsAction() {

@@ -26,7 +26,9 @@ Google ML Kit can send installation identifiers, device and app information, fea
 
 ## Optional badges and sensor servers
 
-You choose whether to connect to a scanner badge or configure a sensor server. These sources can return nearby observations, network names, radio identifiers, locations and times from their own sensors. The app stores connection settings on the phone and sends requests or controls to the device or server you select. Configured sensor servers require HTTPS, including on a local network. The stock badge’s own Wi-Fi access point uses unencrypted HTTP. Use that feature only on the badge network you intend to join. The app does not follow redirects for these connections.
+While the app is open and a USB badge connection is inactive, Friend or Foe periodically asks the stock badge’s local address (192.168.4.1) for status. This starts automatically, including on first launch before you open the Badge screen. The read-only request uses unencrypted HTTP. A device reachable at that address can see the request and the phone’s network address. Badge status can include nearby observations from the badge. Badge controls use a USB connection.
+
+You can also connect a sensor server. The app stores the connection settings on your phone and sends requests to the server you choose using HTTPS, including on a local network. Badge and sensor data can include network names, radio identifiers, locations and times from their sensors. The app does not follow redirects for these connections.
 
 If you start a calibration walk, the app sends your operator label, a session identifier, precise coordinates, time, accuracy when available, and calibration measurements to the server you configured. The app uses HTTPS for these requests and sends the calibration token to that server. Calibration can also advertise a Bluetooth identifier for nearby sensors to measure. The operator of your chosen server controls its records, logs and backups. Ask that operator about retention or deletion of server-side data.
 
